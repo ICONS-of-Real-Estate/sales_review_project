@@ -574,6 +574,43 @@ function installDailyTrigger() {
   Logger.log('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
 }
 
+/**
+ * Diagnostic: dump guest lists for all call events on 14/08/2026.
+ * Answers: do bare "QC" events carry the prospect's email as a guest?
+ * Run once before enabling attendee-email matching.
+ */
+function debugListEventGuests() {
+  var tz = Session.getScriptTimeZone();
+  var target = new Date(2026, 7, 14); // 14/08/2026
+  var dayStart = startOfDay_(target, tz);
+  var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+  CONFIG.REPS.forEach(function (repCfg) {
+    var events = getRepCallEventsRaw_(repCfg, dayStart, dayEnd);
+    Logger.log('--- ' + repCfg.name + ' ---');
+    events.forEach(function (ev) {
+      var guests = ev.getGuestList().map(function (g) { return g.getEmail(); });
+      Logger.log('  "' + ev.getTitle() + '" @ ' +
+        Utilities.formatDate(ev.getStartTime(), tz, 'HH:mm') +
+        ' → guests: ' + (guests.length ? guests.join(', ') : '(NONE)'));
+    });
+  });
+}
+
+/** Raw event fetch with the same include/exclude filter, keeping the event objects. */
+function getRepCallEventsRaw_(repCfg, dayStart, dayEnd) {
+  var cal = repCfg.calendarId === 'primary'
+    ? CalendarApp.getDefaultCalendar()
+    : CalendarApp.getCalendarById(repCfg.calendarId);
+  if (!cal) throw new Error('No calendar found for id ' + repCfg.calendarId);
+  return cal.getEvents(dayStart, dayEnd).filter(function (ev) {
+    var t = (ev.getTitle() || '').toLowerCase();
+    var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
+    if (excluded) return false;
+    return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
+  });
+}
+
 /** Debug: dry-run the compliance check against a specific date. Run from editor. */
 function debugCheckSpecificDate() {
   var tz = Session.getScriptTimeZone();
