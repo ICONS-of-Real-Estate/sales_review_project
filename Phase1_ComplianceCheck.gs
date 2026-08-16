@@ -210,9 +210,9 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
       // tomorrow's match exact-key and builds the Phase 0 join data.
       var anyHit = findMatch_(ev, allRows);
       if (anyHit && !anyHit.logged) {
+        var wrote = stampMatch_(anyHit);
         log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
-          ' — backfilling Calendar Event ID');
-        stampMatch_(anyHit);
+          (wrote ? ' — backfilling Calendar Event ID' : ' — ID already stamped'));
       }
     }
   });
@@ -362,13 +362,17 @@ function findMatch_(ev, rows) {
  * if the cell is empty — never overwrite a human-entered or previously written
  * ID) and the Match Method used. This is the Phase 0 join data being built
  * automatically: tomorrow's match on this row will be exact-key.
+ * Returns true if a Calendar Event ID was actually written this call.
  */
 function stampMatch_(hit) {
   var row = hit.row;
-  if (!row || !row.sheet) return;
+  if (!row || !row.sheet) return false;
+  var wroteId = false;
   try {
     if (row.eventIdCol !== -1 && !row.eventId && row.matchedEvent) {
       row.sheet.getRange(row.rowIndex, row.eventIdCol + 1).setValue(row.matchedEvent.id);
+      row.eventId = row.matchedEvent.id;
+      wroteId = true;
     }
     if (row.matchMethodCol !== -1) {
       var method = hit.via === 'calendar_event_id' ? 'exact_key' : 'fallback_heuristic';
@@ -378,6 +382,7 @@ function stampMatch_(hit) {
     // A failed write-back must never break the compliance check itself.
     log_('    ↳ write-back failed for row ' + row.rowIndex + ': ' + e);
   }
+  return wroteId;
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +683,41 @@ function cleanupStrayWritebacks() {
 }
 
 /**
+ * Go-live cleanup: delete the 4 sample rows inserted by setupSalesCallLog
+ * (14/08/2026 test data: Andrea Brunson, Jacqueline Coleman, Julio Cardoso,
+ * Justine). Matches on date + known sample names so any real logged call is
+ * never touched. Deletes bottom-up; safe to re-run.
+ */
+function deleteSampleRows() {
+  RUN_TAG = 'deleteSampleRows';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab.'); return; }
+
+  var SAMPLE_NAMES = ['andrea brunson', 'jacqueline coleman', 'julio cardoso', 'justine'];
+  var SAMPLE_DATE = '14/08/2026';
+  var tz = Session.getScriptTimeZone();
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('Nothing to delete — sheet has no data rows.'); return; }
+
+  var deleted = 0;
+  for (var r = lastRow; r >= 2; r--) {
+    var name = String(sheet.getRange(r, 1).getValue() || '').trim().toLowerCase();
+    var dateVal = sheet.getRange(r, 4).getValue();  // D: Call Date
+    var dateStr = (dateVal instanceof Date)
+      ? Utilities.formatDate(dateVal, tz, 'dd/MM/yyyy')
+      : String(dateVal || '').trim();
+    if (dateStr === SAMPLE_DATE && SAMPLE_NAMES.indexOf(name) !== -1) {
+      sheet.deleteRow(r);
+      log_('Deleted sample row ' + r + ' (' + name + ')');
+      deleted++;
+    }
+  }
+  log_(deleted ? 'Deleted ' + deleted + ' sample row(s).' : 'No sample rows found.');
+}
+
+/**
  * One-time: fill Prospect Email on the sample rows so attendee-email matching
  * can be validated. Matches by prospect name — safe to re-run, only fills
  * empty email cells.
@@ -820,9 +860,9 @@ function debugCheckSpecificDate() {
           missing.push(ev);
           var anyHit = findMatch_(ev, allRows);
           if (anyHit && !anyHit.logged) {
+            var wrote = stampMatch_(anyHit);
             log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
-              ' — backfilling Calendar Event ID');
-            stampMatch_(anyHit);
+              (wrote ? ' — backfilling Calendar Event ID' : ' — ID already stamped'));
           }
         }
       });
