@@ -525,7 +525,10 @@ function setupSalesCallLog() {
   sheet.getRange('D2:D1000').setNumberFormat('dd/mm/yyyy');
 
   // Sample rows for 14/08/2026 — lets the dry run show both a match and misses.
-  if (sheet.getLastRow() < 2) {
+  // Check column A for real content: inserted checkboxes make getLastRow() unreliable.
+  var hasData = sheet.getRange('A2:A1000').getValues()
+    .some(function (r) { return String(r[0]).trim() !== ''; });
+  if (!hasData) {
     var sample = [
       // Prospect, Email, Source, Call Date, Rep, Call Type, Outcome Logged, Disposition, Calendar Event ID
       ['Andrea Brunson', '', 'Podcast', new Date(2026, 7, 14), 'Joana', 'QC', true, 'Follow-up', ''],
@@ -569,6 +572,32 @@ function installDailyTrigger() {
     .atHour(6)
     .create();
   Logger.log('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
+}
+
+/** Debug: dry-run the compliance check against a specific date. Run from editor. */
+function debugCheckSpecificDate() {
+  var tz = Session.getScriptTimeZone();
+  var target = new Date(2026, 7, 14); // 14/08/2026 — month is 0-based
+  var dayStr = Utilities.formatDate(target, tz, 'dd/MM/yyyy');
+  var dayStart = startOfDay_(target, tz);
+  var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+  CONFIG.REPS.forEach(function (repCfg) {
+    try {
+      var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
+      var loggedRows = getLoggedRows_(repCfg, dayStr, tz);
+      var missing = events.filter(function (ev) {
+        var hit = findMatch_(ev, loggedRows);
+        Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → ' +
+          (hit ? 'LOGGED (row ' + hit.rowIndex + ' via ' + hit.via + ')' : 'NOT LOGGED'));
+        return !hit;
+      });
+      Logger.log('[DEBUG ' + dayStr + '] ' + repCfg.name + ': ' + events.length +
+        ' event(s), ' + loggedRows.length + ' logged row(s), ' + missing.length + ' MISSING');
+    } catch (e) {
+      Logger.log('[DEBUG] ERROR for ' + repCfg.name + ': ' + e);
+    }
+  });
 }
 
 /** Dry run: logs what WOULD be emailed for the prior day, sends nothing. */
