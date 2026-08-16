@@ -792,11 +792,23 @@ function debugCheckSpecificDate() {
       var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
       var allRows = getAllTrackerRows_(repCfg, dayStr, tz);
       var loggedRows = allRows.filter(function (r) { return r.logged; });
-      var missing = events.filter(function (ev) {
+      var missing = [];
+      events.forEach(function (ev) {
         var hit = findMatch_(ev, loggedRows);
-        Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → ' +
-          (hit ? 'LOGGED (row ' + hit.rowIndex + ' via ' + hit.via + ')' : 'NOT LOGGED'));
-        return !hit;
+        if (hit) {
+          Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → LOGGED (row ' +
+            hit.rowIndex + ' via ' + hit.via + ')');
+          stampMatch_(hit);
+        } else {
+          Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → NOT LOGGED');
+          missing.push(ev);
+          var anyHit = findMatch_(ev, allRows);
+          if (anyHit && !anyHit.logged) {
+            Logger.log('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
+              ' — backfilling Calendar Event ID');
+            stampMatch_(anyHit);
+          }
+        }
       });
       Logger.log('[DEBUG ' + dayStr + '] ' + repCfg.name + ': ' + events.length +
         ' event(s), ' + loggedRows.length + ' logged row(s), ' + missing.length + ' MISSING');
