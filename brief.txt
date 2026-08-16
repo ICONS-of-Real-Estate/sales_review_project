@@ -1,0 +1,211 @@
+﻿Technical Design Brief: Call Tracker Compliance + Lead/Call Quality Scoring Automation
+Prepared for: Kris Reid, CEO — Icons of Real Estate / Ardor Media LLC Scope: Architecture and rubric design only. NO Apps Script implementation code. Revision: v2 — incorporates deterministic Riverside/Calendar keying at booking time (moved from Phase 3 fallback to Phase 0 requirement).
+TL;DR
+* Build it as one more module in the existing Moonshot/Apps Script pattern: Apps Script does all deterministic work (Calendar/Sheets reads, date math, quota-guarded email, Riverside pulls, queue ranking); Kimi k2.6 does judgment only (lead-quality verdict, call scoring, failure-mode flags). This mirrors the Phase 3 "Riverside Drive sync + call coaching" work already specced but not yet built.
+* A per-rep "call outcome logged" field does NOT exist today — the current trackers (Tomás's Sales Tracker, Ben's Icons 100 tracker) use checkmark columns (✓) and free-text "Comments", with no timestamp, no rep-owner column, and no machine-readable outcome field. New columns must be added before the compliance check can run reliably.
+* Ground the rubric in real methodology: SPIN Selling (obtaining commitment / objection prevention), Challenger (Take Control / talking about money), and MEDDIC (Identify Pain, Champion, Metrics) map cleanly onto Kris's two failure modes — "never asked for the money" and "objections not uncovered/overcome." MEDDIC concepts are used only as reasoning context for the model, not as extra scored JSON fields — the schema scores exactly two failure modes, nothing more.
+* Critical: kimi-k2.6 rejects any temperature except 1, so consistency must come from rubric anchoring, not a low temperature setting — and defensive JSON parsing must assume the model will occasionally wrap output in markdown code fences.
+* Riverside/tracker matching must be deterministic by design, not fuzzy by necessity. Write the Calendar Event ID into the Riverside recording/studio title at booking time (Phase 0), so the transcript join is an exact key lookup instead of a name+date heuristic. Fuzzy matching is only a fallback for historical recordings created before this convention existed.
+Key Findings
+A. Real current state (confirmed in Drive, not assumed)
+* Tomás's Sales Tracker (14VS-se3Cc9jiPYlVex-5MX69ATmwSHhf0xPd6eAEiY0, owned by tomas@iconsofrealestate.com): columns are Name, Email, Source, First Call Date, Call Taken, Discovery Booked, Discovery Taken, Sale Done, Comments. Outcomes are ✓ checkmarks plus free-text comments. No rep-owner column (it is implicitly Tomás), no per-call timestamp, no structured outcome/disposition field.
+* Ben's Icons 100 Series Podcast Tracker (1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4, owned by tomas): columns are Name, Email, Source, Booked, Booking Date, Recording Date, Recording Done, QC Booked, QC Date, QC Show Up, SC Booked, SC Date, SC Show Up, Sale, Comments. This is booking→recording→QC/SC status, not a sales-call disposition log. Date values are free-text like "May 20" (no year, no DD/MM/YYYY).
+* Sales Dashboard Data (1PZ21Gg5...): contains a "Stage Compliance" tab (Lead Name, Stage, Owner, Most Recent Note, Days Since Note, Compliance Flag) — this is the closest existing pattern to what Kris wants, and it already has an Owner column and a Compliance Flag column. This is a reuse candidate for the compliance-check output format.
+* Guest Pipeline (1Ad74lpsWoU...) is the Tech-Partner/Celebrity lane, unrelated to rep sales-call scoring; do not touch it for this build.
+* Moonshot Automation Build folder (1j01sE62ZY79V9nn97i1XjXgFZSuw2cdc): contains a canonical module Module1_CandidateSourcing_v4_hardcoded.gs and two "Build Status" docs. The Build Status (v4 update) doc records two hard-won bugs that this new build MUST design around:
+   1. kimi-k2.6 rejects any temperature except 1 — sending 0.2 or 0 causes every call to fail silently while the run reports "complete."
+   2. HTTP 416 on Drive download — Google's Drive download endpoint rejects a Range request past the real file size; the fix was to record each file's real size and clamp the range.
+* The Project Brief confirms the canonical architecture ("Google Apps Script acts as the deterministic runtime layer… AI providers are utilized strictly at the judgment layer to maximize reliability and minimize token costs") and that Phase 3 was already specced to do "Riverside Drive sync + Kimi K3 call coaching against a 4-point hosting rubric" — but is NOT STARTED. This new system is effectively the sales-side sibling of that unbuilt Phase 3. Note the brief says Kimi K3's $web_search has an open bug, and the build pins kimi-k2.6 for scoring; this new module should also pin k2.6.
+B. Methodology grounding for the two failure modes
+Failure mode #1 — "the rep never actually asked for the money/close":
+
+
+* SPIN Selling (Neil Rackham): Rackham's Huthwaite study analyzed 35,000 sales calls made by 10,000 salespeople across 23 countries over 12 years (a $1M research effort); per SPIN Selling's subtitle, it is "The Best-Validated Sales Method Available Today. Developed From Research Studies Of 35,000 Sales Calls." The call outcome taxonomy is Order / Advance / Continuation / No-sale. A call with no explicit commitment request is at best a "Continuation" (no agreed action to move forward). Rackham distinguishes the closing question ("Shall we place the order?") from the trial close (asking for an opinion). The rubric should require an explicit Advance or Order request, not merely a trial close.
+* Challenger Sale (Dixon & Adamson), "Take Control": high performers are comfortable discussing money and pressing for commitment; the close stage explicitly means "move the customer to action and finalize the deal." A rep who never raised price/next-step commitment fails "Take Control."
+* Trainers note "reluctant salesperson syndrome" — reps with good skills who never ask; the direct ask ("Would you like to move forward with this?") is the benchmark behavior to detect.
+
+
+Failure mode #2 — "objections were not uncovered or not overcome":
+
+
+* SPIN: "Objection prevention is a superior strategy to objection handling." Per Rackham in a Huthwaite interview: "The difference between the top people and the average salespeople is not how they handle objections; it's the number of objections they get in the first place." Two objection types: value ("too expensive" / ROI not justified) and capability ("not sure it does X"). Best handling references prior proof (case study / reference).
+* MEDDIC: Created inside PTC in 1996 by Dick Dunkel and Jack Napoli under sales leader John McMahon — per MEDDICC, "MEDDIC with one C was initially created by Dick Dunkel in 1996 when he was at PTC" — the framework helped take PTC from $300M to $1B in revenue in four years. The elements that surface objections are Identify Pain (is the problem real and sharp?), Metrics (quantified value), Economic Buyer (budget authority), and Champion (internal advocate). A missed objection usually maps to un-probed Pain or an unconfirmed budget/decision-maker.
+* Challenger "Take Control" also covers addressing resistance head-on and reframing it.
+* Note on scope: these frameworks inform how the model reasons about why an objection was missed (the reasoning field in the JSON schema below) — they are not additional scored output fields. The only scored flags remain asked_for_close, objections_uncovered, objections_overcome. Keep the prompt's rubric-explanation paragraph tight; don't let background citations balloon into extra JSON keys.
+
+
+These give the rubric named, citable criteria rather than invented ones.
+C. LLM-as-judge prompt design (for kimi-k2.6)
+Consensus best practices, anchored to Zheng et al. 2023, "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena" (arXiv:2306.05685, NeurIPS 2023), which identifies position, verbosity, and self-enhancement biases in LLM judges and recommends chain-of-thought reasoning and reference-guided grading as mitigations:
+
+
+* Reasoning before score (CoT). Emit the written reasoning/feedback FIELD FIRST, numeric scores and booleans LAST, so scores are generated in the context of the reasoning ("explanation-first is a reasonable default"; reduces variance, improves human agreement).
+* Structured output / JSON. Enforce a strict JSON schema; require type-safe fields. Moonshot's OpenAI-compatible endpoint supports a response_format of json_object (JSON mode — you must also instruct JSON in the prompt) and newer models advertise json_schema structured output; however, community reports note Moonshot structured-output support has been inconsistent, so the safe path is JSON mode + explicit schema in the prompt + defensive parsing.
+* Defensive parsing, specifically. At forced temperature=1, expect the model to occasionally wrap output in ```json ... ``` code fences, add a leading sentence before the JSON, or leave a trailing comma. Apps Script parsing must: (1) strip a leading/trailing ``` or ```json fence via regex before calling JSON.parse(); (2) on parse failure, retry once with a "return ONLY raw JSON, no markdown" reminder appended; (3) on second failure, log the raw response and route the row to manual review rather than silently dropping it. This is a required step, not optional cleanup.
+* Rubric anchoring with decision rules, not adjectives. "Excellent/good/adequate" leaves the judge to invent boundaries; each score level must be anchored to observable evidence in the transcript.
+* Few-shot anchors. Include 2–3 labeled example excerpts (a clear "asked for the close," a clear "never asked," a borderline). Balance verdicts so the judge doesn't infer a prior.
+* Avoiding score drift / calibration. Because temperature must be 1 on kimi-k2.6, do NOT rely on temperature=0 for determinism. Instead stabilize via: binary/low-precision sub-scores (booleans + a 1–5 severity, not 0–100), rubric anchoring, a fixed few-shot set, and a weekly calibration check against Kris's actual review decisions (mirror the existing learning_loop.gs diff pattern). Track agreement over time (e.g., percent agreement / Cohen's kappa against Kris's calls).
+* Split criteria into separate evaluators. Lead-quality (pass 1) and call-quality (pass 2) are distinct decisions; keep them as separate fields (and optionally separate calls) rather than one blended score.
+D. Prioritization/queuing for 3 calls/day, same-rep-clustered
+Kris can review 3 calls/day and prefers all 3 from one rep in a sitting. This is a constrained ranking problem, solved deterministically in Apps Script (not by the LLM):
+
+
+* Each scored, flagged call has: severity (1–5 from the model), manual_review_recommended (bool), rep, call_date, and age_in_queue (days flagged-but-unreviewed).
+* Rep-cluster scoring: group unreviewed flagged calls by rep; compute a cluster score = (count of that rep's flagged calls capped at 3) blended with the rep's max/sum severity. Pick the rep whose cluster best fills a 3-call sitting with the highest aggregate severity.
+* Daily list = the top rep's top-3 by severity, so Kris gets concentrated feedback on one rep.
+* Tie-breaks: (1) higher single-call severity; (2) older age_in_queue first (starvation guard); (3) both failure-mode flags true beats one; (4) stable alphabetical by rep as last resort.
+* Rollover: unreviewed flagged calls stay in the queue and their age_in_queue increments; an age threshold (e.g., 3 days) escalates a call's effective priority so no rep's backlog is starved by a chronically higher-severity rep. A hard cap (e.g., queue older than N days) triggers a digest to Kris.
+E. Riverside transcript integration — deterministic keying (revised)
+* API: Riverside Business API (Business-tier only; key generated in dashboard, shown once; passed as Authorization: Bearer). Current version is v3; v1/v2 were slated for sunset Feb 24, 2026.
+* List recordings by date: GET /api/v3/recordings with query params start_date / end_date (format YYYY-MM-DD), plus optional studioId / projectId, paginated (page, default 20/page), sorted newest-first. Rate limit ~1/sec.
+* Get one recording: GET /api/v3/recordings/{recordingId} → fields recording_id, name, project_id, project_name, studio_id, studio_name, status, created_date (ISO 8601 UTC — the only date field), tracks[], and transcription.files[] (type srt|txt, download_url).
+* Download transcript: GET /api/v1/download/transcription/{file_id}?type=srt|txt, Bearer auth, rate limit once per 10 minutes per unique request — a hard constraint for batch design.
+* The API exposes NO participant email and NO structured speaker-name field. Track objects have only id, type, status, files; the recording name (title) is the only human-identifying hint. This is exactly why matching must not rely on the API's own metadata.
+* REQUIRED DESIGN (Phase 0, not a fallback): key the join at booking time. When a QC/sales call is booked (in the booking flow that creates the Riverside studio/session), write the Google Calendar Event ID directly into the Riverside recording's name/title field, e.g. QC-{CalendarEventID}-{RepInitials}. This turns the transcript join into an exact string match against a known ID — no date-window heuristics, no name-fuzziness, no dependency on Riverside ever exposing participant emails.
+   * Apps Script flow: at booking, capture the Calendar Event ID → pass it into whatever creates the Riverside session (manually today, so this may initially require the rep to paste the ID into the session name, with the script validating the format on ingest and flagging malformed titles).
+   * Daily pull: GET /api/v3/recordings?start_date=...&end_date=... → for each recording, regex-extract the Calendar Event ID from name → direct row lookup by Calendar Event ID column (added in section 2) → no ambiguity.
+   * Fallback (recordings that predate this convention, or malformed titles): fall back to the old heuristic — match by date window + calendar attendee + tracker prospect name — and flag those specific rows for manual confirmation rather than trusting a silent fuzzy match.
+   * Log every match — exact-key hit, fallback-heuristic hit, or no-match — per row, per the team's logging standard.
+Details
+1. Architecture & data flow (deterministic vs. judgment layer)
+Step
+	Layer
+	Detail
+	Daily trigger (e.g., 6:00, prior-day window)
+	Apps Script (deterministic)
+	Time-driven trigger; compute prior-day date range in the correct timezone with Utilities.formatDate(..., Session.getScriptTimeZone(), "dd/MM/yyyy").
+	Read each rep's Calendar events for prior day
+	Apps Script
+	CalendarApp per rep (Bens, Joana, Sean); collect sales/QC call events (attendee, start time, title, Event ID).
+	Read each rep's tracker rows
+	Apps Script
+	Sheets read; identify rows whose call date = prior day.
+	Compliance compare (event exists but tracker not updated)
+	Apps Script
+	Deterministic set-difference: event with no matching updated row → non-compliant.
+	Send "please update tracker" email (CC Kris, Tomás)
+	Apps Script
+	Quota-guarded MailApp (see risks).
+	Pull Riverside transcript by Calendar Event ID key
+	Apps Script
+	Exact-match lookup via ID embedded in recording title at booking time; fallback to date+name heuristic only for legacy/malformed titles.
+	Lead-quality verdict (pass 1)
+	Kimi k2.6 (judgment)
+	Should this have been booked at all?
+	Call-quality score + failure-mode flags (pass 2)
+	Kimi k2.6 (judgment)
+	Only if lead was good; scores close-ask and objection-handling.
+	Parse JSON (strip markdown fences, retry on failure), write scores, set review flag
+	Apps Script
+	Defensive JSON parse per section C; write to a new Scoring tab; Logger.log per row.
+	Build ranked 3-per-day, same-rep-clustered review list
+	Apps Script
+	Deterministic queue algorithm (section D).
+	Email Kris the day's review cluster; roll over the rest
+	Apps Script
+	Quota-guarded MailApp.
+	Weekly calibration/learning loop
+	Apps Script + Kimi
+	Diff model verdicts vs. Kris's actual review outcomes; suggest rubric tweaks (mirror learning_loop.gs).
+	
+
+Model-agnostic: the judgment calls go through a single wrapper so Claude sonnet or Kimi can be swapped; only the endpoint/model id and the temperature rule change.
+2. Tracker schema — new columns to add (per rep)
+Add to each rep's sales-call tracker (or a normalized shared "Sales Call Log" tab, which is cleaner given Tomás's and Ben's trackers differ):
+
+
+Existing/reused: Prospect Name, Prospect Email, Source, Call Date. New (deterministic, written by rep or by script):
+
+
+* Rep (owner — required; does not exist on Tomás's tracker today)
+* Call Type (QC / Sales Call / Discovery)
+* Outcome Logged (bool/timestamp — the field whose absence drives the compliance email)
+* Outcome Disposition (Sold / Not Sold / Follow-up / No-show — machine-readable, replacing bare ✓)
+* Calendar Event ID (join key to Calendar AND to the Riverside recording title — the single source of truth for matching)
+* Riverside Recording ID / Transcript URL
+* Match Method (exact_key / fallback_heuristic / no_match — for auditability of section E's matching)
+
+
+New (written by the scoring pipeline):
+
+
+* Lead Quality Verdict (Good-to-book / Should-have-screened-out)
+* Call Quality Score (1–5)
+* Flag: Asked For Close (bool)
+* Flag: Objections Handled (bool)
+* Manual Review Recommended (bool)
+* Severity (1–5)
+* AI Feedback Summary (text)
+* Reviewed By Kris (bool/date), Queue Age (days)
+
+
+Dates stored/displayed as DD/MM/YYYY.
+3. Compliance-check logic + escalation email
+Logic (all deterministic): for each rep, for each prior-day calendar sales/QC event, find a tracker row with matching prospect and Outcome Logged = TRUE. If none → non-compliant → send email.
+
+
+Email template (no fluff, discloses AI drafting):
+
+
+Subject: [Action needed] Update your sales tracker — {N} call(s) from {DD/MM/YYYY} not logged
+
+
+Body: Hi {Rep}, Your calendar shows {N} sales/QC call(s) on {DD/MM/YYYY} with no matching outcome in your tracker: • {Prospect Name} — {HH:mm} — {Call Type} Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes today so it can be scored. Tracker: {link} — This is an automated check. This email was drafted by Claude/AI and sent automatically; reply to Kris or Tomás with any issues. CC: Kris Reid, Tomás Fonseca
+4. Moonshot evaluation prompt + JSON schema
+Prompt structure (system + user; temperature = 1 forced):
+
+
+* Role: "You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents."
+* Context injected deterministically: rep, prospect, call type, source, transcript (srt/txt), and the ICP/offer notes.
+* Rubric (anchored to methodology, kept tight): definitions + decision rules for (a) lead quality, (b) asked-for-close (SPIN Order/Advance vs. trial-close-only; Challenger Take Control), (c) objection handling (SPIN value vs. capability; MEDDIC concepts used only as reasoning aids for the model, not as separate scored fields).
+* Few-shot anchors: 2–3 short labeled excerpts, balanced.
+* Output instruction: "Return ONLY raw JSON. No markdown code fences, no leading or trailing text." (Still assume this will occasionally be violated — see defensive parsing in section C.)
+* Output order: reasoning first, then structured fields.
+
+
+JSON schema:
+
+
+{
+  "reasoning": "string — CoT: evidence quoted from transcript, per criterion",
+  "lead_quality": {
+    "verdict": "good_to_book | should_screen_out",
+    "justification": "string"
+  },
+  "call_quality_score": 1,            // 1-5, anchored
+  "flags": {
+    "asked_for_close": true,          // failure mode #1 inverse
+    "objections_uncovered": true,
+    "objections_overcome": true       // failure mode #2
+  },
+  "primary_failure_mode": "none | no_close_ask | objections_missed | both",
+  "manual_review_recommended": true,
+  "severity": 1,                      // 1-5 priority
+  "feedback_summary": "string — 2-3 sentences, coaching-ready"
+}
+
+Booleans + a 1–5 severity (not 0–100) resist drift under forced temperature=1. No fields beyond these — MEDDIC/SPIN/Challenger citations inform the rubric prose and the reasoning field only.
+5. Prioritization/queuing algorithm
+As section D: cluster unreviewed flagged calls by rep, pick the single rep whose top-3 fill the sitting with highest aggregate severity, output that rep's top-3, tie-break by severity → queue age → both-flags → alphabetical, roll over the rest with incrementing age and an age-based escalation so no rep starves.
+6. Known risks / edge cases (per this team's past lessons)
+* Gmail quota exhaustion. Reuse the quota_guard_and_alerting.gs circuit breaker: check MailApp.getRemainingDailyQuota() before every send; ops alerts via MailApp (separate quota reserve from GmailApp). Per Google's official Apps Script quotas page, "Email recipients per day" is 100/day for Consumer accounts vs 1,500/day for Google Workspace accounts; batch compliance emails and never loop-send unguarded.
+* kimi-k2.6 temperature. Must be exactly 1; any other value fails every call silently while reporting "complete." Do NOT copy generic "temperature=0 for evals" advice.
+* kimi-k2.6 markdown-wrapped JSON. At forced temperature=1, expect occasional code-fence wrapping or stray text around the JSON. Strip fences via regex, retry once with an explicit "raw JSON only" reminder, then route to manual review on second failure — never silently drop or fail the row.
+* Gmail search ordering / resultSizeEstimate unreliable. Do not trust result counts or ordering for compliance decisions; enumerate explicitly and match on stable keys (message/event IDs), log every decision.
+* Timezone & DD/MM/YYYY. JS Date defaults are treacherous; always format with an explicit timezone via Utilities.formatDate + Session.getScriptTimeZone(); store/display DD/MM/YYYY; Riverside created_date is UTC and must be converted before matching to a local prior-day window.
+* Drive create_file silent corruption on large payloads. Deliver any code via direct download + node --check, never Drive create_file (smart-quote/large-payload corruption). Also clamp Range requests to real file size to avoid the HTTP 416 bug.
+* Riverside matching — now deterministic by design. With Calendar Event ID embedded in the recording title at booking time, matching is an exact key lookup. Residual risk is limited to: (a) legacy recordings created before this convention, (b) reps mistyping/omitting the ID in the session name. Both cases fall back to the date+name heuristic and get flagged with Match Method = fallback_heuristic or no_match for manual confirmation — never trust a silent fuzzy match, and never trust a silent exact match either without validating the extracted ID actually exists as a Calendar Event ID.
+* GHL contacts bug. The /contacts/?query= endpoint silently returns zero for some emails; don't use GHL as the join key for matching.
+Recommendations
+1. Phase 0 (foundation, this week): Add the new columns (section 2), standardize a single "Sales Call Log" tab across reps, AND establish the Calendar-Event-ID-in-Riverside-title convention at booking time. This last piece is now a Phase 0 requirement, not a later contingency — it removes the Riverside matching risk before any scoring logic depends on it. Benchmark to proceed: all three reps' prior-day calls appear as rows with an owner, a machine-readable outcome, and a valid Calendar Event ID that also appears in the corresponding Riverside recording title.
+2. Phase 1 (compliance check only): Ship the deterministic prior-day Calendar-vs-tracker compare + quota-guarded escalation email. This delivers value with zero LLM risk. Benchmark: <1 false "you didn't log" email per week.
+3. Phase 2 (scoring): Add the Kimi k2.6 pass with the JSON schema and few-shot anchors, temperature=1, with defensive parsing (fence-stripping + retry) from day one. Start in shadow mode (score but don't email Kris) for ~2 weeks; hand-check against Kris's own judgments. Benchmark to go live: ≥80% agreement with Kris on manual-review-recommended. (For reference, Zheng et al. 2023 (arXiv:2306.05685, NeurIPS 2023) found that strong LLM judges like GPT-4 "can match both controlled and crowdsourced human preferences well, achieving over 80% agreement, the same level of agreement between humans" — but that is a general finding; the shadow-mode calibration is what establishes the real number on this data.)
+4. Phase 3 (queue + calibration): Turn on the 3-per-day clustered review email and the weekly learning-loop calibration. Benchmark: Kris's daily review consistently lands 3 calls from one rep; queue age rarely exceeds 3 days.
+5. What would change the plan: If reps can't reliably paste the Calendar Event ID into the Riverside session name at booking (a real risk since it's a manual step today), consider whether the booking flow itself can be automated to set the title programmatically, rather than adding more fallback-matching logic — a second manual step is a bug source, not a fix. If Moonshot structured output stabilizes, switch from JSON-mode-with-prompt to json_schema. If email volume approaches quota, move ops alerts to a dedicated sender or the Gmail API path.
+Caveats
+* Sheet structures were read from Drive content snippets/exports on 16/08/2026; column lists reflect the visible header rows and may miss columns beyond the snippet. Confirm live headers before finalizing schema.
+* "kimi-k2.6 temperature must be 1" and the HTTP 416 fix are taken from the team's own Build Status (v4 update) doc; if Moonshot changes model behavior, re-verify.
+* Riverside API facts reflect current published docs; v1/v2 were marked for sunset Feb 24 2026, and the transcription-download path may have migrated to v3 — verify the live endpoint before building. Business-tier API access and a generated key are prerequisites.
+* The Calendar-Event-ID-in-title convention depends on whoever creates the Riverside session (today, presumably a rep or Goodness) reliably setting it — this is a process change as much as a technical one and should be confirmed as operationally feasible before Phase 0 is marked done.
+* LLM-as-judge agreement figures are general research findings, not measured on this data; the shadow-mode calibration in Phase 2 is what establishes the real number here.
+* Methodology mappings (SPIN/Challenger/MEDDIC) are interpretive scaffolding for the rubric; they are B2B-enterprise frameworks applied to a lower-ACV transactional sale, so treat "asked for the close" and "objection handling" as the load-bearing criteria and the rest as supporting context, not additional scored dimensions.
