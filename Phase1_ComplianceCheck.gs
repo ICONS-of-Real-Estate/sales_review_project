@@ -19,7 +19,8 @@
  *    with a reserve kept for ops alerts; never loop-send unguarded.
  *  - Timezone: all date math via Utilities.formatDate(...,
  *    Session.getScriptTimeZone(), ...); dates displayed DD/MM/YYYY.
- *  - Every compliance decision is logged (Logger.log) per row.
+ *  - Every compliance decision is logged per row, and every log line is
+ *    tagged with the entry point that produced it (RUN_TAG / log_ below).
  */
 
 // ---------------------------------------------------------------------------
@@ -146,16 +147,24 @@ var CONFIG = {
 // Entry point — install a daily time-driven trigger on this function.
 // ---------------------------------------------------------------------------
 
+/** Which entry point is running — every log line carries this tag. */
+var RUN_TAG = 'unknown';
+
+function log_(msg) {
+  Logger.log('[' + RUN_TAG + '] ' + msg);
+}
+
 /**
  * Daily compliance check. Intended trigger: time-driven, day timer, 6am–7am,
  * so "prior day" is always a complete day.
  */
 function runDailyComplianceCheck() {
+  RUN_TAG = 'runDailyComplianceCheck';
   var tz = Session.getScriptTimeZone();
   var prior = new Date();
   prior.setDate(prior.getDate() - 1);
   var priorDay = Utilities.formatDate(prior, tz, 'dd/MM/yyyy');
-  Logger.log('=== Compliance check for prior day ' + priorDay + ' (tz ' + tz + ') ===');
+  log_('=== Compliance check for prior day ' + priorDay + ' (tz ' + tz + ') ===');
 
   var dayStart = startOfDay_(prior, tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
@@ -165,7 +174,7 @@ function runDailyComplianceCheck() {
       checkRep_(repCfg, dayStart, dayEnd, priorDay, tz);
     } catch (e) {
       // One rep's failure must not kill the others.
-      Logger.log('ERROR checking rep ' + repCfg.name + ': ' + e);
+      log_('ERROR checking rep ' + repCfg.name + ': ' + e);
       sendOpsAlert_('Compliance check error for ' + repCfg.name,
         'Rep ' + repCfg.name + ' could not be checked for ' + priorDay + '.\n\n' + e);
     }
@@ -178,12 +187,12 @@ function runDailyComplianceCheck() {
 
 function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
-  Logger.log(repCfg.name + ': ' + events.length + ' sales/QC calendar event(s) on ' + priorDay);
+  log_(repCfg.name + ': ' + events.length + ' sales/QC calendar event(s) on ' + priorDay);
   if (events.length === 0) return;
 
   var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
   var loggedRows = allRows.filter(function (r) { return r.logged; });
-  Logger.log(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
+  log_(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
     ' (' + allRows.length + ' total row(s) for the day)');
 
   var missing = [];
@@ -192,16 +201,16 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
     // backfill below, but the call still counts as not-logged for the email.
     var hit = findMatch_(ev, loggedRows);
     if (hit) {
-      Logger.log('  match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
+      log_('  match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
       stampMatch_(hit);
     } else {
-      Logger.log('  match? event="' + ev.title + '" → NOT LOGGED');
+      log_('  match? event="' + ev.title + '" → NOT LOGGED');
       missing.push(ev);
       // Still try to enrich an UNLOGGED row with the event ID: it makes
       // tomorrow's match exact-key and builds the Phase 0 join data.
       var anyHit = findMatch_(ev, allRows);
       if (anyHit && !anyHit.logged) {
-        Logger.log('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
+        log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
           ' — backfilling Calendar Event ID');
         stampMatch_(anyHit);
       }
@@ -209,7 +218,7 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   });
 
   if (missing.length === 0) {
-    Logger.log(repCfg.name + ': fully compliant for ' + priorDay);
+    log_(repCfg.name + ': fully compliant for ' + priorDay);
     return;
   }
   sendComplianceEmail_(repCfg, missing, priorDay, tz);
@@ -247,7 +256,7 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
           })
       };
     });
-  Logger.log('  [probe v2] ' + repCfg.name + ' events+attendees: ' + mapped.map(function (e) {
+  log_('  events+attendees ' + repCfg.name + ': ' + mapped.map(function (e) {
     return '"' + e.title + '"→[' + e.attendeeEmails.join(',') + ']';
   }).join(' | '));
   return mapped;
@@ -367,7 +376,7 @@ function stampMatch_(hit) {
     }
   } catch (e) {
     // A failed write-back must never break the compliance check itself.
-    Logger.log('    ↳ write-back failed for row ' + row.rowIndex + ': ' + e);
+    log_('    ↳ write-back failed for row ' + row.rowIndex + ': ' + e);
   }
 }
 
@@ -403,14 +412,14 @@ function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
     cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
     name: 'Call Tracker Compliance Bot'
   }, recipientsNeeded);
-  Logger.log('Sent compliance email to ' + repCfg.email + ' for ' + n + ' unlogged call(s).');
+  log_('Sent compliance email to ' + repCfg.email + ' for ' + n + ' unlogged call(s).');
 }
 
 function sendOpsAlert_(subject, body) {
   try {
     guardedSend_(CONFIG.OPS_ALERT_EMAIL, '[Compliance bot] ' + subject, body, {}, 1);
   } catch (e) {
-    Logger.log('FAILED to send ops alert: ' + e);
+    log_('FAILED to send ops alert: ' + e);
   }
 }
 
@@ -422,7 +431,7 @@ function sendOpsAlert_(subject, body) {
 function guardedSend_(to, subject, body, options, recipientsNeeded) {
   var remaining = MailApp.getRemainingDailyQuota();
   if (remaining - recipientsNeeded < CONFIG.QUOTA_RESERVE) {
-    Logger.log('QUOTA SHORT: remaining=' + remaining + ', needed=' + recipientsNeeded +
+    log_('QUOTA SHORT: remaining=' + remaining + ', needed=' + recipientsNeeded +
       ' — skipping send of "' + subject + '" to ' + to);
     if (to !== CONFIG.OPS_ALERT_EMAIL && remaining > 1) {
       MailApp.sendEmail(CONFIG.OPS_ALERT_EMAIL,
@@ -481,7 +490,7 @@ function formatDateCell_(v, tz) {
   if (!isNaN(parsed)) {
     return Utilities.formatDate(parsed, tz, 'dd/MM/yyyy');
   }
-  Logger.log('  unparseable date cell: "' + v + '"');
+  log_('  unparseable date cell: "' + v + '"');
   return String(v).trim();
 }
 
@@ -575,14 +584,15 @@ var SALES_CALL_LOG_SPREADSHEET_ID = '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM
  * Safe to re-run: it will not duplicate the tab or the sample rows.
  */
 function setupSalesCallLog() {
+  RUN_TAG = 'setupSalesCallLog';
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Sales Call Log');
 
   if (!sheet) {
     sheet = ss.insertSheet('Sales Call Log');
-    Logger.log('Created "Sales Call Log" tab.');
+    log_('Created "Sales Call Log" tab.');
   } else {
-    Logger.log('"Sales Call Log" tab already exists — validating.');
+    log_('"Sales Call Log" tab already exists — validating.');
   }
 
   // Headers
@@ -591,7 +601,7 @@ function setupSalesCallLog() {
   var headersPresent = existing[0] === SALES_CALL_LOG_HEADERS[0];
   if (!headersPresent) {
     headerRange.setValues([SALES_CALL_LOG_HEADERS]);
-    Logger.log('Wrote ' + SALES_CALL_LOG_HEADERS.length + ' headers.');
+    log_('Wrote ' + SALES_CALL_LOG_HEADERS.length + ' headers.');
   }
   headerRange.setFontWeight('bold').setBackground('#e8eef7');
   sheet.setFrozenRows(1);
@@ -621,13 +631,13 @@ function setupSalesCallLog() {
       ['Justine', '', 'Podcast', new Date(2026, 7, 14), 'Sean', 'Discovery', false, '', '']
     ];
     sheet.getRange(2, 1, sample.length, sample[0].length).setValues(sample);
-    Logger.log('Inserted ' + sample.length + ' sample rows for 14/08/2026 (Andrea Brunson is logged; the rest are intentionally not).');
+    log_('Inserted ' + sample.length + ' sample rows for 14/08/2026 (Andrea Brunson is logged; the rest are intentionally not).');
   } else {
-    Logger.log('Rows already exist — no sample data inserted.');
+    log_('Rows already exist — no sample data inserted.');
   }
 
   sheet.autoResizeColumns(1, SALES_CALL_LOG_HEADERS.length);
-  Logger.log('Setup complete. Point all rep configs at sheetName "Sales Call Log" and run dryRunComplianceCheck with a -2 day offset to validate against 14/08.');
+  log_('Setup complete. Point all rep configs at sheetName "Sales Call Log" and run dryRunComplianceCheck with a -2 day offset to validate against 14/08.');
 }
 
 function setDropdown_(sheet, colIndex, values) {
@@ -644,9 +654,10 @@ function setDropdown_(sheet, colIndex, values) {
  * prospect identity. Safe to re-run.
  */
 function cleanupStrayWritebacks() {
+  RUN_TAG = 'cleanupStrayWritebacks';
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Sales Call Log');
-  if (!sheet) { Logger.log('No Sales Call Log tab.'); return; }
+  if (!sheet) { log_('No Sales Call Log tab.'); return; }
   var lastRow = Math.max(sheet.getLastRow(), 2);
   var cleared = 0;
   for (var r = 2; r <= lastRow; r++) {
@@ -658,12 +669,12 @@ function cleanupStrayWritebacks() {
       if (String(idCell.getValue()).trim() !== '' || String(mmCell.getValue()).trim() !== '') {
         idCell.clearContent();
         mmCell.clearContent();
-        Logger.log('Cleared stray write-back on row ' + r);
+        log_('Cleared stray write-back on row ' + r);
         cleared++;
       }
     }
   }
-  Logger.log(cleared ? 'Cleared ' + cleared + ' stray row(s).' : 'No stray write-backs found.');
+  log_(cleared ? 'Cleared ' + cleared + ' stray row(s).' : 'No stray write-backs found.');
 }
 
 /**
@@ -672,9 +683,10 @@ function cleanupStrayWritebacks() {
  * empty email cells.
  */
 function fillSampleEmails() {
+  RUN_TAG = 'fillSampleEmails';
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Sales Call Log');
-  if (!sheet) { Logger.log('No Sales Call Log tab — run setupSalesCallLog first.'); return; }
+  if (!sheet) { log_('No Sales Call Log tab — run setupSalesCallLog first.'); return; }
 
   var EMAILS = {
     'jacqueline coleman': 'jcoleb1975@gmail.com',
@@ -690,11 +702,11 @@ function fillSampleEmails() {
     var key = String(names[i][0] || '').trim().toLowerCase();
     if (EMAILS[key] && String(emails[i][0]).trim() === '') {
       sheet.getRange(i + 2, 2).setValue(EMAILS[key]);
-      Logger.log('Row ' + (i + 2) + ': ' + names[i][0] + ' → ' + EMAILS[key]);
+      log_('Row ' + (i + 2) + ': ' + names[i][0] + ' → ' + EMAILS[key]);
       filled++;
     }
   }
-  Logger.log(filled ? 'Filled ' + filled + ' email(s).' : 'Nothing to fill (already set or rows not found).');
+  log_(filled ? 'Filled ' + filled + ' email(s).' : 'Nothing to fill (already set or rows not found).');
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +715,7 @@ function fillSampleEmails() {
 
 /** Install the daily 06:00–07:00 trigger. Run once. */
 function installDailyTrigger() {
+  RUN_TAG = 'installDailyTrigger';
   // Remove any existing copies first so we don't double-fire.
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'runDailyComplianceCheck') {
@@ -714,7 +727,7 @@ function installDailyTrigger() {
     .everyDays(1)
     .atHour(6)
     .create();
-  Logger.log('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
+  log_('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
 }
 
 /**
@@ -723,12 +736,13 @@ function installDailyTrigger() {
  * Run this when matching misbehaves.
  */
 function debugDumpTrackerRows() {
+  RUN_TAG = 'debugDumpTrackerRows';
   var tz = Session.getScriptTimeZone();
   var repCfg = CONFIG.REPS[1]; // Joana — her sample rows are the test case
   var rows = getAllTrackerRows_(repCfg, '14/08/2026', tz);
-  Logger.log('Candidate rows for Joana on 14/08/2026: ' + rows.length);
+  log_('Candidate rows for Joana on 14/08/2026: ' + rows.length);
   rows.forEach(function (r) {
-    Logger.log('  row ' + r.rowIndex + ': prospect="' + r.prospect + '" email="' + r.email +
+    log_('  row ' + r.rowIndex + ': prospect="' + r.prospect + '" email="' + r.email +
       '" eventId="' + r.eventId + '" logged=' + r.logged);
   });
 
@@ -736,9 +750,9 @@ function debugDumpTrackerRows() {
   var ss = SpreadsheetApp.openById(repCfg.spreadsheetId);
   var sheet = ss.getSheetByName('Sales Call Log');
   var raw = sheet.getRange(1, 1, 12, 12).getValues();
-  Logger.log('--- raw A1:L12 ---');
+  log_('--- raw A1:L12 ---');
   raw.forEach(function (row, i) {
-    Logger.log('  R' + (i + 1) + ': ' + JSON.stringify(row));
+    log_('  R' + (i + 1) + ': ' + JSON.stringify(row));
   });
 }
 
@@ -748,6 +762,7 @@ function debugDumpTrackerRows() {
  * Run once before enabling attendee-email matching.
  */
 function debugListEventGuests() {
+  RUN_TAG = 'debugListEventGuests';
   var tz = Session.getScriptTimeZone();
   var target = new Date(2026, 7, 14); // 14/08/2026
   var dayStart = startOfDay_(target, tz);
@@ -755,10 +770,10 @@ function debugListEventGuests() {
 
   CONFIG.REPS.forEach(function (repCfg) {
     var events = getRepCallEventsRaw_(repCfg, dayStart, dayEnd);
-    Logger.log('--- ' + repCfg.name + ' ---');
+    log_('--- ' + repCfg.name + ' ---');
     events.forEach(function (ev) {
       var guests = ev.getGuestList().map(function (g) { return g.getEmail(); });
-      Logger.log('  "' + ev.getTitle() + '" @ ' +
+      log_('  "' + ev.getTitle() + '" @ ' +
         Utilities.formatDate(ev.getStartTime(), tz, 'HH:mm') +
         ' → guests: ' + (guests.length ? guests.join(', ') : '(NONE)'));
     });
@@ -781,6 +796,7 @@ function getRepCallEventsRaw_(repCfg, dayStart, dayEnd) {
 
 /** Debug: dry-run the compliance check against a specific date. Run from editor. */
 function debugCheckSpecificDate() {
+  RUN_TAG = 'debugCheckSpecificDate';
   var tz = Session.getScriptTimeZone();
   var target = new Date(2026, 7, 14); // 14/08/2026 — month is 0-based
   var dayStr = Utilities.formatDate(target, tz, 'dd/MM/yyyy');
@@ -796,30 +812,31 @@ function debugCheckSpecificDate() {
       events.forEach(function (ev) {
         var hit = findMatch_(ev, loggedRows);
         if (hit) {
-          Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → LOGGED (row ' +
+          log_('  [' + repCfg.name + '] "' + ev.title + '" → LOGGED (row ' +
             hit.rowIndex + ' via ' + hit.via + ')');
           stampMatch_(hit);
         } else {
-          Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → NOT LOGGED');
+          log_('  [' + repCfg.name + '] "' + ev.title + '" → NOT LOGGED');
           missing.push(ev);
           var anyHit = findMatch_(ev, allRows);
           if (anyHit && !anyHit.logged) {
-            Logger.log('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
+            log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
               ' — backfilling Calendar Event ID');
             stampMatch_(anyHit);
           }
         }
       });
-      Logger.log('[DEBUG ' + dayStr + '] ' + repCfg.name + ': ' + events.length +
+      log_(dayStr + ' | ' + repCfg.name + ': ' + events.length +
         ' event(s), ' + loggedRows.length + ' logged row(s), ' + missing.length + ' MISSING');
     } catch (e) {
-      Logger.log('[DEBUG] ERROR for ' + repCfg.name + ': ' + e);
+      log_('ERROR for ' + repCfg.name + ': ' + e);
     }
   });
 }
 
 /** Dry run: logs what WOULD be emailed for the prior day, sends nothing. */
 function dryRunComplianceCheck() {
+  RUN_TAG = 'dryRunComplianceCheck';
   var tz = Session.getScriptTimeZone();
   var prior = new Date();
   prior.setDate(prior.getDate() - 1);
@@ -833,12 +850,12 @@ function dryRunComplianceCheck() {
       var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
       var loggedRows = allRows.filter(function (r) { return r.logged; });
       var missing = events.filter(function (ev) { return !findMatch_(ev, loggedRows); });
-      Logger.log('[DRY RUN] ' + repCfg.name + ' @ ' + priorDay + ': ' +
+      log_(repCfg.name + ' @ ' + priorDay + ': ' +
         events.length + ' event(s), ' + loggedRows.length + ' logged row(s), ' +
         missing.length + ' MISSING → ' +
         (missing.length ? missing.map(function (m) { return m.title; }).join(' | ') : '(none)'));
     } catch (e) {
-      Logger.log('[DRY RUN] ERROR for ' + repCfg.name + ': ' + e);
+      log_('ERROR for ' + repCfg.name + ': ' + e);
     }
   });
 }
