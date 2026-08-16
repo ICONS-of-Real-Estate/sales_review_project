@@ -5,8 +5,11 @@
  * compare + quota-guarded escalation email.
  *
  * Per the design brief:
- *  - Runs on a daily time-driven trigger (e.g. 06:00), evaluates the PRIOR day.
- *  - For each rep, collects sales/QC calendar events for the prior day, then
+ *  - Runs on a daily time-driven trigger at 18:00 BUSINESS time
+ *    (America/Los_Angeles — the calls are US calls), evaluating that same
+ *    business day at close of business. Reps get nudged while still at
+ *    their desks, not the next morning about yesterday.
+ *  - For each rep, collects sales/QC calendar events for the business day, then
  *    finds tracker rows for that rep/call-date with Outcome Logged = TRUE.
  *  - Any calendar event with no matching logged row is non-compliant and goes
  *    into one batched "please update your tracker" email to the rep, CC Kris
@@ -17,13 +20,14 @@
  * Safety rules honored from the brief:
  *  - Quota guard: MailApp.getRemainingDailyQuota() checked before every send,
  *    with a reserve kept for ops alerts; never loop-send unguarded.
- *  - Timezone: all date math via Utilities.formatDate(...,
- *    Session.getScriptTimeZone(), ...); dates displayed DD/MM/YYYY.
+ *  - Timezone: all business-day math runs in CONFIG.BUSINESS_TIMEZONE
+ *    (America/Los_Angeles), never the script project's zone; dates displayed
+ *    DD/MM/YYYY.
  *  - Every compliance decision is logged per row, and every log line is
  *    tagged with the entry point that produced it (RUN_TAG / log_ below).
  *
- * Zero-manual-steps design: installAutomation() (run once) installs the daily
- * 06:00 trigger AND a weekly Sunday self-heal trigger that audits the daily
+ * Zero-manual-steps design: installAutomation() (run once) installs the
+ * daily close-of-business trigger AND a weekly Sunday self-heal trigger that audits the daily
  * one (dead/drifted triggers get deleted, recreated, and ops is emailed).
  * Email routing config is validated on every run — a placeholder address
  * blocks sends and alerts ops instead of silently mailing a bogus mailbox.
@@ -57,6 +61,15 @@ var CONFIG = {
   // project. Weekly self-heal verifies the daily trigger belongs to THIS
   // script (a trigger cloned from an old project copy gets replaced).
   EXPECTED_PROJECT_ID: '',
+
+  // The team's business timezone — where the CALLS happen, not where the
+  // script project happens to be set. "Prior day", event windows, and sheet
+  // date cells are all interpreted in this zone. The daily trigger fires at
+  // 18:00 in THIS zone (close of business), evaluating that same business
+  // day — so reps get nudged while they're still at their desks, not the
+  // next morning about yesterday.
+  BUSINESS_TIMEZONE: 'America/Los_Angeles',
+  DAILY_TRIGGER_HOUR: 18, // 18:00 business time = end of the US workday
 
   // Calendar event classification: an event counts as a sales/QC call if its
   // title contains an INCLUDE keyword and does NOT contain an EXCLUDE keyword
@@ -191,16 +204,19 @@ function log_(msg) {
 }
 
 /**
- * Daily compliance check. Intended trigger: time-driven, day timer, 6am–7am,
- * so "prior day" is always a complete day.
+ * Daily close-of-business check (trigger: 18:00 business time).
+ * Evaluates the calls that happened TODAY in the business timezone — at
+ * 18:00 the workday is over, so "today so far" IS the full business day.
+ * Runs the same window math for any hour it happens to fire at, so a manual
+ * run behaves identically to the trigger.
  */
 function runDailyComplianceCheck() {
   RUN_TAG = 'runDailyComplianceCheck';
-  var tz = Session.getScriptTimeZone();
-  var prior = new Date();
-  prior.setDate(prior.getDate() - 1);
-  var priorDay = Utilities.formatDate(prior, tz, 'dd/MM/yyyy');
-  log_('=== Compliance check for prior day ' + priorDay + ' (tz ' + tz + ') ===');
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var now = new Date();
+  var targetDay = Utilities.formatDate(now, tz, 'dd/MM/yyyy');
+  log_('=== Close-of-business compliance check for ' + targetDay +
+    ' (business tz ' + tz + ', script tz ' + Session.getScriptTimeZone() + ') ===');
 
   var audit = auditConfig_();
   if (!audit.ok) {
@@ -211,12 +227,12 @@ function runDailyComplianceCheck() {
       '\n\nFix the CONFIG block in Phase1_ComplianceCheck.gs. The check itself ran normally; only emails were suppressed.');
   }
 
-  var dayStart = startOfDay_(prior, tz);
+  var dayStart = businessDayStart_(now, tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
   CONFIG.REPS.forEach(function (repCfg) {
     try {
-      checkRep_(repCfg, dayStart, dayEnd, priorDay, tz);
+      checkRep_(repCfg, dayStart, dayEnd, targetDay, tz);
     } catch (e) {
       // One rep's failure must not kill the others.
       log_('ERROR checking rep ' + repCfg.name + ': ' + e);
@@ -594,7 +610,18 @@ function guessProspectFromTitle_(title) {
 
 function startOfDay_(d, tz) {
   var s = Utilities.formatDate(d, tz, 'yyyy/MM/dd');
-  return new Date(s + ' 00:00:00');
+  return new Date(s + ' 00:00:00 GMT' + Utilities.formatDate(d, tz, 'Z'));
+}
+
+/**
+ * Start (00:00:00) of the day that instant `d` belongs to in zone `tz`,
+ * returned as an absolute instant. Does NOT interpret `d` in script time
+ * first — 18:00 LA on a Friday still maps to Friday's 00:00 LA, never to
+ * Saturday. DST-safe: the UTC offset is computed for the day itself.
+ */
+function businessDayStart_(d, tz) {
+  var s = Utilities.formatDate(d, tz, 'yyyy/MM/dd');
+  return new Date(s + ' 00:00:00 GMT' + Utilities.formatDate(d, tz, 'Z'));
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +772,7 @@ function deleteSampleRows() {
 
   var SAMPLE_NAMES = ['andrea brunson', 'jacqueline coleman', 'julio cardoso', 'justine'];
   var SAMPLE_DATE = '14/08/2026';
-  var tz = Session.getScriptTimeZone();
+  var tz = CONFIG.BUSINESS_TIMEZONE;
 
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) { log_('Nothing to delete — sheet has no data rows.'); return; }
@@ -802,16 +829,20 @@ function fillSampleEmails() {
 // One-time setup helpers (run manually from the editor)
 // ---------------------------------------------------------------------------
 
-/** Install the daily 06:00–07:00 trigger. Run once. */
+/** Install just the daily close-of-business trigger. Run once. */
 function installDailyTrigger() {
   RUN_TAG = 'installDailyTrigger';
   installDailyTriggerCore_();
-  log_('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
+  log_('Daily trigger installed for runDailyComplianceCheck at ' +
+    CONFIG.DAILY_TRIGGER_HOUR + ':00 business time (' + CONFIG.BUSINESS_TIMEZONE + ').');
 }
 
 /**
- * Create exactly one daily 06:00 trigger for runDailyComplianceCheck,
- * replacing any existing copies. Returns the trigger.
+ * Create exactly one daily close-of-business trigger for
+ * runDailyComplianceCheck, replacing any existing copies. Returns the
+ * trigger. The hour is in BUSINESS time: the trigger carries the business
+ * timezone, so 18:00 LA stays 18:00 LA across DST no matter what timezone
+ * the script project itself is set to.
  */
 function installDailyTriggerCore_() {
   // Remove any existing copies first so we don't double-fire.
@@ -823,7 +854,8 @@ function installDailyTriggerCore_() {
   return ScriptApp.newTrigger('runDailyComplianceCheck')
     .timeBased()
     .everyDays(1)
-    .atHour(6)
+    .atHour(CONFIG.DAILY_TRIGGER_HOUR)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
 }
 
@@ -832,8 +864,8 @@ function installDailyTriggerCore_() {
  * go-live step. Idempotent: safe to re-run, it heals to the desired state.
  *
  * Installs two triggers:
- *   1. runDailyComplianceCheck — every day 06:00 script time (the compliance check)
- *   2. selfHealTriggers_       — every Sunday 05:00 (audits trigger #1 and
+ *   1. runDailyComplianceCheck — every day at DAILY_TRIGGER_HOUR business time
+ *   2. selfHealTriggers_       — every Sunday 05:00 business time (audits #1 and
  *      repairs it if dead/drifted, emailing ops about what it did)
  *
  * Also stamps CONFIG.EXPECTED_PROJECT_ID with this deployed script's ID so the
@@ -854,11 +886,13 @@ function installAutomation() {
     .timeBased()
     .onWeekDay(ScriptApp.WeekDay.SUNDAY)
     .atHour(5)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
 
   var audit = auditConfig_();
-  log_('Automation installed: daily 06:00 compliance check + weekly Sunday 05:00 self-heal. ' +
-    'Project ID stamped as ' + CONFIG.EXPECTED_PROJECT_ID + '.');
+  log_('Automation installed: daily ' + CONFIG.DAILY_TRIGGER_HOUR +
+    ':00 compliance check + weekly Sunday 05:00 self-heal (both ' +
+    CONFIG.BUSINESS_TIMEZONE + '). Project ID stamped as ' + CONFIG.EXPECTED_PROJECT_ID + '.');
   log_('Config audit: ' + (audit.ok ? 'OK — all routing addresses valid.' :
     'PROBLEMS: ' + audit.problems.join(' | ')));
 }
@@ -891,13 +925,14 @@ function selfHealTriggers_() {
 
   if (!healthy) {
     installDailyTriggerCore_();
-    problems.push('daily trigger was missing — recreated for 06:00 daily');
+    problems.push('daily trigger was missing — recreated for ' +
+      CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + ' daily');
   }
 
   if (problems.length) {
     sendOpsAlert_('[Compliance bot] Self-heal repaired the daily trigger',
       'Weekly trigger audit found and fixed:\n  - ' + problems.join('\n  - ') +
-      '\n\nNo action needed; the daily 06:00 compliance check is healthy now.');
+      '\n\nNo action needed; the daily close-of-business compliance check is healthy now.');
   }
   log_(problems.length ? 'Repaired: ' + problems.join(' | ') : 'Daily trigger healthy — nothing to do.');
 }
@@ -909,7 +944,7 @@ function selfHealTriggers_() {
  */
 function debugDumpTrackerRows() {
   RUN_TAG = 'debugDumpTrackerRows';
-  var tz = Session.getScriptTimeZone();
+  var tz = CONFIG.BUSINESS_TIMEZONE;
   var repCfg = CONFIG.REPS[1]; // Joana — her sample rows are the test case
   var rows = getAllTrackerRows_(repCfg, '14/08/2026', tz);
   log_('Candidate rows for Joana on 14/08/2026: ' + rows.length);
@@ -935,9 +970,9 @@ function debugDumpTrackerRows() {
  */
 function debugListEventGuests() {
   RUN_TAG = 'debugListEventGuests';
-  var tz = Session.getScriptTimeZone();
-  var target = new Date(2026, 7, 14); // 14/08/2026
-  var dayStart = startOfDay_(target, tz);
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  // 14/08/2026 business day: noon UTC sits inside that day in any US zone.
+  var dayStart = businessDayStart_(new Date(Date.UTC(2026, 7, 14, 12)), tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
   CONFIG.REPS.forEach(function (repCfg) {
@@ -969,10 +1004,9 @@ function getRepCallEventsRaw_(repCfg, dayStart, dayEnd) {
 /** Debug: dry-run the compliance check against a specific date. Run from editor. */
 function debugCheckSpecificDate() {
   RUN_TAG = 'debugCheckSpecificDate';
-  var tz = Session.getScriptTimeZone();
-  var target = new Date(2026, 7, 14); // 14/08/2026 — month is 0-based
-  var dayStr = Utilities.formatDate(target, tz, 'dd/MM/yyyy');
-  var dayStart = startOfDay_(target, tz);
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var dayStr = '14/08/2026'; // the business day being inspected
+  var dayStart = businessDayStart_(new Date(Date.UTC(2026, 7, 14, 12)), tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
   CONFIG.REPS.forEach(function (repCfg) {
@@ -1006,14 +1040,13 @@ function debugCheckSpecificDate() {
   });
 }
 
-/** Dry run: logs what WOULD be emailed for the prior day, sends nothing. */
+/** Dry run: logs what WOULD be emailed for today's business day, sends nothing. */
 function dryRunComplianceCheck() {
   RUN_TAG = 'dryRunComplianceCheck';
-  var tz = Session.getScriptTimeZone();
-  var prior = new Date();
-  prior.setDate(prior.getDate() - 1);
-  var priorDay = Utilities.formatDate(prior, tz, 'dd/MM/yyyy');
-  var dayStart = startOfDay_(prior, tz);
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var now = new Date();
+  var priorDay = Utilities.formatDate(now, tz, 'dd/MM/yyyy');
+  var dayStart = businessDayStart_(now, tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
   CONFIG.REPS.forEach(function (repCfg) {
