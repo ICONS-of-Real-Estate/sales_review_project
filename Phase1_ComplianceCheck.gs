@@ -275,7 +275,12 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
   var rows = [];
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
-    if (String(row[col.prospectName] || '').trim() === '') continue; // skip blank rows
+    // Skip fully-blank rows. NOTE: inserted checkboxes extend getDataRange()
+    // far beyond real content, so check every cell, not just the name.
+    var hasContent = row.some(function (cell) {
+      return !(cell === '' || cell === null || cell === false);
+    });
+    if (!hasContent) continue;
 
     if (col.callDate !== -1 && row[col.callDate] !== '' && row[col.callDate] != null) {
       if (formatDateCell_(row[col.callDate], tz) !== priorDay) continue; // wrong day
@@ -308,29 +313,32 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
  *   3. normalized prospect name (substring-tolerant fallback)
  */
 function findMatch_(ev, rows) {
-  for (var i = 0; i < rows.length; i++) {
-    if (rows[i].eventId && idsEqual_(rows[i].eventId, ev.id)) {
-      rows[i].matchedEvent = ev;
-      return { rowIndex: rows[i].rowIndex, via: 'calendar_event_id', row: rows[i] };
+  // Only rows with a real prospect identity may match — guards against stale
+  // write-backs on junk rows shadowing real ones via exact-ID.
+  var candidates = rows.filter(function (r) { return r.prospect || r.email; });
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i].eventId && idsEqual_(candidates[i].eventId, ev.id)) {
+      candidates[i].matchedEvent = ev;
+      return { rowIndex: candidates[i].rowIndex, via: 'calendar_event_id', row: candidates[i] };
     }
   }
   if (ev.attendeeEmails && ev.attendeeEmails.length) {
-    for (var j = 0; j < rows.length; j++) {
-      if (rows[j].email && ev.attendeeEmails.indexOf(rows[j].email) !== -1) {
-        rows[j].matchedEvent = ev;
-        return { rowIndex: rows[j].rowIndex, via: 'attendee_email', row: rows[j] };
+    for (var j = 0; j < candidates.length; j++) {
+      if (candidates[j].email && ev.attendeeEmails.indexOf(candidates[j].email) !== -1) {
+        candidates[j].matchedEvent = ev;
+        return { rowIndex: candidates[j].rowIndex, via: 'attendee_email', row: candidates[j] };
       }
     }
   }
   var evProspect = normalize_(ev.prospectGuess);
   var evTitle = normalize_(ev.title);
-  for (var k = 0; k < rows.length; k++) {
-    var p = rows[k].prospect;
+  for (var k = 0; k < candidates.length; k++) {
+    var p = candidates[k].prospect;
     if (!p) continue;
     if (evTitle.indexOf(p) !== -1 || (evProspect && p.indexOf(evProspect) !== -1) ||
         (evProspect && evProspect.indexOf(p) !== -1)) {
-      rows[k].matchedEvent = ev;
-      return { rowIndex: rows[k].rowIndex, via: 'prospect_name_fallback', row: rows[k] };
+      candidates[k].matchedEvent = ev;
+      return { rowIndex: candidates[k].rowIndex, via: 'prospect_name_fallback', row: candidates[k] };
     }
   }
   return null;
@@ -624,6 +632,34 @@ function setDropdown_(sheet, colIndex, values) {
     .setAllowInvalid(false)
     .build();
   sheet.getRange(2, colIndex, 999, 1).setDataValidation(rule);
+}
+
+/**
+ * One-time cleanup: an early build backfilled a Calendar Event ID onto a blank
+ * row (row 6). Clear any Event ID / Match Method written to rows with no
+ * prospect identity. Safe to re-run.
+ */
+function cleanupStrayWritebacks() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  if (!sheet) { Logger.log('No Sales Call Log tab.'); return; }
+  var lastRow = Math.max(sheet.getLastRow(), 2);
+  var cleared = 0;
+  for (var r = 2; r <= lastRow; r++) {
+    var name = String(sheet.getRange(r, 1).getValue() || '').trim();
+    var email = String(sheet.getRange(r, 2).getValue() || '').trim();
+    if (!name && !email) {
+      var idCell = sheet.getRange(r, 9);   // I: Calendar Event ID
+      var mmCell = sheet.getRange(r, 12);  // L: Match Method
+      if (String(idCell.getValue()).trim() !== '' || String(mmCell.getValue()).trim() !== '') {
+        idCell.clearContent();
+        mmCell.clearContent();
+        Logger.log('Cleared stray write-back on row ' + r);
+        cleared++;
+      }
+    }
+  }
+  Logger.log(cleared ? 'Cleared ' + cleared + ' stray row(s).' : 'No stray write-backs found.');
 }
 
 /**
