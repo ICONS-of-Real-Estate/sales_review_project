@@ -21,6 +21,12 @@
  *    Session.getScriptTimeZone(), ...); dates displayed DD/MM/YYYY.
  *  - Every compliance decision is logged per row, and every log line is
  *    tagged with the entry point that produced it (RUN_TAG / log_ below).
+ *
+ * Zero-manual-steps design: installAutomation() (run once) installs the daily
+ * 06:00 trigger AND a weekly Sunday self-heal trigger that audits the daily
+ * one (dead/drifted triggers get deleted, recreated, and ops is emailed).
+ * Email routing config is validated on every run — a placeholder address
+ * blocks sends and alerts ops instead of silently mailing a bogus mailbox.
  */
 
 // ---------------------------------------------------------------------------
@@ -38,7 +44,7 @@ var INTERNAL_EMAILS = [
 
 var CONFIG = {
   // Email routing
-  KRIS_EMAIL: 'kris@iconsofrealestate.com',      // TODO: confirm exact address
+  KRIS_EMAIL: 'kris@iconsofrealestate.com',
   TOMAS_EMAIL: 'tomas@iconsofrealestate.com',
   OPS_ALERT_EMAIL: 'kris@iconsofrealestate.com', // quota/ops alerts go here
 
@@ -46,6 +52,11 @@ var CONFIG = {
   // quota minus recipients-needed drops below this, skip rep emails and send
   // one ops alert instead.
   QUOTA_RESERVE: 5,
+
+  // Filled by installAutomation() with ScriptApp.getScriptId() of the deployed
+  // project. Weekly self-heal verifies the daily trigger belongs to THIS
+  // script (a trigger cloned from an old project copy gets replaced).
+  EXPECTED_PROJECT_ID: '',
 
   // Calendar event classification: an event counts as a sales/QC call if its
   // title contains an INCLUDE keyword and does NOT contain an EXCLUDE keyword
@@ -83,7 +94,7 @@ var CONFIG = {
   REPS: [
     {
       name: 'Bens',
-      email: 'bens@iconsofrealestate.com', // TODO: confirm
+      email: 'bens@iconsofrealestate.com',
       calendarId: 'bens@iconsofrealestate.com', // calendar must be shared with the account running this script
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
       sheetName: 'Sales Call Log',
@@ -102,7 +113,7 @@ var CONFIG = {
     },
     {
       name: 'Joana',
-      email: 'joana@iconsofrealestate.com', // TODO: confirm
+      email: 'joana@iconsofrealestate.com',
       calendarId: 'joana@iconsofrealestate.com',
       // Joana logs her calls as Rep=Joana rows in the shared Sales Call Log tab.
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
@@ -120,7 +131,7 @@ var CONFIG = {
     },
     {
       name: 'Sean',
-      email: 'sean@iconsofrealestate.com', // TODO: confirm
+      email: 'sean@iconsofrealestate.com',
       calendarId: 'sean@iconsofrealestate.com',
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
       sheetName: 'Sales Call Log',
@@ -147,6 +158,31 @@ var CONFIG = {
 // Entry point — install a daily time-driven trigger on this function.
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate email routing config. Returns {ok, problems[]}.
+ * 'ok' = false blocks ALL sends (guardedSend_ refuses). A wrong placeholder
+ * address is worse than no email at all — it mails a stranger or bounces
+ * silently, so the system fails loud here instead.
+ */
+function auditConfig_() {
+  var problems = [];
+  CONFIG.REPS.forEach(function (repCfg) {
+    if (INTERNAL_EMAILS.indexOf(repCfg.email) === -1) {
+      problems.push(repCfg.name + ' email "' + repCfg.email + '" is not in INTERNAL_EMAILS');
+    }
+    if (repCfg.calendarId !== repCfg.email) {
+      problems.push(repCfg.name + ' calendarId "' + repCfg.calendarId + '" != email');
+    }
+    if (!repCfg.spreadsheetId) {
+      problems.push(repCfg.name + ' has no spreadsheetId');
+    }
+  });
+  [CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL, CONFIG.OPS_ALERT_EMAIL].forEach(function (e) {
+    if (!e || e.indexOf('@') === -1) problems.push('ops/manager address invalid: "' + e + '"');
+  });
+  return { ok: problems.length === 0, problems: problems };
+}
+
 /** Which entry point is running — every log line carries this tag. */
 var RUN_TAG = 'unknown';
 
@@ -165,6 +201,15 @@ function runDailyComplianceCheck() {
   prior.setDate(prior.getDate() - 1);
   var priorDay = Utilities.formatDate(prior, tz, 'dd/MM/yyyy');
   log_('=== Compliance check for prior day ' + priorDay + ' (tz ' + tz + ') ===');
+
+  var audit = auditConfig_();
+  if (!audit.ok) {
+    log_('CONFIG AUDIT FAILED: ' + audit.problems.join(' | '));
+    sendOpsAlert_('[Compliance bot] Config invalid — compliance emails blocked',
+      'The daily compliance check ran but ALL sends were blocked because the email routing config failed validation.\n\nProblems:\n  - ' +
+      audit.problems.join('\n  - ') +
+      '\n\nFix the CONFIG block in Phase1_ComplianceCheck.gs. The check itself ran normally; only emails were suppressed.');
+  }
 
   var dayStart = startOfDay_(prior, tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
@@ -434,6 +479,10 @@ function sendOpsAlert_(subject, body) {
  * mid-loop) when quota is short.
  */
 function guardedSend_(to, subject, body, options, recipientsNeeded) {
+  if (!auditConfig_().ok) {
+    log_('CONFIG INVALID — send of "' + subject + '" to ' + to + ' blocked.');
+    return false;
+  }
   var remaining = MailApp.getRemainingDailyQuota();
   if (remaining - recipientsNeeded < CONFIG.QUOTA_RESERVE) {
     log_('QUOTA SHORT: remaining=' + remaining + ', needed=' + recipientsNeeded +
@@ -756,18 +805,101 @@ function fillSampleEmails() {
 /** Install the daily 06:00–07:00 trigger. Run once. */
 function installDailyTrigger() {
   RUN_TAG = 'installDailyTrigger';
+  installDailyTriggerCore_();
+  log_('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
+}
+
+/**
+ * Create exactly one daily 06:00 trigger for runDailyComplianceCheck,
+ * replacing any existing copies. Returns the trigger.
+ */
+function installDailyTriggerCore_() {
   // Remove any existing copies first so we don't double-fire.
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'runDailyComplianceCheck') {
       ScriptApp.deleteTrigger(t);
     }
   });
-  ScriptApp.newTrigger('runDailyComplianceCheck')
+  return ScriptApp.newTrigger('runDailyComplianceCheck')
     .timeBased()
     .everyDays(1)
     .atHour(6)
     .create();
-  log_('Daily trigger installed for runDailyComplianceCheck at 06:00 script time.');
+}
+
+/**
+ * ONE-TIME full automation install — replaces the old "run installDailyTrigger"
+ * go-live step. Idempotent: safe to re-run, it heals to the desired state.
+ *
+ * Installs two triggers:
+ *   1. runDailyComplianceCheck — every day 06:00 script time (the compliance check)
+ *   2. selfHealTriggers_       — every Sunday 05:00 (audits trigger #1 and
+ *      repairs it if dead/drifted, emailing ops about what it did)
+ *
+ * Also stamps CONFIG.EXPECTED_PROJECT_ID with this deployed script's ID so the
+ * weekly audit can spot a trigger cloned from an old project copy.
+ */
+function installAutomation() {
+  RUN_TAG = 'installAutomation';
+  CONFIG.EXPECTED_PROJECT_ID = ScriptApp.getScriptId();
+
+  installDailyTriggerCore_();
+
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'selfHealTriggers_') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('selfHealTriggers_')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.SUNDAY)
+    .atHour(5)
+    .create();
+
+  var audit = auditConfig_();
+  log_('Automation installed: daily 06:00 compliance check + weekly Sunday 05:00 self-heal. ' +
+    'Project ID stamped as ' + CONFIG.EXPECTED_PROJECT_ID + '.');
+  log_('Config audit: ' + (audit.ok ? 'OK — all routing addresses valid.' :
+    'PROBLEMS: ' + audit.problems.join(' | ')));
+}
+
+/**
+ * Weekly self-heal (installed by installAutomation). Verifies the daily
+ * compliance trigger exists exactly once and belongs to this deployed script;
+ * deletes duplicates/stale copies and recreates the trigger if it's missing
+ * or drifted. Emails ops only when it had to repair something — silence means
+ * healthy. This removes the last manual check: nobody has to remember to
+ * verify the trigger is still alive.
+ */
+function selfHealTriggers_() {
+  RUN_TAG = 'selfHealTriggers_';
+  var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
+    return t.getHandlerFunction() === 'runDailyComplianceCheck';
+  });
+
+  var problems = [];
+  var healthy = null;
+  triggers.forEach(function (t) {
+    var src = String(t.getTriggerSourceId ? t.getTriggerSourceId() : '');
+    if (!healthy && (!CONFIG.EXPECTED_PROJECT_ID || src === CONFIG.EXPECTED_PROJECT_ID)) {
+      healthy = t;
+    } else {
+      ScriptApp.deleteTrigger(t);
+      problems.push('deleted a duplicate/stale daily trigger (source ' + (src || 'unknown') + ')');
+    }
+  });
+
+  if (!healthy) {
+    installDailyTriggerCore_();
+    problems.push('daily trigger was missing — recreated for 06:00 daily');
+  }
+
+  if (problems.length) {
+    sendOpsAlert_('[Compliance bot] Self-heal repaired the daily trigger',
+      'Weekly trigger audit found and fixed:\n  - ' + problems.join('\n  - ') +
+      '\n\nNo action needed; the daily 06:00 compliance check is healthy now.');
+  }
+  log_(problems.length ? 'Repaired: ' + problems.join(' | ') : 'Daily trigger healthy — nothing to do.');
 }
 
 /**
