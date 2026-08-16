@@ -626,6 +626,37 @@ function setDropdown_(sheet, colIndex, values) {
   sheet.getRange(2, colIndex, 999, 1).setDataValidation(rule);
 }
 
+/**
+ * One-time: fill Prospect Email on the sample rows so attendee-email matching
+ * can be validated. Matches by prospect name — safe to re-run, only fills
+ * empty email cells.
+ */
+function fillSampleEmails() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  if (!sheet) { Logger.log('No Sales Call Log tab — run setupSalesCallLog first.'); return; }
+
+  var EMAILS = {
+    'jacqueline coleman': 'jcoleb1975@gmail.com',
+    'julio cardoso': 'elitecapitalrealtyinc@gmail.com'
+  };
+
+  var lastRow = sheet.getLastRow();
+  var names = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  var emails = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+  var filled = 0;
+
+  for (var i = 0; i < names.length; i++) {
+    var key = String(names[i][0] || '').trim().toLowerCase();
+    if (EMAILS[key] && String(emails[i][0]).trim() === '') {
+      sheet.getRange(i + 2, 2).setValue(EMAILS[key]);
+      Logger.log('Row ' + (i + 2) + ': ' + names[i][0] + ' → ' + EMAILS[key]);
+      filled++;
+    }
+  }
+  Logger.log(filled ? 'Filled ' + filled + ' email(s).' : 'Nothing to fill (already set or rows not found).');
+}
+
 // ---------------------------------------------------------------------------
 // One-time setup helpers (run manually from the editor)
 // ---------------------------------------------------------------------------
