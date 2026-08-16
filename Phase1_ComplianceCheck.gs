@@ -225,7 +225,7 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
     : CalendarApp.getCalendarById(repCfg.calendarId);
   if (!cal) throw new Error('No calendar found for id ' + repCfg.calendarId);
 
-  return cal.getEvents(dayStart, dayEnd)
+  var mapped = cal.getEvents(dayStart, dayEnd)
     .filter(function (ev) {
       var t = (ev.getTitle() || '').toLowerCase();
       var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
@@ -247,6 +247,10 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
           })
       };
     });
+  Logger.log('  [probe v2] ' + repCfg.name + ' events+attendees: ' + mapped.map(function (e) {
+    return '"' + e.title + '"→[' + e.attendeeEmails.join(',') + ']';
+  }).join(' | '));
+  return mapped;
 }
 
 /**
