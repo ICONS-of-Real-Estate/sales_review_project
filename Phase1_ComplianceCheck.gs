@@ -76,7 +76,7 @@ var CONFIG = {
       email: 'bens@iconsofrealestate.com', // TODO: confirm
       calendarId: 'bens@iconsofrealestate.com', // calendar must be shared with the account running this script
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
-      sheetName: null, // null → try shared tab, else first sheet
+      sheetName: 'Sales Call Log',
       // Header names as they appear in THIS rep's sheet. Brief §2 target
       // names are listed first; current real headers as fallbacks.
       columns: {
@@ -93,11 +93,9 @@ var CONFIG = {
       name: 'Joana',
       email: 'joana@iconsofrealestate.com', // TODO: confirm
       calendarId: 'joana@iconsofrealestate.com',
-      // Joana has no tracker of her own yet per the brief; point her at the
-      // shared log spreadsheet once it exists. Until then her rows can live
-      // as Rep=Joana rows in the shared tab of this spreadsheet.
-      spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4', // TODO: replace with shared-log spreadsheet id
-      sheetName: null,
+      // Joana logs her calls as Rep=Joana rows in the shared Sales Call Log tab.
+      spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
+      sheetName: 'Sales Call Log',
       columns: {
         prospectName: ['Prospect Name', 'Name'],
         callDate: ['Call Date', 'First Call Date'],
@@ -112,8 +110,8 @@ var CONFIG = {
       name: 'Sean',
       email: 'sean@iconsofrealestate.com', // TODO: confirm
       calendarId: 'sean@iconsofrealestate.com',
-      spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4', // TODO: replace with shared-log spreadsheet id
-      sheetName: null,
+      spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
+      sheetName: 'Sales Call Log',
       columns: {
         prospectName: ['Prospect Name', 'Name'],
         callDate: ['Call Date', 'First Call Date'],
@@ -450,6 +448,107 @@ function guessProspectFromTitle_(title) {
 function startOfDay_(d, tz) {
   var s = Utilities.formatDate(d, tz, 'yyyy/MM/dd');
   return new Date(s + ' 00:00:00');
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0 one-time setup — creates the shared "Sales Call Log" tab.
+// Run setupSalesCallLog() ONCE from the editor, then delete or ignore.
+// ---------------------------------------------------------------------------
+
+var SALES_CALL_LOG_HEADERS = [
+  // --- Phase 0: deterministic, filled by rep or script ---
+  'Prospect Name',          // A
+  'Prospect Email',         // B
+  'Source',                 // C
+  'Call Date',              // D  (DD/MM/YYYY)
+  'Rep',                    // E  (dropdown: Bens/Joana/Sean)
+  'Call Type',              // F  (dropdown: QC/Sales Call/Discovery)
+  'Outcome Logged',         // G  (checkbox)
+  'Outcome Disposition',    // H  (dropdown: Sold/Not Sold/Follow-up/No-show)
+  'Calendar Event ID',      // I  (join key to Calendar + Riverside title)
+  'Riverside Recording ID', // J  (Phase 2)
+  'Transcript URL',         // K  (Phase 2)
+  'Match Method',           // L  (dropdown: exact_key/fallback_heuristic/no_match — Phase 2)
+  // --- Phase 2: written by the scoring pipeline ---
+  'Lead Quality Verdict',   // M
+  'Call Quality Score',     // N  (1-5)
+  'Flag: Asked For Close',  // O  (bool)
+  'Flag: Objections Handled', // P  (bool)
+  'Manual Review Recommended', // Q (bool)
+  'Severity',               // R  (1-5)
+  'AI Feedback Summary',    // S
+  'Reviewed By Kris',       // T
+  'Queue Age'               // U  (days)
+];
+
+/** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
+var SALES_CALL_LOG_SPREADSHEET_ID = '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4';
+
+/**
+ * One-time Phase 0 setup. Creates (or validates) the "Sales Call Log" tab with
+ * headers, dropdowns, checkbox column, frozen header row, and a few sample
+ * rows for 14/08/2026 so the dry run can be validated end-to-end.
+ * Safe to re-run: it will not duplicate the tab or the sample rows.
+ */
+function setupSalesCallLog() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+
+  if (!sheet) {
+    sheet = ss.insertSheet('Sales Call Log');
+    Logger.log('Created "Sales Call Log" tab.');
+  } else {
+    Logger.log('"Sales Call Log" tab already exists — validating.');
+  }
+
+  // Headers
+  var headerRange = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length);
+  var existing = headerRange.getValues()[0];
+  var headersPresent = existing[0] === SALES_CALL_LOG_HEADERS[0];
+  if (!headersPresent) {
+    headerRange.setValues([SALES_CALL_LOG_HEADERS]);
+    Logger.log('Wrote ' + SALES_CALL_LOG_HEADERS.length + ' headers.');
+  }
+  headerRange.setFontWeight('bold').setBackground('#e8eef7');
+  sheet.setFrozenRows(1);
+
+  // Data validation: Rep (E), Call Type (F), Outcome Disposition (H), Match Method (L)
+  setDropdown_(sheet, 5, ['Bens', 'Joana', 'Sean']);
+  setDropdown_(sheet, 6, ['QC', 'Sales Call', 'Discovery']);
+  setDropdown_(sheet, 8, ['Sold', 'Not Sold', 'Follow-up', 'No-show']);
+  setDropdown_(sheet, 12, ['exact_key', 'fallback_heuristic', 'no_match']);
+
+  // Outcome Logged (G) as checkbox
+  sheet.getRange('G2:G1000').insertCheckboxes();
+
+  // Call Date (D) number format DD/MM/YYYY
+  sheet.getRange('D2:D1000').setNumberFormat('dd/mm/yyyy');
+
+  // Sample rows for 14/08/2026 — lets the dry run show both a match and misses.
+  if (sheet.getLastRow() < 2) {
+    var sample = [
+      // Prospect, Email, Source, Call Date, Rep, Call Type, Outcome Logged, Disposition, Calendar Event ID
+      ['Andrea Brunson', '', 'Podcast', new Date(2026, 7, 14), 'Joana', 'QC', true, 'Follow-up', ''],
+      ['Jacqueline Coleman', '', 'Podcast', new Date(2026, 7, 14), 'Joana', 'QC', false, '', ''],
+      ['Julio Cardoso', '', 'Podcast', new Date(2026, 7, 14), 'Joana', 'QC', false, '', ''],
+      ['Justine', '', 'Podcast', new Date(2026, 7, 14), 'Sean', 'Discovery', false, '', '']
+    ];
+    sheet.getRange(2, 1, sample.length, sample[0].length).setValues(sample);
+    Logger.log('Inserted ' + sample.length + ' sample rows for 14/08/2026 (Andrea Brunson is logged; the rest are intentionally not).');
+  } else {
+    Logger.log('Rows already exist — no sample data inserted.');
+  }
+
+  sheet.autoResizeColumns(1, SALES_CALL_LOG_HEADERS.length);
+  Logger.log('Setup complete. Point all rep configs at sheetName "Sales Call Log" and run dryRunComplianceCheck with a -2 day offset to validate against 14/08.');
+}
+
+function setDropdown_(sheet, colIndex, values) {
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(values, true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, colIndex, 999, 1).setDataValidation(rule);
 }
 
 // ---------------------------------------------------------------------------
