@@ -26,6 +26,15 @@
 // CONFIG — edit these before installing the trigger.
 // ---------------------------------------------------------------------------
 
+/** Internal addresses excluded from attendee matching (rep/team inboxes). */
+var INTERNAL_EMAILS = [
+  'bens@iconsofrealestate.com',
+  'joana@iconsofrealestate.com',
+  'sean@iconsofrealestate.com',
+  'tomas@iconsofrealestate.com',
+  'kris@iconsofrealestate.com'
+];
+
 var CONFIG = {
   // Email routing
   KRIS_EMAIL: 'kris@iconsofrealestate.com',      // TODO: confirm exact address
@@ -81,6 +90,7 @@ var CONFIG = {
       // names are listed first; current real headers as fallbacks.
       columns: {
         prospectName: ['Prospect Name', 'Name'],
+        prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date', 'Recording Date', 'Booking Date'],
         outcomeLogged: ['Outcome Logged', 'Call Taken', 'Recording Done'],
         callType: ['Call Type'],
@@ -98,6 +108,7 @@ var CONFIG = {
       sheetName: 'Sales Call Log',
       columns: {
         prospectName: ['Prospect Name', 'Name'],
+        prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date'],
         outcomeLogged: ['Outcome Logged'],
         callType: ['Call Type'],
@@ -114,6 +125,7 @@ var CONFIG = {
       sheetName: 'Sales Call Log',
       columns: {
         prospectName: ['Prospect Name', 'Name'],
+        prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date'],
         outcomeLogged: ['Outcome Logged'],
         callType: ['Call Type'],
@@ -169,14 +181,31 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   Logger.log(repCfg.name + ': ' + events.length + ' sales/QC calendar event(s) on ' + priorDay);
   if (events.length === 0) return;
 
-  var loggedRows = getLoggedRows_(repCfg, priorDay, tz);
-  Logger.log(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay);
+  var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
+  var loggedRows = allRows.filter(function (r) { return r.logged; });
+  Logger.log(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
+    ' (' + allRows.length + ' total row(s) for the day)');
 
-  var missing = events.filter(function (ev) {
+  var missing = [];
+  events.forEach(function (ev) {
+    // Compliance = matched to a LOGGED row. Unlogged rows may get an ID
+    // backfill below, but the call still counts as not-logged for the email.
     var hit = findMatch_(ev, loggedRows);
-    Logger.log('  match? event="' + ev.title + '" id=' + ev.id +
-      ' → ' + (hit ? 'LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')' : 'NOT LOGGED'));
-    return !hit;
+    if (hit) {
+      Logger.log('  match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
+      stampMatch_(hit);
+    } else {
+      Logger.log('  match? event="' + ev.title + '" → NOT LOGGED');
+      missing.push(ev);
+      // Still try to enrich an UNLOGGED row with the event ID: it makes
+      // tomorrow's match exact-key and builds the Phase 0 join data.
+      var anyHit = findMatch_(ev, allRows);
+      if (anyHit && !anyHit.logged) {
+        Logger.log('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
+          ' — backfilling Calendar Event ID');
+        stampMatch_(anyHit);
+      }
+    }
   });
 
   if (missing.length === 0) {
@@ -208,17 +237,24 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
         id: ev.getId(),
         title: ev.getTitle() || '(untitled)',
         start: ev.getStartTime(),
-        prospectGuess: guessProspectFromTitle_(ev.getTitle() || '')
+        prospectGuess: guessProspectFromTitle_(ev.getTitle() || ''),
+        // Prospect emails only: strip the rep's own address and other internal
+        // guests so an internal placeholder block can never match a tracker row.
+        attendeeEmails: ev.getGuestList()
+          .map(function (g) { return (g.getEmail() || '').toLowerCase().trim(); })
+          .filter(function (e) {
+            return e && INTERNAL_EMAILS.indexOf(e) === -1;
+          })
       };
     });
 }
 
 /**
- * Read the rep's tracker rows and return those for the prior day with
- * Outcome Logged = TRUE (or truthy ✓/timestamp). Each entry carries the row
- * index and the fields we match on.
+ * Read ALL of the rep's tracker rows for the given day (logged or not), each
+ * carrying sheet/column references so a match can write the Calendar Event ID
+ * and Match Method back. Compliance filtering happens in the caller via .logged.
  */
-function getLoggedRows_(repCfg, priorDay, tz) {
+function getAllTrackerRows_(repCfg, priorDay, tz) {
   var ss = SpreadsheetApp.openById(repCfg.spreadsheetId);
   var sheet = resolveSheet_(ss, repCfg.sheetName);
   if (!sheet) throw new Error('No suitable sheet found in spreadsheet ' + repCfg.spreadsheetId);
@@ -233,20 +269,17 @@ function getLoggedRows_(repCfg, priorDay, tz) {
   }
   if (col.prospectName === -1) throw new Error('No prospect-name column found in ' + sheet.getName());
   if (col.outcomeLogged === -1) throw new Error('No outcome-logged column found in ' + sheet.getName());
-  // callDate may be -1: some sheets only get a Call Date column in Phase 0;
-  // without it we can't date-filter rows, so treat all logged rows as candidates.
+  // callDate may be -1 on legacy sheets: without it we can't date-filter, so
+  // treat all rows as candidates.
 
   var rows = [];
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
-    var loggedRaw = col.outcomeLogged !== -1 ? row[col.outcomeLogged] : '';
-    if (!isTruthyOutcome_(loggedRaw)) continue;
+    if (String(row[col.prospectName] || '').trim() === '') continue; // skip blank rows
 
-    var rowDateStr = '';
     if (col.callDate !== -1 && row[col.callDate] !== '' && row[col.callDate] != null) {
-      rowDateStr = formatDateCell_(row[col.callDate], tz);
+      if (formatDateCell_(row[col.callDate], tz) !== priorDay) continue; // wrong day
     }
-    if (col.callDate !== -1 && rowDateStr !== priorDay) continue; // wrong day
 
     var repName = col.rep !== -1 && row[col.rep]
       ? String(row[col.rep]).trim()
@@ -254,8 +287,13 @@ function getLoggedRows_(repCfg, priorDay, tz) {
     if (repName.toLowerCase() !== repCfg.name.toLowerCase()) continue; // shared tab: only this rep's rows
 
     rows.push({
-      rowIndex: r + 1, // 1-based, for logging
+      rowIndex: r + 1, // 1-based sheet row, for logging and write-back
+      sheet: sheet,
+      eventIdCol: col.calendarEventId,   // -1 if the sheet has no such column
+      matchMethodCol: findColumn_(header, ['Match Method']),
+      logged: col.outcomeLogged !== -1 && isTruthyOutcome_(row[col.outcomeLogged]),
       prospect: normalize_(String(row[col.prospectName] || '')),
+      email: col.prospectEmail !== -1 ? String(row[col.prospectEmail] || '').toLowerCase().trim() : '',
       eventId: col.calendarEventId !== -1 ? String(row[col.calendarEventId] || '').trim() : '',
       callType: col.callType !== -1 ? String(row[col.callType] || '').trim() : ''
     });
@@ -264,27 +302,61 @@ function getLoggedRows_(repCfg, priorDay, tz) {
 }
 
 /**
- * Deterministic match: exact Calendar Event ID first; fall back to normalized
- * prospect name (substring-tolerant, since calendar titles rarely equal the
- * tracker's prospect cell exactly).
+ * Deterministic match, in priority order:
+ *   1. exact Calendar Event ID
+ *   2. attendee email (structured guest data, no human typing involved)
+ *   3. normalized prospect name (substring-tolerant fallback)
  */
-function findMatch_(ev, loggedRows) {
-  for (var i = 0; i < loggedRows.length; i++) {
-    if (loggedRows[i].eventId && idsEqual_(loggedRows[i].eventId, ev.id)) {
-      return { rowIndex: loggedRows[i].rowIndex, via: 'calendar_event_id' };
+function findMatch_(ev, rows) {
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].eventId && idsEqual_(rows[i].eventId, ev.id)) {
+      rows[i].matchedEvent = ev;
+      return { rowIndex: rows[i].rowIndex, via: 'calendar_event_id', row: rows[i] };
+    }
+  }
+  if (ev.attendeeEmails && ev.attendeeEmails.length) {
+    for (var j = 0; j < rows.length; j++) {
+      if (rows[j].email && ev.attendeeEmails.indexOf(rows[j].email) !== -1) {
+        rows[j].matchedEvent = ev;
+        return { rowIndex: rows[j].rowIndex, via: 'attendee_email', row: rows[j] };
+      }
     }
   }
   var evProspect = normalize_(ev.prospectGuess);
   var evTitle = normalize_(ev.title);
-  for (var j = 0; j < loggedRows.length; j++) {
-    var p = loggedRows[j].prospect;
+  for (var k = 0; k < rows.length; k++) {
+    var p = rows[k].prospect;
     if (!p) continue;
     if (evTitle.indexOf(p) !== -1 || (evProspect && p.indexOf(evProspect) !== -1) ||
         (evProspect && evProspect.indexOf(p) !== -1)) {
-      return { rowIndex: loggedRows[j].rowIndex, via: 'prospect_name_fallback' };
+      rows[k].matchedEvent = ev;
+      return { rowIndex: rows[k].rowIndex, via: 'prospect_name_fallback', row: rows[k] };
     }
   }
   return null;
+}
+
+/**
+ * Write the match results back to the sheet: the real Calendar Event ID (only
+ * if the cell is empty — never overwrite a human-entered or previously written
+ * ID) and the Match Method used. This is the Phase 0 join data being built
+ * automatically: tomorrow's match on this row will be exact-key.
+ */
+function stampMatch_(hit) {
+  var row = hit.row;
+  if (!row || !row.sheet) return;
+  try {
+    if (row.eventIdCol !== -1 && !row.eventId && row.matchedEvent) {
+      row.sheet.getRange(row.rowIndex, row.eventIdCol + 1).setValue(row.matchedEvent.id);
+    }
+    if (row.matchMethodCol !== -1) {
+      var method = hit.via === 'calendar_event_id' ? 'exact_key' : 'fallback_heuristic';
+      row.sheet.getRange(row.rowIndex, row.matchMethodCol + 1).setValue(method);
+    }
+  } catch (e) {
+    // A failed write-back must never break the compliance check itself.
+    Logger.log('    ↳ write-back failed for row ' + row.rowIndex + ': ' + e);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +694,8 @@ function debugCheckSpecificDate() {
   CONFIG.REPS.forEach(function (repCfg) {
     try {
       var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
-      var loggedRows = getLoggedRows_(repCfg, dayStr, tz);
+      var allRows = getAllTrackerRows_(repCfg, dayStr, tz);
+      var loggedRows = allRows.filter(function (r) { return r.logged; });
       var missing = events.filter(function (ev) {
         var hit = findMatch_(ev, loggedRows);
         Logger.log('  [' + repCfg.name + '] "' + ev.title + '" → ' +
@@ -649,7 +722,8 @@ function dryRunComplianceCheck() {
   CONFIG.REPS.forEach(function (repCfg) {
     try {
       var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
-      var loggedRows = getLoggedRows_(repCfg, priorDay, tz);
+      var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
+      var loggedRows = allRows.filter(function (r) { return r.logged; });
       var missing = events.filter(function (ev) { return !findMatch_(ev, loggedRows); });
       Logger.log('[DRY RUN] ' + repCfg.name + ' @ ' + priorDay + ': ' +
         events.length + ' event(s), ' + loggedRows.length + ' logged row(s), ' +
