@@ -37,10 +37,33 @@ var CONFIG = {
   // one ops alert instead.
   QUOTA_RESERVE: 5,
 
-  // Calendar event titles must contain one of these (case-insensitive) to
-  // count as a sales/QC call. Tighten this list to cut false positives —
+  // Calendar event classification: an event counts as a sales/QC call if its
+  // title contains an INCLUDE keyword and does NOT contain an EXCLUDE keyword
+  // (both case-insensitive). Excludes run first — they kill internal meetings
+  // that would otherwise match includes (e.g. "Bens & Joana | 1-1" contains
+  // "joana"; "Cold Email Outreach Weekly Call" contains "call").
+  // Tune these against dryRunComplianceCheck / debugListRecentEvents output —
   // the Phase 1 benchmark is "<1 false 'you didn't log' email per week".
-  CALL_TITLE_KEYWORDS: ['qc', 'sales call', 'discovery', 'icons 100'],
+  CALL_TITLE_INCLUDE: [
+    'qc',                              // Bens's QC sessions
+    'podcast qualification call',      // Joana's QC calls
+    'starting a podcast',              // Joana/Sean discovery calls
+    'icons 100 podcast recording',     // Bens's recordings
+    'real estate podcast:',            // Joana recordings
+    'discovery',
+    'sales call'
+  ],
+  CALL_TITLE_EXCLUDE: [
+    'update tracker',
+    '1-1',
+    'daily |',
+    'weekly',
+    'spam',
+    'cold email outreach',
+    'setup bcc',
+    'briefing',
+    'co-founder strategy'
+  ],
 
   // Sheet names tried in order when resolving a rep's log tab. The first is
   // the Phase 0 target (normalized shared tab); the rest are today's real
@@ -178,7 +201,9 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
   return cal.getEvents(dayStart, dayEnd)
     .filter(function (ev) {
       var t = (ev.getTitle() || '').toLowerCase();
-      return CONFIG.CALL_TITLE_KEYWORDS.some(function (k) { return t.indexOf(k) !== -1; });
+      var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
+      if (excluded) return false;
+      return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
     })
     .map(function (ev) {
       return {
@@ -388,14 +413,37 @@ function normalize_(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Best-effort prospect name from an event title: strip keywords and separators, keep the remainder. */
+/**
+ * Best-effort prospect name from an event title. Handles the real patterns seen
+ * on the team calendars:
+ *   "Podcast Qualification Call / Tom Wood and ICONS of Real Estate" → "Tom Wood"
+ *   "Starting A Podcast / Theresa Gomez and  Joana"                  → "Theresa Gomez"
+ *   "Lance Nowak  and Bens - Icons 100 Podcast Recording"            → "Lance Nowak"
+ *   "Real Estate Podcast: Andrea Brunson"                            → "Andrea Brunson"
+ * Falls back to stripping keywords/separators; bare titles like "QC" return "QC"
+ * (matching then relies on the Calendar Event ID or fails safe to not-logged).
+ */
 function guessProspectFromTitle_(title) {
   var t = String(title || '');
-  CONFIG.CALL_TITLE_KEYWORDS.forEach(function (k) {
+
+  // Pattern 1: "... / {Name} and ..." — Calendly-style qualification/discovery titles.
+  var m = t.match(/\/\s*([^/]+?)\s+and\s+/i);
+  if (m) return m[1].trim();
+
+  // Pattern 2: "{Name} and {Rep} - ..." — recording titles.
+  m = t.match(/^\s*(.+?)\s+and\s+\w+\s*[-–—]/i);
+  if (m) return m[1].trim();
+
+  // Pattern 3: "Real Estate Podcast: {Name}"
+  m = t.match(/real estate podcast:\s*(.+)$/i);
+  if (m) return m[1].trim();
+
+  // Fallback: strip include keywords and separators, keep the remainder.
+  CONFIG.CALL_TITLE_INCLUDE.forEach(function (k) {
     t = t.replace(new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
   });
-  t = t.replace(/\b(call|with|icons|real estate|podcast|series|booking|session)\b/ig, ' ');
-  t = t.replace(/[|\-–—:()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/\b(call|with|icons|real estate|podcast|series|booking|session|and)\b/ig, ' ');
+  t = t.replace(/[|\-–—:()\[\]/]/g, ' ').replace(/\s+/g, ' ').trim();
   return t || String(title || '').trim();
 }
 
