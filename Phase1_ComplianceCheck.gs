@@ -714,6 +714,31 @@ function installDailyTrigger() {
 }
 
 /**
+ * Diagnostic: dump exactly what getAllTrackerRows_ sees for 14/08 — every
+ * candidate row with its identity fields, and the full raw first 12 rows.
+ * Run this when matching misbehaves.
+ */
+function debugDumpTrackerRows() {
+  var tz = Session.getScriptTimeZone();
+  var repCfg = CONFIG.REPS[1]; // Joana — her sample rows are the test case
+  var rows = getAllTrackerRows_(repCfg, '14/08/2026', tz);
+  Logger.log('Candidate rows for Joana on 14/08/2026: ' + rows.length);
+  rows.forEach(function (r) {
+    Logger.log('  row ' + r.rowIndex + ': prospect="' + r.prospect + '" email="' + r.email +
+      '" eventId="' + r.eventId + '" logged=' + r.logged);
+  });
+
+  // Raw dump of the first 12 rows x 12 cols so we can see anything unexpected.
+  var ss = SpreadsheetApp.openById(repCfg.spreadsheetId);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  var raw = sheet.getRange(1, 1, 12, 12).getValues();
+  Logger.log('--- raw A1:L12 ---');
+  raw.forEach(function (row, i) {
+    Logger.log('  R' + (i + 1) + ': ' + JSON.stringify(row));
+  });
+}
+
+/**
  * Diagnostic: dump guest lists for all call events on 14/08/2026.
  * Answers: do bare "QC" events carry the prospect's email as a guest?
  * Run once before enabling attendee-email matching.
