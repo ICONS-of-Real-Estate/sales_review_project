@@ -49,9 +49,9 @@ var CONFIG = {
 
   REPS: [
     {
-      name: 'Ben',
-      email: 'ben@iconsofrealestate.com', // TODO: confirm
-      calendarId: 'ben@iconsofrealestate.com', // or 'primary' if run as Ben
+      name: 'Bens',
+      email: 'bens@iconsofrealestate.com', // TODO: confirm
+      calendarId: 'bens@iconsofrealestate.com', // calendar must be shared with the account running this script
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
       sheetName: null, // null → try shared tab, else first sheet
       // Header names as they appear in THIS rep's sheet. Brief §2 target
@@ -64,7 +64,7 @@ var CONFIG = {
         calendarEventId: ['Calendar Event ID'],
         rep: ['Rep']
       },
-      defaultRepName: 'Ben' // used when the sheet has no Rep column yet
+      defaultRepName: 'Bens' // used when the sheet has no Rep column yet
     },
     {
       name: 'Joana',
@@ -102,7 +102,7 @@ var CONFIG = {
       defaultRepName: 'Sean'
     }
     // Tomás is CC'd on escalation emails and owns the trackers, but the brief
-    // scopes the compliance check to Ben, Joana, Sean. To also check Tomás's
+    // scopes the compliance check to Bens, Joana, Sean. To also check Tomás's
     // own calls, add him here with spreadsheetId
     // '14VS-se3Cc9jiPYlVex-5MX69ATmwSHhf0xPd6eAEiY0' and
     // outcomeLogged: ['Outcome Logged', 'Call Taken'].
