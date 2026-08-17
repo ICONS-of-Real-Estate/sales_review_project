@@ -107,6 +107,12 @@ Kris reviews 3 calls/day, clustered by rep (concentrated feedback beats scattere
 4. Tie-breaks in order: higher single-call severity → older queue age (anti-starvation) → both failure-mode flags true beats one → alphabetical by rep.
 5. Rollover: unreviewed calls stay queued, `age_in_queue` increments; an age threshold (e.g. 3 days) escalates priority so no rep's backlog starves behind a chronically higher-severity rep.
 
+**Implemented as `buildReviewQueue()` in `Phase2_CallScoring.gs`** (17/08/2026) — this section fully specified the algorithm but, like the ongoing-scoring triggers, it had never actually been built. Two things in the spec above were genuinely ambiguous and needed a concrete choice to write runnable code — confirm both before trusting this to drive real review assignments:
+- **Cluster score weighting:** "capped-at-3 count blended with max/sum severity" doesn't give exact weights. Implemented as `cappedCount × 1000 + sum of the top-3 severities`, so whether a rep's sitting can be filled to 3 dominates, and aggregate severity only breaks ties within the same count band.
+- **Per-call ordering within a rep's own cluster:** not specified at all. Implemented using the same signal order as the rep-level tie-breaks (severity → queue age → both-failure-modes) for internal consistency, rather than inventing a separate rule.
+
+Currently manual (run from the Apps Script editor); not yet wired to a daily trigger pending that confirmation.
+
 ## 7. Rollout gates (do not skip)
 
 | Phase | Gate to advance |

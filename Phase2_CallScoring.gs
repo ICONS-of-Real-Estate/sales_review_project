@@ -939,3 +939,158 @@ function installSeanScoringAutomation() {
   log_('Sean auto-scoring installed: scoreSeanTranscripts() now runs every 4 hours. ' +
     'Remember to disable this trigger once the backlog is fully transcribed and scored.');
 }
+
+// ---------------------------------------------------------------------------
+// Prioritization — SOP §6 ("who Kris actually reviews") fully specifies this
+// algorithm but, like the trigger installers above, it was never actually
+// implemented. First implementation below. The SOP's own wording leaves two
+// things genuinely ambiguous — marked AMBIGUITY below — Kris/Tomás should
+// confirm those interpretations before this drives real review assignments,
+// same review gate as every other rubric/scoring decision in this file.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds today's review queue: the single rep whose unreviewed, flagged
+ * calls best fill a 3-call review sitting, plus those (up to) 3 calls in
+ * priority order. Increments Queue Age on every other unreviewed flagged
+ * call (rolled over, not picked today — SOP §6.5), and logs an escalation
+ * watch for any rep whose oldest queued call crossed the starvation-
+ * prevention age threshold but still wasn't picked today.
+ *
+ * Read-only on everything except Queue Age (rollover aging) — never
+ * touches Reviewed By Kris or any scored field. Run manually for now; wire
+ * to a daily trigger once Kris/Tomás confirm this matches how the 3-call
+ * sitting should actually be picked.
+ */
+function buildReviewQueue() {
+  RUN_TAG = 'buildReviewQueue';
+  var AGE_ESCALATION_THRESHOLD_DAYS = 3; // SOP's own "(e.g. 3 days)" example value.
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return null; }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows.'); return null; }
+
+  var col = {};
+  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  // Step 1: unreviewed flagged calls only.
+  var candidates = [];
+  for (var r = 0; r < values.length; r++) {
+    var row = values[r];
+    if (!row[col['Manual Review Recommended'] - 1]) continue;
+    if (row[col['Reviewed By Kris'] - 1]) continue;
+    candidates.push({
+      rowIndex: r + 2,
+      rep: row[col['Rep'] - 1],
+      prospectName: row[col['Prospect Name'] - 1],
+      severity: Number(row[col['Severity'] - 1]) || 0,
+      askedForClose: !!row[col['Flag: Asked For Close'] - 1],
+      objectionsHandled: !!row[col['Flag: Objections Handled'] - 1],
+      queueAge: Number(row[col['Queue Age'] - 1]) || 0
+    });
+  }
+
+  if (!candidates.length) {
+    log_('buildReviewQueue: nothing unreviewed and flagged — queue is empty.');
+    return null;
+  }
+
+  // "Both failure-mode flags true beats one" in the SOP's tie-break wording
+  // means both flags FAILED (never asked for close AND objections not
+  // handled) — the worst-quality calls, not literally both booleans true.
+  candidates.forEach(function (c) {
+    c.bothFailuresPresent = !c.askedForClose && !c.objectionsHandled;
+  });
+
+  // AMBIGUITY #1: the SOP doesn't specify per-call ordering within a rep's
+  // own cluster before picking their top 3. Reusing the same signal
+  // priority as the rep-level tie-breaks below (severity, then age, then
+  // both-failures) is the most internally consistent reading available.
+  function callPriorityCompare(a, b) {
+    if (b.severity !== a.severity) return b.severity - a.severity;
+    if (b.queueAge !== a.queueAge) return b.queueAge - a.queueAge;
+    if (a.bothFailuresPresent !== b.bothFailuresPresent) return a.bothFailuresPresent ? -1 : 1;
+    return 0;
+  }
+
+  // Step 2/3: group by rep, compute each rep's cluster score.
+  var byRep = {};
+  candidates.forEach(function (c) {
+    (byRep[c.rep] = byRep[c.rep] || []).push(c);
+  });
+
+  var reps = Object.keys(byRep).map(function (repName) {
+    var calls = byRep[repName].slice().sort(callPriorityCompare);
+    var top3 = calls.slice(0, 3);
+    var cappedCount = Math.min(calls.length, 3);
+    var aggregateSeverity = top3.reduce(function (sum, c) { return sum + c.severity; }, 0);
+    // AMBIGUITY #2: "cluster score = (flagged-call count, capped at 3)
+    // blended with max/sum severity" doesn't give exact weights. Count
+    // dominates here (whether the sitting can be filled to 3 matters more
+    // than marginal severity), and aggregate severity of the top 3 breaks
+    // ties within the same count band — the x1000 multiplier keeps that
+    // ordering exact since a top-3 severity sum tops out at 15 (5 max each).
+    var clusterScore = cappedCount * 1000 + aggregateSeverity;
+    return {
+      rep: repName,
+      calls: calls,
+      top3: top3,
+      cappedCount: cappedCount,
+      aggregateSeverity: aggregateSeverity,
+      clusterScore: clusterScore,
+      maxSeverity: calls.length ? calls[0].severity : 0,
+      oldestAge: calls.reduce(function (m, c) { return Math.max(m, c.queueAge); }, 0),
+      bothFailuresCount: calls.filter(function (c) { return c.bothFailuresPresent; }).length
+    };
+  });
+
+  reps.sort(function (a, b) {
+    if (b.clusterScore !== a.clusterScore) return b.clusterScore - a.clusterScore;
+    // Tie-breaks per SOP §6.4, in order.
+    if (b.maxSeverity !== a.maxSeverity) return b.maxSeverity - a.maxSeverity;
+    if (b.oldestAge !== a.oldestAge) return b.oldestAge - a.oldestAge;
+    if (b.bothFailuresCount !== a.bothFailuresCount) return b.bothFailuresCount - a.bothFailuresCount;
+    return a.rep.localeCompare(b.rep);
+  });
+
+  var chosen = reps[0];
+
+  // Anti-starvation escalation watch (SOP §6.5): a rep with a call at/over
+  // the age threshold who still didn't win today's slot gets flagged loudly
+  // instead of silently starving behind a chronically higher-severity rep.
+  var escalations = reps.filter(function (r) {
+    return r !== chosen && r.oldestAge >= AGE_ESCALATION_THRESHOLD_DAYS;
+  });
+
+  // Rollover: increment Queue Age on everything NOT picked today.
+  var chosenRowIndexes = {};
+  chosen.top3.forEach(function (c) { chosenRowIndexes[c.rowIndex] = true; });
+  candidates.forEach(function (c) {
+    if (chosenRowIndexes[c.rowIndex]) return;
+    sheet.getRange(c.rowIndex, col['Queue Age']).setValue(c.queueAge + 1);
+  });
+
+  log_('buildReviewQueue: today\'s pick is ' + chosen.rep + ' (' + chosen.top3.length +
+    ' calls, cluster score ' + chosen.clusterScore + ', aggregate severity ' +
+    chosen.aggregateSeverity + ').');
+  chosen.top3.forEach(function (c) {
+    log_('  Row ' + c.rowIndex + ': ' + c.prospectName + ' — severity ' + c.severity +
+      ', queue age ' + c.queueAge + (c.bothFailuresPresent ? ' [both failure modes]' : ''));
+  });
+  escalations.forEach(function (r) {
+    log_('  ESCALATION WATCH: ' + r.rep + ' has a call at queue age ' + r.oldestAge +
+      ' (>= ' + AGE_ESCALATION_THRESHOLD_DAYS + ' days) and was not picked today.');
+  });
+
+  return {
+    rep: chosen.rep,
+    calls: chosen.top3.map(function (c) {
+      return { rowIndex: c.rowIndex, prospectName: c.prospectName, severity: c.severity, queueAge: c.queueAge };
+    }),
+    escalationWatch: escalations.map(function (r) { return r.rep; })
+  };
+}
