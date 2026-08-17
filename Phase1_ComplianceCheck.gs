@@ -246,6 +246,51 @@ function runDailyComplianceCheck() {
 // Per-rep logic
 // ---------------------------------------------------------------------------
 
+/**
+ * Matches each of a rep's day's events against loggedRows first (compliance),
+ * falling back to allRows for an ID backfill when nothing logged matches.
+ * Tracks which row indices this call has already matched and excludes them
+ * from later events' candidate pool, so one row can satisfy at most one
+ * event per call — without this, two same-day events for the same prospect
+ * (e.g. a QC call followed by a Sales Call, a real and common pattern) could
+ * both independently match the ONE logged row that exists, silently
+ * reporting the second event as compliant when its own tracker row was
+ * never actually logged. Shared by checkRep_ (the live path),
+ * debugCheckSpecificDate (same live behavior against a fixed sample date),
+ * and dryRunComplianceCheck (writeBack=false: preview only, matches the same
+ * logic so the preview doesn't disagree with what the live run would do).
+ * Returns the events with no logged match (repCfg name is for log lines only).
+ */
+function matchEventsForRep_(repName, events, allRows, loggedRows, writeBack) {
+  var claimedRowIndexes = {};
+  var missing = [];
+  events.forEach(function (ev) {
+    var availableLogged = loggedRows.filter(function (r) { return !claimedRowIndexes[r.rowIndex]; });
+    var hit = findMatch_(ev, availableLogged);
+    if (hit) {
+      claimedRowIndexes[hit.rowIndex] = true;
+      log_('  [' + repName + '] match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
+      if (writeBack) stampMatch_(hit);
+    } else {
+      log_('  [' + repName + '] match? event="' + ev.title + '" → NOT LOGGED');
+      missing.push(ev);
+      // Still try to enrich an UNLOGGED row with the event ID: it makes
+      // tomorrow's match exact-key and builds the Phase 0 join data.
+      var availableAll = allRows.filter(function (r) { return !claimedRowIndexes[r.rowIndex]; });
+      var anyHit = findMatch_(ev, availableAll);
+      if (anyHit) {
+        claimedRowIndexes[anyHit.rowIndex] = true;
+        if (!anyHit.logged) {
+          var wrote = writeBack ? stampMatch_(anyHit) : false;
+          log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
+            (wrote ? ' — backfilling Calendar Event ID' : writeBack ? ' — ID already stamped' : ' — dry-run, no write'));
+        }
+      }
+    }
+  });
+  return missing;
+}
+
 function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
   log_(repCfg.name + ': ' + events.length + ' sales/QC calendar event(s) on ' + priorDay);
@@ -256,27 +301,7 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   log_(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
     ' (' + allRows.length + ' total row(s) for the day)');
 
-  var missing = [];
-  events.forEach(function (ev) {
-    // Compliance = matched to a LOGGED row. Unlogged rows may get an ID
-    // backfill below, but the call still counts as not-logged for the email.
-    var hit = findMatch_(ev, loggedRows);
-    if (hit) {
-      log_('  match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
-      stampMatch_(hit);
-    } else {
-      log_('  match? event="' + ev.title + '" → NOT LOGGED');
-      missing.push(ev);
-      // Still try to enrich an UNLOGGED row with the event ID: it makes
-      // tomorrow's match exact-key and builds the Phase 0 join data.
-      var anyHit = findMatch_(ev, allRows);
-      if (anyHit && !anyHit.logged) {
-        var wrote = stampMatch_(anyHit);
-        log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
-          (wrote ? ' — backfilling Calendar Event ID' : ' — ID already stamped'));
-      }
-    }
-  });
+  var missing = matchEventsForRep_(repCfg.name, events, allRows, loggedRows, /*writeBack=*/true);
 
   if (missing.length === 0) {
     log_(repCfg.name + ': fully compliant for ' + priorDay);
@@ -556,9 +581,18 @@ function formatDateCell_(v, tz) {
   if (v instanceof Date && !isNaN(v)) {
     return Utilities.formatDate(v, tz, 'dd/MM/yyyy');
   }
+  // Free-text legacy dates (brief.txt's own documented example: "May 20", no
+  // year) have no explicit offset, so new Date(string) parses them using the
+  // SCRIPT's own default timezone (Session.getScriptTimeZone()) — the exact
+  // thing this file's header comment says business-day math must never rely
+  // on. Reformatting that instant into `tz` (CONFIG.BUSINESS_TIMEZONE) would
+  // re-interpret the same instant in a DIFFERENT zone and can shift the
+  // calendar date by a day whenever the two zones disagree. Read it back out
+  // in the SAME zone the implicit parse assumed, instead of business tz, so
+  // the calendar date the free text was written to mean survives the round trip.
   var parsed = new Date(v);
   if (!isNaN(parsed)) {
-    return Utilities.formatDate(parsed, tz, 'dd/MM/yyyy');
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'dd/MM/yyyy');
   }
   log_('  unparseable date cell: "' + v + '"');
   return String(v).trim();
@@ -1064,24 +1098,7 @@ function debugCheckSpecificDate() {
       var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
       var allRows = getAllTrackerRows_(repCfg, dayStr, tz);
       var loggedRows = allRows.filter(function (r) { return r.logged; });
-      var missing = [];
-      events.forEach(function (ev) {
-        var hit = findMatch_(ev, loggedRows);
-        if (hit) {
-          log_('  [' + repCfg.name + '] "' + ev.title + '" → LOGGED (row ' +
-            hit.rowIndex + ' via ' + hit.via + ')');
-          stampMatch_(hit);
-        } else {
-          log_('  [' + repCfg.name + '] "' + ev.title + '" → NOT LOGGED');
-          missing.push(ev);
-          var anyHit = findMatch_(ev, allRows);
-          if (anyHit && !anyHit.logged) {
-            var wrote = stampMatch_(anyHit);
-            log_('    ↳ unlogged row ' + anyHit.rowIndex + ' found via ' + anyHit.via +
-              (wrote ? ' — backfilling Calendar Event ID' : ' — ID already stamped'));
-          }
-        }
-      });
+      var missing = matchEventsForRep_(repCfg.name, events, allRows, loggedRows, /*writeBack=*/true);
       log_(dayStr + ' | ' + repCfg.name + ': ' + events.length +
         ' event(s), ' + loggedRows.length + ' logged row(s), ' + missing.length + ' MISSING');
     } catch (e) {
@@ -1104,7 +1121,7 @@ function dryRunComplianceCheck() {
       var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
       var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
       var loggedRows = allRows.filter(function (r) { return r.logged; });
-      var missing = events.filter(function (ev) { return !findMatch_(ev, loggedRows); });
+      var missing = matchEventsForRep_(repCfg.name, events, allRows, loggedRows, /*writeBack=*/false);
       log_(repCfg.name + ' @ ' + priorDay + ': ' +
         events.length + ' event(s), ' + loggedRows.length + ' logged row(s), ' +
         missing.length + ' MISSING → ' +
