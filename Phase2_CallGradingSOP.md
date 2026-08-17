@@ -133,6 +133,14 @@ Currently manual (run from the Apps Script editor); not yet wired to a daily tri
 - Expect markdown-fenced JSON even at temperature=1 — defensive parsing is not optional.
 - A call with `Match Method = no_match` never gets auto-scored, full stop — it's a matching failure, not a call-quality signal.
 
+## 8b. Warm-handoff briefing between funnel stages
+
+Kris's ask (17/08/2026): when a lead moves from one funnel stage to the next rep (e.g. Bens takes an ICONS 100 recording call, books a QC, and joins that QC to hand the lead to Joana), the incoming rep should get real context before the call, not just an introduction — who the lead is, their stated issues/goals, how podcasting was pitched (or should be) to address them, which objections from the prior call are still unresolved, and anything else worth knowing.
+
+**Implemented as `Phase3_HandoffBrief.gs`** (17/08/2026). Matches an upcoming QC/Sales Call/Discovery calendar event (reusing Phase 1's event classification and prospect-name guessing) to the most recent *scored* `Sales Call Log` row for the same prospect — no assumption about funnel stage order is encoded, just "the last thing we know about this lead." The brief itself is synthesized fresh from that prior call's transcript via a dedicated prompt (a distinct judgment task from the scoring rubrics — not a call-quality verdict, just an extraction of what the next rep needs to know), not from the terse `AI Feedback Summary` column. Sent ~24 hours ahead of the next call, deduped via a new `Handoff Briefs Sent` tracking tab (the upcoming call has no `Sales Call Log` row of its own yet to mark against).
+
+**Not yet live-verified end-to-end** (no real upcoming event existed to test against at the time this was written) — `previewUpcomingHandoffBriefs_()` does the full match and logs what it would send without calling the model or sending anything; run that first. Gated by `HANDOFF_CONFIG.ENABLED`, a separate flag from `PHASE2_CONFIG.SHADOW_MODE` since this is a different kind of LLM output (an extraction/summary, not a scored verdict) that Kris/Tomás haven't reviewed yet — flip it once a handful of generated briefs check out against the real prior transcript.
+
 ## 9. What this SOP deliberately does not cover
 
 - Few-shot anchor examples (2–3 labeled transcript excerpts: a clear close-ask, a clear miss, a borderline case) — these need to come from real graded calls, not be invented. The first batch of 43 real transcripts has now been scored (17/08/2026) and its objection patterns are cataloged in `Objection_Handling_Playbook.md`; that's the source to pull `FEW_SHOT_ANCHORS` from in `Phase2_CallScoring.gs` once Kris/Tomás confirm which examples are representative.
