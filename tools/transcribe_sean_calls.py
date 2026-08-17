@@ -129,9 +129,7 @@ def generate_with_retry(client, model, contents, max_retries=6):
         try:
             response = client.models.generate_content(model=model, contents=contents, config=config)
         except genai_errors.ClientError as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or getattr(e, "code", None) == 429:
-                raise QuotaExhaustedError(str(e)) from e
-            raise
+            _reraise_as_quota_error_if_applicable(e)
         except (genai_errors.ServerError, ConnectionError, TimeoutError, OSError) as e:
             # OSError also catches transient SSL/connection drops (e.g. "EOF occurred
             # in violation of protocol"), which aren't ServerError but are just as retryable.
@@ -149,11 +147,20 @@ def generate_with_retry(client, model, contents, max_retries=6):
         raise RuntimeError(f"Gemini returned no transcript text (reason: {reason})")
 
 
+def _reraise_as_quota_error_if_applicable(e):
+    if "RESOURCE_EXHAUSTED" in str(e) or getattr(e, "code", None) == 429:
+        raise QuotaExhaustedError(str(e)) from e
+    raise e
+
+
 def transcribe_with_gemini(client, local_path):
-    gemini_file = client.files.upload(file=local_path)
-    while gemini_file.state.name == "PROCESSING":
-        time.sleep(5)
-        gemini_file = client.files.get(name=gemini_file.name)
+    try:
+        gemini_file = client.files.upload(file=local_path)
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(5)
+            gemini_file = client.files.get(name=gemini_file.name)
+    except genai_errors.ClientError as e:
+        _reraise_as_quota_error_if_applicable(e)
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
 
