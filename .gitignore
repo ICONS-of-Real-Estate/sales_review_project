@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Local OAuth artifacts for tools/transcribe_sean_calls.py — never commit secrets
+tools/credentials.json
+tools/token.json
