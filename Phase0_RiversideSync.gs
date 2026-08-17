@@ -95,7 +95,10 @@ function extractEventIdFromRecordingTitle_(title) {
 
 /** Same suffix-stripping idsEqual_ in Phase1_ComplianceCheck.gs applies on the tracker side — applied here too so a row storing the bare ID still matches a title captured with the "@google.com" suffix, or vice versa. */
 function normalizeEventId_(id) {
-  return String(id || '').replace(/@google\.com$/i, '').trim();
+  // Trim BEFORE stripping (see idsEqual_ in Phase1_ComplianceCheck.gs for the
+  // same fix and why): the end-anchored regex wouldn't match through
+  // trailing whitespace left after "@google.com".
+  return String(id || '').trim().replace(/@google\.com$/i, '');
 }
 
 function getRiversideKey_() {

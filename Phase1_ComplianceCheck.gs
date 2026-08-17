@@ -566,7 +566,11 @@ function formatDateCell_(v, tz) {
 
 /** Google event ids look like "abc123@google.com"; rows may store with or without the suffix. */
 function idsEqual_(rowId, eventId) {
-  var strip = function (s) { return String(s).replace(/@google\.com$/i, '').trim(); };
+  // Trim BEFORE stripping the suffix: the regex is end-anchored ($), so
+  // trailing whitespace after "@google.com" (a stray space pasted into a
+  // sheet cell) would otherwise stop it from matching at all, leaving the
+  // suffix un-stripped and silently failing to match a bare-ID row.
+  var strip = function (s) { return String(s).trim().replace(/@google\.com$/i, ''); };
   return strip(rowId) === strip(eventId);
 }
 

@@ -1231,6 +1231,25 @@ function sendReviewQueueDigest_(chosen, escalations, hardCapBreaches) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Cohen's kappa on a 2x2 confusion matrix: κ = (po - pe) / (1 - pe), where po
+ * is observed agreement and pe is agreement expected by chance given each
+ * rater's marginal totals. Pulled out of runWeeklyCalibration as its own pure
+ * function so the math has a unit-testable seam (see tests/run_tests.js) —
+ * assumes n = the sum of all four counts is > 0 (the caller guarantees this).
+ */
+function computeAgreementStats_(aiYes_krisYes, aiYes_krisNo, aiNo_krisYes, aiNo_krisNo) {
+  var n = aiYes_krisYes + aiYes_krisNo + aiNo_krisYes + aiNo_krisNo;
+  var percentAgreement = (aiYes_krisYes + aiNo_krisNo) / n;
+
+  var aiYesTotal = aiYes_krisYes + aiYes_krisNo, aiNoTotal = aiNo_krisYes + aiNo_krisNo;
+  var krisYesTotal = aiYes_krisYes + aiNo_krisYes, krisNoTotal = aiYes_krisNo + aiNo_krisNo;
+  var pe = (aiYesTotal * krisYesTotal + aiNoTotal * krisNoTotal) / (n * n);
+  var kappa = pe === 1 ? 1 : (percentAgreement - pe) / (1 - pe);
+
+  return { n: n, percentAgreement: percentAgreement, kappa: kappa };
+}
+
+/**
  * Diffs the AI's Manual Review Recommended flag against Kris's own
  * independently-recorded verdict (Kris Manual Review Verdict column) for
  * every row where she's actually judged one, and reports percent agreement
@@ -1254,7 +1273,6 @@ function runWeeklyCalibration() {
   var col = getValidatedColumnMap_(sheet);
   var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
-  var n = 0, agree = 0;
   var aiYes_krisYes = 0, aiYes_krisNo = 0, aiNo_krisYes = 0, aiNo_krisNo = 0;
 
   values.forEach(function (row) {
@@ -1264,28 +1282,20 @@ function runWeeklyCalibration() {
     var aiFlag = !!row[col['Manual Review Recommended'] - 1];
     var krisFlag = krisVerdictRaw === 'Yes';
 
-    n++;
-    if (aiFlag === krisFlag) agree++;
     if (aiFlag && krisFlag) aiYes_krisYes++;
     else if (aiFlag && !krisFlag) aiYes_krisNo++;
     else if (!aiFlag && krisFlag) aiNo_krisYes++;
     else aiNo_krisNo++;
   });
 
+  var n = aiYes_krisYes + aiYes_krisNo + aiNo_krisYes + aiNo_krisNo;
   if (n === 0) {
     log_('runWeeklyCalibration: no rows with a Kris Manual Review Verdict yet — nothing to calibrate.');
     return null;
   }
 
-  var percentAgreement = agree / n;
-
-  // Cohen's kappa on the 2x2 confusion matrix: κ = (po - pe) / (1 - pe),
-  // where po is observed agreement and pe is agreement expected by chance
-  // given each rater's marginal totals.
-  var aiYesTotal = aiYes_krisYes + aiYes_krisNo, aiNoTotal = aiNo_krisYes + aiNo_krisNo;
-  var krisYesTotal = aiYes_krisYes + aiNo_krisYes, krisNoTotal = aiYes_krisNo + aiNo_krisNo;
-  var pe = (aiYesTotal * krisYesTotal + aiNoTotal * krisNoTotal) / (n * n);
-  var kappa = pe === 1 ? 1 : (percentAgreement - pe) / (1 - pe);
+  var stats = computeAgreementStats_(aiYes_krisYes, aiYes_krisNo, aiNo_krisYes, aiNo_krisNo);
+  var percentAgreement = stats.percentAgreement, kappa = stats.kappa;
 
   log_('runWeeklyCalibration: n=' + n + ', percent agreement=' +
     (percentAgreement * 100).toFixed(1) + '%, Cohen\'s kappa=' + kappa.toFixed(3));
