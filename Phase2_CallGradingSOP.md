@@ -36,6 +36,22 @@ Kris's own framing of what goes wrong on a call reduces to two failure modes. Ev
 
 **Two scored booleans result:** `asked_for_close`, `objections_uncovered` + `objections_overcome`. `primary_failure_mode` derives from these (`none / no_close_ask / objections_missed / both`) — it's not separately judged.
 
+### 3B. Sean-specific variant — a deliberately stricter rubric
+
+Kris/Thao's explicit ask (17/08/2026): the shared two-failure-mode rubric above doesn't fit Sean's funnel cleanly enough to catch what actually matters on his calls. Sean's calls end one of two acceptable ways — he closes the money directly, or he books a second call with Tomás to close — and a call that does neither, with no clear evidenced reason, is the specific miss worth catching. This is a **separate rubric variant for Sean only** (`buildSeanJudgeSystemPrompt_()` / `scoreSeanTranscripts()` in `Phase2_CallScoring.gs`), not a change to the shared rubric above — Bens/Joana keep the original two-failure-mode design per this doc's own "resist adding scored dimensions" guidance in Section 3.
+
+Six questions the model must answer, in order, before scoring:
+1. Were objections uncovered *and* overcome with something concrete?
+2. Did the rep explicitly ask for the money (not just a trial-close question)?
+3. If no sale closed, was a second call with Tomás actually booked? If not, why not?
+4. Did the rep do real discovery — do they demonstrably understand this lead's specific business?
+5. Did the rep capture the lead's actual goals and tie the podcast framework back to them specifically (not a generic pitch)?
+6. Bottom line: if nothing closed, what's the single root cause — stated causally, not vaguely?
+
+Extra scored fields beyond the shared schema: `discovery_adequate`, `understood_leads_business`, `captured_leads_goals`, `tied_framework_to_goals`, `booked_second_call_with_tomas`, and a free-text `root_cause_if_no_sale`. The "Sales Call Log" sheet has no dedicated columns for these yet, so `scoreSeanTranscripts()` packs them into the existing `AI Feedback Summary` column alongside the standard coaching summary rather than requiring a sheet migration — revisit this if the extra fields turn out to need their own columns for filtering/reporting.
+
+Transcript source for Sean's backfill: `tools/transcribe_sean_calls.py` (Gemini-based, since Sean records on Zoom, not Riverside) writes each transcript as a `"<video title> — Transcript"` Doc directly next to its source video in `PHASE2_CONFIG.SEAN_FOLDERS` — there's no separate transcripts-only folder like Bens' setup, and no Calendar-Event-ID-in-title convention, so every row is forced `Match Method = fallback_heuristic` and `Manual Review Recommended = TRUE`, same policy as the Bens legacy backfill.
+
 ## 4. Scoring scale — anchored, not impressionistic
 
 `call_quality_score` is 1–5. Each level must be anchored to observable transcript evidence, not adjectives like "good/adequate":

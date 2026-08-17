@@ -25,7 +25,7 @@
  * constraint carries over unchanged; if it's really kimi-k3, re-verify the
  * temperature behavior against Moonshot's current docs rather than assuming.
  *
- * Two entry points:
+ * Three entry points:
  *  - scoreNewlyLoggedCalls_()   Ongoing pipeline: scores "Sales Call Log" rows
  *                                that Phase 1 exact-matched to a calendar
  *                                event (Match Method = exact_key) and that
@@ -42,6 +42,15 @@
  *                                zero-argument convenience wrapper for today's
  *                                43-transcript folder so it can be run
  *                                directly from the Apps Script editor.
+ *  - scoreSeanTranscripts()      Sean-specific backfill using a deliberately
+ *                                stricter rubric than the shared two-failure-
+ *                                mode one above (Kris/Thao's explicit ask,
+ *                                17/08/2026 — see the rubric section below for
+ *                                why this is a separate variant rather than a
+ *                                change to the shared rubric). Reads the
+ *                                "<video title> — Transcript" Docs that
+ *                                tools/transcribe_sean_calls.py writes next to
+ *                                each source video in PHASE2_CONFIG.SEAN_FOLDERS.
  */
 
 // ---------------------------------------------------------------------------
@@ -74,6 +83,15 @@ var PHASE2_CONFIG = {
   LEGACY_FOLDERS: {
     Bens: '1vA5F39fGZ3kUrXwMNV9TTQf3Iho_ipdg'
     // Joana: '<folder id once she replies>',
+  },
+
+  // Sean's calls: raw Zoom recordings backfilled with Gemini transcripts by
+  // tools/transcribe_sean_calls.py, which writes each transcript as a
+  // "<video title> — Transcript" Doc directly next to its source video —
+  // there is no separate transcripts-only folder like Bens' setup.
+  SEAN_FOLDERS: {
+    'Sales Calls': '1gFb7YnXbnGAowAJgnLE2KNp5iKOCfnYH',
+    'Qualification Calls': '15YMEMseEvUQakgDF00BtQg3QK6fiTsjX'
   },
 
   // Filename convention for legacy transcripts: YYYY-MM-DD_ProspectName_Transcript.txt
@@ -540,4 +558,269 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
     ', already-present ' + skippedExisting + ', unparsed ' + skippedUnparsed + ', failed ' + failed + '.');
   log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) ' +
     'per brief.txt §6 — Kris/Tomás should confirm the fallback name/date match before trusting a score.');
+}
+
+// ---------------------------------------------------------------------------
+// Sean's rubric — deliberately stricter than the shared two-failure-mode one
+// above. Per Kris/Thao (17/08/2026): Sean's process is a two-step funnel (this
+// call closes the money directly, OR books a second call with Tomás to close)
+// — a call that does neither, with no clear reason why, is a miss the shared
+// rubric doesn't surface on its own. This is a separate variant on purpose;
+// the shared rubric above stays untouched for Bens/Joana per the SOP's own
+// "resist adding scored dimensions" guidance — that call was already made and
+// reviewed. Don't fold these extra fields back into the shared rubric without
+// the same sign-off.
+// ---------------------------------------------------------------------------
+
+function buildSeanJudgeSystemPrompt_() {
+  return [
+    'You are a highly critical sales-call QA evaluator for a podcast-production offer sold to real estate agents.',
+    'This rep\'s calls end one of two acceptable ways: he closes the sale directly, or he books a second call',
+    'with Tomás to close. Neither happening, with no clear evidenced reason why, is the failure to catch.',
+    '',
+    'Be skeptical by default — do not give credit for a step attempted weakly or generically. Every judgment',
+    'must cite specific transcript evidence, not a general impression.',
+    '',
+    'Answer all of the following, in this order, in your reasoning:',
+    '1. Did the rep uncover the lead\'s real objections, and were they overcome with something concrete',
+    '   (a case study, a number, a mechanism) rather than brushed past?',
+    '2. Did the rep explicitly ask for the money / commitment — not merely a soft trial-close question?',
+    '3. If no sale closed on this call, was a second call with Tomás actually booked? If not, what did the',
+    '   rep fail to do or say that would have gotten it booked?',
+    '4. Did the rep conduct real discovery — do they demonstrably understand this lead\'s specific business',
+    '   (production volume, market, current marketing spend, team structure), not a generic read of the room?',
+    '5. Did the rep capture the lead\'s actual stated goals, and explicitly connect the podcast framework back',
+    '   to achieving those specific goals — not a generic pitch that would fit any lead?',
+    '6. Bottom line: if the call ended with no money and no second call booked, what is the single root cause?',
+    '   Be specific and causal ("never asked what her production goal was, so had nothing to tie the offer',
+    '   to"), not vague ("bad fit" / "bad vibes").',
+    '',
+    'Score anchors for call_quality_score (1-5):',
+    '5 = money closed OR second call booked, with strong discovery, goal-alignment, and objection handling.',
+    '4 = second call booked, but one of discovery / goal-alignment / objection-handling was weak.',
+    '3 = second call booked mainly because the lead pushed for it, not because the rep earned it; or a close',
+    '    was attempted but discovery/goal-alignment was clearly missing.',
+    '2 = no sale and no second call booked, lead was a reasonable fit, and the miss is attributable to rep',
+    '    execution (not lead quality).',
+    '1 = no sale, no second call booked, AND no real attempt at discovery, goal-alignment, or a close ask.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text.',
+    'Put "reasoning" first (walk through all 6 questions above with quoted evidence), then the structured',
+    'fields, in this exact shape:',
+    '',
+    '{',
+    '  "reasoning": "string",',
+    '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
+    '  "call_quality_score": 1,',
+    '  "flags": {',
+    '    "asked_for_close": true,',
+    '    "objections_uncovered": true,',
+    '    "objections_overcome": true,',
+    '    "discovery_adequate": true,',
+    '    "understood_leads_business": true,',
+    '    "captured_leads_goals": true,',
+    '    "tied_framework_to_goals": true,',
+    '    "booked_second_call_with_tomas": true',
+    '  },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_goal_alignment | no_second_call_booked | multiple",',
+    '  "root_cause_if_no_sale": "string — the single specific reason money wasn\'t closed and no second call',
+    '   was booked; \\"N/A\\" if a sale closed or a second call was booked",',
+    '  "manual_review_recommended": true,',
+    '  "severity": 1,',
+    '  "feedback_summary": "string — 4-6 sentences, coaching-ready, must explicitly cover: objection',
+    '   handling, whether he asked for the money, why a second call with Tomás was/wasn\'t booked, discovery',
+    '   quality, goal-alignment, and the root cause if nothing closed"',
+    '}'
+  ].join('\n');
+}
+
+function isValidSeanJudgeSchema_(obj) {
+  return !!(obj &&
+    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
+    typeof obj.call_quality_score === 'number' &&
+    obj.flags &&
+    typeof obj.flags.asked_for_close === 'boolean' &&
+    typeof obj.flags.objections_uncovered === 'boolean' &&
+    typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.discovery_adequate === 'boolean' &&
+    typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.captured_leads_goals === 'boolean' &&
+    typeof obj.flags.tied_framework_to_goals === 'boolean' &&
+    typeof obj.flags.booked_second_call_with_tomas === 'boolean' &&
+    typeof obj.manual_review_recommended === 'boolean' &&
+    typeof obj.severity === 'number' &&
+    typeof obj.root_cause_if_no_sale === 'string');
+}
+
+/** Same retry/manual-review shape as scoreTranscript_, against the stricter Sean rubric. */
+function scoreSeanTranscript_(ctx) {
+  var systemPrompt = buildSeanJudgeSystemPrompt_();
+  var userPrompt = buildJudgeUserPrompt_(ctx);
+  var lastRaw = null;
+
+  for (var attempt = 0; attempt <= PHASE2_CONFIG.MAX_PARSE_RETRIES; attempt++) {
+    var promptForThisAttempt = attempt === 0
+      ? userPrompt
+      : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
+    try {
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var parsed = stripFencesAndParseJson_(lastRaw);
+      if (!isValidSeanJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Sean-rubric fields.');
+      return parsed;
+    } catch (e) {
+      log_('    ↳ scoreSeanTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+    }
+  }
+
+  log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
+    '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  return {
+    reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
+    call_quality_score: 1,
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false,
+      discovery_adequate: false, understood_leads_business: false,
+      captured_leads_goals: false, tied_framework_to_goals: false,
+      booked_second_call_with_tomas: false
+    },
+    primary_failure_mode: 'none',
+    root_cause_if_no_sale: 'Unscored — parse failure.',
+    manual_review_recommended: true,
+    severity: 5,
+    feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
+    _parseFailed: true
+  };
+}
+
+/** Packs the extra Sean-only dimensions into the one free-text column the sheet has (AI Feedback Summary) — no schema migration needed to see them. */
+function buildSeanFeedbackSummary_(result) {
+  return [
+    result.feedback_summary,
+    '',
+    'Discovery adequate: ' + result.flags.discovery_adequate +
+      ' | Understood lead\'s business: ' + result.flags.understood_leads_business,
+    'Captured lead\'s goals: ' + result.flags.captured_leads_goals +
+      ' | Tied framework to goals: ' + result.flags.tied_framework_to_goals,
+    'Booked 2nd call w/ Tomás: ' + result.flags.booked_second_call_with_tomas,
+    'Root cause if no sale: ' + result.root_cause_if_no_sale
+  ].join('\n');
+}
+
+/**
+ * Dry-run helper — mirrors previewLegacyTranscriptFolder but for Sean's
+ * "<video title> — Transcript" Docs (no fixed filename convention to parse;
+ * the video's own Drive creation date stands in for Call Date, which is far
+ * more reliable than regexing a date out of titles like "8/14  Nicole
+ * Beauchamp Part 2"). Logs what would be scored, calls no model, writes nothing.
+ */
+function previewSeanTranscripts() {
+  RUN_TAG = 'previewSeanTranscripts';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var existing = loadExistingLegacyKeys_(sheet);
+  var n = 0;
+
+  Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
+    var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var file = files.next();
+      var name = file.getName();
+      if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
+      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+      var dateStr = Utilities.formatDate(file.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+      var key = normalize_(prospectName) + '|' + dateStr;
+      n++;
+      log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
+        (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
+    }
+  });
+  log_('previewSeanTranscripts — ' + n + ' transcript doc(s) found across both folders.');
+}
+
+/**
+ * Scores every unscored "<video title> — Transcript" Doc across
+ * PHASE2_CONFIG.SEAN_FOLDERS against the stricter Sean rubric and appends one
+ * "Sales Call Log" row per call — same appendRow shape and same
+ * fallback_heuristic / forced-manual-review policy as scoreLegacyTranscriptFolder,
+ * since these also predate the Calendar-Event-ID-in-title convention.
+ */
+function scoreSeanTranscripts() {
+  RUN_TAG = 'scoreSeanTranscripts';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
+
+  var existing = loadExistingLegacyKeys_(sheet);
+  var scored = 0, skippedExisting = 0, failed = 0;
+
+  Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
+    var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var file = files.next();
+      var name = file.getName();
+      if (name.indexOf('Transcript') === -1) continue; // skip source videos
+
+      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+      var callDate = file.getDateCreated();
+      var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+      var key = normalize_(prospectName) + '|' + dateStr;
+      if (existing[key]) { skippedExisting++; continue; }
+
+      try {
+        var callType = label === 'Qualification Calls' ? 'QC' : 'Sales Call';
+        var ctx = {
+          rep: 'Sean',
+          prospectName: prospectName,
+          callType: callType,
+          source: '',
+          callDate: dateStr,
+          transcriptText: file.getBlob().getDataAsString()
+        };
+        var result = scoreSeanTranscript_(ctx);
+        var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+
+        sheet.appendRow([
+          prospectName,                   // Prospect Name
+          '',                              // Prospect Email — fill from Sean's tracker
+          '',                              // Source — fill from Sean's tracker
+          callDate,                        // Call Date
+          'Sean',                          // Rep
+          callType,                        // Call Type
+          true,                            // Outcome Logged
+          '',                              // Outcome Disposition — fill from Sean's tracker
+          '',                              // Calendar Event ID — none (predates convention)
+          '',                              // Riverside Recording ID — n/a, Sean uses Zoom
+          file.getUrl(),                   // Transcript URL
+          'fallback_heuristic',            // Match Method
+          result.lead_quality.verdict,     // Lead Quality Verdict
+          result.call_quality_score,       // Call Quality Score
+          result.flags.asked_for_close,    // Flag: Asked For Close
+          objectionsHandled,               // Flag: Objections Handled
+          true,                            // Manual Review Recommended — forced true
+          result.severity,                 // Severity
+          buildSeanFeedbackSummary_(result), // AI Feedback Summary — includes the extra Sean dimensions
+          false,                           // Reviewed By Kris
+          0                                // Queue Age
+        ]);
+
+        log_('  Scored "' + prospectName + '" (' + dateStr + '): ' + result.lead_quality.verdict +
+          ', score ' + result.call_quality_score + ', severity ' + result.severity +
+          ', 2nd call booked: ' + result.flags.booked_second_call_with_tomas +
+          (result._parseFailed ? ' [PARSE FAILED]' : ''));
+        scored++;
+        Utilities.sleep(300);
+      } catch (e) {
+        log_('  FAILED "' + name + '": ' + e);
+        failed++;
+      }
+    }
+  });
+
+  log_('scoreSeanTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
+    ', failed ' + failed + '.');
+  log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
+    'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
 }
