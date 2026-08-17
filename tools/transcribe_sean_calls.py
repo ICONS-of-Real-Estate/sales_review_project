@@ -166,7 +166,10 @@ def save_transcript_doc(drive, folder_id, video_id, title, transcript_text):
         )
         .execute()
     )
-    os.remove(tmp_txt)
+    try:
+        os.remove(tmp_txt)
+    except OSError:
+        pass  # Windows can still hold the handle briefly; harmless to leave a tiny .txt in Temp.
     return doc["webViewLink"]
 
 
