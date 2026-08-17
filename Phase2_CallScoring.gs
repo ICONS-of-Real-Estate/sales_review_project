@@ -1094,3 +1094,95 @@ function buildReviewQueue() {
     escalationWatch: escalations.map(function (r) { return r.rep; })
   };
 }
+
+// ---------------------------------------------------------------------------
+// Weekly calibration — SOP §7 names this ("diff model verdicts vs. Kris's
+// actual review outcomes... track agreement / Cohen's kappa") but it was
+// never implemented, same gap pattern as the trigger installers and the
+// review queue above. This needed one real design decision the SOP itself
+// doesn't make: computing genuine agreement/kappa requires Kris's own
+// independent verdict in the SAME category as the AI's, not just an
+// agree/disagree checkbox — a checkbox would only give percent-agreement,
+// not the confusion matrix kappa needs. So this adds one new column,
+// "Kris Manual Review Verdict" (Yes/No/blank, see SALES_CALL_LOG_HEADERS in
+// Phase1_ComplianceCheck.gs), which Kris fills in per call she's reviewed:
+// does she independently agree this call needed manual review? Additive
+// and backward-compatible (appended at the end, existing appendRow calls
+// that don't set it just leave it blank = "not yet judged").
+// ---------------------------------------------------------------------------
+
+/**
+ * Diffs the AI's Manual Review Recommended flag against Kris's own
+ * independently-recorded verdict (Kris Manual Review Verdict column) for
+ * every row where she's actually judged one, and reports percent agreement
+ * plus Cohen's kappa (chance-corrected agreement — the SOP names this
+ * specifically, not just raw percent agreement). Rows Kris hasn't judged
+ * yet (blank verdict) are skipped, not counted as disagreement.
+ *
+ * Read-only. Not yet wired to a trigger — run manually (or weekly, once
+ * Kris/Tomás confirm the Yes/No column is the right capture mechanism)
+ * until there's a real week of judged rows to calibrate against.
+ */
+function runWeeklyCalibration() {
+  RUN_TAG = 'runWeeklyCalibration';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return null; }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows.'); return null; }
+
+  var col = {};
+  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var n = 0, agree = 0;
+  var aiYes_krisYes = 0, aiYes_krisNo = 0, aiNo_krisYes = 0, aiNo_krisNo = 0;
+
+  values.forEach(function (row) {
+    var krisVerdictRaw = String(row[col['Kris Manual Review Verdict'] - 1] || '').trim();
+    if (krisVerdictRaw !== 'Yes' && krisVerdictRaw !== 'No') return; // blank/unjudged — skip
+
+    var aiFlag = !!row[col['Manual Review Recommended'] - 1];
+    var krisFlag = krisVerdictRaw === 'Yes';
+
+    n++;
+    if (aiFlag === krisFlag) agree++;
+    if (aiFlag && krisFlag) aiYes_krisYes++;
+    else if (aiFlag && !krisFlag) aiYes_krisNo++;
+    else if (!aiFlag && krisFlag) aiNo_krisYes++;
+    else aiNo_krisNo++;
+  });
+
+  if (n === 0) {
+    log_('runWeeklyCalibration: no rows with a Kris Manual Review Verdict yet — nothing to calibrate.');
+    return null;
+  }
+
+  var percentAgreement = agree / n;
+
+  // Cohen's kappa on the 2x2 confusion matrix: κ = (po - pe) / (1 - pe),
+  // where po is observed agreement and pe is agreement expected by chance
+  // given each rater's marginal totals.
+  var aiYesTotal = aiYes_krisYes + aiYes_krisNo, aiNoTotal = aiNo_krisYes + aiNo_krisNo;
+  var krisYesTotal = aiYes_krisYes + aiNo_krisYes, krisNoTotal = aiYes_krisNo + aiNo_krisNo;
+  var pe = (aiYesTotal * krisYesTotal + aiNoTotal * krisNoTotal) / (n * n);
+  var kappa = pe === 1 ? 1 : (percentAgreement - pe) / (1 - pe);
+
+  log_('runWeeklyCalibration: n=' + n + ', percent agreement=' +
+    (percentAgreement * 100).toFixed(1) + '%, Cohen\'s kappa=' + kappa.toFixed(3));
+  log_('  Confusion matrix — AI yes/Kris yes: ' + aiYes_krisYes + ', AI yes/Kris no: ' + aiYes_krisNo +
+    ', AI no/Kris yes: ' + aiNo_krisYes + ', AI no/Kris no: ' + aiNo_krisNo);
+
+  if (percentAgreement < 0.80) {
+    sendOpsAlert_('[Compliance bot] Weekly calibration below the 80% go-live threshold',
+      'Percent agreement with Kris on Manual Review Recommended is ' +
+      (percentAgreement * 100).toFixed(1) + '% (n=' + n + '), below the SOP\'s 80% gate. ' +
+      'Cohen\'s kappa: ' + kappa.toFixed(3) + '. Feed the disagreements back into rubric-prompt ' +
+      'tweaks before treating scores as reliable — see Phase2_CallGradingSOP.md §7.');
+  }
+
+  return { n: n, percentAgreement: percentAgreement, kappa: kappa,
+    confusionMatrix: { aiYes_krisYes: aiYes_krisYes, aiYes_krisNo: aiYes_krisNo,
+      aiNo_krisYes: aiNo_krisYes, aiNo_krisNo: aiNo_krisNo } };
+}

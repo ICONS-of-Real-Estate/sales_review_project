@@ -652,7 +652,9 @@ var SALES_CALL_LOG_HEADERS = [
   'Severity',               // R  (1-5)
   'AI Feedback Summary',    // S
   'Reviewed By Kris',       // T
-  'Queue Age'               // U  (days)
+  'Queue Age',              // U  (days)
+  'Kris Manual Review Verdict' // V (dropdown: Yes/No, blank = not yet judged —
+                            //    Phase 2 weekly calibration input; see SOP §7)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
@@ -692,6 +694,11 @@ function setupSalesCallLog() {
   setDropdown_(sheet, 6, ['QC', 'Sales Call', 'Discovery']);
   setDropdown_(sheet, 8, ['Sold', 'Not Sold', 'Follow-up', 'No-show']);
   setDropdown_(sheet, 12, ['exact_key', 'fallback_heuristic', 'no_match']);
+  // Yes/No dropdown rather than a checkbox: a checkbox range forces every
+  // empty cell to render as unchecked (false), which would make "not yet
+  // judged" indistinguishable from "Kris disagreed" — calibration needs to
+  // tell those two apart, so blank has to stay genuinely blank.
+  setDropdown_(sheet, 22, ['Yes', 'No']);
 
   // Outcome Logged (G) as checkbox
   sheet.getRange('G2:G1000').insertCheckboxes();

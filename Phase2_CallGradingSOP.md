@@ -121,6 +121,8 @@ Currently manual (run from the Apps Script editor); not yet wired to a daily tri
 | Go live | ≥80% agreement with Kris on `manual_review_recommended` (this is a benchmark to hit on *this* data — the 80% figure from Zheng et al. 2023 is a general finding, not a guarantee here). |
 | Weekly calibration | Diff model verdicts vs. Kris's actual review outcomes every week; track agreement (percent agreement / Cohen's kappa); feed disagreements back into rubric-prompt tweaks, mirroring the existing `learning_loop.gs` pattern. |
 
+**Implemented as `runWeeklyCalibration()` in `Phase2_CallScoring.gs`** (17/08/2026) — `learning_loop.gs`, referenced above and in `brief.txt`, could not be located anywhere in this repo, so this is a fresh implementation of the same requirement rather than a port of an existing pattern. Real agreement/kappa needs Kris's own independent verdict in the same category as the AI's `manual_review_recommended`, not just an agree/disagree checkbox (which would only support percent-agreement, not the confusion matrix kappa requires) — added one new column, **`Kris Manual Review Verdict`** (Yes/No dropdown, blank = not yet judged), which she fills in per call she's reviewed. Additive to `SALES_CALL_LOG_HEADERS`, appended at the end so it doesn't shift any existing column and existing `appendRow` calls that don't set it just leave it correctly blank. Not yet wired to a trigger — needs a real week of judged rows first, and Kris/Tomás sign-off that a manual dropdown is the right capture mechanism before this runs unattended.
+
 ## 8. Known failure modes to design around (carried over from `brief.txt`)
 
 - kimi-k2.6 **must** run at temperature=1 — any other value fails every call silently while the run reports "complete."
