@@ -28,7 +28,7 @@ import os
 import sys
 import time
 
-import google.generativeai as genai
+from google import genai
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -109,17 +109,19 @@ def download_video(drive, file_id, dest_path):
                 print(f"    downloaded {int(status.progress() * 100)}%")
 
 
-def transcribe_with_gemini(local_path):
-    gemini_file = genai.upload_file(path=local_path)
+def transcribe_with_gemini(client, local_path):
+    gemini_file = client.files.upload(file=local_path)
     while gemini_file.state.name == "PROCESSING":
         time.sleep(5)
-        gemini_file = genai.get_file(gemini_file.name)
+        gemini_file = client.files.get(name=gemini_file.name)
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
 
-    model = genai.GenerativeModel(GEMINI_MODEL)
-    response = model.generate_content([gemini_file, TRANSCRIPT_PROMPT])
-    genai.delete_file(gemini_file.name)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[gemini_file, TRANSCRIPT_PROMPT],
+    )
+    client.files.delete(name=gemini_file.name)
     return response.text
 
 
@@ -149,7 +151,7 @@ def main():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         sys.exit("Set GEMINI_API_KEY before running.")
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     drive = get_drive_service()
 
@@ -166,7 +168,7 @@ def main():
             local_path = f"/tmp/{video['id']}.mp4"
             try:
                 download_video(drive, video["id"], local_path)
-                transcript = transcribe_with_gemini(local_path)
+                transcript = transcribe_with_gemini(client, local_path)
                 link = save_transcript_doc(drive, folder_id, title, transcript)
                 print(f"    done -> {link}")
             except Exception as e:

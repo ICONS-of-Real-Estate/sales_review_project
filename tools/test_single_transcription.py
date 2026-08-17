@@ -20,7 +20,7 @@ import os
 import sys
 import time
 
-import google.generativeai as genai
+from google import genai
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -56,11 +56,11 @@ def authenticate_drive():
     return build("drive", "v3", credentials=creds)
 
 
-def wait_until_active(gemini_file):
+def wait_until_active(client, gemini_file):
     while gemini_file.state.name == "PROCESSING":
         print("    still processing on Gemini's side, waiting...")
         time.sleep(5)
-        gemini_file = genai.get_file(gemini_file.name)
+        gemini_file = client.files.get(name=gemini_file.name)
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
     return gemini_file
@@ -70,7 +70,7 @@ def run_single_test():
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         sys.exit("Set GEMINI_API_KEY before running.")
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     drive_service = authenticate_drive()
 
@@ -101,13 +101,15 @@ def run_single_test():
                     print(f"    {int(status.progress() * 100)}%")
 
         print("Uploading to Gemini and waiting for it to finish processing...")
-        gemini_file = genai.upload_file(path=local_video_path)
-        gemini_file = wait_until_active(gemini_file)
+        gemini_file = client.files.upload(file=local_video_path)
+        gemini_file = wait_until_active(client, gemini_file)
 
         print("Transcribing...")
-        model = genai.GenerativeModel(model_name=GEMINI_MODEL)
-        response = model.generate_content([gemini_file, TRANSCRIPT_PROMPT])
-        genai.delete_file(gemini_file.name)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[gemini_file, TRANSCRIPT_PROMPT],
+        )
+        client.files.delete(name=gemini_file.name)
 
         transcript_name = f"{file_name} — Transcript"
         local_transcript_path = f"./temp_{file_id}.txt"
