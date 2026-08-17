@@ -44,7 +44,7 @@ SOURCE_FOLDERS = {
     "Qualification Calls": "15YMEMseEvUQakgDF00BtQg3QK6fiTsjX",
 }
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 
 TRANSCRIPT_PROMPT = """Transcribe this recorded sales call verbatim, word for word.
 Do not summarize, paraphrase, or clean up filler words — this is for coaching review,

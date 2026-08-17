@@ -32,7 +32,7 @@ CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
 
 FOLDER_ID = "1gFb7YnXbnGAowAJgnLE2KNp5iKOCfnYH"  # "Sales Calls"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 
 TRANSCRIPT_PROMPT = """Provide a strict, verbatim, word-for-word transcript of the
 audio in this video file. Do not summarize, do not edit, do not add section
