@@ -214,15 +214,20 @@ def main():
             print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
             local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
             try:
-                download_video(drive, video["id"], local_path)
+                if os.path.exists(local_path):
+                    print("    (reusing file downloaded on a previous, quota-stopped run)")
+                else:
+                    download_video(drive, video["id"], local_path)
                 transcript = transcribe_with_gemini(client, local_path)
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    done -> {link}")
+                os.remove(local_path)
             except QuotaExhaustedError:
-                raise  # stop the whole batch — no point downloading more files today
+                # Stop the whole batch, but keep the local file — next run picks up
+                # transcription directly instead of re-downloading it from scratch.
+                raise
             except Exception as e:
                 print(f"    FAILED: {e}")
-            finally:
                 if os.path.exists(local_path):
                     os.remove(local_path)
 
