@@ -57,6 +57,14 @@ var RIVERSIDE_CONFIG = {
   RECORDING_URL: 'https://api.riverside.fm/v3/recordings/', // + recordingId
   DOWNLOAD_URL: 'https://api.riverside.fm/v1/download/transcription/', // + fileId + ?type=txt
 
+  // downloadRiversideTranscript_ below sends the live Bearer key to whatever
+  // URL it fetches — every OTHER URL in this file is built from a hardcoded
+  // host, but a recording's download_url comes straight from the API's own
+  // response body. This prefix is the guard: download_url is only trusted if
+  // it's actually on this host, so a bad/unexpected API response can't trick
+  // this script into handing the credential to an arbitrary third party.
+  ALLOWED_HOST_PREFIX: 'https://api.riverside.fm/',
+
   // List endpoint rate limit is ~1/sec per brief §E; this is a pause between
   // paginated list calls, not a global cap (each recording's own transcript
   // download is a distinct file_id / distinct "unique request", so the
@@ -174,17 +182,31 @@ function findTxtTranscriptFile_(detail) {
 }
 
 /**
- * Downloads one transcript file's text. Uses the file object's own
- * download_url directly (brief §E lists this as a field on
- * transcription.files[] entries) rather than re-deriving
- * /api/v1/download/transcription/{file_id} ourselves — fewer assumptions
- * about how file_id maps into that path. Falls back to constructing the
- * documented path if download_url is missing, in case a real response omits it.
+ * Downloads one transcript file's text. Prefers the file object's own
+ * download_url (brief §E lists this as a field on transcription.files[]
+ * entries) over re-deriving /api/v1/download/transcription/{file_id}
+ * ourselves — fewer assumptions about how file_id maps into that path — but
+ * ONLY if it's actually on RIVERSIDE_CONFIG.ALLOWED_HOST_PREFIX. Unlike every
+ * other URL this file builds (always from a hardcoded host),  download_url
+ * comes straight from the third-party API's response body; fetching it
+ * blindly would mean a bad or unexpected API response could redirect this
+ * script's authenticated request — Bearer key included — to an arbitrary
+ * host. Falls back to the safe constructed path whenever download_url is
+ * missing OR fails that check, logging the mismatch rather than silently
+ * either trusting or dropping it.
  */
 function downloadRiversideTranscript_(file) {
   var key = getRiversideKey_();
-  var url = file.download_url ||
-    (RIVERSIDE_CONFIG.DOWNLOAD_URL + encodeURIComponent(file.id || file.file_id) + '?type=txt');
+  var fallbackUrl = RIVERSIDE_CONFIG.DOWNLOAD_URL + encodeURIComponent(file.id || file.file_id) + '?type=txt';
+  var url = fallbackUrl;
+  if (file.download_url) {
+    if (file.download_url.indexOf(RIVERSIDE_CONFIG.ALLOWED_HOST_PREFIX) === 0) {
+      url = file.download_url;
+    } else {
+      log_('  download_url "' + file.download_url + '" is not on the expected host (' +
+        RIVERSIDE_CONFIG.ALLOWED_HOST_PREFIX + ') — ignoring it and using the constructed path instead.');
+    }
+  }
   var resp = UrlFetchApp.fetch(url, {
     method: 'get',
     headers: { Authorization: 'Bearer ' + key },
