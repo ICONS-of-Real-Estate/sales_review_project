@@ -237,7 +237,7 @@ function runDailyComplianceCheck() {
       // One rep's failure must not kill the others.
       log_('ERROR checking rep ' + repCfg.name + ': ' + e);
       sendOpsAlert_('Compliance check error for ' + repCfg.name,
-        'Rep ' + repCfg.name + ' could not be checked for ' + priorDay + '.\n\n' + e);
+        'Rep ' + repCfg.name + ' could not be checked for ' + targetDay + '.\n\n' + e);
     }
   });
 }

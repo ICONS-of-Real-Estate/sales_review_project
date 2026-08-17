@@ -435,7 +435,7 @@ function scoreNewlyLoggedCalls_() {
 
     log_('scoreNewlyLoggedCalls_ done — scored ' + scored + ', skipped ' + skipped + '.');
     if (!PHASE2_CONFIG.SHADOW_MODE && scored > 0) {
-      log_('SHADOW_MODE is false — go-live queue email is a separate function (not yet built here); see brief.txt §5.');
+      log_('SHADOW_MODE is false — run buildReviewQueue() to pick and email today\'s 3-call sitting to Kris (see brief.txt §D).');
     }
   } finally {
     lock.releaseLock();
