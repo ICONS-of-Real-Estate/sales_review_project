@@ -189,25 +189,30 @@ def save_transcript_doc(drive, folder_id, video_id, title, transcript_text):
     tmp_txt = os.path.join(tempfile.gettempdir(), f"{video_id}.txt")
     with open(tmp_txt, "w", encoding="utf-8") as f:
         f.write(transcript_text)
-    media = MediaFileUpload(tmp_txt, mimetype="text/plain")
-    doc = (
-        drive.files()
-        .create(
-            body={
-                "name": f"{title} — Transcript",
-                "parents": [folder_id],
-                "mimeType": "application/vnd.google-apps.document",
-            },
-            media_body=media,
-            fields="id, webViewLink",
-        )
-        .execute()
-    )
     try:
-        os.remove(tmp_txt)
-    except OSError:
-        pass  # Windows can still hold the handle briefly; harmless to leave a tiny .txt in Temp.
-    return doc["webViewLink"]
+        media = MediaFileUpload(tmp_txt, mimetype="text/plain")
+        doc = (
+            drive.files()
+            .create(
+                body={
+                    "name": f"{title} — Transcript",
+                    "parents": [folder_id],
+                    "mimeType": "application/vnd.google-apps.document",
+                },
+                media_body=media,
+                fields="id, webViewLink",
+            )
+            .execute()
+        )
+        return doc["webViewLink"]
+    finally:
+        # In a try/finally so a failed .execute() (network error, quota, bad
+        # folder ID, auth expiry -- all realistic on large uploads) still
+        # cleans up, instead of leaking tmp_txt permanently on every failure.
+        try:
+            os.remove(tmp_txt)
+        except OSError:
+            pass  # Windows can still hold the handle briefly; harmless to leave a tiny .txt in Temp.
 
 
 def main():

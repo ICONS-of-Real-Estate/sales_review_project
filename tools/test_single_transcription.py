@@ -115,6 +115,10 @@ def run_single_test():
 
     file_id, file_name = files[0]["id"], files[0]["name"].strip()
     local_video_path = f"./temp_{file_id}.mp4"
+    # Defined before the try block (not where it's first used, further down)
+    # so the finally block below can safely reference it even if an earlier
+    # step (download, Gemini upload/transcription) fails first.
+    local_transcript_path = f"./temp_{file_id}.txt"
     print(f"Targeting: {file_name} (ID: {file_id})")
 
     try:
@@ -137,7 +141,6 @@ def run_single_test():
         client.files.delete(name=gemini_file.name)
 
         transcript_name = f"{file_name} — Transcript"
-        local_transcript_path = f"./temp_{file_id}.txt"
         with open(local_transcript_path, "w", encoding="utf-8") as f:
             f.write(response.text)
 
@@ -152,11 +155,12 @@ def run_single_test():
             .execute()
         )
         print(f"SUCCESS: {uploaded['webViewLink']}")
-        os.remove(local_transcript_path)
 
     finally:
         if os.path.exists(local_video_path):
             os.remove(local_video_path)
+        if os.path.exists(local_transcript_path):
+            os.remove(local_transcript_path)
 
 
 if __name__ == "__main__":
