@@ -29,6 +29,7 @@ import sys
 import time
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -109,6 +110,19 @@ def download_video(drive, file_id, dest_path):
                 print(f"    downloaded {int(status.progress() * 100)}%")
 
 
+def generate_with_retry(client, model, contents, max_retries=5):
+    delay = 15
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except genai_errors.ServerError as e:
+            if attempt == max_retries - 1:
+                raise
+            print(f"    Gemini server error ({e}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay *= 2
+
+
 def transcribe_with_gemini(client, local_path):
     gemini_file = client.files.upload(file=local_path)
     while gemini_file.state.name == "PROCESSING":
@@ -117,10 +131,7 @@ def transcribe_with_gemini(client, local_path):
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[gemini_file, TRANSCRIPT_PROMPT],
-    )
+    response = generate_with_retry(client, GEMINI_MODEL, [gemini_file, TRANSCRIPT_PROMPT])
     client.files.delete(name=gemini_file.name)
     return response.text
 

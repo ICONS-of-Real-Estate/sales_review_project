@@ -21,6 +21,7 @@ import sys
 import time
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -54,6 +55,19 @@ def authenticate_drive():
         with open(TOKEN_FILE, "w") as f:
             f.write(creds.to_json())
     return build("drive", "v3", credentials=creds)
+
+
+def generate_with_retry(client, model, contents, max_retries=5):
+    delay = 15
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except genai_errors.ServerError as e:
+            if attempt == max_retries - 1:
+                raise
+            print(f"    Gemini server error ({e}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay *= 2
 
 
 def wait_until_active(client, gemini_file):
@@ -105,10 +119,7 @@ def run_single_test():
         gemini_file = wait_until_active(client, gemini_file)
 
         print("Transcribing...")
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[gemini_file, TRANSCRIPT_PROMPT],
-        )
+        response = generate_with_retry(client, GEMINI_MODEL, [gemini_file, TRANSCRIPT_PROMPT])
         client.files.delete(name=gemini_file.name)
 
         transcript_name = f"{file_name} — Transcript"
