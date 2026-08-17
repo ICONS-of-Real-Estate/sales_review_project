@@ -58,20 +58,23 @@ def authenticate_drive():
     return build("drive", "v3", credentials=creds)
 
 
-def generate_with_retry(client, model, contents, max_retries=5):
+def generate_with_retry(client, model, contents, max_retries=6):
     delay = 15
+    max_delay = 120
     config = genai_types.GenerateContentConfig(
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(model=model, contents=contents, config=config)
-        except genai_errors.ServerError as e:
+        except (genai_errors.ServerError, ConnectionError, TimeoutError, OSError) as e:
+            # OSError also catches transient SSL/connection drops (e.g. "EOF occurred
+            # in violation of protocol"), which aren't ServerError but are just as retryable.
             if attempt == max_retries - 1:
                 raise
             print(f"    Gemini server error ({e}), retrying in {delay}s...")
             time.sleep(delay)
-            delay *= 2
+            delay = min(delay * 2, max_delay)
             continue
 
         if response.text:
