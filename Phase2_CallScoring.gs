@@ -1008,6 +1008,13 @@ function installSeanScoringAutomation() {
  * to a daily trigger once Kris/Tomás confirm this matches how the 3-call
  * sitting should actually be picked.
  */
+// brief.txt §D: "a hard cap (e.g., queue older than N days) triggers a
+// digest to Kris" — distinct from (and stricter than) AGE_ESCALATION_THRESHOLD_DAYS
+// below, which only drives a log line for today's run. This is the threshold
+// that actually sends something (sendReviewQueueDigest_ below needs it too,
+// hence file scope rather than a local inside buildReviewQueue()).
+var QUEUE_AGE_HARD_CAP_DAYS = 7;
+
 function buildReviewQueue() {
   RUN_TAG = 'buildReviewQueue';
   var AGE_ESCALATION_THRESHOLD_DAYS = 3; // SOP's own "(e.g. 3 days)" example value.
@@ -1148,6 +1155,11 @@ function buildReviewQueue() {
       ' (>= ' + AGE_ESCALATION_THRESHOLD_DAYS + ' days) and was not picked today.');
   });
 
+  var hardCapBreaches = reps.filter(function (r) {
+    return r !== chosen && r.oldestAge >= QUEUE_AGE_HARD_CAP_DAYS;
+  });
+  sendReviewQueueDigest_(chosen, escalations, hardCapBreaches);
+
   return {
     rep: chosen.rep,
     calls: chosen.top3.map(function (c) {
@@ -1155,6 +1167,51 @@ function buildReviewQueue() {
     }),
     escalationWatch: escalations.map(function (r) { return r.rep; })
   };
+}
+
+/**
+ * The actual "3-per-day clustered review email" from brief.txt §D, plus the
+ * hard-cap staleness digest it also names. Neither existed before — up to
+ * now buildReviewQueue() computed and logged the pick but never told Kris
+ * anything outside the Apps Script execution log, which she has no reason
+ * to check daily.
+ *
+ * Gated by PHASE2_CONFIG.SHADOW_MODE, same rule as every other Kris-facing
+ * send in this file (SOP §7: "score and log, but never email Kris" during
+ * shadow mode). Flipping SHADOW_MODE to false after the 80%-agreement gate
+ * clears is what "turns on" this email — no separate feature flag needed.
+ */
+function sendReviewQueueDigest_(chosen, escalations, hardCapBreaches) {
+  if (PHASE2_CONFIG.SHADOW_MODE) {
+    log_('  (SHADOW_MODE — review queue digest logged only, not emailed. Flip ' +
+      'PHASE2_CONFIG.SHADOW_MODE to false once weekly calibration clears the 80% gate.)');
+    return;
+  }
+
+  var lines = ['Today\'s review sitting: ' + chosen.rep + ' (' + chosen.top3.length + ' call(s))', ''];
+  chosen.top3.forEach(function (c, i) {
+    lines.push((i + 1) + '. ' + c.prospectName + ' — severity ' + c.severity +
+      ', queue age ' + c.queueAge + (c.bothFailuresPresent ? ' [both failure modes]' : '') +
+      ' (row ' + c.rowIndex + ')');
+  });
+  if (escalations.length) {
+    lines.push('', 'Escalation watch (backlog building up behind ' + chosen.rep + ' today):');
+    escalations.forEach(function (r) {
+      lines.push('- ' + r.rep + ': oldest queued call is ' + r.oldestAge + ' day(s) old');
+    });
+  }
+  guardedSend_(CONFIG.KRIS_EMAIL, '[Call Review] Today\'s 3-call sitting: ' + chosen.rep,
+    lines.join('\n'), {}, 1);
+
+  hardCapBreaches.forEach(function (r) {
+    guardedSend_(CONFIG.KRIS_EMAIL,
+      '[Call Review] ' + r.rep + '\'s queue has gone stale (' + r.oldestAge + ' days)',
+      r.rep + ' has a flagged, unreviewed call that has waited ' + r.oldestAge + ' day(s) — past the ' +
+      QUEUE_AGE_HARD_CAP_DAYS + '-day hard cap named in brief.txt §D. It lost out on today\'s ' +
+      '3-call sitting because ' + chosen.rep + '\'s cluster scored higher; consider reviewing it directly ' +
+      'rather than waiting for it to win a future sitting. See Phase2_CallGradingSOP.md §6.',
+      {}, 1);
+  });
 }
 
 // ---------------------------------------------------------------------------

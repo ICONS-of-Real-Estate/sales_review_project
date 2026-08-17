@@ -113,6 +113,8 @@ Kris reviews 3 calls/day, clustered by rep (concentrated feedback beats scattere
 
 Currently manual (run from the Apps Script editor); not yet wired to a daily trigger pending that confirmation.
 
+**Digest email — implemented as `sendReviewQueueDigest_()`** (17/08/2026), closing a gap `buildReviewQueue()` itself left open: it computed and logged the daily pick but never actually told Kris anything outside the Apps Script execution log. This is `brief.txt` §D's "3-per-day clustered review email" plus the "hard cap ... triggers a digest to Kris" it also names (implemented as a 7-day `QUEUE_AGE_HARD_CAP_DAYS`, stricter than the 3-day escalation-watch log line above). Gated by `PHASE2_CONFIG.SHADOW_MODE` — during shadow mode it logs instead of sending, same rule as every other Kris-facing send in this file; flipping `SHADOW_MODE` to `false` after the 80%-agreement gate (Section 7) clears is what turns this email on, matching `brief.txt`'s own Phase 3 rollout recommendation ("turn on the 3-per-day clustered review email").
+
 ## 7. Rollout gates (do not skip)
 
 | Phase | Gate to advance |
