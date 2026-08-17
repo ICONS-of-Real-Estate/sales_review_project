@@ -52,6 +52,8 @@ Extra scored fields beyond the shared schema: `discovery_adequate`, `understood_
 
 Transcript source for Sean's backfill: `tools/transcribe_sean_calls.py` (Gemini-based, since Sean records on Zoom, not Riverside) writes each transcript as a `"<video title> — Transcript"` Doc directly next to its source video in `PHASE2_CONFIG.SEAN_FOLDERS` — there's no separate transcripts-only folder like Bens' setup, and no Calendar-Event-ID-in-title convention, so every row is forced `Match Method = fallback_heuristic` and `Manual Review Recommended = TRUE`, same policy as the Bens legacy backfill.
 
+A second, cheaper transcription option exists: `tools/transcribe_sean_calls_qwen.py`, using Alibaba's Qwen3-ASR-Flash (~$0.002/min vs. Gemini's much higher effective per-file cost) instead of Gemini. It reuses all of `transcribe_sean_calls.py`'s Drive plumbing and writes to the same `"<video title> — Transcript"` naming, so the two are interchangeable from the scoring side — but the underlying `qwen3-asr-toolkit` doesn't do speaker diarization (no `Rep:`/`Prospect:` labels), unlike Gemini's video-understanding approach. Manually reviewing 12 real Gemini transcripts (17/08/2026) showed speaker roles are reliably inferable from context alone even without labels, which is the working assumption behind using Qwen — but confirm that holds on a real Qwen transcript (`tools/test_single_transcription_qwen.py`) before running it at scale. The Gemini version is kept as-is and works standalone; treat it as the fallback if Qwen's output quality or the missing labels turn out to be a problem.
+
 ## 4. Scoring scale — anchored, not impressionistic
 
 `call_quality_score` is 1–5. Each level must be anchored to observable transcript evidence, not adjectives like "good/adequate":
