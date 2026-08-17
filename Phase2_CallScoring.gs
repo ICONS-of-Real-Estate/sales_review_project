@@ -824,3 +824,61 @@ function scoreSeanTranscripts() {
   log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
     'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
 }
+
+// ---------------------------------------------------------------------------
+// Trigger installers — both scoreNewlyLoggedCalls_() and scoreSeanTranscripts()
+// are idempotent (each has its own skip-if-already-scored check), so it's safe
+// to run either on a recurring schedule instead of by hand. Same idempotent-
+// install pattern as Phase1_ComplianceCheck.gs's installDailyTriggerCore_():
+// delete any existing copy of the trigger first, then create a fresh one, so
+// re-running the installer never doubles up firings.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fills the gap this file's own header comment has documented since it was
+ * written: scoreNewlyLoggedCalls_() was designed to "run on its own trigger
+ * (installPhase2Trigger())," but that function was never actually built.
+ * ONE-TIME setup — select installPhase2Trigger in the Apps Script editor's
+ * function dropdown and click Run. Idempotent: safe to re-run.
+ */
+function installPhase2Trigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'scoreNewlyLoggedCalls_') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('scoreNewlyLoggedCalls_')
+    .timeBased()
+    .everyHours(4)
+    .create();
+  log_('Phase 2 ongoing scoring installed: scoreNewlyLoggedCalls_() now runs every 4 hours.');
+}
+
+/**
+ * Same idea for the Sean backfill: scoreSeanTranscripts() was written as a
+ * one-off, manually-run backfill, but it's fully idempotent (skips any
+ * transcript already scored via its existing-keys lookup), so it's safe to
+ * schedule too — this lets newly-transcribed calls from
+ * tools/transcribe_sean_calls.py / transcribe_sean_calls_qwen.py get scored
+ * automatically as they land, instead of someone re-running it by hand.
+ *
+ * ONE-TIME setup — select installSeanScoringAutomation in the Apps Script
+ * editor's function dropdown and click Run. Idempotent: safe to re-run.
+ *
+ * Once Sean's ~220-call backlog is fully transcribed and scored, consider
+ * deleting this trigger (Apps Script editor → Triggers, left sidebar) rather
+ * than leaving it running every 4 hours indefinitely for no new data.
+ */
+function installSeanScoringAutomation() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'scoreSeanTranscripts') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('scoreSeanTranscripts')
+    .timeBased()
+    .everyHours(4)
+    .create();
+  log_('Sean auto-scoring installed: scoreSeanTranscripts() now runs every 4 hours. ' +
+    'Remember to disable this trigger once the backlog is fully transcribed and scored.');
+}
