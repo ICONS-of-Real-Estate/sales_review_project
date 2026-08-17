@@ -32,6 +32,7 @@ Kris's own framing of what goes wrong on a call reduces to two failure modes. Ev
 ### Failure mode 2 — Objections not uncovered or not overcome
 - **Decision rule:** did the rep proactively surface objections (value: "too expensive" / capability: "not sure it does X") rather than let them go unspoken, and when raised, were they addressed with something concrete (case study, reference, quantified value) rather than brushed past?
 - Grounding: SPIN's "objection prevention beats objection handling"; MEDDIC's Identify Pain / Metrics / Champion as the underlying gaps that produce a missed objection.
+- See `Objection_Handling_Playbook.md` for the actual objection types this has surfaced so far, real examples, and suggested handling technique per type — maintained as a living list and updated whenever a new call batch surfaces an objection not already in it.
 
 **Two scored booleans result:** `asked_for_close`, `objections_uncovered` + `objections_overcome`. `primary_failure_mode` derives from these (`none / no_close_ask / objections_missed / both`) — it's not separately judged.
 
@@ -102,7 +103,7 @@ Kris reviews 3 calls/day, clustered by rep (concentrated feedback beats scattere
 
 ## 9. What this SOP deliberately does not cover
 
-- Few-shot anchor examples (2–3 labeled transcript excerpts: a clear close-ask, a clear miss, a borderline case) — these need to come from real graded calls, not be invented. Populate once the first batch of real transcripts is in hand.
+- Few-shot anchor examples (2–3 labeled transcript excerpts: a clear close-ask, a clear miss, a borderline case) — these need to come from real graded calls, not be invented. The first batch of 43 real transcripts has now been scored (17/08/2026) and its objection patterns are cataloged in `Objection_Handling_Playbook.md`; that's the source to pull `FEW_SHOT_ANCHORS` from in `Phase2_CallScoring.gs` once Kris/Tomás confirm which examples are representative.
 - The actual Apps Script implementation (`brief.txt`'s explicit scope note: architecture/rubric only, no implementation code here either).
 - Podcast-recording grading (Section 4B, separate initiative).
 
