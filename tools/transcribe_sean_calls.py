@@ -26,6 +26,7 @@ token.json so future runs don't prompt again.
 import io
 import os
 import sys
+import tempfile
 import time
 
 from google import genai
@@ -147,9 +148,9 @@ def transcribe_with_gemini(client, local_path):
     return response.text
 
 
-def save_transcript_doc(drive, folder_id, title, transcript_text):
-    tmp_txt = f"/tmp/{title}.txt"
-    with open(tmp_txt, "w") as f:
+def save_transcript_doc(drive, folder_id, video_id, title, transcript_text):
+    tmp_txt = os.path.join(tempfile.gettempdir(), f"{video_id}.txt")
+    with open(tmp_txt, "w", encoding="utf-8") as f:
         f.write(transcript_text)
     media = MediaFileUpload(tmp_txt, mimetype="text/plain")
     doc = (
@@ -187,11 +188,11 @@ def main():
                 continue
 
             print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
-            local_path = f"/tmp/{video['id']}.mp4"
+            local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
             try:
                 download_video(drive, video["id"], local_path)
                 transcript = transcribe_with_gemini(client, local_path)
-                link = save_transcript_doc(drive, folder_id, title, transcript)
+                link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    done -> {link}")
             except Exception as e:
                 print(f"    FAILED: {e}")
