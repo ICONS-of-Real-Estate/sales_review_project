@@ -153,14 +153,30 @@ def _reraise_as_quota_error_if_applicable(e):
     raise e
 
 
+def upload_with_retry(client, local_path, max_retries=4):
+    delay = 15
+    max_delay = 60
+    for attempt in range(max_retries):
+        try:
+            gemini_file = client.files.upload(file=local_path)
+            while gemini_file.state.name == "PROCESSING":
+                time.sleep(5)
+                gemini_file = client.files.get(name=gemini_file.name)
+            return gemini_file
+        except genai_errors.ClientError as e:
+            _reraise_as_quota_error_if_applicable(e)
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # Large files (300MB+) occasionally drop mid-upload with an SSL EOF;
+            # this is transient, unlike quota errors, so it's worth retrying.
+            if attempt == max_retries - 1:
+                raise
+            print(f"    Upload connection error ({e}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, max_delay)
+
+
 def transcribe_with_gemini(client, local_path):
-    try:
-        gemini_file = client.files.upload(file=local_path)
-        while gemini_file.state.name == "PROCESSING":
-            time.sleep(5)
-            gemini_file = client.files.get(name=gemini_file.name)
-    except genai_errors.ClientError as e:
-        _reraise_as_quota_error_if_applicable(e)
+    gemini_file = upload_with_retry(client, local_path)
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
 
