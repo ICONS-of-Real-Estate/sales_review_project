@@ -415,10 +415,15 @@ function scoreNewlyLoggedCalls_() {
       try {
         var fileId = extractDriveFileId_(transcriptUrl);
         var text = getTranscriptText_(DriveApp.getFileById(fileId));
+        var rawCallType = row[col['Call Type'] - 1];
+        if (!rawCallType) {
+          log_('  Row ' + rowIndex + ' (' + prospectName + '): blank Call Type — defaulting to QC. ' +
+            'Confirm/correct in the sheet; this is a guess, not a read value.');
+        }
         var ctx = {
           rep: row[col['Rep'] - 1],
           prospectName: prospectName,
-          callType: row[col['Call Type'] - 1] || 'QC',
+          callType: rawCallType || 'QC',
           source: row[col['Source'] - 1],
           callDate: row[col['Call Date'] - 1],
           transcriptText: text
@@ -1015,7 +1020,32 @@ function installSeanScoringAutomation() {
 // hence file scope rather than a local inside buildReviewQueue()).
 var QUEUE_AGE_HARD_CAP_DAYS = 7;
 
+/**
+ * Thin locked wrapper around buildReviewQueueImpl_(). The function's own
+ * docstring invites repeat manual runs ("run manually for now"), but nothing
+ * previously stopped two overlapping runs from double-incrementing Queue Age
+ * on every unpicked candidate (compounding, not idempotent — distorts the
+ * anti-starvation math in SOP §6.5) and, once SHADOW_MODE is false,
+ * double-sending Kris's digest email. Shares the same script lock as
+ * scoreNewlyLoggedCalls_/scoreSeanTranscripts/syncRiversideTranscripts_ —
+ * a useful side effect is that queue-building is also correctly blocked
+ * while a batch scoring run is mid-write to the same sheet.
+ */
 function buildReviewQueue() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    RUN_TAG = 'buildReviewQueue';
+    log_('buildReviewQueue: another scoring/queue run holds the lock, skipping this run.');
+    return null;
+  }
+  try {
+    return buildReviewQueueImpl_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function buildReviewQueueImpl_() {
   RUN_TAG = 'buildReviewQueue';
   var AGE_ESCALATION_THRESHOLD_DAYS = 3; // SOP's own "(e.g. 3 days)" example value.
 

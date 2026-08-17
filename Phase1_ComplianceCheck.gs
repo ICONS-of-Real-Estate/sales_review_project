@@ -212,34 +212,52 @@ function log_(msg) {
  */
 function runDailyComplianceCheck() {
   RUN_TAG = 'runDailyComplianceCheck';
-  var tz = CONFIG.BUSINESS_TIMEZONE;
-  var now = new Date();
-  var targetDay = Utilities.formatDate(now, tz, 'dd/MM/yyyy');
-  log_('=== Close-of-business compliance check for ' + targetDay +
-    ' (business tz ' + tz + ', script tz ' + Session.getScriptTimeZone() + ') ===');
 
-  var audit = auditConfig_();
-  if (!audit.ok) {
-    log_('CONFIG AUDIT FAILED: ' + audit.problems.join(' | '));
-    sendOpsAlert_('[Compliance bot] Config invalid — compliance emails blocked',
-      'The daily compliance check ran but ALL sends were blocked because the email routing config failed validation.\n\nProblems:\n  - ' +
-      audit.problems.join('\n  - ') +
-      '\n\nFix the CONFIG block in Phase1_ComplianceCheck.gs. The check itself ran normally; only emails were suppressed.');
+  // Every Phase 2 sheet-writing entry point (scoreNewlyLoggedCalls_,
+  // scoreSeanTranscripts, syncRiversideTranscripts_) takes this same script
+  // lock specifically so overlapping firings can't double-act — this one
+  // had no such guard, so the daily trigger overlapping a manual editor run
+  // (or two trigger copies briefly coexisting during a self-heal window)
+  // would independently recompute the same "missing" events twice and send
+  // every rep + Kris + Tomás two copies of the same non-compliance email.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runDailyComplianceCheck: another run holds the lock, skipping this firing.');
+    return;
   }
 
-  var dayStart = businessDayStart_(now, tz);
-  var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  try {
+    var tz = CONFIG.BUSINESS_TIMEZONE;
+    var now = new Date();
+    var targetDay = Utilities.formatDate(now, tz, 'dd/MM/yyyy');
+    log_('=== Close-of-business compliance check for ' + targetDay +
+      ' (business tz ' + tz + ', script tz ' + Session.getScriptTimeZone() + ') ===');
 
-  CONFIG.REPS.forEach(function (repCfg) {
-    try {
-      checkRep_(repCfg, dayStart, dayEnd, targetDay, tz);
-    } catch (e) {
-      // One rep's failure must not kill the others.
-      log_('ERROR checking rep ' + repCfg.name + ': ' + e);
-      sendOpsAlert_('Compliance check error for ' + repCfg.name,
-        'Rep ' + repCfg.name + ' could not be checked for ' + targetDay + '.\n\n' + e);
+    var audit = auditConfig_();
+    if (!audit.ok) {
+      log_('CONFIG AUDIT FAILED: ' + audit.problems.join(' | '));
+      sendOpsAlert_('[Compliance bot] Config invalid — compliance emails blocked',
+        'The daily compliance check ran but ALL sends were blocked because the email routing config failed validation.\n\nProblems:\n  - ' +
+        audit.problems.join('\n  - ') +
+        '\n\nFix the CONFIG block in Phase1_ComplianceCheck.gs. The check itself ran normally; only emails were suppressed.');
     }
-  });
+
+    var dayStart = businessDayStart_(now, tz);
+    var dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    CONFIG.REPS.forEach(function (repCfg) {
+      try {
+        checkRep_(repCfg, dayStart, dayEnd, targetDay, tz);
+      } catch (e) {
+        // One rep's failure must not kill the others.
+        log_('ERROR checking rep ' + repCfg.name + ': ' + e);
+        sendOpsAlert_('Compliance check error for ' + repCfg.name,
+          'Rep ' + repCfg.name + ' could not be checked for ' + targetDay + '.\n\n' + e);
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,9 +403,26 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
       if (formatDateCell_(row[col.callDate], tz) !== priorDay) continue; // wrong day
     }
 
-    var repName = col.rep !== -1 && row[col.rep]
-      ? String(row[col.rep]).trim()
-      : repCfg.defaultRepName;
+    var repName;
+    if (col.rep === -1) {
+      // No Rep column at all — legacy per-rep sheet, safe to default: the
+      // whole sheet belongs to this rep by construction.
+      repName = repCfg.defaultRepName;
+    } else if (row[col.rep]) {
+      repName = String(row[col.rep]).trim();
+    } else {
+      // The Rep column EXISTS (this is the shared "Sales Call Log" tab all
+      // three reps now point at) but this row's cell is blank. Falling back
+      // to repCfg.defaultRepName here — as this used to do — silently
+      // attributes an unowned row to whichever rep's pass happens to be
+      // running: the SAME row would resolve to Bens on Bens' check, Joana on
+      // Joana's, and Sean on Sean's. Skip it instead and say so loudly,
+      // matching this file's "never silently guess" rule elsewhere (e.g.
+      // LEGACY_DEFAULT_CALL_TYPE) — a human needs to set Rep, not have this
+      // script guess it.
+      log_('  Row ' + (r + 1) + ' in ' + sheet.getName() + ' has a blank Rep cell — skipping until it is set (never guessed).');
+      continue;
+    }
     if (repName.toLowerCase() !== repCfg.name.toLowerCase()) continue; // shared tab: only this rep's rows
 
     rows.push({
