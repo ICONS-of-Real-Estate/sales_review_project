@@ -357,3 +357,26 @@ function syncRiversideTranscripts_() {
     lock.releaseLock();
   }
 }
+
+/**
+ * ONE-TIME setup, run manually — ONLY after previewRiversideSync() has been
+ * run against a real API key and confirmed the contract holds (list response
+ * shape, recording titles actually carrying the Calendar Event ID, a real
+ * txt transcription file appearing on a real recording detail response).
+ * Uses the same idempotent reinstallHourlyTrigger_ helper as the Phase 2
+ * scoring triggers (Phase2_CallScoring.gs) — safe to re-run.
+ *
+ * Deliberately NOT added to SELF_HEAL_TRIGGER_REGISTRY_ (Phase1_ComplianceCheck.gs):
+ * that registry's weekly audit recreates any trigger it doesn't find, which
+ * is correct for triggers that are SUPPOSED to always exist — but this one
+ * hasn't been confirmed to work at all yet. Adding it there before a human
+ * has run this installer once would make the weekly self-heal auto-turn-on
+ * an unverified live sync against a real Riverside API key, silently. Add it
+ * to the registry only after this has been run manually and confirmed once.
+ */
+function installRiversideSyncTrigger() {
+  RUN_TAG = 'installRiversideSyncTrigger';
+  reinstallHourlyTrigger_('syncRiversideTranscripts_', 4);
+  log_('Riverside sync installed: syncRiversideTranscripts_() now runs every 4 hours. ' +
+    'Confirm previewRiversideSync() looked correct against real data before relying on this.');
+}
