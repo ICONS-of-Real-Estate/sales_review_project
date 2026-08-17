@@ -81,8 +81,14 @@ var PHASE2_CONFIG = {
   // Event-ID-in-title convention (Phase 0). Filled in as reps set these up —
   // see the "create a folder" email sent 17/08/2026.
   LEGACY_FOLDERS: {
-    Bens: '1vA5F39fGZ3kUrXwMNV9TTQf3Iho_ipdg'
-    // Joana: '<folder id once she replies>',
+    Bens: '1vA5F39fGZ3kUrXwMNV9TTQf3Iho_ipdg',
+    // Joana doesn't have existing transcripts yet (raw Zoom recordings, same
+    // situation as Sean) — tools/transcribe_joana_calls.py is ready to run
+    // once her Drive folder ID(s) are known; fill in JOANA_FOLDERS in that
+    // script AND this ID once the transcripts it produces land somewhere.
+    // scoreJoanaLegacyTranscripts() below already no-ops safely while this
+    // stays blank.
+    Joana: ''
   },
 
   // Sean's calls: raw Zoom recordings backfilled with Gemini transcripts by
@@ -421,6 +427,17 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
 /** Zero-arg convenience wrapper so this can be run directly from the editor. */
 function scoreBensLegacyTranscripts() {
   scoreLegacyTranscriptFolder('Bens', PHASE2_CONFIG.LEGACY_FOLDERS.Bens);
+}
+
+/**
+ * Same wrapper for Joana, against the shared rubric (she is not on the
+ * stricter Sean variant — same funnel/objection shape as Bens). Safely a
+ * no-op (scoreLegacyTranscriptFolder logs and returns) until
+ * PHASE2_CONFIG.LEGACY_FOLDERS.Joana is filled in with a real folder ID once
+ * tools/transcribe_joana_calls.py has somewhere to write transcripts to.
+ */
+function scoreJoanaLegacyTranscripts() {
+  scoreLegacyTranscriptFolder('Joana', PHASE2_CONFIG.LEGACY_FOLDERS.Joana);
 }
 
 /**
