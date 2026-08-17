@@ -30,6 +30,7 @@ import time
 
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -112,15 +113,25 @@ def download_video(drive, file_id, dest_path):
 
 def generate_with_retry(client, model, contents, max_retries=5):
     delay = 15
+    config = genai_types.GenerateContentConfig(
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+    )
     for attempt in range(max_retries):
         try:
-            return client.models.generate_content(model=model, contents=contents)
+            response = client.models.generate_content(model=model, contents=contents, config=config)
         except genai_errors.ServerError as e:
             if attempt == max_retries - 1:
                 raise
             print(f"    Gemini server error ({e}), retrying in {delay}s...")
             time.sleep(delay)
             delay *= 2
+            continue
+
+        if response.text:
+            return response
+        candidate = response.candidates[0] if response.candidates else None
+        reason = candidate.finish_reason if candidate else response.prompt_feedback
+        raise RuntimeError(f"Gemini returned no transcript text (reason: {reason})")
 
 
 def transcribe_with_gemini(client, local_path):
