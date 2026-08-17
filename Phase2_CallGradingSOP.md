@@ -10,6 +10,8 @@ A call is only eligible for grading once it has:
 1. A logged **Outcome Disposition** in the tracker (Sold / Not Sold / Follow-up / No-show) — this is what Phase 1 compliance-checks for.
 2. A matched Riverside transcript, keyed by **Calendar Event ID** (exact match) or flagged `fallback_heuristic` / `no_match` for manual confirmation. Calls with `no_match` do not get auto-scored — they route straight to manual review.
 
+**Implemented as `Phase0_RiversideSync.gs`** (17/08/2026) — `brief.txt` §E fully specifies this (list recordings, extract the Calendar Event ID from the title, exact-key match against the sheet, download + save the transcript) but it had never been built; `scoreNewlyLoggedCalls_()` in `Phase2_CallScoring.gs` has always expected `Transcript URL` to already be populated, which until now only ever happened by someone pasting a Drive link in by hand. **Not yet live-tested against a real Riverside API key** — run `previewRiversideSync()` (read-only, no downloads or writes) first to validate the API contract and confirm recording titles actually carry the Calendar Event ID as expected, before trusting `syncRiversideTranscripts_()` to write anything. Not wired to a trigger yet, same confirm-before-automating gate as `buildReviewQueue()`.
+
 ## 2. The two-pass evaluation
 
 Grading is **not** one blended score. It's two sequential, distinct judgment calls, mirroring the brief's split-evaluator requirement:
