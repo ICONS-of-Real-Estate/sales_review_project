@@ -317,65 +317,79 @@ function scoreTranscript_(ctx) {
  */
 function scoreNewlyLoggedCalls_() {
   RUN_TAG = 'scoreNewlyLoggedCalls_';
-  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
-  var sheet = resolveSheet_(ss, 'Sales Call Log');
-  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
 
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) { log_('No data rows.'); return; }
-
-  var header = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
-  var col = {};
-  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
-
-  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
-  var scored = 0, skipped = 0;
-
-  for (var r = 0; r < values.length; r++) {
-    var row = values[r];
-    var rowIndex = r + 2;
-    var outcomeLogged = row[col['Outcome Logged'] - 1];
-    var matchMethod = row[col['Match Method'] - 1];
-    var leadVerdict = row[col['Lead Quality Verdict'] - 1];
-    var prospectName = row[col['Prospect Name'] - 1];
-
-    if (!outcomeLogged || matchMethod !== 'exact_key' || String(leadVerdict || '').trim() !== '') {
-      skipped++;
-      continue;
-    }
-    if (!prospectName) { skipped++; continue; }
-
-    var transcriptUrl = row[col['Transcript URL'] - 1];
-    if (!transcriptUrl) {
-      log_('  Row ' + rowIndex + ' (' + prospectName + '): exact_key match but no Transcript URL yet — skipping.');
-      skipped++;
-      continue;
-    }
-
-    try {
-      var fileId = extractDriveFileId_(transcriptUrl);
-      var text = DriveApp.getFileById(fileId).getBlob().getDataAsString();
-      var ctx = {
-        rep: row[col['Rep'] - 1],
-        prospectName: prospectName,
-        callType: row[col['Call Type'] - 1] || 'QC',
-        source: row[col['Source'] - 1],
-        callDate: row[col['Call Date'] - 1],
-        transcriptText: text
-      };
-      var result = scoreTranscript_(ctx);
-      writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false);
-      scored++;
-      Utilities.sleep(300);
-    } catch (e) {
-      log_('  Row ' + rowIndex + ' (' + prospectName + ') FAILED: ' + e);
-      skipped++;
-    }
+  // Shares a lock with scoreSeanTranscripts (same underlying script lock) —
+  // both now run on their own trigger and both touch "Sales Call Log", so this
+  // keeps the two from ever reading/writing the sheet at the same moment.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('scoreNewlyLoggedCalls_: another scoring run holds the lock, skipping this firing.');
+    return;
   }
 
-  log_('scoreNewlyLoggedCalls_ done — scored ' + scored + ', skipped ' + skipped + '.');
-  if (!PHASE2_CONFIG.SHADOW_MODE && scored > 0) {
-    log_('SHADOW_MODE is false — go-live queue email is a separate function (not yet built here); see brief.txt §5.');
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) { log_('No data rows.'); return; }
+
+    var header = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
+    var col = {};
+    SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+
+    var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+    var scored = 0, skipped = 0;
+
+    for (var r = 0; r < values.length; r++) {
+      var row = values[r];
+      var rowIndex = r + 2;
+      var outcomeLogged = row[col['Outcome Logged'] - 1];
+      var matchMethod = row[col['Match Method'] - 1];
+      var leadVerdict = row[col['Lead Quality Verdict'] - 1];
+      var prospectName = row[col['Prospect Name'] - 1];
+
+      if (!outcomeLogged || matchMethod !== 'exact_key' || String(leadVerdict || '').trim() !== '') {
+        skipped++;
+        continue;
+      }
+      if (!prospectName) { skipped++; continue; }
+
+      var transcriptUrl = row[col['Transcript URL'] - 1];
+      if (!transcriptUrl) {
+        log_('  Row ' + rowIndex + ' (' + prospectName + '): exact_key match but no Transcript URL yet — skipping.');
+        skipped++;
+        continue;
+      }
+
+      try {
+        var fileId = extractDriveFileId_(transcriptUrl);
+        var text = DriveApp.getFileById(fileId).getBlob().getDataAsString();
+        var ctx = {
+          rep: row[col['Rep'] - 1],
+          prospectName: prospectName,
+          callType: row[col['Call Type'] - 1] || 'QC',
+          source: row[col['Source'] - 1],
+          callDate: row[col['Call Date'] - 1],
+          transcriptText: text
+        };
+        var result = scoreTranscript_(ctx);
+        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false);
+        scored++;
+        Utilities.sleep(300);
+      } catch (e) {
+        log_('  Row ' + rowIndex + ' (' + prospectName + ') FAILED: ' + e);
+        skipped++;
+      }
+    }
+
+    log_('scoreNewlyLoggedCalls_ done — scored ' + scored + ', skipped ' + skipped + '.');
+    if (!PHASE2_CONFIG.SHADOW_MODE && scored > 0) {
+      log_('SHADOW_MODE is false — go-live queue email is a separate function (not yet built here); see brief.txt §5.');
+    }
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -748,81 +762,102 @@ function previewSeanTranscripts() {
  */
 function scoreSeanTranscripts() {
   RUN_TAG = 'scoreSeanTranscripts';
-  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
-  var sheet = resolveSheet_(ss, 'Sales Call Log');
-  if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
-  var existing = loadExistingLegacyKeys_(sheet);
-  var scored = 0, skippedExisting = 0, failed = 0;
+  // Now runs on a 4-hour trigger (installSeanScoringAutomation) as well as by
+  // hand, and existing[] is a snapshot taken once at the top — two overlapping
+  // runs would both see the same "not yet scored" state and could append the
+  // same transcript twice. Script-wide lock (shared with scoreNewlyLoggedCalls_,
+  // which writes to the same sheet) makes overlapping runs skip instead of race.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('scoreSeanTranscripts: another scoring run holds the lock, skipping this firing.');
+    return;
+  }
 
-  Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
-    var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
-    var files = folder.getFiles();
-    while (files.hasNext()) {
-      var file = files.next();
-      var name = file.getName();
-      if (name.indexOf('Transcript') === -1) continue; // skip source videos
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
-      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-      var callDate = file.getDateCreated();
-      var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-      var key = normalize_(prospectName) + '|' + dateStr;
-      if (existing[key]) { skippedExisting++; continue; }
+    var existing = loadExistingLegacyKeys_(sheet);
+    var scored = 0, skippedExisting = 0, failed = 0;
 
-      try {
-        var callType = label === 'Qualification Calls' ? 'QC' : 'Sales Call';
-        var ctx = {
-          rep: 'Sean',
-          prospectName: prospectName,
-          callType: callType,
-          source: '',
-          callDate: dateStr,
-          transcriptText: file.getBlob().getDataAsString()
-        };
-        var result = scoreSeanTranscript_(ctx);
-        var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+    Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
+      var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var file = files.next();
+        var name = file.getName();
+        if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
-        sheet.appendRow([
-          prospectName,                   // Prospect Name
-          '',                              // Prospect Email — fill from Sean's tracker
-          '',                              // Source — fill from Sean's tracker
-          callDate,                        // Call Date
-          'Sean',                          // Rep
-          callType,                        // Call Type
-          true,                            // Outcome Logged
-          '',                              // Outcome Disposition — fill from Sean's tracker
-          '',                              // Calendar Event ID — none (predates convention)
-          '',                              // Riverside Recording ID — n/a, Sean uses Zoom
-          file.getUrl(),                   // Transcript URL
-          'fallback_heuristic',            // Match Method
-          result.lead_quality.verdict,     // Lead Quality Verdict
-          result.call_quality_score,       // Call Quality Score
-          result.flags.asked_for_close,    // Flag: Asked For Close
-          objectionsHandled,               // Flag: Objections Handled
-          true,                            // Manual Review Recommended — forced true
-          result.severity,                 // Severity
-          buildSeanFeedbackSummary_(result), // AI Feedback Summary — includes the extra Sean dimensions
-          false,                           // Reviewed By Kris
-          0                                // Queue Age
-        ]);
+        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+        var callDate = file.getDateCreated();
+        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+        var key = normalize_(prospectName) + '|' + dateStr;
+        if (existing[key]) { skippedExisting++; continue; }
 
-        log_('  Scored "' + prospectName + '" (' + dateStr + '): ' + result.lead_quality.verdict +
-          ', score ' + result.call_quality_score + ', severity ' + result.severity +
-          ', 2nd call booked: ' + result.flags.booked_second_call_with_tomas +
-          (result._parseFailed ? ' [PARSE FAILED]' : ''));
-        scored++;
-        Utilities.sleep(300);
-      } catch (e) {
-        log_('  FAILED "' + name + '": ' + e);
-        failed++;
+        try {
+          var callType = label === 'Qualification Calls' ? 'QC' : 'Sales Call';
+          var ctx = {
+            rep: 'Sean',
+            prospectName: prospectName,
+            callType: callType,
+            source: '',
+            callDate: dateStr,
+            transcriptText: file.getBlob().getDataAsString()
+          };
+          var result = scoreSeanTranscript_(ctx);
+          var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+
+          sheet.appendRow([
+            prospectName,                   // Prospect Name
+            '',                              // Prospect Email — fill from Sean's tracker
+            '',                              // Source — fill from Sean's tracker
+            callDate,                        // Call Date
+            'Sean',                          // Rep
+            callType,                        // Call Type
+            true,                            // Outcome Logged
+            '',                              // Outcome Disposition — fill from Sean's tracker
+            '',                              // Calendar Event ID — none (predates convention)
+            '',                              // Riverside Recording ID — n/a, Sean uses Zoom
+            file.getUrl(),                   // Transcript URL
+            'fallback_heuristic',            // Match Method
+            result.lead_quality.verdict,     // Lead Quality Verdict
+            result.call_quality_score,       // Call Quality Score
+            result.flags.asked_for_close,    // Flag: Asked For Close
+            objectionsHandled,               // Flag: Objections Handled
+            true,                            // Manual Review Recommended — forced true
+            result.severity,                 // Severity
+            buildSeanFeedbackSummary_(result), // AI Feedback Summary — includes the extra Sean dimensions
+            false,                           // Reviewed By Kris
+            0                                // Queue Age
+          ]);
+
+          // existing[] would go stale for the rest of THIS run's own folder
+          // loop too (e.g. Part 1 / Part 2 of the same call landing in the
+          // same pass) if we didn't mark it locally the moment it's scored.
+          existing[key] = true;
+
+          log_('  Scored "' + prospectName + '" (' + dateStr + '): ' + result.lead_quality.verdict +
+            ', score ' + result.call_quality_score + ', severity ' + result.severity +
+            ', 2nd call booked: ' + result.flags.booked_second_call_with_tomas +
+            (result._parseFailed ? ' [PARSE FAILED]' : ''));
+          scored++;
+          Utilities.sleep(300);
+        } catch (e) {
+          log_('  FAILED "' + name + '": ' + e);
+          failed++;
+        }
       }
-    }
-  });
+    });
 
-  log_('scoreSeanTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
-    ', failed ' + failed + '.');
-  log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
-    'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
+    log_('scoreSeanTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
+      ', failed ' + failed + '.');
+    log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
+      'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +870,25 @@ function scoreSeanTranscripts() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Shared by both installers below: delete any existing copy of a trigger for
+ * the given handler, then create a fresh every-N-hours one. Centralizes the
+ * pattern instead of copy-pasting it (a third copy already existed as
+ * installDailyTriggerCore_'s daily/atHour variant in Phase1_ComplianceCheck.gs,
+ * which has different cadence needs and is left as-is).
+ */
+function reinstallHourlyTrigger_(handlerFunctionName, everyNHours) {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === handlerFunctionName) {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  return ScriptApp.newTrigger(handlerFunctionName)
+    .timeBased()
+    .everyHours(everyNHours)
+    .create();
+}
+
+/**
  * Fills the gap this file's own header comment has documented since it was
  * written: scoreNewlyLoggedCalls_() was designed to "run on its own trigger
  * (installPhase2Trigger())," but that function was never actually built.
@@ -842,15 +896,8 @@ function scoreSeanTranscripts() {
  * function dropdown and click Run. Idempotent: safe to re-run.
  */
 function installPhase2Trigger() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'scoreNewlyLoggedCalls_') {
-      ScriptApp.deleteTrigger(t);
-    }
-  });
-  ScriptApp.newTrigger('scoreNewlyLoggedCalls_')
-    .timeBased()
-    .everyHours(4)
-    .create();
+  RUN_TAG = 'installPhase2Trigger';
+  reinstallHourlyTrigger_('scoreNewlyLoggedCalls_', 4);
   log_('Phase 2 ongoing scoring installed: scoreNewlyLoggedCalls_() now runs every 4 hours.');
 }
 
@@ -870,15 +917,8 @@ function installPhase2Trigger() {
  * than leaving it running every 4 hours indefinitely for no new data.
  */
 function installSeanScoringAutomation() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'scoreSeanTranscripts') {
-      ScriptApp.deleteTrigger(t);
-    }
-  });
-  ScriptApp.newTrigger('scoreSeanTranscripts')
-    .timeBased()
-    .everyHours(4)
-    .create();
+  RUN_TAG = 'installSeanScoringAutomation';
+  reinstallHourlyTrigger_('scoreSeanTranscripts', 4);
   log_('Sean auto-scoring installed: scoreSeanTranscripts() now runs every 4 hours. ' +
     'Remember to disable this trigger once the backlog is fully transcribed and scored.');
 }

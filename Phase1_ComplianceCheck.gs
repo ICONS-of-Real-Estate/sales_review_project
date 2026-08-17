@@ -905,36 +905,61 @@ function installAutomation() {
  * healthy. This removes the last manual check: nobody has to remember to
  * verify the trigger is still alive.
  */
+/**
+ * Every trigger this weekly audit is responsible for keeping alive. Each
+ * entry's installer must be idempotent (delete-then-recreate), since heal
+ * calls it directly when the trigger is missing entirely.
+ */
+var SELF_HEAL_TRIGGER_REGISTRY_ = [
+  {
+    handler: 'runDailyComplianceCheck',
+    install: installDailyTriggerCore_,
+    label: 'daily compliance trigger'
+  },
+  {
+    handler: 'scoreNewlyLoggedCalls_',
+    install: function () { reinstallHourlyTrigger_('scoreNewlyLoggedCalls_', 4); },
+    label: 'Phase 2 ongoing-scoring trigger'
+  },
+  {
+    handler: 'scoreSeanTranscripts',
+    install: function () { reinstallHourlyTrigger_('scoreSeanTranscripts', 4); },
+    label: 'Sean auto-scoring trigger'
+  }
+];
+
 function selfHealTriggers_() {
   RUN_TAG = 'selfHealTriggers_';
-  var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
-    return t.getHandlerFunction() === 'runDailyComplianceCheck';
-  });
-
   var problems = [];
-  var healthy = null;
-  triggers.forEach(function (t) {
-    var src = String(t.getTriggerSourceId ? t.getTriggerSourceId() : '');
-    if (!healthy && (!CONFIG.EXPECTED_PROJECT_ID || src === CONFIG.EXPECTED_PROJECT_ID)) {
-      healthy = t;
-    } else {
-      ScriptApp.deleteTrigger(t);
-      problems.push('deleted a duplicate/stale daily trigger (source ' + (src || 'unknown') + ')');
+
+  SELF_HEAL_TRIGGER_REGISTRY_.forEach(function (entry) {
+    var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
+      return t.getHandlerFunction() === entry.handler;
+    });
+
+    var healthy = null;
+    triggers.forEach(function (t) {
+      var src = String(t.getTriggerSourceId ? t.getTriggerSourceId() : '');
+      if (!healthy && (!CONFIG.EXPECTED_PROJECT_ID || src === CONFIG.EXPECTED_PROJECT_ID)) {
+        healthy = t;
+      } else {
+        ScriptApp.deleteTrigger(t);
+        problems.push('deleted a duplicate/stale ' + entry.label + ' (source ' + (src || 'unknown') + ')');
+      }
+    });
+
+    if (!healthy) {
+      entry.install();
+      problems.push(entry.label + ' was missing — recreated');
     }
   });
 
-  if (!healthy) {
-    installDailyTriggerCore_();
-    problems.push('daily trigger was missing — recreated for ' +
-      CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + ' daily');
-  }
-
   if (problems.length) {
-    sendOpsAlert_('[Compliance bot] Self-heal repaired the daily trigger',
+    sendOpsAlert_('[Compliance bot] Self-heal repaired a trigger',
       'Weekly trigger audit found and fixed:\n  - ' + problems.join('\n  - ') +
-      '\n\nNo action needed; the daily close-of-business compliance check is healthy now.');
+      '\n\nNo action needed; all scoring/compliance triggers are healthy now.');
   }
-  log_(problems.length ? 'Repaired: ' + problems.join(' | ') : 'Daily trigger healthy — nothing to do.');
+  log_(problems.length ? 'Repaired: ' + problems.join(' | ') : 'All triggers healthy — nothing to do.');
 }
 
 /**
