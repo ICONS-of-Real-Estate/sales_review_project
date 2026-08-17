@@ -49,6 +49,13 @@ SOURCE_FOLDERS = {
 
 GEMINI_MODEL = "gemini-flash-latest"
 
+
+class QuotaExhaustedError(RuntimeError):
+    """Raised when Gemini reports a daily/project quota cap, not a transient error.
+    Retrying or continuing to the next file won't help until billing is enabled
+    or the quota window resets, so this aborts the whole batch instead of
+    burning bandwidth downloading files that are guaranteed to fail."""
+
 TRANSCRIPT_PROMPT = """Transcribe this recorded sales call verbatim, word for word.
 Do not summarize, paraphrase, or clean up filler words — this is for coaching review,
 so accuracy matters more than readability.
@@ -121,6 +128,10 @@ def generate_with_retry(client, model, contents, max_retries=6):
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(model=model, contents=contents, config=config)
+        except genai_errors.ClientError as e:
+            if "RESOURCE_EXHAUSTED" in str(e) or getattr(e, "code", None) == 429:
+                raise QuotaExhaustedError(str(e)) from e
+            raise
         except (genai_errors.ServerError, ConnectionError, TimeoutError, OSError) as e:
             # OSError also catches transient SSL/connection drops (e.g. "EOF occurred
             # in violation of protocol"), which aren't ServerError but are just as retryable.
@@ -200,6 +211,8 @@ def main():
                 transcript = transcribe_with_gemini(client, local_path)
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    done -> {link}")
+            except QuotaExhaustedError:
+                raise  # stop the whole batch — no point downloading more files today
             except Exception as e:
                 print(f"    FAILED: {e}")
             finally:
@@ -208,4 +221,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except QuotaExhaustedError as e:
+        sys.exit(
+            "\nSTOPPING — Gemini API quota exhausted for today: "
+            f"{e}\n\n"
+            "This is a free-tier daily cap on this Google Cloud project, not a bug in "
+            "the script. Enable billing on the project tied to your Gemini API key "
+            "(aistudio.google.com/apikey -> this key -> its linked project -> enable "
+            "Pay-as-you-go billing in Google Cloud Console), then re-run this script. "
+            "It will skip everything already transcribed and pick up right where it "
+            "stopped."
+        )
