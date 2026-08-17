@@ -215,8 +215,9 @@ function buildJudgeSystemPrompt_() {
     '   good_to_book | should_screen_out.',
     '',
     '2) Call quality score (1-5) and two failure-mode flags — regardless of the lead',
-    '   verdict, still score the call (a should_screen_out verdict is recorded separately',
-    '   and downstream logic will decide how much weight the score carries; do not omit fields).',
+    '   verdict, still score the call (a should_screen_out verdict is recorded separately;',
+    '   buildReviewQueue() excludes should_screen_out rows from rep-coaching prioritization',
+    '   so the score is captured for the record without penalizing the rep; do not omit fields).',
     '',
     '   Failure mode 1 — never asked for the close. Decision rule: did the rep make an',
     '   explicit request for commitment (an Order or Advance in SPIN\'s taxonomy, e.g.',
@@ -311,6 +312,50 @@ function scoreTranscript_(ctx) {
   };
 }
 
+/**
+ * DriveApp's File.getBlob() cannot read native Google Docs/Sheets/Slides —
+ * it throws, since those aren't blob-representable formats. Every
+ * transcript this project reads could be either kind depending on how it
+ * was uploaded: tools/transcribe_sean_calls.py's save_transcript_doc()
+ * explicitly requests mimeType 'application/vnd.google-apps.document'
+ * (Drive converts the uploaded text to a real Doc), while an older/simpler
+ * upload path (or any transcript created by hand in Drive) stays plain
+ * text. Route to DocumentApp for the former, getBlob() for everything
+ * else, so a mixed folder of both kinds doesn't silently fail every Doc.
+ */
+function getTranscriptText_(file) {
+  if (file.getMimeType() === MimeType.GOOGLE_DOCS) {
+    return DocumentApp.openById(file.getId()).getBody().getText();
+  }
+  return file.getBlob().getDataAsString();
+}
+
+/**
+ * Builds the header-name -> column-index map every function below uses to
+ * read/write "Sales Call Log" by name — but checks the sheet's real header
+ * row actually matches SALES_CALL_LOG_HEADERS first. Without this, a
+ * manually reordered/renamed/inserted column drifts silently out of sync
+ * with the hardcoded array, and every col['...'] lookup then points at the
+ * wrong cell with no error — e.g. writing a Call Quality Score into what's
+ * now the Severity column. Throws loudly instead.
+ */
+function getValidatedColumnMap_(sheet) {
+  var header = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
+  var mismatches = [];
+  SALES_CALL_LOG_HEADERS.forEach(function (expected, i) {
+    if (header[i] !== expected) {
+      mismatches.push('column ' + (i + 1) + ': expected "' + expected + '", found "' + header[i] + '"');
+    }
+  });
+  if (mismatches.length) {
+    throw new Error('Sales Call Log header drift detected — run setupSalesCallLog() or fix the ' +
+      'sheet manually before trusting any column lookup:\n  ' + mismatches.join('\n  '));
+  }
+  var col = {};
+  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  return col;
+}
+
 // ---------------------------------------------------------------------------
 // Ongoing pipeline: score newly-logged, exact-matched calls.
 // ---------------------------------------------------------------------------
@@ -341,9 +386,7 @@ function scoreNewlyLoggedCalls_() {
     var lastRow = sheet.getLastRow();
     if (lastRow < 2) { log_('No data rows.'); return; }
 
-    var header = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
-    var col = {};
-    SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+    var col = getValidatedColumnMap_(sheet);
 
     var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
     var scored = 0, skipped = 0;
@@ -371,7 +414,7 @@ function scoreNewlyLoggedCalls_() {
 
       try {
         var fileId = extractDriveFileId_(transcriptUrl);
-        var text = DriveApp.getFileById(fileId).getBlob().getDataAsString();
+        var text = getTranscriptText_(DriveApp.getFileById(fileId));
         var ctx = {
           rep: row[col['Rep'] - 1],
           prospectName: prospectName,
@@ -538,7 +581,7 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
     if (existing[key]) { skippedExisting++; continue; }
 
     try {
-      var text = file.getBlob().getDataAsString();
+      var text = getTranscriptText_(file);
       var ctx = {
         rep: repName,
         prospectName: parsed.prospectName,
@@ -821,7 +864,7 @@ function scoreSeanTranscripts() {
             callType: callType,
             source: '',
             callDate: dateStr,
-            transcriptText: file.getBlob().getDataAsString()
+            transcriptText: getTranscriptText_(file)
           };
           var result = scoreSeanTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
@@ -929,9 +972,12 @@ function installPhase2Trigger() {
  * ONE-TIME setup — select installSeanScoringAutomation in the Apps Script
  * editor's function dropdown and click Run. Idempotent: safe to re-run.
  *
- * Once Sean's ~220-call backlog is fully transcribed and scored, consider
- * deleting this trigger (Apps Script editor → Triggers, left sidebar) rather
- * than leaving it running every 4 hours indefinitely for no new data.
+ * Once Sean's ~220-call backlog is fully transcribed and scored, set the
+ * PAUSE_SEAN_TRIGGER Script Property to 'true' (Project Settings → Script
+ * Properties) rather than just deleting the trigger — selfHealTriggers_'s
+ * weekly audit will otherwise silently recreate a deleted-but-not-paused
+ * trigger, since it can't tell "deleted by accident" from "deleted on
+ * purpose."
  */
 function installSeanScoringAutomation() {
   RUN_TAG = 'installSeanScoringAutomation';
@@ -973,8 +1019,7 @@ function buildReviewQueue() {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) { log_('No data rows.'); return null; }
 
-  var col = {};
-  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  var col = getValidatedColumnMap_(sheet);
   var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
   // Step 1: unreviewed flagged calls only.
@@ -983,6 +1028,18 @@ function buildReviewQueue() {
     var row = values[r];
     if (!row[col['Manual Review Recommended'] - 1]) continue;
     if (row[col['Reviewed By Kris'] - 1]) continue;
+    // SOP §2: "a bad lead doesn't get penalized for a rep's close technique
+    // on a call that shouldn't have happened" — this queue is specifically
+    // about coaching rep EXECUTION, so a should_screen_out lead's severity
+    // shouldn't compete for a review slot on that basis. The judge prompt
+    // still generates a score for these rows (its own comment promises
+    // "downstream logic will decide how much weight the score carries") —
+    // this is that downstream logic; the row itself is untouched on the
+    // sheet. NOTE: this exclusion did not exist before tonight, so the 43
+    // already-scored Bens rows may include should_screen_out calls whose
+    // severity was already weighed as if it counted — worth a manual spot
+    // check before trusting historical review-queue picks retroactively.
+    if (String(row[col['Lead Quality Verdict'] - 1] || '').trim() === 'should_screen_out') continue;
     candidates.push({
       rowIndex: r + 2,
       rep: row[col['Rep'] - 1],
@@ -1066,13 +1123,18 @@ function buildReviewQueue() {
     return r !== chosen && r.oldestAge >= AGE_ESCALATION_THRESHOLD_DAYS;
   });
 
-  // Rollover: increment Queue Age on everything NOT picked today.
+  // Rollover: increment Queue Age on everything NOT picked today. Batched as
+  // one column write instead of one setValue per row — with a large rolled-
+  // over backlog, per-cell writes would mean dozens to hundreds of
+  // individual Sheets API calls per run instead of one.
   var chosenRowIndexes = {};
   chosen.top3.forEach(function (c) { chosenRowIndexes[c.rowIndex] = true; });
+  var queueAgeCol = values.map(function (row) { return [row[col['Queue Age'] - 1]]; });
   candidates.forEach(function (c) {
     if (chosenRowIndexes[c.rowIndex]) return;
-    sheet.getRange(c.rowIndex, col['Queue Age']).setValue(c.queueAge + 1);
+    queueAgeCol[c.rowIndex - 2][0] = c.queueAge + 1; // rowIndex is 1-based incl. header; values[] isn't.
   });
+  sheet.getRange(2, col['Queue Age'], queueAgeCol.length, 1).setValues(queueAgeCol);
 
   log_('buildReviewQueue: today\'s pick is ' + chosen.rep + ' (' + chosen.top3.length +
     ' calls, cluster score ' + chosen.clusterScore + ', aggregate severity ' +
@@ -1132,8 +1194,7 @@ function runWeeklyCalibration() {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) { log_('No data rows.'); return null; }
 
-  var col = {};
-  SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  var col = getValidatedColumnMap_(sheet);
   var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
   var n = 0, agree = 0;

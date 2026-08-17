@@ -922,24 +922,38 @@ var SELF_HEAL_TRIGGER_REGISTRY_ = [
     handler: 'runDailyComplianceCheck',
     install: installDailyTriggerCore_,
     label: 'daily compliance trigger'
+    // No pauseProperty: this one should always stay on.
   },
   {
     handler: 'scoreNewlyLoggedCalls_',
     install: function () { reinstallHourlyTrigger_('scoreNewlyLoggedCalls_', 4); },
-    label: 'Phase 2 ongoing-scoring trigger'
+    label: 'Phase 2 ongoing-scoring trigger',
+    pauseProperty: 'PAUSE_PHASE2_TRIGGER'
   },
   {
     handler: 'scoreSeanTranscripts',
     install: function () { reinstallHourlyTrigger_('scoreSeanTranscripts', 4); },
-    label: 'Sean auto-scoring trigger'
+    label: 'Sean auto-scoring trigger',
+    pauseProperty: 'PAUSE_SEAN_TRIGGER'
   }
 ];
 
 function selfHealTriggers_() {
   RUN_TAG = 'selfHealTriggers_';
   var problems = [];
+  var props = PropertiesService.getScriptProperties();
 
   SELF_HEAL_TRIGGER_REGISTRY_.forEach(function (entry) {
+    // A trigger missing because someone deliberately deleted it (e.g. "once
+    // Sean's backlog is done, delete this trigger") looks identical to one
+    // that's missing by accident — self-heal was recreating it either way,
+    // silently undoing the deliberate choice. Set this Script Property to
+    // 'true' (Project Settings → Script Properties) to opt a trigger out of
+    // auto-recreation instead of just deleting it.
+    if (entry.pauseProperty && props.getProperty(entry.pauseProperty) === 'true') {
+      return;
+    }
+
     var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
       return t.getHandlerFunction() === entry.handler;
     });
