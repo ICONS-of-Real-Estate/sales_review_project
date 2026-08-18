@@ -997,6 +997,75 @@ function installAutomation() {
 }
 
 /**
+ * Single entry point that installs every trigger this project knows about —
+ * but only for whatever is ACTUALLY ready to run, never as a way to skip a
+ * phase's own preview-before-live gate. Answers "do we have one thing to run
+ * to schedule everything?" without silently turning on something nobody has
+ * reviewed yet. Safe to re-run any time (idempotent); re-running after
+ * flipping an ENABLED flag just picks up the newly-ready phase.
+ *
+ * What "ready" means, per phase:
+ *   - Phase 1 (compliance check) & Phase 2 (call scoring) — always installed.
+ *     Neither has a live-send gate that this could bypass: Phase 1 has no
+ *     ENABLED flag at all, and Phase 2's SHADOW_MODE only gates the Kris
+ *     review-queue EMAIL, not the scoring/logging itself — running the
+ *     scoring pipeline on a schedule is exactly what shadow mode is for.
+ *   - Phase 3 (handoff briefs), Phase 4 (inbox SLA), Phase 5 (weekly
+ *     scorecard) — installed ONLY if that phase's own CONFIG.ENABLED is
+ *     already true, i.e. a human ran its preview*() function and flipped the
+ *     flag themselves. Otherwise this logs why it skipped that one and
+ *     leaves it alone — flipping ENABLED to true and re-running this
+ *     picks it up.
+ *   - Phase 0 (Riverside sync) — deliberately NEVER auto-installed here, by
+ *     design (see installRiversideSyncTrigger_'s own comment): its API
+ *     contract has never been confirmed against a real key, so it must be
+ *     installed by a human running installRiversideSyncTrigger() directly,
+ *     once, after previewRiversideSync() looks right.
+ */
+function installAllReadyTriggers_() {
+  RUN_TAG = 'installAllReadyTriggers_';
+  var installed = [], skipped = [];
+
+  installAutomation();
+  installed.push('Phase 1: daily compliance check + weekly self-heal');
+
+  installPhase2Trigger();
+  installSeanScoringAutomation();
+  installed.push('Phase 2: ongoing call scoring (every 4h) + Sean auto-scoring (every 4h)');
+
+  if (typeof HANDOFF_CONFIG !== 'undefined' && HANDOFF_CONFIG.ENABLED) {
+    installHandoffBriefTrigger();
+    installed.push('Phase 3: warm-handoff briefs');
+  } else {
+    skipped.push('Phase 3 (handoff briefs) — HANDOFF_CONFIG.ENABLED is false. Run ' +
+      'previewUpcomingHandoffBriefs_(), confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof INBOX_SLA_CONFIG !== 'undefined' && INBOX_SLA_CONFIG.ENABLED) {
+    installInboxSlaTrigger();
+    installed.push('Phase 4: inbox SLA check');
+  } else {
+    skipped.push('Phase 4 (inbox SLA) — INBOX_SLA_CONFIG.ENABLED is false. Needs the domain-wide-' +
+      'delegation setup (see that file\'s header) + previewInboxSlaCheck_() first, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof WEEKLY_SCORECARD_CONFIG !== 'undefined' && WEEKLY_SCORECARD_CONFIG.ENABLED) {
+    installWeeklyScorecardTrigger();
+    installed.push('Phase 5: weekly scorecard');
+  } else {
+    skipped.push('Phase 5 (weekly scorecard) — WEEKLY_SCORECARD_CONFIG.ENABLED is false. Run ' +
+      'migrateAddPrimaryFailureModeColumn_() + previewWeeklyScorecards_() first, then flip ENABLED and re-run this.');
+  }
+
+  skipped.push('Phase 0 (Riverside sync) — never auto-installed here on purpose; run ' +
+    'previewRiversideSync() against a real API key, confirm it looks right, then run ' +
+    'installRiversideSyncTrigger() yourself, once.');
+
+  log_('installAllReadyTriggers_ done.\nInstalled:\n  ' + installed.join('\n  ') +
+    '\nSkipped:\n  ' + skipped.join('\n  '));
+}
+
+/**
  * Weekly self-heal (installed by installAutomation). Verifies the daily
  * compliance trigger exists exactly once and belongs to this deployed script;
  * deletes duplicates/stale copies and recreates the trigger if it's missing
