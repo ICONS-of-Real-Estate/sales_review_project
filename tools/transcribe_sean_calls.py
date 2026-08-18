@@ -189,30 +189,52 @@ def save_transcript_doc(drive, folder_id, video_id, title, transcript_text):
     tmp_txt = os.path.join(tempfile.gettempdir(), f"{video_id}.txt")
     with open(tmp_txt, "w", encoding="utf-8") as f:
         f.write(transcript_text)
+
+    # Retries transient network drops -- confirmed to hit this Drive upload
+    # too, not just the large-file Gemini upload upload_with_retry already
+    # guards above ("SSL EOF occurred in violation of protocol" is a real
+    # error seen here on a plain .txt upload, not just 300MB+ files).
+    # Deliberately does NOT delete tmp_txt if every retry is exhausted:
+    # transcript_text can represent 30-40+ minutes of local CPU time (Whisper)
+    # or real API cost (Gemini/Qwen) to regenerate, so losing it to a
+    # transient blip is far worse than a stray temp file. Only cleaned up
+    # after a confirmed successful upload, below.
+    link = _upload_transcript_with_retry(drive, folder_id, tmp_txt, title)
     try:
-        media = MediaFileUpload(tmp_txt, mimetype="text/plain")
-        doc = (
-            drive.files()
-            .create(
-                body={
-                    "name": f"{title} — Transcript",
-                    "parents": [folder_id],
-                    "mimeType": "application/vnd.google-apps.document",
-                },
-                media_body=media,
-                fields="id, webViewLink",
-            )
-            .execute()
-        )
-        return doc["webViewLink"]
-    finally:
-        # In a try/finally so a failed .execute() (network error, quota, bad
-        # folder ID, auth expiry -- all realistic on large uploads) still
-        # cleans up, instead of leaking tmp_txt permanently on every failure.
+        os.remove(tmp_txt)
+    except OSError:
+        pass  # Windows can still hold the handle briefly; harmless to leave a tiny .txt in Temp.
+    return link
+
+
+def _upload_transcript_with_retry(drive, folder_id, tmp_txt, title, max_retries=4):
+    delay = 15
+    max_delay = 60
+    for attempt in range(max_retries):
         try:
-            os.remove(tmp_txt)
-        except OSError:
-            pass  # Windows can still hold the handle briefly; harmless to leave a tiny .txt in Temp.
+            media = MediaFileUpload(tmp_txt, mimetype="text/plain")
+            doc = (
+                drive.files()
+                .create(
+                    body={
+                        "name": f"{title} — Transcript",
+                        "parents": [folder_id],
+                        "mimeType": "application/vnd.google-apps.document",
+                    },
+                    media_body=media,
+                    fields="id, webViewLink",
+                )
+                .execute()
+            )
+            return doc["webViewLink"]
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # OSError also catches transient SSL/connection drops, same
+            # reasoning as upload_with_retry above.
+            if attempt == max_retries - 1:
+                raise
+            print(f"    Drive upload connection error ({e}), retrying in {delay}s...")
+            time.sleep(delay)
+            delay = min(delay * 2, max_delay)
 
 
 def main():
