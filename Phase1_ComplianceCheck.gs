@@ -514,8 +514,17 @@ function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
   var n = missingEvents.length;
   var trackerUrl = 'https://docs.google.com/spreadsheets/d/' + repCfg.spreadsheetId + '/edit';
 
-  var subject = '[Action needed] Update your sales tracker — ' + n +
-    ' call(s) from ' + priorDay + ' not logged';
+  // Names in the subject (not just the body) so which prospect(s) this is
+  // about is visible from the inbox list without opening the email. Caps at
+  // 3 named + "+N more" so a rare heavy day doesn't produce an unreadably
+  // long subject line.
+  var names = missingEvents.map(function (ev) { return ev.prospectGuess; });
+  var namesForSubject = names.length <= 3
+    ? names.join(', ')
+    : names.slice(0, 3).join(', ') + ', +' + (names.length - 3) + ' more';
+
+  var subject = '[Action needed] Update your sales tracker — ' + namesForSubject +
+    ' (' + n + ' call(s) from ' + priorDay + ') not logged';
 
   var lines = missingEvents.map(function (ev) {
     var time = Utilities.formatDate(ev.start, tz, 'HH:mm');
