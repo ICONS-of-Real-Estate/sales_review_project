@@ -25,7 +25,8 @@ const vm = require('vm');
 const GAS_FILES = [
   'Phase1_ComplianceCheck.gs',
   'Phase2_CallScoring.gs',
-  'Phase0_RiversideSync.gs'
+  'Phase0_RiversideSync.gs',
+  'Phase5_WeeklyScorecard.gs'
 ];
 
 function stubApi(name) {

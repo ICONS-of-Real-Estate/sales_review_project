@@ -138,3 +138,82 @@ test('computeAgreementStats_ matches a known worked kappa example (n=50, po=0.7,
   assert.equal(stats.percentAgreement, 0.7);
   assert.ok(Math.abs(stats.kappa - 0.4) < 1e-9);
 });
+
+test('mean_ returns null for an empty array (so "no data" is distinguishable from a real 0) and the correct average otherwise', () => {
+  assert.equal(gas.mean_([]), null);
+  assert.equal(gas.mean_([2, 4]), 3);
+});
+
+test('mostFrequent_ picks the most common value, alphabetical tie-break for determinism', () => {
+  assert.equal(gas.mostFrequent_([]), null);
+  // Returned objects are built inside the vm sandbox's own realm (see
+  // gas_env.js's Date comment) — deepEqual's constructor-identity check fails
+  // against a plain literal here for realm reasons, so compare fields instead.
+  const majority = gas.mostFrequent_(['a', 'b', 'a']);
+  assert.equal(majority.value, 'a');
+  assert.equal(majority.count, 2);
+  // exact tie between 'b' and 'a' -> alphabetically first wins, not insertion order
+  const tie = gas.mostFrequent_(['b', 'a']);
+  assert.equal(tie.value, 'a');
+  assert.equal(tie.count, 1);
+});
+
+// col map covers only the fields computeRepWeeklyStats_ actually reads —
+// indices are arbitrary as long as they're consistent with the row arrays below.
+const SCORECARD_COL = {
+  'Rep': 1, 'Prospect Name': 2, 'Call Date': 3, 'Call Quality Score': 4,
+  'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7
+};
+
+function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled }) {
+  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled];
+}
+
+test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, per rep, and tallies flags/failure modes', () => {
+  const weekStart = new gas.Date(2026, 7, 10);
+  const weekEnd = new gas.Date(2026, 7, 17);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: true }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: false }),
+    scorecardRow(gas, { rep: 'Sean', name: 'C', date: new gas.Date(2026, 7, 3), score: 5, pfm: 'none', askedForClose: true, objectionsHandled: true }), // before the week
+    scorecardRow(gas, { rep: 'Bens', name: 'D', date: new gas.Date(2026, 7, 11), score: 1, pfm: 'objections_missed', askedForClose: true, objectionsHandled: false }) // different rep
+  ];
+
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  assert.equal(stats.weekCalls.length, 2);
+  assert.equal(stats.weeklyAvg, 3);
+  assert.ok(Math.abs(stats.historicAvg - 11 / 3) < 1e-9);
+  assert.equal(stats.historicAvgBeforeThisWeek, 5);
+  assert.equal(stats.historicCount, 3);
+  // Array/object values here were built inside the vm sandbox's own realm (see
+  // gas_env.js's Date comment) — deepEqual's constructor-identity check fails
+  // against this file's plain literals for realm reasons, not a real mismatch,
+  // so compare contents field-by-field instead.
+  assert.equal(stats.weekFailureModes.length, 2);
+  assert.equal(stats.weekFailureModes[0], 'no_close_ask');
+  assert.equal(stats.weekFailureModes[1], 'no_close_ask');
+  assert.equal(stats.weekFlagMiss.askedForClose, 2);
+  assert.equal(stats.weekFlagMiss.objectionsHandled, 1);
+});
+
+test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {
+  const stats = {
+    weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 2 }],
+    weekFailureModes: ['no_close_ask', 'no_close_ask'],
+    weekFlagMiss: { askedForClose: 2, objectionsHandled: 0 }
+  };
+  assert.equal(gas.priorityToImprove_(stats), gas.FAILURE_MODE_COACHING_TEXT_.no_close_ask);
+});
+
+test('priorityToImprove_ falls back to the Objections Handled flag when no Primary Failure Mode data exists', () => {
+  const stats = {
+    weekCalls: [{ name: 'A', score: 3 }],
+    weekFailureModes: [],
+    weekFlagMiss: { askedForClose: 1, objectionsHandled: 2 }
+  };
+  assert.equal(gas.priorityToImprove_(stats), gas.FAILURE_MODE_COACHING_TEXT_.objections_missed);
+});
+
+test('priorityToImprove_ returns null when the rep had no calls scored this week', () => {
+  assert.equal(gas.priorityToImprove_({ weekCalls: [], weekFailureModes: [], weekFlagMiss: {} }), null);
+});

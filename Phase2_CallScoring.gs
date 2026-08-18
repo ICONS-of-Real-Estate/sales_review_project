@@ -466,6 +466,39 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
   sheet.getRange(rowIndex, col['Severity']).setValue(result.severity);
   sheet.getRange(rowIndex, col['AI Feedback Summary']).setValue(result.feedback_summary);
   sheet.getRange(rowIndex, col['Queue Age']).setValue(0);
+  // Phase 5 (weekly scorecard) input — blank on rows scored before this column
+  // existed; those just read as "no signal" rather than breaking anything.
+  sheet.getRange(rowIndex, col['Primary Failure Mode']).setValue(result.primary_failure_mode || 'none');
+}
+
+/**
+ * ONE-TIME migration: appends the "Primary Failure Mode" header to the live
+ * "Sales Call Log" sheet if it isn't there yet. Needed because
+ * getValidatedColumnMap_ requires the sheet's real header row to exactly
+ * match SALES_CALL_LOG_HEADERS, and appending a column to that array (done
+ * for Phase 5) does not retroactively touch the already-deployed sheet.
+ * Safe to re-run — no-ops once the column is present. Run this before
+ * previewWeeklyScorecards_() / the next scoring pass.
+ */
+function migrateAddPrimaryFailureModeColumn_() {
+  RUN_TAG = 'migrateAddPrimaryFailureModeColumn_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var colIndex = SALES_CALL_LOG_HEADERS.length; // 'Primary Failure Mode' is the last header
+  var cell = sheet.getRange(1, colIndex);
+  if (cell.getValue() === 'Primary Failure Mode') {
+    log_('"Primary Failure Mode" column already present at column ' + colIndex + ' — nothing to do.');
+    return;
+  }
+  if (cell.getValue() !== '') {
+    throw new Error('Column ' + colIndex + ' already has an unrelated value ("' + cell.getValue() +
+      '") — resolve manually before migrating (expected either blank or "Primary Failure Mode").');
+  }
+  cell.setValue('Primary Failure Mode').setFontWeight('bold').setBackground('#e8eef7');
+  log_('Added "Primary Failure Mode" header at column ' + colIndex + '. Existing rows read as blank ' +
+    '("no signal") until re-scored; new scoring passes will populate it going forward.');
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +652,9 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
         result.severity,                // Severity
         result.feedback_summary,        // AI Feedback Summary
         false,                          // Reviewed By Kris
-        0                                // Queue Age
+        0,                               // Queue Age
+        '',                              // Kris Manual Review Verdict — not yet judged
+        result.primary_failure_mode || 'none' // Primary Failure Mode
       ]);
 
       log_('  Scored "' + parsed.prospectName + '" (' + parsed.dateStr + '): ' +
@@ -895,7 +930,9 @@ function scoreSeanTranscripts() {
             result.severity,                 // Severity
             buildSeanFeedbackSummary_(result), // AI Feedback Summary — includes the extra Sean dimensions
             false,                           // Reviewed By Kris
-            0                                // Queue Age
+            0,                               // Queue Age
+            '',                              // Kris Manual Review Verdict — not yet judged
+            result.primary_failure_mode || 'none' // Primary Failure Mode
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder

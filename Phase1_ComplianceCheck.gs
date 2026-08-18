@@ -735,8 +735,18 @@ var SALES_CALL_LOG_HEADERS = [
   'AI Feedback Summary',    // S
   'Reviewed By Kris',       // T
   'Queue Age',              // U  (days)
-  'Kris Manual Review Verdict' // V (dropdown: Yes/No, blank = not yet judged —
+  'Kris Manual Review Verdict', // V (dropdown: Yes/No, blank = not yet judged —
                             //    Phase 2 weekly calibration input; see SOP §7)
+  // --- Phase 5: written by the scoring pipeline, read by the weekly scorecard ---
+  'Primary Failure Mode'    // W  (no_close_ask/objections_missed/weak_discovery/
+                            //    no_goal_alignment/no_second_call_booked/both/
+                            //    multiple/none — appended at the end, same
+                            //    backward-compatible pattern as column V. Existing
+                            //    live sheets need migrateAddPrimaryFailureModeColumn_()
+                            //    (Phase2_CallScoring.gs) run once before this column
+                            //    exists there; rows scored before that will read as
+                            //    blank, which the weekly scorecard treats as "no
+                            //    signal" rather than an error.
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
