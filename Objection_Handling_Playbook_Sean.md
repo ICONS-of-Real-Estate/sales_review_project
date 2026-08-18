@@ -10,7 +10,7 @@ This is a **living list**, not a one-time document. Every time a new batch of Se
 
 **v1 — built from the first batch of 12 real Sean recordings, scored 17/08/2026** (out of a ~220-call backlog still being transcribed — see `tools/transcribe_sean_calls.py` / `transcribe_sean_calls_qwen.py`). Nothing here has been used in training yet; this is the draft Tomás reviews before a practice session with Sean.
 
-**v2 — 12 more calls scored overnight 17→18/08/2026** (Ross Seligman, Debra J. Cook, Daniel Blankenship, Amelia Breslin, Jennifer Watson, Michael Blevins, Julio Lopez, Skyler Hynes, Deme Mekras ×2 [separate calls, 4/27 and 5/1], Ward Frederick ×2 [separate calls, 4/23 and 6/30], Bently Perry — 24 total now scored; a 13th transcript this batch, Jim Bevins, was unscorable: the Drive file is a blank/failed recording, no real content, flagged separately for a transcription re-check, not a rep issue). New objection types and two cross-cutting patterns below; original v1 sections 1-8 and their examples are unchanged.
+**v2 — 15 more calls scored overnight 17→18/08/2026** (Ross Seligman, Debra J. Cook, Daniel Blankenship, Amelia Breslin, Jennifer Watson, Michael Blevins, Julio Lopez, Skyler Hynes, Deme Mekras ×2 [separate calls, 4/27 and 5/1], Ward Frederick ×2 [separate calls, 4/23 and 6/30], Bently Perry, Teresa Anderson, Dertrez Pressley, Julio Lopez follow-up call — 27 total scored, 26 usable; Jim Bevins was unscorable: the Drive file is a blank/failed recording, no real content, flagged separately for a transcription re-check, not a rep issue). New objection types and cross-cutting patterns below; original v1 sections 1-8 and their examples are unchanged.
 
 ## Summary
 
@@ -31,7 +31,7 @@ Objections #2 (budget) is by far the most common, in over half the calls. But th
 
 ## 1. Budget / needs money freed up first
 
-**Real examples:** William Schlunaker ("$300 a month for nothing" on one failed vendor, "$600 a month for the two of those... it's just a matter of how much money I have after I cancel"), Roxy Miles ("it really depends on like the investment, like long-term, cuz I have other marketing things that I'm working on" — raised twice), Marcus Jackson ("out of my range, so"), Parisa Daily ("that price point, that's nearly $1,000 per month, that's an extra expense... I just want to take some time to mull it over"), Tyrone Mingo ("I'm waiting for the closing, so once I get the closing, then I'll be ready"), Justin Abel ("my car is about to die, I got a lot of financial crap going on"), Lei McDonald Pt.2 (needing sponsorships to afford it).
+**Real examples:** William Schlunaker ("$300 a month for nothing" on one failed vendor, "$600 a month for the two of those... it's just a matter of how much money I have after I cancel"), Roxy Miles ("it really depends on like the investment, like long-term, cuz I have other marketing things that I'm working on" — raised twice), Marcus Jackson ("out of my range, so"), Parisa Daily ("that price point, that's nearly $1,000 per month, that's an extra expense... I just want to take some time to mull it over"), Tyrone Mingo ("I'm waiting for the closing, so once I get the closing, then I'll be ready"), Justin Abel ("my car is about to die, I got a lot of financial crap going on"), Lei McDonald Pt.2 (needing sponsorships to afford it). **(v2)** Debra J. Cook, Daniel Blankenship, Amelia Breslin, Skyler Hynes ("the reality of the market... and my own personal cash flow"), and Teresa Anderson — the most severe case yet: "financially, I'm going to have to wait at least until mid month... my husband's [terminal] stage four prostate lung and bone cancer... each treatment... costs me $25,000."
 
 **Why it happens:** Real estate agents are largely 1099 commission-only — cash flow is genuinely lumpy, and a recurring monthly cost competes directly against other active marketing spend or a pending closing.
 
@@ -44,7 +44,7 @@ Objections #2 (budget) is by far the most common, in over half the calls. But th
 
 ## 2. Needs a third party's approval (partner, spouse, coach, investor)
 
-**Real examples:** Elijah Castelli Pt.1 ("I want to make sure that I got Lindsay's approval on it... there'll be a little bit of a fight on it"), Steve Robe ("I got to run it by Tom... he watches my P&L, and he'll freak out"), William Schlunaker ("I'd like to go talk to him first and see what he's willing to give me"), Kodie Smiley (a silent investor, her ex-husband), Justin Abel (a business partner).
+**Real examples:** Elijah Castelli Pt.1 ("I want to make sure that I got Lindsay's approval on it... there'll be a little bit of a fight on it"), Steve Robe ("I got to run it by Tom... he watches my P&L, and he'll freak out"), William Schlunaker ("I'd like to go talk to him first and see what he's willing to give me"), Kodie Smiley (a silent investor, her ex-husband), Justin Abel (a business partner). **(v2)** Julio Lopez ("I want to talk to a partner in the same field for feedback"), Teresa Anderson ("I cannot make the decision on my own until I talk to him" — her husband, invited by name onto a properly locked-in Tomás call, the correct move here).
 
 **Why it happens:** Many of these leads run their business jointly (a spouse, a coach who reviews the books, a team's managing broker) — the purchase decision genuinely isn't theirs alone to make.
 
@@ -65,6 +65,8 @@ Objections #2 (budget) is by far the most common, in over half the calls. But th
 
 **Suggested response:**
 > "What specifically do you need to think through — is it the investment, the timing, or something about how this works?" Whatever they name, answer that thing concretely on the spot using the matching technique above, then get a specific day/time locked before hanging up.
+
+**(v2) Repeat offender — Julio Lopez.** His follow-up call, weeks after the first, shows the exact same unresolved stall — "I need to do more research and find out if it's a good fit," rated himself "4 or 5" out of 10, "I need to check on the... programs." Sean never asked what programs, or what "good fit" would even mean to him, either time. When the same isolation question fails twice with the same lead, that's a signal to change the approach entirely on attempt three, not repeat it a third time.
 
 ---
 
@@ -161,6 +163,8 @@ Two patterns showed up across the 18/08 batch more consistently than any individ
 **A. Almost never asks the lead to state their own numeric goal.** Ross Seligman, Debra J. Cook, Amelia Breslin, Michael Blevins, Julio Lopez, Skyler Hynes, and both Deme Mekras calls all show the same gap: Sean pitches generic value ("increase your production," "establishes you as the authority") without ever asking the lead to name a number (a target GCI, a transaction count, a specific growth goal). Without that number, there's nothing lead-specific to fall back on the moment a real objection surfaces — which is exactly when Sean defaults to generic case studies or bluster instead of a tailored answer. **Add this as a required discovery question on every call, before the pitch, not just when a call permits it:** *"What's your production goal for this year — a number, not a feeling?"*
 
 **B. Gets partial progress, then stops pushing instead of locking down the rest.** Ward Frederick (4/23) and Bently Perry both show this: Sean secures *something* (a verbal yes, a launch-pad payment) and then folds — no smaller ask when the bigger one is declined, no second call with Tomás for the remaining decision, a follow-up booked with himself instead. This is a different failure than "no close ask" (he did ask) — it's stopping the moment there's *any* win instead of finishing the job. **Drill this explicitly:** once you get a partial yes, the very next sentence should either ask for a smaller concrete commitment or say "let's get Tomás on a specific date to lock in the rest" — never just "no worries, talk soon."
+
+**C. A good score can hide zero live skill.** Dertrez Pressley closed cleanly ($2,117.68 charged) with no objection raised at all — because the lead arrived already decided from a conversation the day before. No discovery, no objection handling, no goal-tie happened *in this call*. Worth watching for in training: don't let an easy, pre-sold win get held up as an example of good process — it isn't one, and it teaches nothing about how Sean handles a harder lead.
 
 ---
 
