@@ -185,8 +185,19 @@ def transcribe_with_gemini(client, local_path):
     return response.text
 
 
+def transcript_temp_path(video_id):
+    """Where save_transcript_doc stashes a transcript locally before/while
+    uploading it. Exposed so callers can check for one left behind by a
+    prior run that got interrupted after transcribing but before a
+    successful upload (process killed, laptop slept through a long network
+    drop, etc.) and skip straight to re-uploading instead of re-transcribing
+    -- regenerating can mean 20-40+ minutes of local CPU time (Whisper) or
+    real API cost (Gemini/Qwen)."""
+    return os.path.join(tempfile.gettempdir(), f"{video_id}.txt")
+
+
 def save_transcript_doc(drive, folder_id, video_id, title, transcript_text):
-    tmp_txt = os.path.join(tempfile.gettempdir(), f"{video_id}.txt")
+    tmp_txt = transcript_temp_path(video_id)
     with open(tmp_txt, "w", encoding="utf-8") as f:
         f.write(transcript_text)
 
@@ -254,17 +265,28 @@ def main():
                 print(f"[skip] {title} (already transcribed)")
                 continue
 
-            print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
             local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
+            txt_path = transcript_temp_path(video["id"])
             try:
-                if os.path.exists(local_path):
-                    print("    (reusing file downloaded on a previous, quota-stopped run)")
+                if os.path.exists(txt_path):
+                    # Already transcribed on a prior run that got interrupted
+                    # before a successful upload -- reuse it instead of paying
+                    # for another Gemini transcription.
+                    print(f"[resuming upload] {title} (already transcribed on a previous run)")
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        transcript = f.read()
                 else:
-                    download_video(drive, video["id"], local_path)
-                transcript = transcribe_with_gemini(client, local_path)
+                    print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
+                    if os.path.exists(local_path):
+                        print("    (reusing file downloaded on a previous, quota-stopped run)")
+                    else:
+                        download_video(drive, video["id"], local_path)
+                    transcript = transcribe_with_gemini(client, local_path)
+
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    done -> {link}")
-                os.remove(local_path)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
             except QuotaExhaustedError:
                 # Stop the whole batch, but keep the local file — next run picks up
                 # transcription directly instead of re-downloading it from scratch.

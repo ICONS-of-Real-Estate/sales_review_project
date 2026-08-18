@@ -18,7 +18,7 @@ import os
 import sys
 import tempfile
 
-from transcribe_sean_calls import download_video, get_drive_service, list_videos, save_transcript_doc
+from transcribe_sean_calls import download_video, get_drive_service, list_videos, save_transcript_doc, transcript_temp_path
 from transcribe_sean_calls_whisper import transcribe_with_whisper
 from transcribe_joana_calls import JOANA_FOLDERS
 
@@ -41,17 +41,25 @@ def main():
                 print(f"[skip] {title} (already transcribed)")
                 continue
 
-            print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
             local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
+            txt_path = transcript_temp_path(video["id"])
             try:
-                if os.path.exists(local_path):
-                    print("    (reusing file downloaded on a previous run)")
+                if os.path.exists(txt_path):
+                    print(f"[resuming upload] {title} (already transcribed on a previous run)")
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        transcript = f.read()
                 else:
-                    download_video(drive, video["id"], local_path)
-                transcript = transcribe_with_whisper(local_path)
+                    print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
+                    if os.path.exists(local_path):
+                        print("    (reusing file downloaded on a previous run)")
+                    else:
+                        download_video(drive, video["id"], local_path)
+                    transcript = transcribe_with_whisper(local_path)
+
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    done -> {link}")
-                os.remove(local_path)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
             except Exception as e:
                 print(f"    FAILED: {e}")
                 if os.path.exists(local_path):
