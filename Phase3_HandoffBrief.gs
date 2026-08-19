@@ -421,5 +421,7 @@ function installHandoffBriefTrigger() {
   RUN_TAG = 'installHandoffBriefTrigger';
   reinstallHourlyTrigger_('sendUpcomingHandoffBriefs_', 1);
   log_('Handoff brief check installed: sendUpcomingHandoffBriefs_() now runs every hour. ' +
-    'Remember HANDOFF_CONFIG.ENABLED is false until Kris/Tomás review a few generated briefs.');
+    (HANDOFF_CONFIG.ENABLED
+      ? 'HANDOFF_CONFIG.ENABLED is true — real briefs will be emailed to reps as upcoming calls are found.'
+      : 'HANDOFF_CONFIG.ENABLED is still false — it will only log, not send, until you flip that.'));
 }
