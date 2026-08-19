@@ -47,7 +47,8 @@ var HANDOFF_CONFIG = {
   // Kris/Tomás should read a handful of generated briefs against the real
   // prior transcript before this emails anyone. False = previewUpcomingHandoffBriefs_
   // and sendUpcomingHandoffBriefs_ both log the brief instead of sending it.
-  ENABLED: false,
+  // Flipped true 19/08/2026 after a clean previewUpcomingHandoffBriefs_() run.
+  ENABLED: true,
 
   // How far ahead to look for an upcoming call. Checked on an hourly
   // trigger (installHandoffBriefTrigger) with a 2-hour-wide window so a
