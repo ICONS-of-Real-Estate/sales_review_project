@@ -980,6 +980,60 @@ function scoreSeanTranscripts() {
   }
 }
 
+/**
+ * Cleanup for a specific failure mode: if scoreSeanTranscripts() or
+ * scoreNewlyLoggedCalls_() ever runs while LITELLM_PROXY_URL/LITELLM_API_KEY
+ * are missing (or the proxy is otherwise unreachable), every transcript hits
+ * the parse-failure fallback and still gets appended as a real row — fake
+ * placeholder score (1/5), severity 5, every flag false — and gets marked
+ * "already scored," so a later successful run silently skips it forever
+ * instead of re-scoring for real. This finds/removes exactly those rows,
+ * identified by the fixed feedback-summary text the fallback always writes.
+ * Bottom-to-top delete so earlier deletions don't shift the row indices of
+ * ones still queued. Run previewFailedParseRows() first to see the list.
+ */
+var PARSE_FAILURE_MARKER_ = 'Automated scoring failed twice to return parseable JSON';
+
+function findFailedParseRows_(sheet) {
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var summaries = sheet.getRange(2, col['AI Feedback Summary'], lastRow - 1, 1).getValues();
+  var names = sheet.getRange(2, col['Prospect Name'], lastRow - 1, 1).getValues();
+  var rows = [];
+  summaries.forEach(function (r, i) {
+    if (String(r[0]).indexOf(PARSE_FAILURE_MARKER_) === 0) {
+      rows.push({ rowIndex: i + 2, prospectName: names[i][0] });
+    }
+  });
+  return rows;
+}
+
+function previewFailedParseRows() {
+  RUN_TAG = 'previewFailedParseRows';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var rows = findFailedParseRows_(sheet);
+  if (!rows.length) { log_('No parse-failure placeholder rows found.'); return; }
+  log_('Found ' + rows.length + ' parse-failure placeholder row(s) — deleteFailedParseRows() would remove:');
+  rows.forEach(function (r) { log_('  Row ' + r.rowIndex + ': ' + r.prospectName); });
+}
+
+function deleteFailedParseRows() {
+  RUN_TAG = 'deleteFailedParseRows';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var rows = findFailedParseRows_(sheet);
+  if (!rows.length) { log_('No parse-failure placeholder rows found — nothing to delete.'); return; }
+  rows.sort(function (a, b) { return b.rowIndex - a.rowIndex; });
+  rows.forEach(function (r) {
+    sheet.deleteRow(r.rowIndex);
+    log_('  Deleted row ' + r.rowIndex + ': ' + r.prospectName);
+  });
+  log_('Deleted ' + rows.length + ' parse-failure placeholder row(s). Re-run scoreSeanTranscripts() ' +
+    'once LITELLM_PROXY_URL/LITELLM_API_KEY are set to re-score these for real.');
+}
+
 // ---------------------------------------------------------------------------
 // Trigger installers — both scoreNewlyLoggedCalls_() and scoreSeanTranscripts()
 // are idempotent (each has its own skip-if-already-scored check), so it's safe
