@@ -1057,6 +1057,22 @@ function installAllReadyTriggers_() {
       'migrateAddPrimaryFailureModeColumn_() + previewWeeklyScorecards_() first, then flip ENABLED and re-run this.');
   }
 
+  if (typeof TRAINING_REVIEW_CONFIG !== 'undefined' && TRAINING_REVIEW_CONFIG.ENABLED) {
+    installTrainingCallReviewTrigger();
+    installed.push('Phase 6: training call review');
+  } else {
+    skipped.push('Phase 6 (training call review) — TRAINING_REVIEW_CONFIG.ENABLED is false. Run ' +
+      'previewTrainingCallReview_() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof DAILY_PRACTICE_CONFIG !== 'undefined' && DAILY_PRACTICE_CONFIG.ENABLED) {
+    installDailySelfPracticeTriggers_();
+    installed.push('Phase 7: daily self-practice grading + reminders');
+  } else {
+    skipped.push('Phase 7 (daily self-practice) — DAILY_PRACTICE_CONFIG.ENABLED is false. Run ' +
+      'previewDailyPracticeGrading_() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
   skipped.push('Phase 0 (Riverside sync) — never auto-installed here on purpose; run ' +
     'previewRiversideSync() against a real API key, confirm it looks right, then run ' +
     'installRiversideSyncTrigger() yourself, once.');
