@@ -35,7 +35,7 @@
  */
 
 var DAILY_PRACTICE_CONFIG = {
-  ENABLED: false,
+  ENABLED: true, // Flipped true 19/08/2026 after previewDailyPracticeGrading_() ran clean (0 found, folders newly shared with Kris).
   FOLDERS: {
     Bens: '1NG3YUXlCWOjcJT8d8ECU0uw6hEVL-fHC',
     Sean: '1SJJ5Jek_4vEzmS907NQofDYq6bl-Mnr1',
