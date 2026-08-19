@@ -23,7 +23,9 @@
  * global scope).
  *
  * ONE-TIME SETUP:
- *   1. Run previewDailyPracticeGrading_() from the Apps Script editor —
+ *   1. Run previewDailyPracticeGrading() from the Apps Script editor (not
+ *      the trailing-underscore version — Apps Script's "Select function"
+ *      dropdown hides those) —
  *      grades whatever transcripts already exist and only logs the feedback,
  *      nothing sent, nothing written.
  *   2. Flip DAILY_PRACTICE_CONFIG.ENABLED to true and run
@@ -209,6 +211,11 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
 }
 
 /** Run this FIRST from the editor. Grades whatever's in the folders and only logs — sends and writes nothing. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewDailyPracticeGrading() {
+  return previewDailyPracticeGrading_();
+}
+
 function previewDailyPracticeGrading_() {
   RUN_TAG = 'previewDailyPracticeGrading_';
   log_('PREVIEW MODE — grading daily practice transcript(s), nothing will be sent or written.');

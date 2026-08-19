@@ -20,11 +20,13 @@
  * Close / Objections Handled).
  *
  * ONE-TIME SETUP:
- *   1. Run migrateAddPrimaryFailureModeColumn_() (Phase2_CallScoring.gs) once —
+ *   1. Run migrateAddPrimaryFailureModeColumn() (Phase2_CallScoring.gs) once —
  *      it adds the "Primary Failure Mode" column to the live Sales Call Log
  *      sheet. Without it, getValidatedColumnMap_ throws (header drift) the
  *      moment anything here runs.
- *   2. Run previewWeeklyScorecards_() from the Apps Script editor. It builds
+ *   2. Run previewWeeklyScorecards() from the Apps Script editor (NOT the
+ *      trailing-underscore version — the "Select function" dropdown hides
+ *      those). It builds
  *      this week's three emails and only logs them — nothing is sent. Check
  *      the numbers look sane (especially if few calls have Primary Failure
  *      Mode populated yet, since that only backfills going forward).
@@ -218,6 +220,11 @@ function buildAndMaybeSendScorecards_(forcePreview) {
 }
 
 /** Run this FIRST from the editor. Builds this week's three emails and only logs them — sends nothing. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewWeeklyScorecards() {
+  return previewWeeklyScorecards_();
+}
+
 function previewWeeklyScorecards_() {
   RUN_TAG = 'previewWeeklyScorecards_';
   log_('PREVIEW MODE — building this week\'s scorecards, nothing will be sent.');

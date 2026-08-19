@@ -478,8 +478,17 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
  * match SALES_CALL_LOG_HEADERS, and appending a column to that array (done
  * for Phase 5) does not retroactively touch the already-deployed sheet.
  * Safe to re-run — no-ops once the column is present. Run this before
- * previewWeeklyScorecards_() / the next scoring pass.
+ * previewWeeklyScorecards() / the next scoring pass.
+ *
+ * NOTE: run migrateAddPrimaryFailureModeColumn() (below), not the
+ * trailing-underscore version — Apps Script's "Select function" dropdown
+ * hides functions ending in "_", so only the wrapper shows up to run.
  */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function migrateAddPrimaryFailureModeColumn() {
+  return migrateAddPrimaryFailureModeColumn_();
+}
+
 function migrateAddPrimaryFailureModeColumn_() {
   RUN_TAG = 'migrateAddPrimaryFailureModeColumn_';
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);

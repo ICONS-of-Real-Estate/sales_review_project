@@ -62,14 +62,16 @@
  *        un-escapes those \n's back into real line breaks itself, so don't
  *        hand-edit the key before pasting it in.
  *
- * 4. Run previewInboxSlaCheck_() from the Apps Script editor FIRST. It signs
+ * 4. Run previewInboxSlaCheck() from the Apps Script editor FIRST (not the
+ *    trailing-underscore version — Apps Script's "Select function" dropdown
+ *    hides those). It signs
  *    in as Sean, then Bens, reads their inbox metadata, and logs what it
  *    found — no email sent, nothing written anywhere. If this errors with
  *    "unauthorized_client", either the delegation grant in step 2 hasn't
  *    propagated yet (wait a bit and retry) or the Client ID/scope typed there
  *    doesn't exactly match what's requested here.
  *
- * 5. Once previewInboxSlaCheck_() output looks right, flip
+ * 5. Once previewInboxSlaCheck() output looks right, flip
  *    INBOX_SLA_CONFIG.ENABLED to true and run installInboxSlaTrigger() once.
  *    That's the whole go-live — no per-rep involvement needed, matching how
  *    Kris said they'd rather run this (Super Admin + direct account access,
@@ -286,6 +288,11 @@ function isWeekendInBusinessTz_(date) {
 }
 
 /** Read-only dry run: logs what each rep's overdue inbox looks like right now. Sends nothing. Run this first, per the setup steps above. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewInboxSlaCheck() {
+  return previewInboxSlaCheck_();
+}
+
 function previewInboxSlaCheck_() {
   RUN_TAG = 'previewInboxSlaCheck_';
   INBOX_SLA_CONFIG.REPS.forEach(function (repCfg) {
@@ -367,7 +374,7 @@ function runInboxSlaCheck() {
 }
 
 /**
- * ONE-TIME setup, run manually — ONLY after previewInboxSlaCheck_() has been
+ * ONE-TIME setup, run manually — ONLY after previewInboxSlaCheck() has been
  * checked against real data (see file header, step 4). Installs a single
  * daily trigger; runInboxSlaCheck() itself skips weekends, so no separate
  * Mon-Fri triggers are needed.
@@ -386,5 +393,5 @@ function installInboxSlaTrigger() {
   log_('Inbox SLA check installed: runInboxSlaCheck() now runs daily at ' +
     INBOX_SLA_CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE +
     ' and skips itself on Saturday/Sunday. Remember INBOX_SLA_CONFIG.ENABLED is false until ' +
-    'previewInboxSlaCheck_() has been checked against real data.');
+    'previewInboxSlaCheck() has been checked against real data.');
 }

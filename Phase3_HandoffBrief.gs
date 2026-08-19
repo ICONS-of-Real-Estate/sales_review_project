@@ -32,7 +32,9 @@
  *    is logged), so there's nowhere else to mark "already sent" against.
  *
  * NOT YET LIVE-VERIFIED end-to-end (no real upcoming QC/Sales Call event to
- * test against at the time this was written) — previewUpcomingHandoffBriefs_()
+ * test against at the time this was written) — previewUpcomingHandoffBriefs()
+ * (run that one, not the trailing-underscore version — Apps Script's
+ * "Select function" dropdown hides those) —
  * below does the full match (calendar -> prospect -> prior row) and logs
  * what it WOULD send without calling the model or sending anything; run
  * that first. Gated by HANDOFF_CONFIG.ENABLED (see below), same
@@ -268,6 +270,11 @@ function buildHandoffBriefEmailBody_(brief, ctx) {
  * tab). Run this first — before flipping HANDOFF_CONFIG.ENABLED — to confirm
  * the matching logic finds real rows against real upcoming events.
  */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewUpcomingHandoffBriefs() {
+  return previewUpcomingHandoffBriefs_();
+}
+
 function previewUpcomingHandoffBriefs_() {
   RUN_TAG = 'previewUpcomingHandoffBriefs_';
   var tz = CONFIG.BUSINESS_TIMEZONE;

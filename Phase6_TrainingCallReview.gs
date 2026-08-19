@@ -31,7 +31,9 @@
  * getTranscriptText_ from Phase1/Phase2 (same-project global scope).
  *
  * ONE-TIME SETUP:
- *   1. Run previewTrainingCallReview_() from the Apps Script editor. It reads
+ *   1. Run previewTrainingCallReview() from the Apps Script editor (the
+ *      trailing-underscore version won't show up in the "Select function"
+ *      dropdown — Apps Script hides those). It reads
  *      whatever dated subfolders exist and only logs the coaching plan for
  *      each — nothing is sent, nothing is marked processed.
  *   2. Check the output makes sense (right rep, notes actually match what
@@ -223,6 +225,11 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
 }
 
 /** Run this FIRST from the editor. Reviews whatever's in the folders and only logs — sends and writes nothing. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewTrainingCallReview() {
+  return previewTrainingCallReview_();
+}
+
 function previewTrainingCallReview_() {
   RUN_TAG = 'previewTrainingCallReview_';
   log_('PREVIEW MODE — reviewing training call transcript(s), nothing will be sent or written.');

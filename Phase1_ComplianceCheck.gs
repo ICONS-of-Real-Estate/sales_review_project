@@ -742,7 +742,7 @@ var SALES_CALL_LOG_HEADERS = [
                             //    no_goal_alignment/no_second_call_booked/both/
                             //    multiple/none — appended at the end, same
                             //    backward-compatible pattern as column V. Existing
-                            //    live sheets need migrateAddPrimaryFailureModeColumn_()
+                            //    live sheets need migrateAddPrimaryFailureModeColumn()
                             //    (Phase2_CallScoring.gs) run once before this column
                             //    exists there; rows scored before that will read as
                             //    blank, which the weekly scorecard treats as "no
@@ -1022,6 +1022,11 @@ function installAutomation() {
  *     installed by a human running installRiversideSyncTrigger() directly,
  *     once, after previewRiversideSync() looks right.
  */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function installAllReadyTriggers() {
+  return installAllReadyTriggers_();
+}
+
 function installAllReadyTriggers_() {
   RUN_TAG = 'installAllReadyTriggers_';
   var installed = [], skipped = [];
@@ -1038,7 +1043,7 @@ function installAllReadyTriggers_() {
     installed.push('Phase 3: warm-handoff briefs');
   } else {
     skipped.push('Phase 3 (handoff briefs) — HANDOFF_CONFIG.ENABLED is false. Run ' +
-      'previewUpcomingHandoffBriefs_(), confirm it looks right, then flip ENABLED and re-run this.');
+      'previewUpcomingHandoffBriefs(), confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   if (typeof INBOX_SLA_CONFIG !== 'undefined' && INBOX_SLA_CONFIG.ENABLED) {
@@ -1046,7 +1051,7 @@ function installAllReadyTriggers_() {
     installed.push('Phase 4: inbox SLA check');
   } else {
     skipped.push('Phase 4 (inbox SLA) — INBOX_SLA_CONFIG.ENABLED is false. Needs the domain-wide-' +
-      'delegation setup (see that file\'s header) + previewInboxSlaCheck_() first, then flip ENABLED and re-run this.');
+      'delegation setup (see that file\'s header) + previewInboxSlaCheck() first, then flip ENABLED and re-run this.');
   }
 
   if (typeof WEEKLY_SCORECARD_CONFIG !== 'undefined' && WEEKLY_SCORECARD_CONFIG.ENABLED) {
@@ -1054,7 +1059,7 @@ function installAllReadyTriggers_() {
     installed.push('Phase 5: weekly scorecard');
   } else {
     skipped.push('Phase 5 (weekly scorecard) — WEEKLY_SCORECARD_CONFIG.ENABLED is false. Run ' +
-      'migrateAddPrimaryFailureModeColumn_() + previewWeeklyScorecards_() first, then flip ENABLED and re-run this.');
+      'migrateAddPrimaryFailureModeColumn() + previewWeeklyScorecards() first, then flip ENABLED and re-run this.');
   }
 
   if (typeof TRAINING_REVIEW_CONFIG !== 'undefined' && TRAINING_REVIEW_CONFIG.ENABLED) {
@@ -1062,7 +1067,7 @@ function installAllReadyTriggers_() {
     installed.push('Phase 6: training call review');
   } else {
     skipped.push('Phase 6 (training call review) — TRAINING_REVIEW_CONFIG.ENABLED is false. Run ' +
-      'previewTrainingCallReview_() first, confirm it looks right, then flip ENABLED and re-run this.');
+      'previewTrainingCallReview() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   if (typeof DAILY_PRACTICE_CONFIG !== 'undefined' && DAILY_PRACTICE_CONFIG.ENABLED) {
@@ -1070,7 +1075,7 @@ function installAllReadyTriggers_() {
     installed.push('Phase 7: daily self-practice grading + reminders');
   } else {
     skipped.push('Phase 7 (daily self-practice) — DAILY_PRACTICE_CONFIG.ENABLED is false. Run ' +
-      'previewDailyPracticeGrading_() first, confirm it looks right, then flip ENABLED and re-run this.');
+      'previewDailyPracticeGrading() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   skipped.push('Phase 0 (Riverside sync) — never auto-installed here on purpose; run ' +
