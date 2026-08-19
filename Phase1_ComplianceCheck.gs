@@ -706,6 +706,29 @@ function businessDayStart_(d, tz) {
   return new Date(s + ' 00:00:00 GMT' + Utilities.formatDate(d, tz, 'Z'));
 }
 
+/**
+ * Kris's ask (19/08/2026): the daily self-practice cycle is anchored to
+ * Tuesday's training call, not the calendar work-week — Wed/Thu/Fri/Mon/Tue
+ * = Day 1-5, then it loops to Week+1 Day 1 the following Wednesday.
+ * Saturday/Sunday get no assignment (returns null). Deliberately stateless —
+ * derived purely from the date, using TRAINING_CYCLE_EPOCH (a real Wednesday,
+ * Week 1 Day 1) as the anchor, so no counter needs to be stored anywhere.
+ */
+var TRAINING_CYCLE_DAY_BY_WEEKDAY_ = { Wednesday: 1, Thursday: 2, Friday: 3, Monday: 4, Tuesday: 5 };
+var TRAINING_CYCLE_EPOCH_ = new Date(2026, 7, 19); // Wed 19 Aug 2026 = Week 1, Day 1
+
+function computeTrainingCycleLabel_(date, tz) {
+  var weekdayName = Utilities.formatDate(date, tz, 'EEEE');
+  var day = TRAINING_CYCLE_DAY_BY_WEEKDAY_[weekdayName];
+  if (!day) return null; // Saturday/Sunday — no assignment
+
+  var daysSinceEpoch = Math.round(
+    (businessDayStart_(date, tz) - businessDayStart_(TRAINING_CYCLE_EPOCH_, tz)) / 86400000
+  );
+  var week = Math.floor(daysSinceEpoch / 7) + 1;
+  return { week: week, day: day, label: 'Week ' + week + ', Day ' + day };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 0 one-time setup — creates the shared "Sales Call Log" tab.
 // Run setupSalesCallLog() ONCE from the editor, then delete or ignore.

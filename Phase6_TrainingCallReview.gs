@@ -66,7 +66,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  - Did Tomás reference a specific real call/objection pattern of ' + rep + '\'s, and what did he say about it?',
     '  - Did ' + rep + ' actively practice (role-play, answer a drill question) in this call? Quote the moment.',
     '  - What did Tomás explicitly tell ' + rep + ' to do differently before next week?',
-    '  - One concrete focus area for ' + rep + '\'s daily self-practice this coming week.',
+    '  - The 2-3 SPECIFIC objections Tomás drilled ' + rep + ' on in this call (not a general theme —',
+    '    the actual named objection, e.g. "I\'m too busy right now", "What does this cost?"), each with a',
+    '    short, concrete one-clause note on how to handle it. These get sent to ' + rep + ' as this week\'s',
+    '    daily practice assignment, so keep both the label and the note short and usable as a checklist item.',
     '',
     'Be skeptical: if ' + rep + ' was only listening, not practicing, mark practiced=false — don\'t invent',
     'practice that didn\'t happen.',
@@ -79,6 +82,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  "practiced": true,',
     '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote",',
     '  "next_focus": "string — one concrete, specific self-practice focus for this coming week",',
+    '  "objections_to_drill": [',
+    '    { "label": "string — the specific objection, short, e.g. \\"I\'m too busy right now\\"",',
+    '      "note": "string — one short clause on how to handle it, e.g. \\"qualify them, don\'t just push to book\\"" }',
+    '  ],',
     '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\""',
     '}'
   ].join('\n');
@@ -100,7 +107,12 @@ function isValidTrainingReviewSchema_(obj) {
     typeof obj.practiced === 'boolean' &&
     typeof obj.coaching_notes === 'string' &&
     typeof obj.next_focus === 'string' &&
-    typeof obj.team_notes === 'string');
+    typeof obj.team_notes === 'string' &&
+    Array.isArray(obj.objections_to_drill) &&
+    obj.objections_to_drill.length > 0 &&
+    obj.objections_to_drill.every(function (o) {
+      return o && typeof o.label === 'string' && typeof o.note === 'string';
+    }));
 }
 
 /** Strips WebVTT cue numbers + timestamp lines, leaving just "Speaker: text" lines for the judge. */
@@ -142,23 +154,40 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     practiced: false,
     coaching_notes: 'Automated review failed to parse twice — read the transcript manually.',
     next_focus: 'n/a — read transcript manually: ' + rep + '/' + dateLabel,
+    objections_to_drill: [],
     team_notes: 'none'
   };
 }
 
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
-  var body = 'Tomás\'s training call with ' + rep + ' (' + dateLabel + ') reviewed.\n\n';
-  body += 'Attended: ' + (result.attended ? 'Yes' : 'No') + '\n';
-  body += 'Practiced live: ' + (result.practiced ? 'Yes' : 'No') + '\n';
-  body += 'Notes: ' + result.coaching_notes + '\n\n';
-  body += 'Focus for ' + rep + '\'s self-practice this week: ' + result.next_focus + '\n\n';
-  if (result.team_notes && result.team_notes.toLowerCase() !== 'none') {
-    body += 'Team-wide note: ' + result.team_notes + '\n\n';
-  }
-  body += '— This is an automated review of the training call transcript itself, not a sales call. ' +
-    'Drafted by AI; reply to Kris or Tomás with any corrections.';
-  return { subject: subject, body: body };
+  var objections = result.objections_to_drill || [];
+
+  var objectionsPlain = objections.map(function (o) {
+    return '- ' + o.label + ' — ' + o.note;
+  }).join('\n');
+  var objectionsHtml = '<ul>' + objections.map(function (o) {
+    return '<li><b>' + o.label + '</b> — ' + o.note + '</li>';
+  }).join('') + '</ul>';
+
+  var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+    'Attended: ' + (result.attended ? 'Yes' : 'No') + ' | Practiced live: ' + (result.practiced ? 'Yes' : 'No') + '\n\n' +
+    'Notes: ' + result.coaching_notes + '\n\n' +
+    'This week\'s objections to drill:\n' + objectionsPlain + '\n\n' +
+    (result.team_notes && result.team_notes.toLowerCase() !== 'none' ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
+    '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
+
+  var htmlBody =
+    '<p>Training call with <b>' + rep + '</b> (' + dateLabel + '):</p>' +
+    '<p><b>Attended:</b> ' + (result.attended ? 'Yes' : 'No') +
+    ' &nbsp;|&nbsp; <b>Practiced live:</b> ' + (result.practiced ? 'Yes' : 'No') + '</p>' +
+    '<p><b>Notes:</b> ' + result.coaching_notes + '</p>' +
+    '<p><b>This week\'s objections to drill:</b></p>' + objectionsHtml +
+    (result.team_notes && result.team_notes.toLowerCase() !== 'none'
+      ? '<p><b>Team-wide note:</b> ' + result.team_notes + '</p>' : '') +
+    '<p><i>— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</i></p>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
 /** Finds the Zoom-generated transcript inside a dated subfolder (skips the video/audio siblings). */
@@ -214,8 +243,18 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
       // Goes to the rep being trained; Tomás (who ran the call) and Kris are cc'd.
       guardedSend_(repCfg.email, email.subject, email.body, {
         cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL,
+        htmlBody: email.htmlBody,
         name: 'Training Call Review Bot'
       }, 3); // rep + Tomás + Kris
+
+      // Persisted for Phase 7's daily assignment emails to read. Only overwrite on a
+      // real, non-empty result — a parse-failure fallback (empty array) must NOT wipe
+      // out last week's objections; per Kris, a skipped/late training week just keeps
+      // running the previous week's assignment until a new one actually lands.
+      if (result.objections_to_drill && result.objections_to_drill.length) {
+        PropertiesService.getScriptProperties().setProperty(
+          'TRAINING_OBJECTIONS_' + rep, JSON.stringify(result.objections_to_drill));
+      }
 
       var doc = DocumentApp.create('Training Plan');
       doc.getBody().setText(email.body);
