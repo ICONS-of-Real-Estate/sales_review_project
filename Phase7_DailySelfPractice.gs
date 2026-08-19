@@ -3,8 +3,10 @@
  *
  * Thao's ask (19/08/2026): every day, each rep (Bens/Sean/Joana) uploads a
  * video of themselves practicing objection handling alone. This phase grades
- * that day's practice reps and emails feedback, plus reminds anyone who
- * hasn't uploaded yet.
+ * that day's practice reps and emails feedback, plus sends each rep that
+ * day's assignment (the specific objections from their last training call,
+ * per Phase 6's TRAINING_OBJECTIONS_<rep> property) each training-cycle
+ * weekday.
  *
  * Source folders — one per rep, under "Daily Objection Practice":
  *   Bens:  https://drive.google.com/drive/folders/1NG3YUXlCWOjcJT8d8ECU0uw6hEVL-fHC
@@ -19,7 +21,7 @@
  * each upload before this phase's grading trigger runs.
  *
  * Reuses CONFIG, log_, guardedSend_, callKimiJudge_, stripFencesAndParseJson_,
- * getTranscriptText_, businessDayStart_ from Phase1/Phase2 (same-project
+ * getTranscriptText_, computeTrainingCycleLabel_ from Phase1/Phase2 (same-project
  * global scope).
  *
  * ONE-TIME SETUP:
@@ -40,7 +42,7 @@ var DAILY_PRACTICE_CONFIG = {
     Joana: '1fevtADQtgtb6Q1UAffp-cZjcNB6t6VRm'
   },
   GRADING_HOUR: 20, // 8pm — after the work day, so today's upload has time to land + get transcribed
-  REMINDER_HOUR: 16, // 4pm — nudge anyone who hasn't uploaded yet with hours still left in the day
+  REMINDER_HOUR: 9, // 9am — this is now the day's assignment (objections to drill), not an end-of-day nag, so it goes out in the morning. Was 16:00; flag to Kris if a different time is wanted.
   // Escalate (cc Kris + Tomás) when a graded rep falls at or below this — same
   // "manual review" spirit as Phase 2's severity flag, applied to a rep's own
   // practice quality rather than a real lead's call.
@@ -239,45 +241,67 @@ function runDailyPracticeGrading() {
 }
 
 /**
- * Reminder pass — for each rep, checks whether ANY file (video or transcript)
- * was added to their folder so far today (business day); if not, emails them
- * the direct folder link. Independent of grading — runs earlier in the day
- * so there's still time left to upload.
+ * Daily assignment pass — for each rep, on a training-cycle weekday (Wed-Tue,
+ * skips weekends), sends that day's objection-drill assignment: the specific
+ * objections stored from their last training call (Phase 6's
+ * TRAINING_OBJECTIONS_<rep> property) plus the delivery folder link. Falls
+ * back to a generic "record something" nudge if no training has landed yet
+ * for that rep (e.g. before their first Tuesday session).
  */
 function sendDailyPracticeReminders_() {
   RUN_TAG = 'sendDailyPracticeReminders_';
   var tz = CONFIG.BUSINESS_TIMEZONE;
-  var dayStart = businessDayStart_(new Date(), tz);
+  var label = computeTrainingCycleLabel_(new Date(), tz);
+  if (!label) { log_('Weekend — no daily practice assignment today.'); return; }
 
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
-    if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping reminder.'); return; }
+    if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping assignment.'); return; }
 
     var folderId = DAILY_PRACTICE_CONFIG.FOLDERS[rep];
-    var folder = DriveApp.getFolderById(folderId);
-    var files = folder.getFiles();
-    var uploadedToday = false;
-    while (files.hasNext()) {
-      if (files.next().getDateCreated() >= dayStart) { uploadedToday = true; break; }
+    var folderLink = 'https://drive.google.com/drive/folders/' + folderId;
+    var stored = PropertiesService.getScriptProperties().getProperty('TRAINING_OBJECTIONS_' + rep);
+    var objections = stored ? JSON.parse(stored) : null;
+
+    var subject, body, htmlBody;
+    if (objections && objections.length) {
+      subject = label.label + ' — Training Plan';
+      var plainList = objections.map(function (o, i) { return (i + 1) + '. ' + o.label + ' — ' + o.note; }).join('\n');
+      var htmlList = '<ol>' + objections.map(function (o) {
+        return '<li><b>' + o.label + '</b> — ' + o.note + '</li>';
+      }).join('') + '</ol>';
+
+      body =
+        'Record a video practicing objection handling:\n\n' +
+        plainList + '\n\n' +
+        'Delivery folder: ' + folderLink + '\n\n' +
+        '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
+
+      htmlBody =
+        '<p>Record a video practicing objection handling:</p>' +
+        htmlList +
+        '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
+        '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
+    } else {
+      subject = label.label + ' — Training Plan';
+      body =
+        'Record a video practicing objection handling (no specific objections on file yet — pick one you ' +
+        'want to sharpen).\n\n' +
+        'Delivery folder: ' + folderLink + '\n\n' +
+        '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
+      htmlBody =
+        '<p>Record a video practicing objection handling (no specific objections on file yet — pick one ' +
+        'you want to sharpen).</p>' +
+        '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
+        '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     }
-
-    if (uploadedToday) { log_('[' + rep + '] already uploaded today — no reminder needed.'); return; }
-
-    var subject = 'Reminder: today\'s objection-practice drill';
-    var body =
-      'Hi ' + rep + ',\n\n' +
-      'Looks like today\'s objection-handling practice video hasn\'t been uploaded yet. Drop it here ' +
-      'when you record it:\n\n' +
-      'https://drive.google.com/drive/folders/' + folderId + '\n\n' +
-      'You\'ll get feedback automatically once it\'s uploaded and transcribed.\n\n' +
-      '— This is an automated reminder. Reply to Kris or Tomás with any issues.';
 
     if (!DAILY_PRACTICE_CONFIG.ENABLED) {
-      log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject);
+      log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject + '\n' + body + '\n');
       return;
     }
-    guardedSend_(repCfg.email, subject, body, { name: 'Daily Practice Reminder Bot' }, 1);
-    log_('[' + rep + '] Sent upload reminder.');
+    guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot' }, 1);
+    log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).'));
   });
 }
 
