@@ -43,7 +43,9 @@
  */
 
 var TRAINING_REVIEW_CONFIG = {
-  ENABLED: false,
+  // Flipped true 19/08/2026 after Bens' 260818 training call was reviewed
+  // and sent manually — future weeks are handled by this automation.
+  ENABLED: true,
   FOLDERS: {
     Bens: '1aukWaQPrwGM_RmquAFo6gdPFveOgsNoD',
     Sean: '1gbFSBxpEL-8YEnFzfZNidIrZF1hIsCTj',
