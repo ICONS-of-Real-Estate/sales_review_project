@@ -196,19 +196,24 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
         continue;
       }
 
+      var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
+      if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping.'); return; }
+
       var cleanText = stripVttMarkup_(getTranscriptText_(transcriptFile));
       var result = reviewTrainingCallTranscript_(rep, cleanText, dateLabel);
       var email = buildTrainingReviewEmail_(rep, dateLabel, result);
 
       if (dryRun) {
-        log_('(preview) ' + CONFIG.TOMAS_EMAIL + ' <- ' + email.subject + '\n' + email.body + '\n');
+        log_('(preview) ' + repCfg.email + ' (cc ' + CONFIG.TOMAS_EMAIL + ', ' + CONFIG.KRIS_EMAIL +
+          ') <- ' + email.subject + '\n' + email.body + '\n');
         continue;
       }
 
-      guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
-        cc: CONFIG.KRIS_EMAIL,
+      // Goes to the rep being trained; Tomás (who ran the call) and Kris are cc'd.
+      guardedSend_(repCfg.email, email.subject, email.body, {
+        cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL,
         name: 'Training Call Review Bot'
-      }, 2); // Tomás + Kris
+      }, 3); // rep + Tomás + Kris
 
       var doc = DocumentApp.create('Training Plan');
       doc.getBody().setText(email.body);
