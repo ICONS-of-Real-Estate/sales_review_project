@@ -472,13 +472,15 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
 }
 
 /**
- * ONE-TIME migration: appends the "Primary Failure Mode" header to the live
- * "Sales Call Log" sheet if it isn't there yet. Needed because
- * getValidatedColumnMap_ requires the sheet's real header row to exactly
- * match SALES_CALL_LOG_HEADERS, and appending a column to that array (done
- * for Phase 5) does not retroactively touch the already-deployed sheet.
- * Safe to re-run — no-ops once the column is present. Run this before
- * previewWeeklyScorecards() / the next scoring pass.
+ * ONE-TIME migration: appends any header(s) from SALES_CALL_LOG_HEADERS that
+ * are missing from the live "Sales Call Log" sheet's header row (e.g. "Kris
+ * Manual Review Verdict", "Primary Failure Mode" — both added to the shared
+ * array over the course of this project without ever being backfilled onto
+ * the already-deployed sheet). Needed because getValidatedColumnMap_
+ * requires the sheet's real header row to exactly match SALES_CALL_LOG_HEADERS.
+ * Checks every column in order (not just the last one) and appends whichever
+ * are actually missing — safe to re-run, no-ops once everything is present.
+ * Run this before previewWeeklyScorecards() / the next scoring pass.
  *
  * NOTE: run migrateAddPrimaryFailureModeColumn() (below), not the
  * trailing-underscore version — Apps Script's "Select function" dropdown
@@ -495,19 +497,26 @@ function migrateAddPrimaryFailureModeColumn_() {
   var sheet = resolveSheet_(ss, 'Sales Call Log');
   if (!sheet) { log_('No Sales Call Log tab found.'); return; }
 
-  var colIndex = SALES_CALL_LOG_HEADERS.length; // 'Primary Failure Mode' is the last header
-  var cell = sheet.getRange(1, colIndex);
-  if (cell.getValue() === 'Primary Failure Mode') {
-    log_('"Primary Failure Mode" column already present at column ' + colIndex + ' — nothing to do.');
+  var existing = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
+  var added = [];
+  for (var i = 0; i < SALES_CALL_LOG_HEADERS.length; i++) {
+    var expected = SALES_CALL_LOG_HEADERS[i];
+    var actual = existing[i];
+    if (actual === expected) continue;
+    if (actual !== '' && actual !== undefined) {
+      throw new Error('Column ' + (i + 1) + ' expected "' + expected + '" or blank, found "' + actual +
+        '" — resolve manually before migrating.');
+    }
+    sheet.getRange(1, i + 1).setValue(expected).setFontWeight('bold').setBackground('#e8eef7');
+    added.push(expected + ' (column ' + (i + 1) + ')');
+  }
+
+  if (!added.length) {
+    log_('All ' + SALES_CALL_LOG_HEADERS.length + ' headers already present — nothing to do.');
     return;
   }
-  if (cell.getValue() !== '') {
-    throw new Error('Column ' + colIndex + ' already has an unrelated value ("' + cell.getValue() +
-      '") — resolve manually before migrating (expected either blank or "Primary Failure Mode").');
-  }
-  cell.setValue('Primary Failure Mode').setFontWeight('bold').setBackground('#e8eef7');
-  log_('Added "Primary Failure Mode" header at column ' + colIndex + '. Existing rows read as blank ' +
-    '("no signal") until re-scored; new scoring passes will populate it going forward.');
+  log_('Added missing header(s): ' + added.join(', ') + '. Existing rows read as blank ' +
+    '("no signal") for these until re-scored; new scoring passes will populate them going forward.');
 }
 
 // ---------------------------------------------------------------------------
