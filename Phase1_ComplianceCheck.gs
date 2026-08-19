@@ -1093,6 +1093,14 @@ function installAllReadyTriggers_() {
       'previewTrainingCallReview() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
+  if (typeof TOMAS_TRANSCRIPT_REMINDER_CONFIG !== 'undefined' && TOMAS_TRANSCRIPT_REMINDER_CONFIG.ENABLED) {
+    installTomasTranscriptReminderTrigger();
+    installed.push("Phase 6: Tomás's Tuesday transcript-upload reminder");
+  } else {
+    skipped.push("Phase 6 (Tomás's Tuesday reminder) — TOMAS_TRANSCRIPT_REMINDER_CONFIG.ENABLED is false. Run " +
+      'sendTomasTranscriptReminder() once to see the preview, then flip ENABLED and re-run this.');
+  }
+
   if (typeof DAILY_PRACTICE_CONFIG !== 'undefined' && DAILY_PRACTICE_CONFIG.ENABLED) {
     installDailySelfPracticeTriggers_();
     installed.push('Phase 7: daily self-practice grading + reminders');

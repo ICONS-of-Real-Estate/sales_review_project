@@ -312,3 +312,67 @@ function installTrainingCallReviewTrigger() {
   log_('Training call review trigger installed: daily ' + TRAINING_REVIEW_CONFIG.TRIGGER_HOUR +
     ':00 (' + CONFIG.BUSINESS_TIMEZONE + ') — checks for new transcripts, most days finds none.');
 }
+
+// ---------------------------------------------------------------------------
+// Tomás's Tuesday reminder to upload each rep's training call recording.
+//
+// Kris's ask (19/08/2026): remind Tomás every Tuesday, midday Portugal time,
+// to drop each rep's training call recording into their folder. The daily
+// scan above (runTrainingCallReview, hourly-checked-daily) already covers
+// "training happened late" (Wed/Thu) or "training got skipped this week" —
+// it just keeps finding nothing until a transcript actually shows up, and
+// Phase 7's daily assignment keeps running last week's objections in the
+// meantime. This reminder is purely a nudge on top of that, not a dependency.
+// ---------------------------------------------------------------------------
+
+var TOMAS_TRANSCRIPT_REMINDER_CONFIG = {
+  ENABLED: false,
+  TRIGGER_HOUR: 12, // midday
+  TIMEZONE: 'Europe/Lisbon' // Portugal
+};
+
+function buildTomasTranscriptReminderEmail_() {
+  var subject = "Reminder: upload this week's training call recordings";
+  var links = Object.keys(TRAINING_REVIEW_CONFIG.FOLDERS).map(function (rep) {
+    return rep + ': https://drive.google.com/drive/folders/' + TRAINING_REVIEW_CONFIG.FOLDERS[rep];
+  }).join('\n');
+  var body = 'Hi Tomás,\n\n' +
+    "Please drop this week's training call recording for each rep into their folder (a dated " +
+    'YYMMDD subfolder), so it can be reviewed:\n\n' + links + '\n\n' +
+    "If Zoom's cloud recording auto-transcribes it, that's picked up automatically — nothing else " +
+    'to do once it lands there.\n\n' +
+    '— This is an automated reminder. Reply to Kris with any issues.';
+  return { subject: subject, body: body };
+}
+
+/** Trigger target — also serves as its own preview (logs instead of sending while disabled). */
+function sendTomasTranscriptReminder_() {
+  RUN_TAG = 'sendTomasTranscriptReminder_';
+  var email = buildTomasTranscriptReminderEmail_();
+  if (!TOMAS_TRANSCRIPT_REMINDER_CONFIG.ENABLED) {
+    log_('(preview, config disabled) ' + CONFIG.TOMAS_EMAIL + ' <- ' + email.subject + '\n' + email.body);
+    return;
+  }
+  guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, { name: 'Training Call Review Bot' }, 1);
+  log_("Sent Tomás this week's transcript-upload reminder.");
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function sendTomasTranscriptReminder() {
+  return sendTomasTranscriptReminder_();
+}
+
+function installTomasTranscriptReminderTrigger() {
+  RUN_TAG = 'installTomasTranscriptReminderTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sendTomasTranscriptReminder_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('sendTomasTranscriptReminder_')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .atHour(TOMAS_TRANSCRIPT_REMINDER_CONFIG.TRIGGER_HOUR)
+    .inTimezone(TOMAS_TRANSCRIPT_REMINDER_CONFIG.TIMEZONE)
+    .create();
+  log_('Tomás transcript reminder installed: Tuesdays ' + TOMAS_TRANSCRIPT_REMINDER_CONFIG.TRIGGER_HOUR +
+    ':00 (' + TOMAS_TRANSCRIPT_REMINDER_CONFIG.TIMEZONE + ').');
+}
