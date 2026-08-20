@@ -22,11 +22,31 @@
  *
  * The daily assignment email (sendDailyPracticeReminders_) is cc'd to Tomás
  * (CONFIG.TOMAS_EMAIL) so he sees every assignment as it goes out, not just
- * the escalations. A separate compliance check (checkDailyPracticeCompliance_)
- * runs each morning BEFORE that day's new assignment goes out, checking
- * whether the rep replied to yesterday's assignment email and whether a new
- * file actually landed in their Drive folder — alerting Kris+Tomás per rep
- * missing either.
+ * the escalations. Each assignment tells the rep to name their file starting
+ * with that day's date in YYMMDD format (Zoom's own auto-recording names,
+ * e.g. "GMT20260820-085518_Recording.mp4", do NOT satisfy this — the rep
+ * must rename it).
+ *
+ * Kris's ask (20/08/2026): a rep saying "done" in the thread isn't enough —
+ * checkDailyPracticeCompliance_ now persistently reply-alls the SAME
+ * assignment thread once a day for as long as the correctly-named file is
+ * still missing from the rep's Drive folder, tracked via the "Daily Practice
+ * Follow-ups" sheet tab (one open row per outstanding assignment, not just
+ * yesterday's). The only way to stop the nagging on one thread is Kris or
+ * Tomás replying-all on it with "cancel" or "stop" — the check looks for
+ * that in every message from either of them before deciding whether to nag
+ * again. This replaces the old one-shot "alert Kris/Tomás about yesterday"
+ * behavior; it runs at the same trigger slot (runDailyPracticeCompliance),
+ * no new trigger to install.
+ *
+ * Once the correctly-named file lands AND its transcript is ready, the
+ * grading itself also lands as a reply-all on that same tracked thread
+ * (deliverDailyPracticeGrading_) instead of a separate standalone email —
+ * so everyone already watching the thread sees how the rep did, in place.
+ * Both checkDailyPracticeCompliance_'s daily scan and the nightly
+ * buildAndMaybeGradeDailyPractice_ grading pass can be the one that actually
+ * delivers it, whichever finds the transcript first; a file with no tracked
+ * thread (predates this system) still falls back to a standalone email.
  *
  * Reuses CONFIG, log_, guardedSend_, callKimiJudge_, stripFencesAndParseJson_,
  * getTranscriptText_, computeTrainingCycleLabel_ from Phase1/Phase2 (same-project
@@ -196,6 +216,54 @@ function dailyPracticeAlreadyGraded_(folder, fileName) {
   return folder.getFilesByName(feedbackName).hasNext();
 }
 
+/**
+ * Delivers one graded file's feedback and writes the "<title> — Feedback" Doc
+ * artifact. If replyThreadId is given (the original assignment thread, from
+ * the "Daily Practice Follow-ups" sheet), replies-all on THAT thread instead
+ * of sending a standalone email — per Kris (20/08/2026): once the thread's
+ * assignment is picked up as complete, the grading should land as a reply on
+ * the same thread everyone's already watching, not a separate email. Falls
+ * back to a standalone email to the rep (the pre-existing behavior) when no
+ * tracked thread is found — e.g. a backlog file that predates this tracking.
+ */
+function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId) {
+  if (dryRun) {
+    log_('(preview) ' + (replyThreadId ? 'reply-all on tracked thread ' + replyThreadId : repCfg.email) +
+      ' <- ' + email.subject +
+      (escalate ? ' [would CC Kris+Tomás — score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ']' : '') +
+      '\n' + email.body + '\n');
+    return;
+  }
+
+  if (replyThreadId) {
+    var thread = GmailApp.getThreadById(replyThreadId);
+    if (thread) {
+      thread.replyAll(email.body, { cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL, name: 'Daily Practice Feedback Bot' });
+      log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) — replied on tracked assignment thread.');
+    } else {
+      log_('  [' + rep + '] Tracked thread ' + replyThreadId + ' no longer exists — falling back to a standalone email.');
+      replyThreadId = null;
+    }
+  }
+  if (!replyThreadId) {
+    var sendOptions = { name: 'Daily Practice Feedback Bot' };
+    var recipientsNeeded = 1;
+    if (escalate) {
+      sendOptions.cc = CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL;
+      recipientsNeeded = 3;
+    }
+    guardedSend_(repCfg.email, email.subject, email.body, sendOptions, recipientsNeeded);
+    log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5)' +
+      (escalate ? ' — escalated to Kris/Tomás.' : '.'));
+  }
+
+  var feedbackName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
+  var doc = DocumentApp.create(feedbackName);
+  doc.getBody().setText(email.body);
+  doc.saveAndClose();
+  DriveApp.getFileById(doc.getId()).moveTo(folder);
+}
+
 /** Shared by preview and live paths. dryRun=true never sends and never writes a Feedback doc. */
 function buildAndMaybeGradeDailyPractice_(dryRun) {
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
@@ -218,31 +286,12 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
       var result = gradeDailyPracticeTranscript_(rep, text, name);
       var email = buildDailyPracticeFeedbackEmail_(rep, name, result);
       var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
+      var replyThreadId = findDailyPracticeFollowupThreadForFile_(rep, name);
 
-      if (dryRun) {
-        log_('(preview) ' + repCfg.email + ' <- ' + email.subject +
-          (escalate ? ' [would CC Kris+Tomás — score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ']' : '') +
-          '\n' + email.body + '\n');
-        continue;
-      }
-
-      var sendOptions = { name: 'Daily Practice Feedback Bot' };
-      var recipientsNeeded = 1;
-      if (escalate) {
-        sendOptions.cc = CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL;
-        recipientsNeeded = 3;
-      }
-      guardedSend_(repCfg.email, email.subject, email.body, sendOptions, recipientsNeeded);
-
-      var feedbackName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
-      var doc = DocumentApp.create(feedbackName);
-      doc.getBody().setText(email.body);
-      doc.saveAndClose();
-      DriveApp.getFileById(doc.getId()).moveTo(folder);
-
+      deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId);
+      if (dryRun) continue;
+      if (replyThreadId) markDailyPracticeFollowupGraded_(rep, replyThreadId);
       processed++;
-      log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5)' +
-        (escalate ? ' — escalated to Kris/Tomás.' : '.'));
     }
 
     log_('[' + rep + '] ' + found + ' transcript(s) found, ' + processed + ' graded this run.');
@@ -288,8 +337,14 @@ function runDailyPracticeGrading() {
 function sendDailyPracticeReminders_() {
   RUN_TAG = 'sendDailyPracticeReminders_';
   var tz = CONFIG.BUSINESS_TIMEZONE;
-  var label = computeTrainingCycleLabel_(new Date(), tz);
+  var now = new Date();
+  var label = computeTrainingCycleLabel_(now, tz);
   if (!label) { log_('Weekend — no daily practice assignment today.'); return; }
+  var dateStr = Utilities.formatDate(now, tz, 'yyMMdd');
+  var namingLine = 'Name the file starting with today\'s date, ' + dateStr +
+    ' (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
+  var namingLineHtml = 'Name the file starting with today\'s date, <b>' + dateStr +
+    '</b> (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
 
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
@@ -316,12 +371,14 @@ function sendDailyPracticeReminders_() {
         'Record a video practicing ASKING FOR THE MONEY:\n\n' +
         '"' + closeAsk.label + '" — ' + closeAsk.note + '\n\n' +
         'Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.\n\n' +
+        namingLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
         '<p>Record a video practicing <b>ASKING FOR THE MONEY</b>:</p>' +
         '<p>"' + closeAsk.label + '" — ' + closeAsk.note + '</p>' +
         '<p>Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.</p>' +
+        '<p>' + namingLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (objections && objections.length) {
@@ -362,64 +419,199 @@ function sendDailyPracticeReminders_() {
     }
     guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
     log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).') + ' (cc\'d Tomás)');
+
+    // Track this thread so checkDailyPracticeCompliance_ can nag/resolve it later.
+    var thread = GmailApp.search('subject:"' + subject + '" to:' + repCfg.email + ' newer_than:1d', 0, 1)[0];
+    if (thread) {
+      registerDailyPracticeFollowup_(rep, dateStr, thread.getId());
+    } else {
+      log_('[' + rep + '] Could not find the just-sent thread to track for follow-up — will retry next run.');
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Persistent follow-up tracking — "Daily Practice Follow-ups" sheet tab.
+// One open row per outstanding assignment (rep + date), not just yesterday's.
+// ---------------------------------------------------------------------------
+
+var DAILY_PRACTICE_FOLLOWUP_SHEET_NAME = 'Daily Practice Follow-ups';
+var DAILY_PRACTICE_FOLLOWUP_HEADERS = ['Rep', 'Assignment Date (YYMMDD)', 'Thread ID', 'Status', 'Last Nag Date', 'Nag Count'];
+
+function getOrCreateDailyPracticeFollowupSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(DAILY_PRACTICE_FOLLOWUP_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(DAILY_PRACTICE_FOLLOWUP_SHEET_NAME);
+    sheet.getRange(1, 1, 1, DAILY_PRACTICE_FOLLOWUP_HEADERS.length).setValues([DAILY_PRACTICE_FOLLOWUP_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + DAILY_PRACTICE_FOLLOWUP_SHEET_NAME + '" tab.');
+  }
+  return sheet;
+}
+
+/** Appends an 'open' row for rep+dateStr unless one already exists (safe to call every time an assignment sends). */
+function registerDailyPracticeFollowup_(rep, dateStr, threadId) {
+  var sheet = getOrCreateDailyPracticeFollowupSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    var existing = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i][0] === rep && existing[i][1] === dateStr) return; // already tracked
+    }
+  }
+  sheet.appendRow([rep, dateStr, threadId, 'open', '', 0]);
+}
+
+/** Row objects for every row currently in a given status (or any status if omitted). */
+function loadDailyPracticeFollowupRows_(sheet, statusFilter) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, DAILY_PRACTICE_FOLLOWUP_HEADERS.length).getValues();
+  var rows = [];
+  values.forEach(function (row, i) {
+    if (statusFilter && row[3] !== statusFilter) return;
+    rows.push({ rowIndex: i + 2, rep: row[0], dateStr: row[1], threadId: row[2], status: row[3], lastNagDate: row[4], nagCount: row[5] });
+  });
+  return rows;
+}
+
+/** Finds the tracked assignment thread for a graded file by its leading YYMMDD prefix — null if none tracked (e.g. a pre-tracking backlog file). */
+function findDailyPracticeFollowupThreadForFile_(rep, fileName) {
+  var m = String(fileName).match(/^(\d{6})/);
+  if (!m) return null;
+  var sheet = getOrCreateDailyPracticeFollowupSheet_();
+  var rows = loadDailyPracticeFollowupRows_(sheet, null);
+  var match = rows.filter(function (r) { return r.rep === rep && r.dateStr === m[1] && r.status !== 'cancelled'; })[0];
+  return match ? match.threadId : null;
+}
+
+function markDailyPracticeFollowupGraded_(rep, threadId) {
+  var sheet = getOrCreateDailyPracticeFollowupSheet_();
+  var rows = loadDailyPracticeFollowupRows_(sheet, null);
+  var match = rows.filter(function (r) { return r.rep === rep && r.threadId === threadId; })[0];
+  if (match) sheet.getRange(match.rowIndex, 4).setValue('graded');
+}
+
+/** True if any message in the thread from Kris or Tomás contains a standalone "cancel" or "stop". */
+function dailyPracticeThreadHasStopRequest_(thread) {
+  var stopRe = /\b(cancel|stop)\b/i;
+  return thread.getMessages().some(function (msg) {
+    var from = msg.getFrom();
+    var isKrisOrTomas = from.indexOf(CONFIG.KRIS_EMAIL) !== -1 || from.indexOf(CONFIG.TOMAS_EMAIL) !== -1;
+    return isKrisOrTomas && stopRe.test(msg.getPlainBody());
   });
 }
 
 /**
- * Compliance check for the PREVIOUS training-cycle weekday's assignment —
- * did the rep (a) reply to that day's "<label> — Training Plan" email, and
- * (b) actually upload a new practice file to their Drive folder? Escalates
- * to Kris + Tomás per rep missing either. Runs once daily, an hour BEFORE
- * sendDailyPracticeReminders_ sends that day's new assignment, so it's
- * always checking on yesterday's — see COMPLIANCE_CHECK_HOUR below.
+ * Persistent per-assignment follow-up — replaces the old one-shot "check
+ * yesterday, alert Kris/Tomás" behavior (20/08/2026, Kris's ask). Scans every
+ * row in the "Daily Practice Follow-ups" sheet that isn't already resolved:
+ *
+ *   'open'          — no correctly-named file yet. Check for a STOP/cancel
+ *                      reply from Kris or Tomás on the thread first (that
+ *                      wins outright, marks 'cancelled', done). Otherwise
+ *                      check the rep's folder for a file starting with that
+ *                      assignment's YYMMDD; if found, mark 'file_received'
+ *                      and fall through to the grading check below in the
+ *                      same pass. If still missing, reply-all on the SAME
+ *                      thread with a nag (once per day — a rep saying "done"
+ *                      in the thread does NOT stop this, only Kris/Tomás
+ *                      saying cancel/stop, or the file actually landing,
+ *                      does).
+ *   'file_received' — file is in, nagging already stopped. Once a matching
+ *                      "<title> — Transcript" doc also exists, grades it and
+ *                      replies-all on the tracked thread with the result
+ *                      (buildAndMaybeGradeDailyPractice_'s nightly pass does
+ *                      the same lookup, so whichever runs first delivers it).
+ *
+ * Runs once daily at COMPLIANCE_CHECK_HOUR — same trigger slot as before.
  */
 function checkDailyPracticeCompliance_(dryRun) {
   RUN_TAG = 'checkDailyPracticeCompliance_';
-  var tz = CONFIG.BUSINESS_TIMEZONE;
-  var yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  var label = computeTrainingCycleLabel_(yesterday, tz);
-  if (!label) { log_('Yesterday was a weekend — no daily practice assignment to check.'); return; }
+  var todayStr = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+  var sheet = getOrCreateDailyPracticeFollowupSheet_();
+  var rows = loadDailyPracticeFollowupRows_(sheet, null).filter(function (r) {
+    return r.status === 'open' || r.status === 'file_received';
+  });
 
-  var subject = label.label + ' — Training Plan';
-  var sinceMidnightYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+  if (!rows.length) { log_('No open or pending daily-practice follow-ups.'); return; }
 
-  Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
-    var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
-    if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping compliance check.'); return; }
+  rows.forEach(function (row) {
+    var repCfg = CONFIG.REPS.filter(function (r) { return r.name === row.rep; })[0];
+    if (!repCfg) { log_('No CONFIG.REPS entry for "' + row.rep + '" — skipping row ' + row.rowIndex); return; }
 
-    var replied = false;
-    GmailApp.search('subject:"' + subject + '" to:' + repCfg.email + ' newer_than:2d', 0, 5).forEach(function (thread) {
-      thread.getMessages().forEach(function (msg) {
-        if (msg.getFrom().indexOf(repCfg.email) !== -1) replied = true;
-      });
-    });
+    var thread = GmailApp.getThreadById(row.threadId);
+    if (!thread) {
+      log_('[' + row.rep + '/' + row.dateStr + '] Tracked thread ' + row.threadId + ' no longer exists — leaving row as-is.');
+      return;
+    }
 
-    var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
+    if (dailyPracticeThreadHasStopRequest_(thread)) {
+      if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('cancelled');
+      log_('[' + row.rep + '/' + row.dateStr + '] Kris or Tomás said cancel/stop on the thread — stopping follow-up.' +
+        (dryRun ? ' (preview — not written)' : ''));
+      return;
+    }
+
+    var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[row.rep]);
     var files = folder.getFiles();
-    var newFile = false;
+    var namedFile = null;
     while (files.hasNext()) {
-      if (files.next().getDateCreated() >= sinceMidnightYesterday) { newFile = true; break; }
+      var f = files.next();
+      if (f.getName().indexOf(row.dateStr) === 0) { namedFile = f; break; }
     }
 
-    if (replied && newFile) {
-      log_('[' + rep + '] Compliant — replied to "' + subject + '" and uploaded a new file.');
+    if (row.status === 'open') {
+      if (namedFile) {
+        if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('file_received');
+        log_('[' + row.rep + '/' + row.dateStr + '] Correctly-named file landed ("' + namedFile.getName() +
+          '") — stopping nag.' + (dryRun ? ' (preview — not written)' : ''));
+        row.status = 'file_received'; // fall through to the grading check below in this same pass
+      } else {
+        // Sheets may auto-convert this cell to a real Date on read-back even though it was written
+        // as a 'yyyy-MM-dd' string — normalize before comparing rather than assuming the type.
+        var lastNagDateStr = row.lastNagDate instanceof Date
+          ? Utilities.formatDate(row.lastNagDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd')
+          : String(row.lastNagDate || '');
+        if (lastNagDateStr === todayStr) return; // already nagged today
+        var nagNum = (row.nagCount || 0) + 1;
+        var nagBody = 'Still don\'t see a correctly-named file (starting with ' + row.dateStr + ') in the practice folder ' +
+          '— this is follow-up #' + nagNum + '. This thread will keep getting a daily nag until the file lands, or ' +
+          'Kris or Tomás replies-all here with "cancel" or "stop".\n\nFolder: https://drive.google.com/drive/folders/' +
+          DAILY_PRACTICE_CONFIG.FOLDERS[row.rep];
+        if (dryRun) {
+          log_('(preview) would reply-all nag #' + nagNum + ' on thread for [' + row.rep + '/' + row.dateStr + ']\n' + nagBody);
+          return;
+        }
+        thread.replyAll(nagBody, { name: 'Daily Practice Follow-up Bot' });
+        sheet.getRange(row.rowIndex, 5, 1, 2).setValues([[todayStr, nagNum]]);
+        log_('[' + row.rep + '/' + row.dateStr + '] NON-COMPLIANT — reply-all nag #' + nagNum + ' sent on the tracked thread.');
+        return;
+      }
+    }
+
+    // row.status === 'file_received' here (either already was, or just transitioned above).
+    if (!namedFile) return; // shouldn't happen, but guard anyway
+    var transcriptDoc = folder.getFilesByName(namedFile.getName().replace(/\.[^.]+$/, '') + ' — Transcript');
+    if (!transcriptDoc.hasNext()) {
+      log_('[' + row.rep + '/' + row.dateStr + '] File received, waiting on transcription before it can be graded.');
+      return;
+    }
+    var transcriptFile = transcriptDoc.next();
+    var transcriptName = transcriptFile.getName();
+    if (!dryRun && dailyPracticeAlreadyGraded_(folder, transcriptName)) {
+      sheet.getRange(row.rowIndex, 4).setValue('graded');
       return;
     }
 
-    var missing = [];
-    if (!replied) missing.push('no reply to the "' + subject + '" email');
-    if (!newFile) missing.push('no new file uploaded to their practice folder');
-    var alertSubject = '[Daily Practice] ' + rep + ' missed yesterday\'s assignment';
-    var alertBody = rep + ' — ' + missing.join(' and ') + ' (checking against "' + subject + '").\n\n' +
-      'Folder: https://drive.google.com/drive/folders/' + DAILY_PRACTICE_CONFIG.FOLDERS[rep];
-
-    if (dryRun) {
-      log_('(preview) ' + CONFIG.KRIS_EMAIL + ' <- ' + alertSubject + ' (cc ' + CONFIG.TOMAS_EMAIL + ')\n' + alertBody);
-      return;
-    }
-    guardedSend_(CONFIG.KRIS_EMAIL, alertSubject, alertBody, { cc: CONFIG.TOMAS_EMAIL, name: 'Daily Practice Compliance Bot' }, 2);
-    log_('[' + rep + '] NON-COMPLIANT — ' + missing.join(' and ') + '. Alerted Kris/Tomás.');
+    var text = getTranscriptText_(transcriptFile);
+    var result = gradeDailyPracticeTranscript_(row.rep, text, transcriptName);
+    var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result);
+    var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
+    deliverDailyPracticeGrading_(row.rep, repCfg, folder, transcriptName, result, email, escalate, dryRun, row.threadId);
+    if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('graded');
   });
 }
 
