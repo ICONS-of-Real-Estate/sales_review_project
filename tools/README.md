@@ -127,6 +127,22 @@ python test_single_transcription_qwen.py     # Qwen
 python test_single_transcription_whisper.py  # Whisper
 ```
 
+## Running all three people at once (Sean + Joana + Tomás)
+
+`transcribe_all.py` runs all three Whisper backlogs back-to-back in one
+process — same lock-safe behavior as running each `*_whisper.py` script
+individually, just sequenced for you. Bens isn't included: his calls go
+through Riverside, which already transcribes them, so there's no raw-video
+folder to point this at for him.
+
+```powershell
+python transcribe_all.py
+```
+
+For unattended deployment on the OVH VPS (auto-runs on a schedule, lowest
+CPU/IO priority so it never slows down the hosted websites), see
+`deploy/README.md` in this same folder.
+
 ## Running on a headless machine (e.g. an OVH cloud VM)
 
 The OAuth step above (`flow.run_local_server(port=0)`) opens a real browser

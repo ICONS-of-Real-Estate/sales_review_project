@@ -7,3 +7,6 @@ tools/token.json
 
 # Per-machine progress log from tools/transcribe_tomas_calls*.py — local state, not shared
 tools/tomas_transcribed_log.txt
+
+# Per-machine Python virtualenv created by tools/deploy/setup_ovh.sh
+tools/.venv/
