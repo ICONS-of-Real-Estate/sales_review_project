@@ -42,7 +42,7 @@
  */
 
 var REPLY_TRACKER_CONFIG = {
-  ENABLED: false, // Flip only after previewReplyClassification() + previewReplyMetricsReport() both look right.
+  ENABLED: true, // Flipped true 20/08/2026 after real classifications (Sabrina/Marilyn/CARY/Stop/Michelle/Ray) checked out.
 
   FORWARD_ADDRESS: 'network@ardorseo.com', // confirmed 20/08/2026 — see file header.
   IMPERSONATE_EMAIL: 'joana@iconsofrealestate.com', // whose inbox actually holds these forwards.
