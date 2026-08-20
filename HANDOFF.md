@@ -1,124 +1,162 @@
-# Handoff — 20/08/2026
+# Handoff — 20/08/2026 (end of day)
 
-## 1. Current state — what's live vs. blocked
+## 1. Current state — everything is live
 
-**Phases live (triggers installed or ready for the user to install):**
-- Phase 1 (compliance check)
-- Phase 2 (call scoring + Sean auto-scoring)
-- Phase 3 (handoff briefs) — `HANDOFF_CONFIG.ENABLED = true`
-- Phase 4 (inbox SLA) — `INBOX_SLA_CONFIG.ENABLED = true` (20/08/2026), scoped
-  to **Sean and Bens only** — Joana deliberately excluded, she has hundreds
-  of leads to work through and this nudge would just be noise on top of that
-  backlog. User needs to run `installInboxSlaTrigger()` (`Phase4_InboxSLA.gs`)
-  after `clasp push` if not already done.
-- Phase 5 (weekly scorecard) — `WEEKLY_SCORECARD_CONFIG.ENABLED = true`
-  (20/08/2026) after `previewWeeklyScorecards_()` ran clean. User needs to run
-  `installWeeklyScorecardTrigger()` (`Phase5_WeeklyScorecard.gs`) if not
-  already done. **Flag for a future session:** the preview showed Sean's
-  all-time average as 1.0/5 across 103 scored calls — the lowest possible
-  score on every call he's had scored. Worth sanity-checking a sample of his
-  scored rows/reasoning before this has been running a few weeks, in case the
-  Sean-specific stricter rubric is miscalibrated rather than that being real.
-- Phase 6 (training call review) — `TRAINING_REVIEW_CONFIG.ENABLED = true`,
-  including Tomás's Tuesday transcript-upload reminder
-  (`TOMAS_TRANSCRIPT_REMINDER_CONFIG.ENABLED = true`, 20/08/2026) — user needs
-  to run `installTomasTranscriptReminderTrigger()` if not already done.
-- Phase 7 (daily self-practice) — `DAILY_PRACTICE_CONFIG.ENABLED = true`,
-  covers both objection-handling and asking-for-the-money ("close ask")
-  drills as of the split-schema rewrite (see §2).
+`installAllReadyTriggers()` (`Phase1_ComplianceCheck.gs`) was run this
+session and confirmed clean — **all 8 phases installed, nothing skipped**:
 
-**Deliberately not automated:**
-- **Phase 0 (Riverside sync) — parked, not just blocked.** Riverside's API
-  is Business-plan-only; the account is on Pro. Kris's call (20/08/2026):
-  not upgrading for this — **Bens will manually download his own
-  transcripts** instead, same as the existing "someone pastes a Drive link
-  in by hand" fallback path. Don't re-raise this as an open blocker in a
-  future session; it's a settled decision, not a TODO. Revisit only if the
-  Riverside plan is ever upgraded for other reasons.
+- Phase 1: daily compliance check + weekly self-heal
+- Phase 2: ongoing call scoring (4h) + Sean auto-scoring (4h) + **Tomás
+  auto-scoring (4h, new this session)**
+- Phase 3: warm-handoff briefs
+- Phase 4: inbox SLA check (Sean + Bens only — Joana deliberately excluded,
+  see below)
+- Phase 5: weekly scorecard
+- Phase 6: training call review + Tomás's Tuesday transcript reminder
+- Phase 7: daily self-practice grading + reminders (persistent follow-up
+  system, new this session — see §2)
+- Phase 8: reply tracker (new this session — see §2)
 
-**Transcription pipelines (tools/, not Apps Script):**
-- Sean and Tomás: Gemini/Qwen/Whisper variants all built; the three
-  `*_whisper.py` scripts support running on multiple machines at once via a
-  Drive-marker-file lock (6h stale-lock steal). Sean's backlog was still
-  transcribing as of 19/08 (~70h estimate).
-- Joana: `JOANA_FOLDERS` now points at her real Drive folder
-  (`17YaE4fBjEBFissvR-l7_GOkoTnZjdQq5`, "Joana Peixe" — 9 QC/SC videos as of
-  20/08). Code-ready; not yet run. Plan is to run it on Kris's OVH cloud VM
-  once access is available (setup doc:
-  https://docs.google.com/document/d/1MUhwFzSeDX9w0D2PN6ct4JCfSoGg1u2d_SrCnmijmfc/edit
-  — still has a stale "NOT YET READY" banner at the top that should be
-  deleted manually, the rest of the doc is accurate).
+**Phase 0 (Riverside sync) is gone, not just parked.** Deleted
+`Phase0_RiversideSync.gs` this session — settled decision from earlier today
+(Riverside's API is Business-plan-only, Bens manually downloads his own
+transcripts instead), and nothing else in the codebase depended on it.
+Don't recreate it unless the Riverside plan is genuinely upgraded.
 
-**Pending sign-off:**
-- `FEW_SHOT_ANCHORS` in `Phase2_CallScoring.gs` — populated (20/08/2026) with
-  3 real excerpts from `Objection_Handling_Playbook.md` (Carolyn Triebold:
-  close-ask miss; Tennitia Wilson: objection surfaced-not-overcome; Ben
-  Sweet: model resolution). Marked `TODO(Tomás)` in the code — these shape
-  live grading prompts, so get his confirmation before treating as final.
+## 2. What got built/fixed this session
 
-## 2. Key architectural decisions
+**Fixed a real scoring bug, not just a rubric question.** Sean's Phase 5
+"1.0/5 across 103 calls" flagged at the top of today's earlier handoff was
+real, but not because Sean is bad — `LITELLM_PROXY_URL` was never set
+(the LiteLLM proxy server described in `litellm-config.yaml` was never
+actually deployed anywhere), so ~110 of those "scored" calls were parse-failure
+placeholders hardcoded to `score: 1`. Fixed by pointing `Phase2_CallScoring.gs`
+straight at Moonshot's own API instead of a nonexistent proxy
+(`LITELLM_PROXY_URL` → `https://api.moonshot.ai/v1/chat/completions`, model
+name `kimi-k3` confirmed via platform.kimi.ai/playground, no `moonshot/`
+prefix). Ran `deleteFailedParseRows()` + `scoreSeanTranscripts()` to rescore
+for real — **re-check Sean's actual average once that finishes** (see §3).
+Real scoring costs ~$0.02–0.03/call (Kimi K3: $3/M input, $15/M output).
 
-- **Apps Script hides trailing-underscore functions from the "Select
-  function to run" dropdown.** Every `preview*_()`/`install*_()` function in
-  this codebase uses a thin no-underscore wrapper for this reason (e.g.
-  `previewWeeklyScorecards()` calling `previewWeeklyScorecards_()`). Apply
-  the same pattern to any new human-run entry point.
-- **GitHub and the live Apps Script project can silently drift.** Any
-  `ENABLED` flag flipped directly in the browser editor (not in the local
-  `.gs` file + git) gets reverted by the next `clasp push`. Deploy workflow
-  is always: change config in the repo → commit → push → `git pull` +
-  `clasp push` on whichever machine has `.clasp.json` (see `CLAUDE.md`).
-  Never edit live in the browser.
-- **"Asking for the money" is graded as its own skill, separate from
-  objection handling.** Per Kris's exact methodology: Objection Handling =
-  Agree, Isolate, Repeat; Asking For The Money = a direct line ("Ready to
-  get started?"), ideally asked more than once, branching to another
-  objection or straight to payment. A soft/open question never counts as a
-  close. This runs through Phase 6 (`practiced_objections` /
-  `practiced_close_ask` / `close_ask_drill`, persisted as
-  `TRAINING_CLOSE_DRILL_<rep>`) and Phase 7 (`drill_type: "objection" |
-  "close_ask"`, alternating assignment days once both types are on file).
-- **Training-call folder structure**: `<Rep> Training Calls/<YYMMDD>/`
-  containing Zoom's own auto-generated `.vtt` transcript + video/audio — no
-  separate transcription step, unlike Sean/Joana's sales-call backlog.
-  `stripVttMarkup_()` strips cue numbers/timestamps before judging.
-- **Training-plan email routing:** goes to the rep being trained (primary
-  recipient), always cc Tomás + Kris.
-- **The daily-practice cycle is anchored to Tuesday's training call, NOT the
-  calendar work-week:** Wed=Day1 … Tue=Day5, loops the following Wednesday.
-  Weekends get no assignment. `computeTrainingCycleLabel_(date, tz)` in
-  `Phase1_ComplianceCheck.gs` is deliberately **stateless** — computed from
-  the date against a fixed epoch, no counter persisted anywhere.
-- **This week's objections/close-ask drill persist across a skipped/late
-  training week.** Phase 6 only *overwrites*
-  `TRAINING_OBJECTIONS_<rep>`/`TRAINING_CLOSE_DRILL_<rep>` on a real
-  non-empty result — a parse failure or a week with no training call must
-  NOT wipe out last week's data.
-- **Tomás's Tuesday reminder is a nudge, not a dependency.** Phase 6's daily
-  scan already handles "training happened late/skipped" on its own; the
-  reminder just reduces how often that happens.
-- **`htmlBody` passed to `guardedSend_`/`MailApp.sendEmail` must contain raw
-  HTML tags, not HTML-escaped text** (`<p>`, not `&lt;p&gt;`) — escaped tags
-  render as literal text in Gmail. Has bitten a prior session already.
-- **Cross-machine Drive lock** (the three `*_whisper.py` scripts): a
-  `.lock-<video_id>` marker file dropped next to the target file in the same
-  Drive folder, race resolution by earliest `(createdTime, id)`, stale-lock
-  steal after 6 hours. Lets 2 laptops + a cloud VM share a work queue without
-  a central server. Gemini/Qwen engine variants deliberately don't have this
-  — don't run the same engine/person combo on two machines at once.
+**Tomás's own calls now get graded too** (`Phase2_CallScoring.gs`) —
+`scoreTomasTranscripts()`, shared rubric (not Sean's stricter variant, per
+`tools/transcribe_tomas_calls.py`'s own header note). Two folders:
+`PHASE2_CONFIG.TOMAS_FOLDERS = { 'Sales Calls': ..., 'Second Calls': ... }`
+(his own first-touch calls vs. his closing calls as the 2nd-call closer —
+added mid-session once Kris found the folder). The judge classifies
+`call_role` (`own_new_lead` / `second_call_closer`) from the transcript
+itself since the folders don't cleanly separate this, and every call gets
+two coaching fields beyond the score — `teachable_strength` (what to pass to
+other reps) and `coach_this` (what to train him on) — per Kris's explicit
+ask: the point is coaching material both directions, not just a number.
+Backlog (46 transcripts as of this session, "Second Calls" still
+transcribing) is scoring via the same 4h trigger as Sean's.
+
+**Phase 7 (daily self-practice) got a persistent follow-up system,
+replacing the old one-shot "alert Kris/Tomás about yesterday" check** —
+Kris's ask: a rep saying "done" isn't enough. `checkDailyPracticeCompliance_`
+(same trigger slot, no new install) now tracks every outstanding assignment
+in a new **"Daily Practice Follow-ups" sheet tab** and reply-alls a nag on
+the *same thread* once a day until either (a) a correctly-named file (must
+start with that day's YYMMDD — Zoom's own auto-recording name does not
+count) lands in the rep's folder, or (b) Kris or Tomás replies-all on that
+thread with "cancel" or "stop". Once the file *and* its transcript are both
+ready, the grading itself lands as a reply-all on that same tracked thread
+(`deliverDailyPracticeGrading_`) instead of a separate email — shared logic
+between this daily scan and the nightly grading pass, whichever gets there
+first. A file with no tracked thread (predates this system) still falls
+back to a standalone email.
+
+**New Phase 8: daily reply tracker** (`Phase8_ReplyTracker.gs`) — tracks
+the hundreds of cold-outreach replies forwarded daily into Joana's inbox.
+Confirmed by reading real threads: despite hundreds of different Maildoso
+sending domains, every forward funnels through one consistent address,
+`network@ardorseo.com` — that's what it filters on. Classifies each reply
+positive/negative via the same Kimi judge Phase 2 uses (no existing system
+recorded this before), logs to a new "Reply Tracker" sheet tab, reports
+daily/7-day/30-day rollups (count, positive, negative, % of negative-replying
+leads who later turned positive) to Kris (cc Tomás) at 9pm daily.
+`ENABLED = true`, live. Costs pennies — replies are short, ~$0.003–0.005 each.
+**Not yet wired up:** the two booking-percentage metrics ("booked themselves"
+vs. "booked to QC by a rep") are stubbed — `REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS`
+is empty, logs `n/a` rather than guessing. Needs the real tab name(s) holding
+the existing "Booked" column (values seen: a rep name, or "By the Lead").
+
+**Fixed a silent deploy-drift bug on Kris's machine**, not code: a stale
+nested `sales_review_project/sales_review_project/` folder (leftover from an
+earlier accidental clone-inside-a-clone, dated 17/08) was sitting inside the
+real repo folder. Because `.clasp.json` has `rootDir: "."`, `clasp push`
+walked into it too and — since Apps Script has a flat file namespace — the
+stale duplicate `Phase1_ComplianceCheck.gs` inside it was silently
+overwriting the real one's fixes on every push. Kris deleted the nested
+folder; confirm a future `clasp push` + a look at the compliance email
+formatting (see §3) to be sure this is fully resolved.
 
 ## 3. Open items for a future session
 
-- Confirm `previewInboxSlaCheck_()`/`previewWeeklyScorecards_()` triggers
-  actually got installed (steps above) — this session enabled the configs
-  but couldn't run Apps Script itself to install the triggers.
-- Sanity-check Sean's 1.0/5 all-time average (see §1) once a few more real
-  weeks of Phase 5 data exist.
-- Get Tomás's sign-off on the 3 `FEW_SHOT_ANCHORS` excerpts.
-- Run Joana's Whisper transcription pipeline once OVH access is available.
-- Delete the stale "NOT YET READY" banner at the top of Joana's setup doc
-  (link above) — cosmetic only, doesn't block anything.
-- Two now-fully-merged GitHub branches (`claude/repo-handoff-next-task-fzt3rq`,
-  `claude/sales-review-dev-infra-wp3cto`) still exist on GitHub — delete
-  manually via the repo's Branches page if desired (no API permission to do
-  it from a session).
+- **Re-check Sean's real Phase 5 average** now that the Moonshot direct-call
+  fix + `scoreSeanTranscripts()` rescore have run — the 1.0/5 was fake data,
+  confirm what his actual average looks like via `previewWeeklyScorecards_()`.
+- **Confirm the compliance-email formatting fix actually deployed** — this
+  was blocked by the nested-folder `clasp push` bug (see §2); the fix itself
+  (commit `a278379`, an older commit than today's session) should already be
+  correct in git, just confirm it's showing up in a real sent email now that
+  the nested folder is gone.
+- **Wire up Phase 8's booking-percentage metrics** — need the real tab
+  name(s) for the existing "Booked" column (see §2).
+- Get Tomás's sign-off on the 3 `FEW_SHOT_ANCHORS` excerpts in
+  `Phase2_CallScoring.gs` (draft email sent to him this session, cc Kris —
+  check it was actually sent, it landed in a draft under Joana's connected
+  mailbox rather than Kris's own, per this session's Gmail-connector mixup).
+- Decide/confirm Tomás's `call_role` split is producing sensible results
+  once his backlog (Sales Calls + Second Calls) finishes scoring — spot-check
+  a few `teachable_strength`/`coach_this` entries before circulating any of
+  it to other reps (every row is forced `Manual Review Recommended = TRUE`,
+  same policy as the other legacy backfills).
+- Run Joana's Whisper transcription pipeline once OVH access is available
+  (unchanged from before this session).
+- Delete the stale "NOT YET READY" banner in Joana's setup doc (cosmetic,
+  unchanged from before this session):
+  https://docs.google.com/document/d/1MUhwFzSeDX9w0D2PN6ct4JCfSoGg1u2d_SrCnmijmfc/edit
+
+## 4. Key architectural decisions
+
+- **Apps Script hides trailing-underscore functions from the "Select
+  function to run" dropdown.** Every `preview*_()`/`install*_()` function in
+  this codebase uses a thin no-underscore wrapper for this reason.
+- **GitHub and the live Apps Script project can silently drift** — both via
+  the browser editor (an `ENABLED` flip not in git gets reverted by the next
+  `clasp push`) and, as discovered this session, via a stale nested clone
+  inside the working directory that `clasp push` also walks (flat Apps
+  Script namespace means a duplicate file silently wins). Deploy workflow is
+  always: change config in the repo → commit → push → `git pull` +
+  `clasp push`. Periodically sanity-check there's no nested
+  `sales_review_project/` folder inside the real one.
+- **The Moonshot/Kimi call is direct, not through a proxy** — despite the
+  Script Property names (`LITELLM_PROXY_URL`/`LITELLM_API_KEY`) and
+  `litellm-config.yaml` existing in the repo, no LiteLLM proxy server was
+  ever deployed. Those properties point straight at Moonshot's API. Don't
+  assume `litellm-config.yaml` describes live infrastructure.
+- **"Asking for the money" is graded as its own skill, separate from
+  objection handling.** Objection Handling = Agree, Isolate, Repeat; Asking
+  For The Money = a direct line, ideally asked more than once. Runs through
+  Phase 6 (`TRAINING_CLOSE_DRILL_<rep>`) and Phase 7 (`drill_type`).
+- **Training-call folder structure**: `<Rep> Training Calls/<YYMMDD>/`
+  containing Zoom's own auto-generated `.vtt` transcript + video/audio.
+- **Daily-practice file naming**: must start with that day's YYMMDD (new
+  this session) — enforced by `checkDailyPracticeCompliance_`'s persistent
+  follow-up, not just a suggestion.
+- **The daily-practice cycle is anchored to Tuesday's training call, NOT the
+  calendar work-week:** Wed=Day1 … Tue=Day5. `computeTrainingCycleLabel_` is
+  stateless — computed from the date against a fixed epoch.
+- **This week's objections/close-ask drill persist across a skipped/late
+  training week** — Phase 6 only overwrites `TRAINING_OBJECTIONS_<rep>` on a
+  real non-empty result.
+- **`htmlBody` passed to `guardedSend_`/`MailApp.sendEmail` must contain raw
+  HTML tags, not HTML-escaped text.**
+- **Cross-machine Drive lock** (the three `*_whisper.py` scripts): a
+  `.lock-<video_id>` marker file, stale-lock steal after 6 hours. Gemini/Qwen
+  variants deliberately don't have this.
+- **Reply-tracker forward address**: `network@ardorseo.com` is the one
+  consistent thread despite hundreds of different Maildoso sending domains —
+  confirmed by reading real inbox threads, not assumed.
