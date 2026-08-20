@@ -1151,6 +1151,14 @@ function installAllReadyTriggers_() {
       'previewDailyPracticeGrading() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
+  if (typeof REPLY_TRACKER_CONFIG !== 'undefined' && REPLY_TRACKER_CONFIG.ENABLED) {
+    installReplyTrackerTriggers();
+    installed.push('Phase 8: reply tracker');
+  } else {
+    skipped.push('Phase 8 (reply tracker) — REPLY_TRACKER_CONFIG.ENABLED is false. Run ' +
+      'previewReplyClassification() + previewReplyMetricsReport() first, then flip ENABLED and re-run this.');
+  }
+
   skipped.push('Phase 0 (Riverside sync) — never auto-installed here on purpose; run ' +
     'previewRiversideSync() against a real API key, confirm it looks right, then run ' +
     'installRiversideSyncTrigger() yourself, once.');
