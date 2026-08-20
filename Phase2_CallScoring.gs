@@ -52,6 +52,16 @@
  *                                "<video title> — Transcript" Docs that
  *                                tools/transcribe_sean_calls.py writes next to
  *                                each source video in PHASE2_CONFIG.SEAN_FOLDERS.
+ *  - scoreTomasTranscripts()     Tomás's own calls — same shared rubric as
+ *                                Bens/Joana (not Sean's stricter variant),
+ *                                plus a call_role classifier (own_new_lead vs
+ *                                second_call_closer, since his folder mixes
+ *                                both) and explicit teachable_strength/
+ *                                coach_this fields — the point is coaching
+ *                                material both directions (Kris, 20/08/2026),
+ *                                not just a score. Reads the same
+ *                                "<video title> — Transcript" Doc convention
+ *                                from PHASE2_CONFIG.TOMAS_FOLDERS.
  */
 
 // ---------------------------------------------------------------------------
@@ -101,6 +111,19 @@ var PHASE2_CONFIG = {
   SEAN_FOLDERS: {
     'Sales Calls': '1gFb7YnXbnGAowAJgnLE2KNp5iKOCfnYH',
     'Qualification Calls': '15YMEMseEvUQakgDF00BtQg3QK6fiTsjX'
+  },
+
+  // Tomás's own calls: raw Zoom recordings backfilled with Gemini transcripts
+  // by tools/transcribe_tomas_calls.py, same "<video title> — Transcript" Doc
+  // convention as Sean's folder above. Mixes two different call shapes he
+  // doesn't distinguish by folder — his own first-touch calls with a new
+  // lead, AND second/closing calls for leads Sean/Bens already qualified —
+  // so buildTomasJudgeSystemPrompt_() below classifies call_role itself from
+  // the transcript rather than trusting the folder. Per Kris (20/08/2026):
+  // goal is coaching material both directions — what Tomás does well to
+  // teach the other reps, and what to coach him on — not just a score.
+  TOMAS_FOLDERS: {
+    'Sales Calls': '1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_'
   },
 
   // Filename convention for legacy transcripts: YYYY-MM-DD_ProspectName_Transcript.txt
@@ -998,6 +1021,265 @@ function scoreSeanTranscripts() {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tomás's own calls — shared rubric (per Kris/tools/transcribe_tomas_calls.py
+// header note: NOT the Sean stricter variant, that one's built around Tomás
+// being the second-call closer someone else booked, which doesn't describe
+// his own calls). Adds a call_role classification (he does both first-touch
+// AND second/closing calls, undivided by folder) plus explicit teachable-
+// strength / coach-this-weakness extraction on top of the normal score, per
+// Kris (20/08/2026): the point of grading Tomás is producing coaching
+// material in both directions, not just a number.
+// ---------------------------------------------------------------------------
+
+function buildTomasJudgeSystemPrompt_() {
+  return [
+    'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a call',
+    'run by Tomás — the team\'s most experienced closer. He takes two different kinds of calls; decide which this',
+    'one is from the transcript itself (do not assume from anything outside the transcript):',
+    '  own_new_lead = this is his own first-touch call with a lead nobody else has spoken to yet.',
+    '  second_call_closer = a lead who already had a QC/Sales Call with another rep (Sean or Bens), now on a',
+    '    follow-up/closing call with Tomás. Listen for references to an earlier call, another rep\'s name, or the',
+    '    conversation picking up mid-funnel rather than starting cold.',
+    '  unclear = say so rather than guessing if the transcript genuinely doesn\'t make it obvious.',
+    '',
+    'Score the call the same way regardless of call_role — asked for the close, objections uncovered and',
+    'overcome — but weigh a second_call_closer call primarily on whether it actually closed (money or a firm',
+    'commitment), since by this stage discovery/rapport is mostly already done by the first rep.',
+    '',
+    'Because this call is being reviewed to build training material — both "what Tomás does well that other reps',
+    'should copy" and "what to coach Tomás on himself" — go beyond the score and pull out BOTH of these,',
+    'independent of whether the call closed:',
+    '  teachable_strength: one specific technique he used well, with a direct quote and why it worked. If nothing',
+    '    genuinely stands out as exemplary, say so plainly rather than manufacturing praise.',
+    '  coach_this: one specific, concrete gap in THIS call — a missed objection, a weak close attempt, a discovery',
+    '    question left unasked — with a quote or specific moment. If the call was clean, say so rather than',
+    '    inventing a weakness.',
+    '',
+    'Be skeptical by default — do not credit a step attempted weakly or generically, and do not let his seniority',
+    'lower the bar. Every judgment must cite specific transcript evidence.',
+    '',
+    'Score anchors for call_quality_score (1-5):',
+    '5 = close asked (or already closed) AND objections surfaced+resolved with concrete proof.',
+    '4 = close asked, minor objection-handling gap (surfaced but weakly resolved).',
+    '3 = one of asked-for-close / objections-overcome missing; the other executed well.',
+    '2 = both missing, but lead was otherwise good-to-book (or, for second_call_closer, a real attempt was made',
+    '    but fell short).',
+    '1 = both missing AND no real attempt at discovery or a close — a call that just went through the motions.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
+    '',
+    '{',
+    '  "reasoning": "string",',
+    '  "call_role": "own_new_lead | second_call_closer | unclear",',
+    '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
+    '  "call_quality_score": 1,',
+    '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true, "closed_or_committed": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | both",',
+    '  "teachable_strength": "string",',
+    '  "coach_this": "string",',
+    '  "manual_review_recommended": true,',
+    '  "severity": 1,',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready"',
+    '}'
+  ].join('\n');
+}
+
+function isValidTomasJudgeSchema_(obj) {
+  return !!(obj &&
+    typeof obj.call_role === 'string' &&
+    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
+    typeof obj.call_quality_score === 'number' &&
+    obj.flags &&
+    typeof obj.flags.asked_for_close === 'boolean' &&
+    typeof obj.flags.objections_uncovered === 'boolean' &&
+    typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.closed_or_committed === 'boolean' &&
+    typeof obj.teachable_strength === 'string' &&
+    typeof obj.coach_this === 'string' &&
+    typeof obj.manual_review_recommended === 'boolean' &&
+    typeof obj.severity === 'number');
+}
+
+/** Same retry/manual-review shape as scoreTranscript_/scoreSeanTranscript_, against the Tomás-specific prompt. */
+function scoreTomasTranscript_(ctx) {
+  var systemPrompt = buildTomasJudgeSystemPrompt_();
+  var userPrompt = buildJudgeUserPrompt_(ctx);
+  var lastRaw = null;
+
+  for (var attempt = 0; attempt <= PHASE2_CONFIG.MAX_PARSE_RETRIES; attempt++) {
+    var promptForThisAttempt = attempt === 0
+      ? userPrompt
+      : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
+    try {
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var parsed = stripFencesAndParseJson_(lastRaw);
+      if (!isValidTomasJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Tomás-rubric fields.');
+      return parsed;
+    } catch (e) {
+      log_('    ↳ scoreTomasTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+    }
+  }
+
+  log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
+    '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  return {
+    reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
+    call_role: 'unclear',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
+    call_quality_score: 1,
+    flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false, closed_or_committed: false },
+    primary_failure_mode: 'none',
+    teachable_strength: 'Unscored — parse failure.',
+    coach_this: 'Unscored — parse failure.',
+    manual_review_recommended: true,
+    severity: 5,
+    feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
+    _parseFailed: true
+  };
+}
+
+/** Packs the extra Tomás-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
+function buildTomasFeedbackSummary_(result) {
+  return [
+    result.feedback_summary,
+    '',
+    'Call role: ' + result.call_role + ' | Closed or committed: ' + result.flags.closed_or_committed,
+    'Teachable strength (pass to other reps): ' + result.teachable_strength,
+    'Coach Tomás on: ' + result.coach_this
+  ].join('\n');
+}
+
+/**
+ * Dry-run helper — mirrors previewSeanTranscripts. Logs what would be scored,
+ * calls no model, writes nothing.
+ */
+function previewTomasTranscripts() {
+  RUN_TAG = 'previewTomasTranscripts';
+  var n = 0;
+  Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
+    var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var file = files.next();
+      if (file.getName().indexOf('Transcript') === -1) continue;
+      log_('  [' + label + '] ' + file.getName());
+      n++;
+    }
+  });
+  log_('previewTomasTranscripts — ' + n + ' transcript doc(s) found across ' +
+    Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).length + ' folder(s).');
+}
+
+/**
+ * Scores every unscored transcript in PHASE2_CONFIG.TOMAS_FOLDERS against the
+ * Tomás-specific rubric and appends one "Sales Call Log" row per call. Same
+ * lock/dedup/force-manual-review shape as scoreSeanTranscripts() — see that
+ * function's header comment for why.
+ */
+function scoreTomasTranscripts() {
+  RUN_TAG = 'scoreTomasTranscripts';
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('scoreTomasTranscripts: another scoring run holds the lock, skipping this firing.');
+    return;
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
+
+    var existing = loadExistingLegacyKeys_(sheet);
+    var scored = 0, skippedExisting = 0, failed = 0;
+
+    Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
+      var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var file = files.next();
+        var name = file.getName();
+        if (name.indexOf('Transcript') === -1) continue; // skip source videos
+
+        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+        var callDate = file.getDateCreated();
+        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+        var key = normalize_(prospectName) + '|' + dateStr;
+        if (existing[key]) { skippedExisting++; continue; }
+
+        try {
+          var ctx = {
+            rep: 'Tomás',
+            prospectName: prospectName,
+            callType: 'Sales Call',
+            source: '',
+            callDate: dateStr,
+            transcriptText: getTranscriptText_(file)
+          };
+          var result = scoreTomasTranscript_(ctx);
+          var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+
+          sheet.appendRow([
+            prospectName,                     // Prospect Name
+            '',                                // Prospect Email — fill from tracker
+            '',                                // Source — fill from tracker
+            callDate,                          // Call Date
+            'Tomás',                           // Rep
+            'Sales Call',                      // Call Type
+            true,                              // Outcome Logged
+            '',                                // Outcome Disposition — fill from tracker
+            '',                                // Calendar Event ID — none (predates convention)
+            '',                                // Riverside Recording ID — n/a, Tomás uses Zoom
+            file.getUrl(),                     // Transcript URL
+            'fallback_heuristic',              // Match Method
+            result.lead_quality.verdict,       // Lead Quality Verdict
+            result.call_quality_score,         // Call Quality Score
+            result.flags.asked_for_close,      // Flag: Asked For Close
+            objectionsHandled,                 // Flag: Objections Handled
+            true,                              // Manual Review Recommended — forced true
+            result.severity,                   // Severity
+            buildTomasFeedbackSummary_(result), // AI Feedback Summary — includes call_role + coaching extraction
+            false,                             // Reviewed By Kris
+            0,                                  // Queue Age
+            '',                                 // Kris Manual Review Verdict — not yet judged
+            result.primary_failure_mode || 'none' // Primary Failure Mode
+          ]);
+
+          existing[key] = true;
+
+          log_('  Scored "' + prospectName + '" (' + dateStr + '): ' + result.call_role + ', ' +
+            result.lead_quality.verdict + ', score ' + result.call_quality_score + ', severity ' + result.severity +
+            (result._parseFailed ? ' [PARSE FAILED]' : ''));
+          scored++;
+          Utilities.sleep(300);
+        } catch (e) {
+          log_('  FAILED "' + name + '": ' + e);
+          failed++;
+        }
+      }
+    });
+
+    log_('scoreTomasTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
+      ', failed ' + failed + '.');
+    log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
+      'Kris should confirm before trusting a score, same policy as the Bens/Sean backfills.');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * ONE-TIME setup — select installTomasScoringAutomation in the Apps Script
+ * editor's "Select function" dropdown and run it once. Puts Tomás's ongoing
+ * scoring on the same 4-hour cadence as Sean's (installSeanScoringAutomation).
+ */
+function installTomasScoringAutomation() {
+  RUN_TAG = 'installTomasScoringAutomation';
+  reinstallHourlyTrigger_('scoreTomasTranscripts', 4);
+  log_('Tomás auto-scoring installed: scoreTomasTranscripts() now runs every 4 hours.');
 }
 
 /**
