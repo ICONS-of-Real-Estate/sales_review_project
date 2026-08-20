@@ -67,33 +67,57 @@ function buildTrainingReviewSystemPrompt_(rep) {
     'You are reviewing the TRANSCRIPT OF A LIVE 1:1 TRAINING CALL between Tomás (sales trainer) and ' +
       rep + ' (rep) — not a sales call.',
     'Tomás runs this call weekly, built around ' + rep + '\'s own performance review from the week',
-    'before, to drill objection handling and asking for the money. A third person (e.g. "Admin"/Kris)',
-    'may sit in on the call — treat their turns as context, not as something to coach.',
+    'before, to drill two separate skills: objection handling, and asking for the money. A third person',
+    '(e.g. "Admin"/Kris) may sit in on the call — treat their turns as context, not as something to coach.',
+    '',
+    'These are our two named frameworks — grade against these, not a generic sales methodology:',
+    '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise (don\'t argue it',
+    '    away), isolate it as the one thing standing in the way ("so if it weren\'t for X, you\'d be ready',
+    '    to move forward?"), then repeat/confirm that back before answering it.',
+    '  ASKING FOR THE MONEY = a direct line, e.g. "Ready to get started?" — not a soft/open question like',
+    '    "what would it take to get you started?". Ideally asked MORE THAN ONCE in the same call: ask it,',
+    '    and whatever comes back is either another objection (loop back into Agree/Isolate/Repeat, then ask',
+    '    again) or a yes (go straight to payment). A single ask with no repeat attempt, or a soft-question',
+    '    substitute for the direct line, does not count as the drill having landed.',
     '',
     'Extract:',
     '  - Did Tomás reference a specific real call/objection pattern of ' + rep + '\'s, and what did he say about it?',
-    '  - Did ' + rep + ' actively practice (role-play, answer a drill question) in this call? Quote the moment.',
+    '  - Did ' + rep + ' actively practice OBJECTION HANDLING (role-play the Agree/Isolate/Repeat sequence,',
+    '    not just listen to Tomás describe it) in this call? Quote the moment.',
+    '  - Did ' + rep + ' actively practice ASKING FOR THE MONEY (role-play saying the direct "Ready to get',
+    '    started?" line or a clear equivalent, ideally more than once) in this call? Quote the moment. Be',
+    '    strict: Tomás merely telling ' + rep + ' to ask for the money is not the same as ' + rep + ' practicing',
+    '    saying it.',
     '  - What did Tomás explicitly tell ' + rep + ' to do differently before next week?',
     '  - The 2-3 SPECIFIC objections Tomás drilled ' + rep + ' on in this call (not a general theme —',
     '    the actual named objection, e.g. "I\'m too busy right now", "What does this cost?"), each with a',
-    '    short, concrete one-clause note on how to handle it. These get sent to ' + rep + ' as this week\'s',
-    '    daily practice assignment, so keep both the label and the note short and usable as a checklist item.',
+    '    short, concrete one-clause note on how to handle it via Agree/Isolate/Repeat. These get sent to',
+    '    ' + rep + ' as this week\'s daily practice assignment, so keep both the label and the note short',
+    '    and usable as a checklist item.',
+    '  - If Tomás drilled the money-ask specifically: a short label for the exact line practiced (e.g.',
+    '    "Ready to get started?") and a one-clause note on the branch logic he taught (e.g. "ask again after',
+    '    handling the objection, then go straight to payment on a yes"). Omit (null) if the money-ask wasn\'t',
+    '    drilled this call.',
     '',
-    'Be skeptical: if ' + rep + ' was only listening, not practicing, mark practiced=false — don\'t invent',
-    'practice that didn\'t happen.',
+    'Be skeptical: if ' + rep + ' was only listening, not practicing, mark the relevant practiced_* field',
+    'false — don\'t invent practice that didn\'t happen. The two skills are independent: a call can drill',
+    'one, both, or neither.',
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
     '  "reasoning": "string",',
     '  "attended": true,',
-    '  "practiced": true,',
+    '  "practiced_objections": true,',
+    '  "practiced_close_ask": true,',
     '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote",',
     '  "next_focus": "string — one concrete, specific self-practice focus for this coming week",',
     '  "objections_to_drill": [',
     '    { "label": "string — the specific objection, short, e.g. \\"I\'m too busy right now\\"",',
-    '      "note": "string — one short clause on how to handle it, e.g. \\"qualify them, don\'t just push to book\\"" }',
+    '      "note": "string — one short clause on how to handle it, e.g. \\"agree, isolate as the one thing, repeat it back\\"" }',
     '  ],',
+    '  "close_ask_drill": { "label": "string — the exact line practiced, e.g. \\"Ready to get started?\\"",',
+    '    "note": "string — one short clause on the branch logic, e.g. \\"ask again after the objection, then payment on a yes\\"" } | null,',
     '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\""',
     '}'
   ].join('\n');
@@ -112,7 +136,8 @@ function buildTrainingReviewUserPrompt_(rep, dateLabel, transcriptText) {
 function isValidTrainingReviewSchema_(obj) {
   return !!(obj &&
     typeof obj.attended === 'boolean' &&
-    typeof obj.practiced === 'boolean' &&
+    typeof obj.practiced_objections === 'boolean' &&
+    typeof obj.practiced_close_ask === 'boolean' &&
     typeof obj.coaching_notes === 'string' &&
     typeof obj.next_focus === 'string' &&
     typeof obj.team_notes === 'string' &&
@@ -120,7 +145,9 @@ function isValidTrainingReviewSchema_(obj) {
     obj.objections_to_drill.length > 0 &&
     obj.objections_to_drill.every(function (o) {
       return o && typeof o.label === 'string' && typeof o.note === 'string';
-    }));
+    }) &&
+    (obj.close_ask_drill === null ||
+      (obj.close_ask_drill && typeof obj.close_ask_drill.label === 'string' && typeof obj.close_ask_drill.note === 'string')));
 }
 
 /** Strips WebVTT cue numbers + timestamp lines, leaving just "Speaker: text" lines for the judge. */
@@ -159,10 +186,12 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
   return {
     reasoning: 'Unscored — parse failure after retries.',
     attended: true,
-    practiced: false,
+    practiced_objections: false,
+    practiced_close_ask: false,
     coaching_notes: 'Automated review failed to parse twice — read the transcript manually.',
     next_focus: 'n/a — read transcript manually: ' + rep + '/' + dateLabel,
     objections_to_drill: [],
+    close_ask_drill: null,
     team_notes: 'none'
   };
 }
@@ -170,6 +199,7 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
   var objections = result.objections_to_drill || [];
+  var closeAsk = result.close_ask_drill || null;
 
   var objectionsPlain = objections.map(function (o) {
     return '- ' + o.label + ' — ' + o.note;
@@ -178,19 +208,28 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     return '<li><b>' + o.label + '</b> — ' + o.note + '</li>';
   }).join('') + '</ul>';
 
+  var closeAskPlain = closeAsk ? '\nAsking for the money — "' + closeAsk.label + '": ' + closeAsk.note + '\n' : '';
+  var closeAskHtml = closeAsk
+    ? '<p><b>Asking for the money:</b> "' + closeAsk.label + '" — ' + closeAsk.note + '</p>' : '';
+
   var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
-    'Attended: ' + (result.attended ? 'Yes' : 'No') + ' | Practiced live: ' + (result.practiced ? 'Yes' : 'No') + '\n\n' +
+    'Attended: ' + (result.attended ? 'Yes' : 'No') +
+    ' | Practiced objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
+    ' | Practiced asking for the money: ' + (result.practiced_close_ask ? 'Yes' : 'No') + '\n\n' +
     'Notes: ' + result.coaching_notes + '\n\n' +
-    'This week\'s objections to drill:\n' + objectionsPlain + '\n\n' +
+    'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
+    closeAskPlain + '\n' +
     (result.team_notes && result.team_notes.toLowerCase() !== 'none' ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
     '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
 
   var htmlBody =
     '<p>Training call with <b>' + rep + '</b> (' + dateLabel + '):</p>' +
     '<p><b>Attended:</b> ' + (result.attended ? 'Yes' : 'No') +
-    ' &nbsp;|&nbsp; <b>Practiced live:</b> ' + (result.practiced ? 'Yes' : 'No') + '</p>' +
+    ' &nbsp;|&nbsp; <b>Practiced objection handling:</b> ' + (result.practiced_objections ? 'Yes' : 'No') +
+    ' &nbsp;|&nbsp; <b>Practiced asking for the money:</b> ' + (result.practiced_close_ask ? 'Yes' : 'No') + '</p>' +
     '<p><b>Notes:</b> ' + result.coaching_notes + '</p>' +
-    '<p><b>This week\'s objections to drill:</b></p>' + objectionsHtml +
+    '<p><b>This week\'s objections to drill (Agree, Isolate, Repeat):</b></p>' + objectionsHtml +
+    closeAskHtml +
     (result.team_notes && result.team_notes.toLowerCase() !== 'none'
       ? '<p><b>Team-wide note:</b> ' + result.team_notes + '</p>' : '') +
     '<p><i>— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</i></p>';
@@ -269,6 +308,13 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
   if (result.objections_to_drill && result.objections_to_drill.length) {
     PropertiesService.getScriptProperties().setProperty(
       'TRAINING_OBJECTIONS_' + rep, JSON.stringify(result.objections_to_drill));
+  }
+  // Same non-destructive rule as above, for the money-ask drill: only overwrite when
+  // this call actually drilled it, so a week that skips the close-ask keeps running
+  // the last one that was actually taught.
+  if (result.close_ask_drill) {
+    PropertiesService.getScriptProperties().setProperty(
+      'TRAINING_CLOSE_DRILL_' + rep, JSON.stringify(result.close_ask_drill));
   }
 
   var doc = DocumentApp.create(outputDocName);

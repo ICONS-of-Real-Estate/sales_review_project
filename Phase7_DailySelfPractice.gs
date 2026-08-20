@@ -65,33 +65,51 @@ var DAILY_PRACTICE_CONFIG = {
 
 function buildDailyPracticeSystemPrompt_() {
   return [
-    'You are grading a rep\'s SOLO OBJECTION-HANDLING PRACTICE DRILL — not a real sales call. There is no',
-    'lead on this recording; the rep is practicing alone or role-playing both sides to rehearse handling',
-    'a specific objection.',
+    'You are grading a rep\'s SOLO PRACTICE DRILL — not a real sales call. There is no lead on this',
+    'recording; the rep is practicing alone or role-playing both sides to rehearse one of our two named',
+    'skills. First decide which one this drill is:',
+    '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise, isolate it as the',
+    '    one thing standing in the way, then repeat/confirm that back before answering it.',
+    '  ASKING FOR THE MONEY = a direct line, e.g. "Ready to get started?" — not a soft/open question. Ideally',
+    '    asked MORE THAN ONCE: ask it, then whatever comes back is either another objection (loop back into',
+    '    Agree/Isolate/Repeat, then ask again) or a yes (go straight to payment).',
     '',
-    'Answer, in order:',
-    '1. Which objection type were they practicing (budget, third-party approval, timing, ROI/proof,',
-    '   compliance, competitor comparison, trust/prior bad experience, or other — name it specifically)?',
-    '2. Did they use a concrete technique (a number, a case study, a specific script line) rather than',
-    '   vague reassurance?',
+    'If drill_type is "close_ask", answer, in order:',
+    '1. Did they use the direct line (or a clear equivalent) rather than a soft/open question? Quote it.',
+    '2. Did they ask more than once — i.e. handle whatever came back (objection or hesitation) and ask',
+    '   again, rather than asking once and moving on?',
     '3. Delivery: confident and natural, or hesitant/reading off a script woodenly?',
     '4. What is the single most specific thing to sharpen before their next live call?',
+    'Score anchors for overall_score (1-5) on a close_ask drill:',
+    '5 = direct line used, asked more than once with a real branch (objection-loop or payment), confident.',
+    '4 = direct line used and repeated, but delivery or the branch handling was a little off.',
+    '3 = direct line used once, but no repeat attempt after the first response.',
+    '2 = only a soft/open question substituted for the direct ask — no real close-ask practiced.',
+    '1 = did not attempt the ask at all, or the drill doesn\'t show real practice.',
     '',
-    'Be skeptical by default — a rep going through the motions without a real technique attempt should',
-    'score low even if their delivery is smooth.',
-    '',
-    'Score anchors for overall_score (1-5):',
-    '5 = clear objection named, a genuinely concrete technique used, confident delivery.',
+    'If drill_type is "objection", answer, in order:',
+    '1. Which objection type were they practicing (budget, third-party approval, timing, ROI/proof,',
+    '   compliance, competitor comparison, trust/prior bad experience, or other — name it specifically)?',
+    '2. Did they actually run Agree, Isolate, Repeat — or use a concrete technique (a number, a case study,',
+    '   a specific script line) — rather than vague reassurance?',
+    '3. Delivery: confident and natural, or hesitant/reading off a script woodenly?',
+    '4. What is the single most specific thing to sharpen before their next live call?',
+    'Score anchors for overall_score (1-5) on an objection drill:',
+    '5 = clear objection named, Agree/Isolate/Repeat (or an equally concrete technique) used, confident.',
     '4 = concrete technique used, but delivery or objection-framing was a little off.',
     '3 = attempted a technique but it stayed generic/vague rather than concrete.',
     '2 = no real technique — just repeated reassurance or changed the subject.',
     '1 = did not engage with the objection at all, or the drill doesn\'t show real practice.',
     '',
+    'Be skeptical by default — a rep going through the motions without a real attempt should score low',
+    'even if their delivery is smooth.',
+    '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
     '  "reasoning": "string",',
-    '  "objection_type": "string",',
+    '  "drill_type": "objection | close_ask",',
+    '  "objection_type": "string — the objection practiced, or \\"n/a\\" if drill_type is close_ask",',
     '  "technique_used": true,',
     '  "technique_description": "string",',
     '  "delivery_quality": "confident | hesitant | mixed",',
@@ -114,6 +132,7 @@ function buildDailyPracticeUserPrompt_(rep, transcriptText, fileName) {
 
 function isValidDailyPracticeSchema_(obj) {
   return !!(obj &&
+    (obj.drill_type === 'objection' || obj.drill_type === 'close_ask') &&
     typeof obj.objection_type === 'string' &&
     typeof obj.technique_used === 'boolean' &&
     typeof obj.delivery_quality === 'string' &&
@@ -142,6 +161,7 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
   }
   return {
     reasoning: 'Unscored — parse failure after retries.',
+    drill_type: 'objection',
     objection_type: 'unknown',
     technique_used: false,
     technique_description: '',
@@ -154,10 +174,13 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
 
 function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
   var subject = 'Practice Drill Feedback — ' + fileName + ' (' + result.overall_score + '/5)';
+  var focusLine = result.drill_type === 'close_ask'
+    ? 'Drill: Asking for the money'
+    : 'Objection practiced: ' + result.objection_type;
   var body =
     'Hi ' + rep + ',\n\n' +
     'Feedback on today\'s practice drill ("' + fileName + '"):\n\n' +
-    'Objection practiced: ' + result.objection_type + '\n' +
+    focusLine + '\n' +
     'Technique used: ' + (result.technique_used ? 'Yes — ' + result.technique_description : 'No — see below') + '\n' +
     'Delivery: ' + result.delivery_quality + '\n' +
     'Score: ' + result.overall_score + '/5\n\n' +
@@ -276,9 +299,32 @@ function sendDailyPracticeReminders_() {
     var folderLink = 'https://drive.google.com/drive/folders/' + folderId;
     var stored = PropertiesService.getScriptProperties().getProperty('TRAINING_OBJECTIONS_' + rep);
     var objections = stored ? JSON.parse(stored) : null;
+    var storedCloseAsk = PropertiesService.getScriptProperties().getProperty('TRAINING_CLOSE_DRILL_' + rep);
+    var closeAsk = storedCloseAsk ? JSON.parse(storedCloseAsk) : null;
+
+    // Alternate which skill gets today's assignment when both are on file, so reps
+    // get dedicated close-ask reps rather than it always riding along after
+    // objections (or being crowded out of a single day's recording). Objection days
+    // fall on the "day" index computeTrainingCycleLabel_ assigns; close-ask takes
+    // the other days once a close-ask drill actually exists on file.
+    var assignCloseAskToday = closeAsk && (!objections || !objections.length || (label.day % 2 === 1));
 
     var subject, body, htmlBody;
-    if (objections && objections.length) {
+    if (assignCloseAskToday) {
+      subject = label.label + ' — Training Plan';
+      body =
+        'Record a video practicing ASKING FOR THE MONEY:\n\n' +
+        '"' + closeAsk.label + '" — ' + closeAsk.note + '\n\n' +
+        'Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.\n\n' +
+        'Delivery folder: ' + folderLink + '\n\n' +
+        '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
+      htmlBody =
+        '<p>Record a video practicing <b>ASKING FOR THE MONEY</b>:</p>' +
+        '<p>"' + closeAsk.label + '" — ' + closeAsk.note + '</p>' +
+        '<p>Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.</p>' +
+        '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
+        '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
+    } else if (objections && objections.length) {
       subject = label.label + ' — Training Plan';
       var plainList = objections.map(function (o, i) { return (i + 1) + '. ' + o.label + ' — ' + o.note; }).join('\n');
       var htmlList = '<ol>' + objections.map(function (o) {
@@ -286,13 +332,13 @@ function sendDailyPracticeReminders_() {
       }).join('') + '</ol>';
 
       body =
-        'Record a video practicing objection handling:\n\n' +
+        'Record a video practicing objection handling (Agree, Isolate, Repeat):\n\n' +
         plainList + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
 
       htmlBody =
-        '<p>Record a video practicing objection handling:</p>' +
+        '<p>Record a video practicing objection handling (Agree, Isolate, Repeat):</p>' +
         htmlList +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
