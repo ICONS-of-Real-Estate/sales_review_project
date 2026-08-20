@@ -9,6 +9,16 @@ Drive folder as a Google Doc.
 All scripts are **safely re-runnable** — they skip anything already
 transcribed, so running one again later only picks up new recordings.
 
+**The three `*_whisper.py` scripts (Sean/Tomás/Joana) are also safe to run on
+multiple machines at once against the same folder(s)** — e.g. two laptops
+plus a cloud VM chewing through the same backlog together. Each one claims a
+video (a small `.lock-<id>` marker file dropped in the same Drive folder)
+before transcribing it; if another machine already claimed it, it's skipped
+in favor of the next pending video. A lock left behind by a crashed/killed
+process is treated as abandoned and stolen after 6 hours. The Gemini/Qwen
+engines don't have this yet — don't run the same engine's script for the same
+person on two machines simultaneously, they'll duplicate work.
+
 ## One-time setup
 
 You already have `credentials.json` and `token.json` in this folder, so the
@@ -108,6 +118,16 @@ python test_single_transcription.py          # Gemini
 python test_single_transcription_qwen.py     # Qwen
 python test_single_transcription_whisper.py  # Whisper
 ```
+
+## Running on a headless machine (e.g. an OVH cloud VM)
+
+The OAuth step above (`flow.run_local_server(port=0)`) opens a real browser
+tab — that only works on a machine with a desktop/browser. A headless cloud
+VM has neither, so **copy `credentials.json` and `token.json` from a laptop
+that's already authorized** into this folder on the VM instead of trying to
+run the login flow there. Same two files, same folder, no re-login needed —
+this is exactly how the lock feature above lets that VM safely join the same
+batch as your existing laptops.
 
 ## Where the output goes
 

@@ -23,8 +23,11 @@ First run opens a browser tab for Google login/consent, then caches a
 token.json so future runs don't prompt again.
 """
 
+import calendar
+import datetime
 import io
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -48,6 +51,13 @@ SOURCE_FOLDERS = {
 }
 
 GEMINI_MODEL = "gemini-flash-latest"
+
+# How stale a lock file has to be before another machine will steal it --
+# i.e. how long we're willing to assume a machine that grabbed a video is
+# still legitimately working on it before treating it as crashed/killed.
+# Comfortably above the slowest realistic single-video time (download + local
+# Whisper transcription of a 900MB call on a modest CPU).
+LOCK_STALE_SECONDS = 6 * 3600
 
 
 class QuotaExhaustedError(RuntimeError):
@@ -260,6 +270,207 @@ def _upload_transcript_with_retry(drive, folder_id, tmp_txt, title, max_retries=
             print(f"    Drive upload connection error ({e}), retrying in {delay}s...")
             time.sleep(delay)
             delay = min(delay * 2, max_delay)
+
+
+def _lock_name(video_id):
+    return f".lock-{video_id}"
+
+
+def _parse_drive_time(ts):
+    """Drive's createdTime looks like '2026-08-20T12:34:56.789Z' -- parse as UTC epoch seconds."""
+    dt = datetime.datetime.strptime(ts.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+    return calendar.timegm(dt.timetuple())
+
+
+def try_acquire_lock(drive, folder_id, video_id):
+    """Best-effort distributed lock so multiple machines (e.g. two laptops plus
+    an OVH cloud VM) can run the SAME batch script against the SAME Drive
+    folder at once without two of them transcribing the same video.
+
+    Drive has no real compare-and-swap, so this creates a marker file named
+    after the video, waits a beat for Drive to settle, then re-lists by that
+    exact name: only the earliest-created contender (createdTime, file id as
+    a stable tiebreak) wins the race, and every loser deletes its own copy.
+    A lock left behind by a crashed/killed process is stolen once it's older
+    than LOCK_STALE_SECONDS, so a dead machine can't strand a video forever.
+
+    Returns the winning lock file's id (pass to release_lock when done), or
+    None if this machine should skip this video (already claimed and fresh,
+    or the lock check itself failed -- either way, safer to move on to the
+    next pending video than to risk double-transcribing).
+    """
+    lock_name = _lock_name(video_id)
+    try:
+        existing = drive.files().list(
+            q=f"'{folder_id}' in parents and name = '{lock_name}' and trashed = false",
+            fields="files(id, createdTime)",
+        ).execute().get("files", [])
+        if existing:
+            oldest_age = time.time() - min(_parse_drive_time(f["createdTime"]) for f in existing)
+            if oldest_age < LOCK_STALE_SECONDS:
+                return None
+            print(f"    (stealing a lock left behind {format_duration_(oldest_age)} ago -- looks abandoned)")
+            for f in existing:
+                try:
+                    drive.files().delete(fileId=f["id"]).execute()
+                except Exception:
+                    pass
+
+        mine = drive.files().create(
+            body={
+                "name": lock_name,
+                "parents": [folder_id],
+                "description": f"claimed by {socket.gethostname()} pid={os.getpid()}",
+            },
+            fields="id, createdTime",
+        ).execute()
+
+        time.sleep(2)  # let Drive settle before checking for a same-instant race with another machine
+        contenders = drive.files().list(
+            q=f"'{folder_id}' in parents and name = '{lock_name}' and trashed = false",
+            fields="files(id, createdTime)",
+        ).execute().get("files", [])
+        winner = min(contenders, key=lambda f: (f["createdTime"], f["id"]))
+        for f in contenders:
+            if f["id"] != winner["id"] and f["id"] != mine["id"]:
+                try:
+                    drive.files().delete(fileId=f["id"]).execute()
+                except Exception:
+                    pass
+        if winner["id"] != mine["id"]:
+            try:
+                drive.files().delete(fileId=mine["id"]).execute()
+            except Exception:
+                pass
+            return None
+        return mine["id"]
+    except Exception as e:
+        print(f"    (lock check failed, skipping this video for now: {e})")
+        return None
+
+
+def release_lock(drive, lock_file_id):
+    if not lock_file_id:
+        return
+    try:
+        drive.files().delete(fileId=lock_file_id).execute()
+    except Exception:
+        pass  # best-effort -- a leftover lock is just treated as stale (and stolen) after LOCK_STALE_SECONDS
+
+
+def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=None):
+    """Shared multi-machine-safe batch loop for the *_whisper.py variants
+    (Sean/Tomás/Joana) -- same Drive plumbing as main() above, plus the
+    per-video lock from try_acquire_lock/release_lock so this can safely run
+    on several machines at once against the same folder(s): each machine
+    claims a video before starting it, and skips straight to the next
+    pending one if another machine already has it.
+
+    title_fn(video_dict) -> display name; defaults to the raw Drive filename.
+    log_completed_fn(title, video_id, link), if given, is called after each
+    successful upload (Tomás's variant uses this for its completion log).
+    """
+    if title_fn is None:
+        title_fn = lambda v: v["name"].strip()
+
+    drive = get_drive_service()
+
+    # Pre-scan every folder up front (list_videos() gets called once per
+    # folder either way) so the per-video progress/ETA lines below can report
+    # against the WHOLE backlog, not just whatever folder happens to be
+    # running.
+    work_by_folder = {}
+    total_videos = 0
+    for folder_label, folder_id in folders.items():
+        videos, existing_names = list_videos(drive, folder_id)
+        pending = [v for v in videos if f"{title_fn(v)} — Transcript" not in existing_names]
+        work_by_folder[folder_label] = (folder_id, pending)
+        total_videos += len(pending)
+        print(f"  [{folder_label}] {len(pending)} to do, {len(videos) - len(pending)} already transcribed")
+    print(f"\n{total_videos} video(s) to transcribe across {len(folders)} folder(s) "
+          f"(some may already be claimed by another machine).")
+
+    batch_start = time.time()
+    completed = 0
+    skipped_locked = 0
+    # Only videos transcribed FRESH this run go in here -- a reused
+    # download/transcript from a prior interrupted run finishes far faster
+    # than a real transcription, so it isn't a fair basis for estimating what
+    # the REMAINING (not-yet-started) videos will take.
+    per_video_times = []
+
+    for folder_label, (folder_id, videos) in work_by_folder.items():
+        print(f"\n=== {folder_label} ===")
+        for video in videos:
+            title = title_fn(video)
+
+            lock_id = try_acquire_lock(drive, folder_id, video["id"])
+            if lock_id is None:
+                print(f"[skipping] {title} — already claimed by another machine")
+                skipped_locked += 1
+                continue
+
+            print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
+
+            local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
+            txt_path = transcript_temp_path(video["id"])
+            video_start = time.time()
+            fresh = False
+            try:
+                if os.path.exists(txt_path):
+                    # A previous run already finished transcribing this one but
+                    # got interrupted before a successful upload (process
+                    # killed, laptop slept through a long network drop, etc.)
+                    # -- reuse it instead of burning another 20-40+ minutes
+                    # re-transcribing.
+                    print("    (reusing transcript from a previous, interrupted run)")
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        transcript = f.read()
+                else:
+                    if os.path.exists(local_path):
+                        print("    (reusing file downloaded on a previous run)")
+                    else:
+                        t0 = time.time()
+                        download_video(drive, video["id"], local_path)
+                        print(f"    download: {format_duration_(time.time() - t0)}")
+
+                    t0 = time.time()
+                    transcript = transcribe_fn(local_path)
+                    print(f"    transcribe: {format_duration_(time.time() - t0)}")
+                    fresh = True
+
+                t0 = time.time()
+                link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
+                print(f"    upload: {format_duration_(time.time() - t0)}")
+                print(f"    done -> {link}")
+                if log_completed_fn:
+                    log_completed_fn(title, video["id"], link)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+            except Exception as e:
+                print(f"    FAILED: {e}")
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                continue
+            finally:
+                video_total = time.time() - video_start
+                print(f"    total: {format_duration_(video_total)}")
+                release_lock(drive, lock_id)
+
+            completed += 1
+            if fresh:
+                per_video_times.append(video_total)
+            remaining = total_videos - completed - skipped_locked
+            line = (f"    progress: {completed}/{total_videos} done this machine "
+                    f"({skipped_locked} claimed by others), elapsed {format_duration_(time.time() - batch_start)}")
+            if remaining and per_video_times:
+                avg = sum(per_video_times) / len(per_video_times)
+                line += f", ~{format_duration_(avg * remaining)} left ({format_duration_(avg)}/video avg)"
+            print(line)
+
+    print(f"\nAll done: {completed}/{total_videos} video(s) transcribed on this machine "
+          f"({skipped_locked} were already claimed by other machines). "
+          f"Total elapsed: {format_duration_(time.time() - batch_start)}")
 
 
 def main():
