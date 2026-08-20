@@ -510,6 +510,18 @@ function stampMatch_(hit) {
 // Email
 // ---------------------------------------------------------------------------
 
+/**
+ * The bit of the raw Calendar title before the first "/" -- e.g.
+ * "Podcast Qualification Call / Jess Provencher and ICONS of Real Estate"
+ * -> "Podcast Qualification Call". Titles with no "/" (e.g. bare "QC") are
+ * returned as-is. Used so the email shows a short call-type label instead of
+ * repeating the whole raw title next to the already-parsed name.
+ */
+function callTypeFromTitle_(title) {
+  var idx = title.indexOf('/');
+  return (idx === -1 ? title : title.slice(0, idx)).trim();
+}
+
 function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
   var n = missingEvents.length;
   var trackerUrl = 'https://docs.google.com/spreadsheets/d/' + repCfg.spreadsheetId + '/edit';
@@ -526,25 +538,54 @@ function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
   var subject = '[Action needed] Update your sales tracker — ' + namesForSubject +
     ' (' + n + ' call(s) from ' + priorDay + ') not logged';
 
-  var lines = missingEvents.map(function (ev) {
-    var time = Utilities.formatDate(ev.start, tz, 'HH:mm');
-    return '• ' + ev.prospectGuess + ' — ' + time + ' — ' + ev.title;
+  // guessProspectFromTitle_ falls back to echoing the raw title verbatim when
+  // it can't parse a name out of it (e.g. a bare "QC" event) -- show that
+  // honestly instead of printing the same string twice on one line
+  // ("QC — 07:45 — QC"), which reads as a meaningless duplicate.
+  var entries = missingEvents.map(function (ev) {
+    var nameParsed = ev.prospectGuess.trim().toLowerCase() !== ev.title.trim().toLowerCase();
+    return {
+      time: Utilities.formatDate(ev.start, tz, 'HH:mm'),
+      who: nameParsed ? ev.prospectGuess : '(name not parsed from calendar title)',
+      callType: callTypeFromTitle_(ev.title)
+    };
+  });
+
+  var plainLines = entries.map(function (e) {
+    return '  • ' + e.time + ' — ' + e.who + ' — ' + e.callType;
+  });
+  var htmlLines = entries.map(function (e) {
+    return '<li>' + e.time + ' — <b>' + e.who + '</b> — ' + e.callType + '</li>';
   });
 
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
     'Your calendar shows ' + n + ' sales/QC call(s) on ' + priorDay +
-    ' with no matching outcome in your tracker:\n' +
-    lines.join('\n') + '\n\n' +
+    ' with no matching outcome in your tracker:\n\n' +
+    plainLines.join('\n') + '\n\n' +
     'Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes today ' +
     'so it can be scored.\n\n' +
     'Tracker: ' + trackerUrl + '\n\n' +
+    'Reply to this email once you\'ve updated the tracker, so Kris/Tomás know it\'s done.\n\n' +
     '— This is an automated check. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
+
+  var htmlBody =
+    '<p>Hi ' + repCfg.name + ',</p>' +
+    '<p>Your calendar shows ' + n + ' sales/QC call(s) on ' + priorDay +
+    ' with no matching outcome in your tracker:</p>' +
+    '<ul>' + htmlLines.join('') + '</ul>' +
+    '<p>Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes today ' +
+    'so it can be scored.</p>' +
+    '<p><b>Tracker:</b> <a href="' + trackerUrl + '">' + trackerUrl + '</a></p>' +
+    '<p><b>Reply to this email once you\'ve updated the tracker</b>, so Kris/Tomás know it\'s done.</p>' +
+    '<p><i>— This is an automated check. This email was drafted by AI and sent automatically; ' +
+    'reply to Kris or Tomás with any issues.</i></p>';
 
   var recipientsNeeded = 3; // rep + Kris + Tomás (CC counts against recipient quota)
   guardedSend_(repCfg.email, subject, body, {
     cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
+    htmlBody: htmlBody,
     name: 'Call Tracker Compliance Bot'
   }, recipientsNeeded);
   log_('Sent compliance email to ' + repCfg.email + ' for ' + n + ' unlogged call(s).');
