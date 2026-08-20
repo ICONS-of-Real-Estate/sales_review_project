@@ -20,6 +20,14 @@
  * machine, or by hand) so a "<video name> — Transcript" Doc lands next to
  * each upload before this phase's grading trigger runs.
  *
+ * The daily assignment email (sendDailyPracticeReminders_) is cc'd to Tomás
+ * (CONFIG.TOMAS_EMAIL) so he sees every assignment as it goes out, not just
+ * the escalations. A separate compliance check (checkDailyPracticeCompliance_)
+ * runs each morning BEFORE that day's new assignment goes out, checking
+ * whether the rep replied to yesterday's assignment email and whether a new
+ * file actually landed in their Drive folder — alerting Kris+Tomás per rep
+ * missing either.
+ *
  * Reuses CONFIG, log_, guardedSend_, callKimiJudge_, stripFencesAndParseJson_,
  * getTranscriptText_, computeTrainingCycleLabel_ from Phase1/Phase2 (same-project
  * global scope).
@@ -30,8 +38,13 @@
  *      dropdown hides those) —
  *      grades whatever transcripts already exist and only logs the feedback,
  *      nothing sent, nothing written.
- *   2. Flip DAILY_PRACTICE_CONFIG.ENABLED to true and run
- *      installDailySelfPracticeTriggers_().
+ *   2. Run previewDailyPracticeCompliance() the same way to sanity-check the
+ *      reply/upload check against yesterday's real assignment before it can
+ *      send any alerts.
+ *   3. Flip DAILY_PRACTICE_CONFIG.ENABLED to true and run
+ *      installDailySelfPracticeTriggers_(). First run will prompt Gmail
+ *      authorization (checkDailyPracticeCompliance_ reads reply threads via
+ *      GmailApp) — approve it under the same account that owns this project.
  */
 
 var DAILY_PRACTICE_CONFIG = {
@@ -43,6 +56,7 @@ var DAILY_PRACTICE_CONFIG = {
   },
   GRADING_HOUR: 20, // 8pm — after the work day, so today's upload has time to land + get transcribed
   REMINDER_HOUR: 9, // 9am — this is now the day's assignment (objections to drill), not an end-of-day nag, so it goes out in the morning. Was 16:00; flag to Kris if a different time is wanted.
+  COMPLIANCE_CHECK_HOUR: 8, // 8am — an hour before REMINDER_HOUR, so it always checks yesterday's assignment before today's goes out.
   // Escalate (cc Kris + Tomás) when a graded rep falls at or below this — same
   // "manual review" spirit as Phase 2's severity flag, applied to a rep's own
   // practice quality rather than a real lead's call.
@@ -297,27 +311,107 @@ function sendDailyPracticeReminders_() {
     }
 
     if (!DAILY_PRACTICE_CONFIG.ENABLED) {
-      log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject + '\n' + body + '\n');
+      log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject + ' (cc ' + CONFIG.TOMAS_EMAIL + ')\n' + body + '\n');
       return;
     }
-    guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot' }, 1);
-    log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).'));
+    guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+    log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).') + ' (cc\'d Tomás)');
   });
+}
+
+/**
+ * Compliance check for the PREVIOUS training-cycle weekday's assignment —
+ * did the rep (a) reply to that day's "<label> — Training Plan" email, and
+ * (b) actually upload a new practice file to their Drive folder? Escalates
+ * to Kris + Tomás per rep missing either. Runs once daily, an hour BEFORE
+ * sendDailyPracticeReminders_ sends that day's new assignment, so it's
+ * always checking on yesterday's — see COMPLIANCE_CHECK_HOUR below.
+ */
+function checkDailyPracticeCompliance_(dryRun) {
+  RUN_TAG = 'checkDailyPracticeCompliance_';
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  var label = computeTrainingCycleLabel_(yesterday, tz);
+  if (!label) { log_('Yesterday was a weekend — no daily practice assignment to check.'); return; }
+
+  var subject = label.label + ' — Training Plan';
+  var sinceMidnightYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+
+  Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
+    var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
+    if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping compliance check.'); return; }
+
+    var replied = false;
+    GmailApp.search('subject:"' + subject + '" to:' + repCfg.email + ' newer_than:2d', 0, 5).forEach(function (thread) {
+      thread.getMessages().forEach(function (msg) {
+        if (msg.getFrom().indexOf(repCfg.email) !== -1) replied = true;
+      });
+    });
+
+    var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
+    var files = folder.getFiles();
+    var newFile = false;
+    while (files.hasNext()) {
+      if (files.next().getDateCreated() >= sinceMidnightYesterday) { newFile = true; break; }
+    }
+
+    if (replied && newFile) {
+      log_('[' + rep + '] Compliant — replied to "' + subject + '" and uploaded a new file.');
+      return;
+    }
+
+    var missing = [];
+    if (!replied) missing.push('no reply to the "' + subject + '" email');
+    if (!newFile) missing.push('no new file uploaded to their practice folder');
+    var alertSubject = '[Daily Practice] ' + rep + ' missed yesterday\'s assignment';
+    var alertBody = rep + ' — ' + missing.join(' and ') + ' (checking against "' + subject + '").\n\n' +
+      'Folder: https://drive.google.com/drive/folders/' + DAILY_PRACTICE_CONFIG.FOLDERS[rep];
+
+    if (dryRun) {
+      log_('(preview) ' + CONFIG.KRIS_EMAIL + ' <- ' + alertSubject + ' (cc ' + CONFIG.TOMAS_EMAIL + ')\n' + alertBody);
+      return;
+    }
+    guardedSend_(CONFIG.KRIS_EMAIL, alertSubject, alertBody, { cc: CONFIG.TOMAS_EMAIL, name: 'Daily Practice Compliance Bot' }, 2);
+    log_('[' + rep + '] NON-COMPLIANT — ' + missing.join(' and ') + '. Alerted Kris/Tomás.');
+  });
+}
+
+/** Run this FIRST from the editor — logs compliance findings, sends nothing. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewDailyPracticeCompliance() {
+  return previewDailyPracticeCompliance_();
+}
+
+function previewDailyPracticeCompliance_() {
+  RUN_TAG = 'previewDailyPracticeCompliance_';
+  log_('PREVIEW MODE — checking yesterday\'s daily practice compliance, nothing will be sent.');
+  checkDailyPracticeCompliance_(/*dryRun=*/true);
+}
+
+/** Trigger target. */
+function runDailyPracticeCompliance() {
+  RUN_TAG = 'runDailyPracticeCompliance';
+  if (!DAILY_PRACTICE_CONFIG.ENABLED) { log_('DAILY_PRACTICE_CONFIG.ENABLED is false — skipping.'); return; }
+  checkDailyPracticeCompliance_(/*dryRun=*/false);
 }
 
 function installDailySelfPracticeTriggers_() {
   RUN_TAG = 'installDailySelfPracticeTriggers_';
-  ['runDailyPracticeGrading', 'sendDailyPracticeReminders_'].forEach(function (handler) {
+  ['runDailyPracticeGrading', 'sendDailyPracticeReminders_', 'runDailyPracticeCompliance'].forEach(function (handler) {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
     });
   });
 
+  ScriptApp.newTrigger('runDailyPracticeCompliance')
+    .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('sendDailyPracticeReminders_')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.REMINDER_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('runDailyPracticeGrading')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.GRADING_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
 
-  log_('Daily self-practice triggers installed: reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR +
-    ':00, grading at ' + DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
+  log_('Daily self-practice triggers installed: compliance check at ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR +
+    ':00, reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR + ':00, grading at ' +
+    DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
 }
