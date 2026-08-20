@@ -110,6 +110,15 @@ var INBOX_SLA_CONFIG = {
   // previewInboxSlaCheck() after editing this list — if it still surfaces
   // system/marketing noise, add the sender here rather than the subject list,
   // since senders are a tighter match than subject substrings.
+  // Round 2 (20/08/2026): live runs on Bens (182) and especially Joana (1,276)
+  // surfaced a second wave of noise round 1 didn't catch — Joana's inbox gets
+  // CC'd on the entire cold-outreach "Network" alias (both her own forwarded
+  // reply threads AND every newsletter riding that same alias), plus generic
+  // marketing/social/tool notifications neither rep needs to personally
+  // reply to. Deliberately NOT excluding "Podcast Recording: X x Y" threads
+  // (still a large share of Bens' volume) — can't tell from sender/subject
+  // alone whether a given one needs his reply, so left as real signal rather
+  // than risk hiding something that matters.
   EXCLUDE_FROM: [
     'chat-noreply@google.com',
     'calendar-notification@google.com',
@@ -118,14 +127,50 @@ var INBOX_SLA_CONFIG = {
     'gemini-notes@google.com',
     'hello@mail.grammarly.com',
     'invitations@alignable.com',
-    'support@alignable.com'
+    'support@alignable.com',
+    'network@ardorseo.com',
+    'claude.mgt@ardorseo.com',
+    'no-reply@zoom.us',
+    'billing@zoom.us',
+    'no-reply@accounts.google.com',
+    '@linkedin.com',
+    '@facebookmail.com',
+    '@mail.instagram.com',
+    '@zmail.zillow.com',
+    '@email.homes.com',
+    '@hello.bitdefender.com',
+    '@update.justeat.it',
+    '@mail.apollo.io',
+    'support@apollo.io',
+    'notifications@turboscribe.ai',
+    '@otter.ai',
+    '@updates.otter.ai',
+    '@email.openai.com',
+    '@email.microsoft.com',
+    'msa@communication.microsoft.com',
+    '@e.atlassian.com',
+    '@id.atlassian.com',
+    'hello@kixie.com',
+    'cs@kixie.com',
+    '@marketing.descript.com',
+    'wordpress@iconsrealestate.com',
+    'newsletter@screendollars.com',
+    'hello@emailmeter.com'
   ],
   EXCLUDE_SUBJECT_CONTAINS: [
     'Accepted:',
     'Declined:',
     'Invitation:',
     'Updated invitation:',
-    'Canceled event:'
+    'Canceled event:',
+    'Icons 100 Booking of',
+    'Appointment Confirmation of',
+    'Sales Call Confirmation of',
+    'New Qualification Zoom Boooked',
+    'ingressou na sua Sala Pessoal de Reuni',
+    'has joined your Personal Meeting Room',
+    'Zoom sign-in',
+    'Novo início de sess'
   ],
 
   // Business time, reusing CONFIG.BUSINESS_TIMEZONE (Phase1_ComplianceCheck.gs)
