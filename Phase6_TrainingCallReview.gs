@@ -428,7 +428,7 @@ function installTrainingCallReviewTrigger() {
 // ---------------------------------------------------------------------------
 
 var TOMAS_TRANSCRIPT_REMINDER_CONFIG = {
-  ENABLED: false,
+  ENABLED: true, // Flipped true 20/08/2026 per Kris's go-ahead.
   TRIGGER_HOUR: 12, // midday
   TIMEZONE: 'Europe/Lisbon' // Portugal
 };

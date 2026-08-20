@@ -43,6 +43,13 @@
  * That's a process change on the booking side, not something this script can
  * enforce — it can only detect and flag when a recording's title has no
  * extractable ID (logged loudly, never silently skipped).
+ *
+ * DEPRIORITIZED (20/08/2026, Kris's call): Riverside's API is Business-plan-
+ * only and the account is on Pro, so this stays unused for now. Bens will
+ * manually download his own transcripts instead of automating Riverside
+ * sync — same "someone pastes a Drive link in by hand" fallback path this
+ * file's own header describes above. Revisit this file if the plan is ever
+ * upgraded.
  */
 
 var RIVERSIDE_CONFIG = {

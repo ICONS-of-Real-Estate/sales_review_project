@@ -83,7 +83,7 @@ var INBOX_SLA_CONFIG = {
   // HANDOFF_CONFIG.ENABLED (Phase3_HandoffBrief.gs) and RIVERSIDE_CONFIG's
   // preview-first flow (Phase0_RiversideSync.gs). False = log what would be
   // sent instead of sending it.
-  ENABLED: false,
+  ENABLED: true, // Flipped true 20/08/2026 after previewInboxSlaCheck_() ran clean on Sean/Bens post noise-filtering.
 
   // Joana deliberately excluded (20/08/2026, Kris's call) — she has hundreds
   // of leads to work through and this SLA nudge would just be noise on top

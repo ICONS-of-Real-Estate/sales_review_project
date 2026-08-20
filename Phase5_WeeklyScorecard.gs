@@ -35,7 +35,7 @@
  */
 
 var WEEKLY_SCORECARD_CONFIG = {
-  ENABLED: false,
+  ENABLED: true, // Flipped true 20/08/2026 after previewWeeklyScorecards_() ran clean.
   TRIGGER_HOUR: 18 // 6pm, CONFIG.BUSINESS_TIMEZONE (Monday close of business)
 };
 
