@@ -51,6 +51,13 @@ Wants=network-online.target
 Type=oneshot
 User=$SERVICE_USER
 WorkingDirectory=$TOOLS_DIR
+# 4 parallel workers x 4 Whisper threads each = ~16 threads, matched to this
+# box's vCore count -- see transcribe_all.py's docstring for why running
+# several workers on one machine is safe (same per-video Drive lock that
+# already lets multiple separate machines share one backlog). Adjust both
+# numbers here if the VPS's core count ever changes.
+Environment=TRANSCRIBE_WORKERS=4
+Environment=WHISPER_THREADS=4
 ExecStart=$VENV_DIR/bin/python $TOOLS_DIR/transcribe_all.py
 # Lowest possible scheduling priority so this never competes with anything
 # else running on this box (e.g. hosted websites) -- only runs when the

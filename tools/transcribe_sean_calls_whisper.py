@@ -46,6 +46,8 @@ small.en) downloads automatically to a local cache the first time this runs,
 then never needs the network again.
 """
 
+import os
+
 from transcribe_sean_calls import SOURCE_FOLDERS, run_whisper_batch
 
 _whisper_model = None
@@ -53,11 +55,24 @@ _whisper_model = None
 
 def get_whisper_model():
     """Loads the whisper.cpp model once per process (loading it is the slow
-    part; reuse across every file in the batch instead of reloading each time)."""
+    part; reuse across every file in the batch instead of reloading each time).
+
+    WHISPER_THREADS controls how many CPU threads EACH model instance uses --
+    matters when transcribe_all.py runs several parallel workers (each with
+    its own model) on the same box, so the total (workers x threads) can be
+    tuned to the machine's core count instead of oversubscribing it. Left
+    unset, whisper.cpp's own default applies -- fine for a single-worker run."""
     global _whisper_model
     if _whisper_model is None:
         from pywhispercpp.model import Model
-        _whisper_model = Model("small.en", print_realtime=False, print_progress=False)
+        n_threads = os.environ.get("WHISPER_THREADS")
+        kwargs = {"n_threads": int(n_threads)} if n_threads else {}
+        try:
+            _whisper_model = Model("small.en", print_realtime=False, print_progress=False, **kwargs)
+        except TypeError:
+            # Older pywhispercpp versions may not accept n_threads as a kwarg --
+            # fall back to its default thread count rather than hard-failing.
+            _whisper_model = Model("small.en", print_realtime=False, print_progress=False)
     return _whisper_model
 
 
