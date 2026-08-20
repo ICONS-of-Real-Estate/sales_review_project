@@ -197,7 +197,24 @@ function callKimiJudge_(systemPrompt, userPrompt) {
  * case), not invented examples — populate FEW_SHOT_ANCHORS once the first
  * batch of Kris-reviewed calls exists.
  */
-var FEW_SHOT_ANCHORS = []; // TODO(Kris/Tomás): 2-3 labeled excerpts once real graded calls exist.
+// Pulled from real, Kris-reviewed calls cataloged in Objection_Handling_Playbook.md
+// (first batch of 43 Bens transcripts, scored 17/08/2026) per SOP §9's requirement
+// that anchors come from real graded calls, not invented ones. DRAFT — Tomás has
+// not signed off on these specific three yet; confirm before treating as final.
+var FEW_SHOT_ANCHORS = [
+  'Clear close-ask miss — Carolyn Triebold: the rep never made a direct ask, only the soft trial-close question ' +
+    '"haven\'t you thought about social media?" — when she said "not something I\'m interested in," he accepted ' +
+    'it and wrapped up. asked_for_close = false here: a trial-close question is not a real ask, even though a ' +
+    'question was technically asked.',
+  'Clear objection-handling miss — Tennitia Wilson: she raised a real cost concern ("the costs were prohibitive... ' +
+    'more than my car note and insurance put together"), and the rep\'s only response was "maybe we can offer you ' +
+    'something that fits," with no actual number. objections_uncovered = true, objections_overcome = false: ' +
+    'acknowledging a concern without a concrete answer does not count as resolved.',
+  'Model resolution — Ben Sweet (2026-07-02): asked directly whether other clients had grown from the podcast, the ' +
+    'rep answered with a specific, quantified case study (a client stuck at $10M in production for years who used ' +
+    'a podcast episode to help land a 330-house land development deal). objections_overcome = true only when the ' +
+    'response is this concrete — a number, a name, a mechanism — not generic reassurance.'
+]; // TODO(Tomás): confirm these three are representative before this becomes the literal prompt text (SOP §9).
 
 function buildJudgeSystemPrompt_() {
   var fewShot = FEW_SHOT_ANCHORS.length
