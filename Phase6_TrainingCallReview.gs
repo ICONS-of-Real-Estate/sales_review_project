@@ -27,6 +27,14 @@
  * recording (with its auto-transcript) lands in a dated YYMMDD subfolder
  * under the right rep's folder above. Nothing to run by hand.
  *
+ * If there's no Zoom video/audio bundle — just a transcript on its own (a
+ * Google Doc, .vtt, or .txt) — no subfolder is needed either: drop the file
+ * straight into the rep's folder above, named starting with the call's
+ * YYMMDD date (e.g. "260819" or "260819 Transcript"). The output doc for
+ * that path is named "<date> Training Plan" (vs. plain "Training Plan"
+ * inside a dated subfolder) so multiple flat transcripts in the same rep
+ * folder don't collide on the same output/already-done marker name.
+ *
  * Reuses CONFIG, log_, guardedSend_, callKimiJudge_, stripFencesAndParseJson_,
  * getTranscriptText_ from Phase1/Phase2 (same-project global scope).
  *
@@ -206,14 +214,83 @@ function trainingReviewAlreadyDone_(dateFolder) {
   return dateFolder.getFilesByName('Training Plan').hasNext();
 }
 
+/**
+ * Finds transcript-looking files sitting directly in a rep's Training Calls
+ * folder (no dated subfolder) — for when there's only a transcript to hand
+ * over, no Zoom video/audio bundle to keep it company. Identified by a
+ * leading YYMMDD date in the file name (e.g. "260819" or "260819 Transcript"),
+ * same date-label convention as the subfolder path below.
+ */
+function findFlatTrainingTranscripts_(repFolder) {
+  var dateLabelPrefix = /^(\d{6})\b/;
+  var files = repFolder.getFiles();
+  var out = [];
+  while (files.hasNext()) {
+    var file = files.next();
+    var name = file.getName();
+    var m = name.match(dateLabelPrefix);
+    if (!m) continue;
+    if (/Training Plan$/.test(name)) continue; // a previous run's output doc, not a transcript to review
+    out.push({ file: file, dateLabel: m[1] });
+  }
+  return out;
+}
+
+/**
+ * Grades one training-call transcript, emails the rep (cc Tomás/Kris),
+ * persists this week's drill objections for Phase 7, and writes the output
+ * "<name> Training Plan" doc into outputParentFolder. Shared by both the
+ * dated-subfolder path (Zoom's own bundle) and the flat-file path (a lone
+ * transcript dropped straight in the rep's folder). Returns true if it did
+ * real work (false in dryRun, since nothing is sent or written then).
+ */
+function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outputDocName, outputParentFolder, dryRun) {
+  var cleanText = stripVttMarkup_(getTranscriptText_(transcriptFile));
+  var result = reviewTrainingCallTranscript_(rep, cleanText, dateLabel);
+  var email = buildTrainingReviewEmail_(rep, dateLabel, result);
+
+  if (dryRun) {
+    log_('(preview) ' + repCfg.email + ' (cc ' + CONFIG.TOMAS_EMAIL + ', ' + CONFIG.KRIS_EMAIL +
+      ') <- ' + email.subject + '\n' + email.body + '\n');
+    return false;
+  }
+
+  // Goes to the rep being trained; Tomás (who ran the call) and Kris are cc'd.
+  guardedSend_(repCfg.email, email.subject, email.body, {
+    cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL,
+    htmlBody: email.htmlBody,
+    name: 'Training Call Review Bot'
+  }, 3); // rep + Tomás + Kris
+
+  // Persisted for Phase 7's daily assignment emails to read. Only overwrite on a
+  // real, non-empty result — a parse-failure fallback (empty array) must NOT wipe
+  // out last week's objections; per Kris, a skipped/late training week just keeps
+  // running the previous week's assignment until a new one actually lands.
+  if (result.objections_to_drill && result.objections_to_drill.length) {
+    PropertiesService.getScriptProperties().setProperty(
+      'TRAINING_OBJECTIONS_' + rep, JSON.stringify(result.objections_to_drill));
+  }
+
+  var doc = DocumentApp.create(outputDocName);
+  doc.getBody().setText(email.body);
+  doc.saveAndClose();
+  DriveApp.getFileById(doc.getId()).moveTo(outputParentFolder);
+
+  log_('  Reviewed ' + rep + '/' + dateLabel + ' -> emailed training plan, wrote "' + outputDocName + '" doc.');
+  return true;
+}
+
 /** Shared by preview and live paths. dryRun=true never sends and never marks anything processed. */
 function buildAndMaybeSendTrainingReviews_(dryRun) {
   var found = 0, processed = 0;
 
   Object.keys(TRAINING_REVIEW_CONFIG.FOLDERS).forEach(function (rep) {
     var repFolder = DriveApp.getFolderById(TRAINING_REVIEW_CONFIG.FOLDERS[rep]);
-    var dateFolders = repFolder.getFolders();
+    var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
+    if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping.'); return; }
 
+    // Path A: Zoom's own dated-subfolder bundle (video + audio + auto .vtt transcript).
+    var dateFolders = repFolder.getFolders();
     while (dateFolders.hasNext()) {
       var dateFolder = dateFolders.next();
       var dateLabel = dateFolder.getName(); // e.g. "260818"
@@ -227,43 +304,22 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
         continue;
       }
 
-      var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
-      if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping.'); return; }
-
-      var cleanText = stripVttMarkup_(getTranscriptText_(transcriptFile));
-      var result = reviewTrainingCallTranscript_(rep, cleanText, dateLabel);
-      var email = buildTrainingReviewEmail_(rep, dateLabel, result);
-
-      if (dryRun) {
-        log_('(preview) ' + repCfg.email + ' (cc ' + CONFIG.TOMAS_EMAIL + ', ' + CONFIG.KRIS_EMAIL +
-          ') <- ' + email.subject + '\n' + email.body + '\n');
-        continue;
-      }
-
-      // Goes to the rep being trained; Tomás (who ran the call) and Kris are cc'd.
-      guardedSend_(repCfg.email, email.subject, email.body, {
-        cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL,
-        htmlBody: email.htmlBody,
-        name: 'Training Call Review Bot'
-      }, 3); // rep + Tomás + Kris
-
-      // Persisted for Phase 7's daily assignment emails to read. Only overwrite on a
-      // real, non-empty result — a parse-failure fallback (empty array) must NOT wipe
-      // out last week's objections; per Kris, a skipped/late training week just keeps
-      // running the previous week's assignment until a new one actually lands.
-      if (result.objections_to_drill && result.objections_to_drill.length) {
-        PropertiesService.getScriptProperties().setProperty(
-          'TRAINING_OBJECTIONS_' + rep, JSON.stringify(result.objections_to_drill));
-      }
-
-      var doc = DocumentApp.create('Training Plan');
-      doc.getBody().setText(email.body);
-      doc.saveAndClose();
-      DriveApp.getFileById(doc.getId()).moveTo(dateFolder);
-
-      processed++;
-      log_('  Reviewed ' + rep + '/' + dateLabel + ' -> emailed training plan, wrote "Training Plan" doc.');
+      if (processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, 'Training Plan', dateFolder, dryRun)) processed++;
     }
+
+    // Path B: a single transcript file dropped directly in the rep's folder, named
+    // with a leading YYMMDD date (e.g. "260819" or "260819 Transcript") — for when
+    // there's no Zoom video/audio bundle to keep it company, just the transcript
+    // itself. No subfolder needed.
+    findFlatTrainingTranscripts_(repFolder).forEach(function (entry) {
+      found++;
+      var outputName = entry.dateLabel + ' Training Plan';
+      if (!dryRun && repFolder.getFilesByName(outputName).hasNext()) {
+        log_('  ' + rep + '/' + entry.dateLabel + ' already has a "' + outputName + '" doc — skipping.');
+        return;
+      }
+      if (processTrainingTranscript_(rep, repCfg, entry.dateLabel, entry.file, outputName, repFolder, dryRun)) processed++;
+    });
   });
 
   log_('buildAndMaybeSendTrainingReviews_(dryRun=' + dryRun + ') — ' + found + ' transcript(s) found, ' +
