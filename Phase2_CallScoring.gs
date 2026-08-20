@@ -16,14 +16,15 @@
  * resolveSheet_, findColumn_, normalize_) — Apps Script concatenates all .gs
  * files in a project into one scope, so there is no import to wire up.
  *
- * IMPORTANT — model name mismatch to resolve before relying on this:
- * litellm-config.yaml routes "*" to moonshot/kimi-k3. brief.txt and the SOP
- * consistently call the model "kimi-k2.6" and document a hard-won bug against
- * IT specifically (temperature must be exactly 1, or every call fails
- * silently while reporting "complete" — see Build Status v4 doc). Confirm
- * which model is actually behind the LiteLLM proxy before trusting that
- * constraint carries over unchanged; if it's really kimi-k3, re-verify the
- * temperature behavior against Moonshot's current docs rather than assuming.
+ * MODEL — resolved 20/08/2026: calling Moonshot's API directly (no LiteLLM
+ * proxy was ever actually deployed; litellm-config.yaml describes a server
+ * that was never stood up). Confirmed via platform.kimi.ai/playground that
+ * the real model id is "kimi-k3" (the "kimi-k2.6" name in brief.txt/SOP was
+ * stale). PROXY_URL_PROPERTY/API_KEY_PROPERTY point straight at Moonshot's
+ * own endpoint and API key now — the "LiteLLM" naming is legacy, not a sign
+ * a proxy is involved. The temperature=1 hard constraint below was
+ * documented against kimi-k2.6; re-verify it still applies to kimi-k3 if you
+ * see silent failures.
  *
  * Three entry points:
  *  - scoreNewlyLoggedCalls_()   Ongoing pipeline: scores "Sales Call Log" rows
@@ -59,10 +60,12 @@
 
 var PHASE2_CONFIG = {
   // Set via: Project Settings → Script Properties (never hardcode a key here).
-  PROXY_URL_PROPERTY: 'LITELLM_PROXY_URL', // e.g. https://<your-proxy-host>/chat/completions
-  API_KEY_PROPERTY: 'LITELLM_API_KEY',     // LiteLLM virtual key (Bearer token)
+  // Despite the property names, this now points straight at Moonshot's own
+  // API (no proxy) — see file-header note above.
+  PROXY_URL_PROPERTY: 'LITELLM_PROXY_URL', // set to https://api.moonshot.ai/v1/chat/completions
+  API_KEY_PROPERTY: 'LITELLM_API_KEY',     // set to your real Moonshot API key (sk-...)
 
-  MODEL_NAME: 'moonshot/kimi-k3', // per litellm-config.yaml — see file-header note above.
+  MODEL_NAME: 'kimi-k3', // confirmed against platform.kimi.ai/playground 20/08/2026 — no "moonshot/" prefix, that was LiteLLM-only routing syntax.
 
   // HARD CONSTRAINT. Per the team's Build Status (v4) doc, kimi-k2.6 rejects
   // any other value and fails EVERY call silently while the run still reports
