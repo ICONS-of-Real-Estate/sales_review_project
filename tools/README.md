@@ -88,11 +88,19 @@ python transcribe_sean_calls_whisper.py
 First run downloads the `small.en` model (~500MB) to a local cache, then
 never touches the network again.
 
-### Joana — any engine
-**Not ready yet.** `transcribe_joana_calls.py` (and its `_qwen`/`_whisper`
-siblings) will exit immediately with an error — `JOANA_FOLDERS` is still a
-placeholder at the top of the file. Fill in her real Drive folder ID(s)
-there first, then it works identically to the Sean scripts above.
+### Joana — Whisper (free, fully local, no speaker labels)
+```powershell
+python transcribe_joana_calls_whisper.py
+```
+`JOANA_FOLDERS` (in `transcribe_joana_calls.py`) now points at her "Joana
+Peixe" Drive folder of QC & Sales Call recordings. Works identically to
+the Sean/Tomás Whisper scripts above, including the multi-machine lock.
+
+### Joana — Gemini (produces speaker labels)
+```powershell
+$env:GEMINI_API_KEY = "<your key from aistudio.google.com/apikey>"
+python transcribe_joana_calls.py
+```
 
 ### Tomás — Gemini (recommended default; produces speaker labels)
 ```powershell

@@ -5,12 +5,10 @@ situation as Sean (raw Zoom recordings, no existing transcripts), so this
 reuses all of transcribe_sean_calls.py's Drive/Gemini plumbing rather than
 duplicating it. Only the source folders differ.
 
-NOT YET READY TO RUN: JOANA_FOLDERS below is a placeholder. Fill in her
-actual Drive folder ID(s) once known (same "create a folder" ask that was
-sent to Sean applies to her — see Phase2_CallGradingSOP.md), then this
-works exactly like transcribe_sean_calls.py: skip already-transcribed
-videos, retry on quota/connection errors, stop cleanly on a real billing
-wall instead of grinding through the whole folder.
+JOANA_FOLDERS points at her "Joana Peixe" Drive folder of QC & Sales Call
+recordings. Works exactly like transcribe_sean_calls.py: skip
+already-transcribed videos, retry on quota/connection errors, stop cleanly
+on a real billing wall instead of grinding through the whole folder.
 
 Once transcripts exist, also set PHASE2_CONFIG.LEGACY_FOLDERS.Joana in
 Phase2_CallScoring.gs to the SAME folder ID (or wherever the transcript
@@ -38,11 +36,8 @@ from transcribe_sean_calls import (
 )
 from google import genai
 
-# TODO: replace with Joana's actual Drive folder ID(s) once known. Add more
-# entries here the same way SEAN_FOLDERS has "Sales Calls" / "Qualification
-# Calls" if her recordings are similarly split.
 JOANA_FOLDERS = {
-    # "Sales Calls": "PASTE_JOANA_FOLDER_ID_HERE",
+    "QC & Sales Calls": "17YaE4fBjEBFissvR-l7_GOkoTnZjdQq5",
 }
 
 
