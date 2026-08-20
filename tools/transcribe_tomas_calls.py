@@ -46,6 +46,19 @@ TOMAS_FOLDERS = {
     "Sales Calls": "1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_",
 }
 
+# Append-only record of every video this machine has finished transcribing,
+# so progress is visible at a glance (which files, when) without opening
+# Drive -- useful when the backlog is being split across machines/runs over
+# several days. The actual skip-already-done logic still comes from checking
+# Drive for the matching "<title> — Transcript" doc (see main() below); this
+# log is a human-readable side effect of that, not a second source of truth.
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tomas_transcribed_log.txt")
+
+
+def log_completed_(title, video_id, link):
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"{title} | {video_id} | {link}\n")
+
 
 def clean_title_(raw_name):
     """Tomás's files carry their video extension in the Drive filename
@@ -120,6 +133,7 @@ def main():
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
                 print(f"    done -> {link}")
+                log_completed_(title, video["id"], link)
                 if os.path.exists(local_path):
                     os.remove(local_path)
             except QuotaExhaustedError:

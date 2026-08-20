@@ -121,3 +121,13 @@ Tomás's video filenames carry their `.mp4` extension in the Drive name itself
 (e.g. `"Steve Houck Sales Call.mp4"`) — both Tomás scripts strip that before
 building the transcript doc's name, so it still comes out as
 `"Steve Houck Sales Call — Transcript"`, matching everyone else's convention.
+
+Both Tomás scripts also append a line to `tools/tomas_transcribed_log.txt`
+(title | Drive video ID | transcript doc link) every time they finish one —
+a local, human-readable record of what's been done, useful when the backlog
+is being worked through gradually over several days/runs. It's just a
+progress log, not what makes re-running safe: the actual "skip what's
+already done" logic still checks Drive itself for the matching
+`"<title> — Transcript"` doc, so re-running after uploading more of Tomás's
+calls will still only transcribe the new ones even without this file (and
+the log itself is gitignored — it's per-machine state, not shared).

@@ -4,3 +4,6 @@ __pycache__/
 # Local OAuth artifacts for tools/transcribe_sean_calls.py — never commit secrets
 tools/credentials.json
 tools/token.json
+
+# Per-machine progress log from tools/transcribe_tomas_calls*.py — local state, not shared
+tools/tomas_transcribed_log.txt

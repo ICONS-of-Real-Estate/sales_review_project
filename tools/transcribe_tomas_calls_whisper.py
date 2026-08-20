@@ -21,7 +21,7 @@ import time
 
 from transcribe_sean_calls import download_video, format_duration_, get_drive_service, list_videos, save_transcript_doc, transcript_temp_path
 from transcribe_sean_calls_whisper import transcribe_with_whisper
-from transcribe_tomas_calls import TOMAS_FOLDERS, clean_title_
+from transcribe_tomas_calls import TOMAS_FOLDERS, clean_title_, log_completed_
 
 
 def main():
@@ -86,6 +86,7 @@ def main():
                 link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
                 print(f"    done -> {link}")
+                log_completed_(title, video["id"], link)
                 if os.path.exists(local_path):
                     os.remove(local_path)
             except Exception as e:
