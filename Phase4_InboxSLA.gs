@@ -477,6 +477,6 @@ function installInboxSlaTrigger() {
     .create();
   log_('Inbox SLA check installed: runInboxSlaCheck() now runs daily at ' +
     INBOX_SLA_CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE +
-    ' and skips itself on Saturday/Sunday. Remember INBOX_SLA_CONFIG.ENABLED is false until ' +
-    'previewInboxSlaCheck() has been checked against real data.');
+    ' and skips itself on Saturday/Sunday. INBOX_SLA_CONFIG.ENABLED is currently ' +
+    INBOX_SLA_CONFIG.ENABLED + ' — while false this only logs instead of sending.');
 }
