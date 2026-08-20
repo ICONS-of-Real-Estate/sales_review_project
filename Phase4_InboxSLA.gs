@@ -85,10 +85,12 @@ var INBOX_SLA_CONFIG = {
   // sent instead of sending it.
   ENABLED: false,
 
+  // Joana deliberately excluded (20/08/2026, Kris's call) — she has hundreds
+  // of leads to work through and this SLA nudge would just be noise on top
+  // of that backlog. Add her back once that's under control.
   REPS: [
     { name: 'Sean', email: 'sean@iconsofrealestate.com' },
-    { name: 'Bens', email: 'bens@iconsofrealestate.com' },
-    { name: 'Joana', email: 'joana@iconsofrealestate.com' }
+    { name: 'Bens', email: 'bens@iconsofrealestate.com' }
   ],
 
   SLA_HOURS: 24,
