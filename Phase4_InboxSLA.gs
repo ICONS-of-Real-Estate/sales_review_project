@@ -98,6 +98,35 @@ var INBOX_SLA_CONFIG = {
   // problem than this daily nudge is meant to catch.
   SEARCH_WINDOW_DAYS: 30,
 
+  // previewInboxSlaCheck_() run on Sean's real inbox (20/08/2026) surfaced
+  // 108 "unanswered" threads that were almost entirely calendar RSVP mechanics
+  // (Accepted:/Declined:/Invitation:/Updated invitation:/Canceled event:),
+  // Google Chat/Docs/Calendar system notifications, delivery-failure bounces,
+  // and marketing email (Grammarly, Alignable) — none of which are things a
+  // rep actually needs to reply to. Excluded here, baked directly into the
+  // Gmail search query (listInboxThreadIds_) so noisy threads never even get
+  // fetched, rather than filtering them out after the fact. Re-run
+  // previewInboxSlaCheck() after editing this list — if it still surfaces
+  // system/marketing noise, add the sender here rather than the subject list,
+  // since senders are a tighter match than subject substrings.
+  EXCLUDE_FROM: [
+    'chat-noreply@google.com',
+    'calendar-notification@google.com',
+    'drive-shares-dm-noreply@google.com',
+    'mailer-daemon@googlemail.com',
+    'gemini-notes@google.com',
+    'hello@mail.grammarly.com',
+    'invitations@alignable.com',
+    'support@alignable.com'
+  ],
+  EXCLUDE_SUBJECT_CONTAINS: [
+    'Accepted:',
+    'Declined:',
+    'Invitation:',
+    'Updated invitation:',
+    'Canceled event:'
+  ],
+
   // Business time, reusing CONFIG.BUSINESS_TIMEZONE (Phase1_ComplianceCheck.gs)
   // — same "the calls/work happen in America/Los_Angeles, not wherever the
   // script project's own timezone happens to be set" reasoning.
@@ -204,10 +233,18 @@ function gmailApiGet_(accessToken, path) {
   return JSON.parse(resp.getContentText());
 }
 
+/** Builds the Gmail search string once, incl. the EXCLUDE_FROM/EXCLUDE_SUBJECT_CONTAINS noise filters — see their config comment for why these exist. */
+function buildInboxSlaSearchQuery_() {
+  var parts = ['in:inbox', 'newer_than:' + INBOX_SLA_CONFIG.SEARCH_WINDOW_DAYS + 'd'];
+  INBOX_SLA_CONFIG.EXCLUDE_FROM.forEach(function (addr) { parts.push('-from:' + addr); });
+  INBOX_SLA_CONFIG.EXCLUDE_SUBJECT_CONTAINS.forEach(function (s) { parts.push('-subject:"' + s + '"'); });
+  return parts.join(' ');
+}
+
 function listInboxThreadIds_(accessToken) {
   var ids = [];
   var pageToken = null;
-  var q = encodeURIComponent('in:inbox newer_than:' + INBOX_SLA_CONFIG.SEARCH_WINDOW_DAYS + 'd');
+  var q = encodeURIComponent(buildInboxSlaSearchQuery_());
   do {
     var path = '/threads?q=' + q + '&maxResults=100' + (pageToken ? '&pageToken=' + pageToken : '');
     var page = gmailApiGet_(accessToken, path);
