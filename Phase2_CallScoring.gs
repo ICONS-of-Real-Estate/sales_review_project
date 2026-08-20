@@ -123,7 +123,8 @@ var PHASE2_CONFIG = {
   // goal is coaching material both directions — what Tomás does well to
   // teach the other reps, and what to coach him on — not just a score.
   TOMAS_FOLDERS: {
-    'Sales Calls': '1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_'
+    'Sales Calls': '1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_',
+    'Second Calls': '1ohbJInhrWg_toyrGNr39ba7VzzAojmqE' // his closing calls as the second-call closer — added 20/08/2026
   },
 
   // Filename convention for legacy transcripts: YYYY-MM-DD_ProspectName_Transcript.txt

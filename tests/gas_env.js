@@ -4,8 +4,7 @@
  * Loads the three .gs files the way Apps Script actually runs them: all
  * concatenated into one shared global scope (that's why they freely
  * cross-reference each other's functions/vars with no import statements —
- * see the file-header comments in Phase2_CallScoring.gs and
- * Phase0_RiversideSync.gs). Runs the concatenated source inside a Node vm
+ * see the file-header comments in Phase2_CallScoring.gs). Runs the concatenated source inside a Node vm
  * context with the Google Apps Script globals stubbed out, and returns that
  * context so tests can call the functions defined in it directly.
  *
@@ -25,7 +24,6 @@ const vm = require('vm');
 const GAS_FILES = [
   'Phase1_ComplianceCheck.gs',
   'Phase2_CallScoring.gs',
-  'Phase0_RiversideSync.gs',
   'Phase5_WeeklyScorecard.gs'
 ];
 

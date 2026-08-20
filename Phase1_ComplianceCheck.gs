@@ -1080,11 +1080,6 @@ function installAutomation() {
  *     flag themselves. Otherwise this logs why it skipped that one and
  *     leaves it alone — flipping ENABLED to true and re-running this
  *     picks it up.
- *   - Phase 0 (Riverside sync) — deliberately NEVER auto-installed here, by
- *     design (see installRiversideSyncTrigger_'s own comment): its API
- *     contract has never been confirmed against a real key, so it must be
- *     installed by a human running installRiversideSyncTrigger() directly,
- *     once, after previewRiversideSync() looks right.
  */
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function installAllReadyTriggers() {
@@ -1158,10 +1153,6 @@ function installAllReadyTriggers_() {
     skipped.push('Phase 8 (reply tracker) — REPLY_TRACKER_CONFIG.ENABLED is false. Run ' +
       'previewReplyClassification() + previewReplyMetricsReport() first, then flip ENABLED and re-run this.');
   }
-
-  skipped.push('Phase 0 (Riverside sync) — never auto-installed here on purpose; run ' +
-    'previewRiversideSync() against a real API key, confirm it looks right, then run ' +
-    'installRiversideSyncTrigger() yourself, once.');
 
   log_('installAllReadyTriggers_ done.\nInstalled:\n  ' + installed.join('\n  ') +
     '\nSkipped:\n  ' + skipped.join('\n  '));

@@ -22,27 +22,6 @@ const { loadGasProject } = require('./gas_env');
 
 const gas = loadGasProject(path.join(__dirname, '..'));
 
-test('extractEventIdFromRecordingTitle_ isolates the ID out of the "QC-{id}-{initials}" convention (regression: must not capture the surrounding hyphens/prefix/suffix)', () => {
-  const id = 'abcdEFGH12345678ijkl'; // 20 chars — the minimum length the regex requires
-  assert.equal(gas.extractEventIdFromRecordingTitle_('QC-' + id + '-BT'), id);
-});
-
-test('extractEventIdFromRecordingTitle_ strips a trailing @google.com suffix', () => {
-  const id = 'abcdEFGH12345678ijkl';
-  assert.equal(gas.extractEventIdFromRecordingTitle_('QC-' + id + '@google.com-BT'), id);
-});
-
-test('extractEventIdFromRecordingTitle_ returns null when no ID-shaped token is present', () => {
-  assert.equal(gas.extractEventIdFromRecordingTitle_('Discovery Call with Sean'), null);
-  assert.equal(gas.extractEventIdFromRecordingTitle_(''), null);
-});
-
-test('normalizeEventId_ strips the @google.com suffix and trims whitespace', () => {
-  assert.equal(gas.normalizeEventId_('  abc123@google.com  '), 'abc123');
-  assert.equal(gas.normalizeEventId_('abc123'), 'abc123');
-  assert.equal(gas.normalizeEventId_(''), '');
-});
-
 test('idsEqual_ treats a bare ID and its @google.com-suffixed form as equal', () => {
   assert.equal(gas.idsEqual_('abc123', 'abc123@google.com'), true);
   assert.equal(gas.idsEqual_('abc123', 'xyz789'), false);
@@ -110,13 +89,6 @@ test('isTruthyOutcome_ recognizes the documented truthy spellings and rejects bl
   // Date` check for the wrong reason (cross-realm identity), not because of
   // any real bug.
   assert.equal(gas.isTruthyOutcome_(new gas.Date()), true);
-});
-
-test('findTxtTranscriptFile_ picks the txt file out of a recording detail\'s transcription.files[]', () => {
-  const detail = { transcription: { files: [{ type: 'srt', download_url: 'a' }, { type: 'txt', download_url: 'b' }] } };
-  assert.equal(gas.findTxtTranscriptFile_(detail).download_url, 'b');
-  assert.equal(gas.findTxtTranscriptFile_({ transcription: { files: [] } }), null);
-  assert.equal(gas.findTxtTranscriptFile_({}), null);
 });
 
 test('computeAgreementStats_ returns kappa=1 for perfect agreement', () => {

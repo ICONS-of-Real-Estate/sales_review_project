@@ -44,6 +44,7 @@ from google import genai
 
 TOMAS_FOLDERS = {
     "Sales Calls": "1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_",
+    "Second Calls": "1ohbJInhrWg_toyrGNr39ba7VzzAojmqE",  # his closing calls as the second-call closer -- added 20/08/2026
 }
 
 # Append-only record of every video this machine has finished transcribing,
