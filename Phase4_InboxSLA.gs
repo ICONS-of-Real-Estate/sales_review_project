@@ -87,7 +87,8 @@ var INBOX_SLA_CONFIG = {
 
   REPS: [
     { name: 'Sean', email: 'sean@iconsofrealestate.com' },
-    { name: 'Bens', email: 'bens@iconsofrealestate.com' }
+    { name: 'Bens', email: 'bens@iconsofrealestate.com' },
+    { name: 'Joana', email: 'joana@iconsofrealestate.com' }
   ],
 
   SLA_HOURS: 24,
