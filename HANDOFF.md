@@ -1,3 +1,124 @@
+# Handoff — 21/08/2026 (session 2)
+
+## 0. What happened this session (read this first)
+
+**IMPORTANT — code is pushed to GitHub but likely NOT deployed to the live
+Apps Script project yet.** `clasp push` failed mid-session with
+`invalid_grant`/`invalid_rapt` (an expired Google re-auth token, unrelated to
+the code). Fix on the machine with `.clasp.json`:
+```
+clasp logout
+clasp login
+clasp push
+```
+Everything below in this section is in `main` on GitHub as of commits
+`f1c4e36` → `98ec43d`, but confirm it actually reached the live Apps Script
+project before assuming any of it is running for real.
+
+**Fixed a real bug: every rep-facing email subject was missing the rep's
+name.** Kris couldn't tell whose email was whose in an inbox list (multiple
+reps' automated emails all had the same generic subject). Added `<rep> — `
+to the front of the subject in every phase that emails individual reps:
+Phase 1 (compliance check), Phase 3 (handoff brief), Phase 4 (inbox SLA),
+Phase 5 (weekly scorecard), Phase 7 (daily practice reminder) — commits
+`60b6530`, `4694e85`. Phase 2/6/8 either already had the rep's name or only
+ever go to one fixed recipient (Kris/Tomás), so left alone.
+
+**Phase 7 (daily practice) had two more real bugs**, both fixed in
+`60b6530`:
+- The YYMMDD file-naming instruction was only wired into the close-ask
+  assignment branch — the "objections" branch and the generic fallback
+  branch (what Bens/Joana actually see when no objections are on file yet)
+  never told the rep how to name their file at all.
+- The non-compliance nag was a once-a-day check tied to calendar date, not a
+  true 12h interval, despite Kris asking for 12h. Now: two daily triggers
+  (`COMPLIANCE_CHECK_HOUR` / `COMPLIANCE_CHECK_HOUR_PM`, 8am/8pm) plus a
+  real elapsed-time gate (`NAG_INTERVAL_HOURS = 12`) using a stored
+  timestamp instead of a date string.
+
+**Formatting fixes, content unchanged, on three more bot emails** (Kris
+flagged each as "badly formatted" with real screenshots):
+- Phase 4 inbox SLA email — added an `htmlBody` bullet list so unanswered
+  emails don't run together as one wrapped paragraph (`60b6530`).
+- Phase 8 daily reply tracker — added blank lines between the
+  Today/7-day/30-day blocks, which were running together (`f1c4e36`).
+- Phase 6 training call review email — already had an `htmlBody`, but it
+  was just `<p>` tags with bold labels, so Notes/team-notes still rendered
+  as one dense paragraph. Restyled with colored yes/no badges for the
+  attended/practiced stats and a left-accented callout box per section
+  (blue Notes, orange close-ask, purple team-note) — `98ec43d`. Reusable
+  helpers `trainingReviewStatBadge_`/`trainingReviewCallout_` if other
+  phases' emails need the same treatment later.
+
+**Found and fixed a real transcription-pipeline bug: subfolders were never
+scanned.** `list_videos()` (shared by every `transcribe_*.py` script) only
+listed a folder's direct children. Live folders actually have videos
+organized into subfolders — confirmed real, not hypothetical: Sean has
+`Sabiha Razzak` and `Roxy Miles` subfolders under Sales Calls, Joana has a
+`Qualification Calls` subfolder under QC & Sales Calls — and none of those
+videos were ever being picked up by any engine (Gemini/Qwen/Whisper) on any
+machine. Fixed in `bbb2b64`: `list_videos()` now recurses into subfolders at
+any depth, and each video carries its own `parent_folder_id` so its
+transcript doc and multi-machine lock file get created in the folder it
+actually lives in (not the top-level folder) — threaded through every
+script that calls `save_transcript_doc` (Sean/Joana/Tomás ×
+Gemini/Qwen/Whisper, plus `transcribe_daily_practice.py`).
+
+**Transcription backlog snapshot (21/08, before the OVH box's next few
+cycles run with the recursion fix):**
+
+| Folder | Videos | Transcribed | Pending |
+|---|---|---|---|
+| Sean — Sales Calls (+2 subfolders) | 146 | 145 | 1 |
+| Sean — Qualification Calls | 80 | 71 | 9 (4 from Feb, unexplained — see §3) |
+| Joana — QC & Sales Calls (+ Qualification Calls subfolder) | 25 | 0 | 25 (never scanned before the recursion fix — should clear on the next OVH cycle) |
+| Tomás — Sales Calls + Second Calls | 80 | 80 | 0 |
+| Bens — Daily Practice | 0 | n/a | n/a (no raw-video folder — Riverside handles his) |
+
+**Bens' Riverside-transcript folder** (`PHASE2_CONFIG.LEGACY_FOLDERS.Bens`,
+`1vA5F39fGZ3kUrXwMNV9TTQf3Iho_ipdg`) now has ~60 `.txt` transcripts, up from
+the 43 scored in the first batch (17/08). **Do not re-run
+`scoreBensLegacyTranscripts()` yet** — Kris wants to wait until Bens
+confirms he's fully caught up uploading before scoring the rest.
+
+**FEW_SHOT_ANCHORS sign-off — RESOLVED, was never actually a code/deploy
+problem.** The email asking Tomás to confirm the 3 few-shot anchor examples
+(Carolyn Triebold close-ask miss, Tennitia Wilson objection-handling miss,
+Ben Sweet model resolution) was a fully-written, correctly-addressed Gmail
+draft (`to: tomas@iconsofrealestate.com`, `cc: kris@ardorseo.com`) that had
+just never been sent — sitting in Joana's Gmail account since 20/08. Sent it
+this session via `mcp__Gmail__send_message` with `draftId`. Nothing to
+follow up here unless Tomás's reply raises something.
+
+Also emailed Tomás directly (separate from the above) with a link to the
+Sales Call Log and what to check, so he can self-verify his own
+`call_role`/`teachable_strength`/`coach_this` output now that his backlog
+(Sales Calls + Second Calls) is fully transcribed — his own leads, his call
+on whether the classification/coaching reads right.
+
+**Known friction: the Gmail MCP connector for this session kept needing
+manual reconnection between `kris@iconsofrealestate.com` and
+`joana@iconsofrealestate.com`** to find things (an email sent from one
+account isn't visible when the connector points at the other). This is the
+same underlying issue flagged in the 20/08 handoff below. Worth someone
+checking with whoever set up the connector which account should be the
+actual default, so this doesn't keep costing time.
+
+**Still not done: delete the stale "NOT YET READY" banner in Joana's setup
+doc.** No tool in this session can edit a Google Doc's body content (only
+read/download/metadata) — someone needs to open the doc and delete this
+paragraph (and the `---` divider right after it) by hand:
+> ⚠ NOT YET READY TO RUN: JOANA_FOLDERS in transcribe_joana_calls.py is
+> still an empty placeholder — nobody has filled in her actual Drive folder
+> ID(s) yet. Someone needs to edit that one line in the repo (same file
+> Sean's and Tomás's real folder IDs live in) before Step 5 below will do
+> anything but exit with an error. Everything else in this doc is ready to
+> go now.
+
+https://docs.google.com/document/d/1MUhwFzSeDX9w0D2PN6ct4JCfSoGg1u2d_SrCnmijmfc/edit
+
+---
+
 # Handoff — 20/08/2026 (end of day)
 
 ## 1. Current state — everything is live
@@ -137,10 +258,17 @@ new beyond what the laptops already did.
   the nested folder is gone.
 - **Wire up Phase 8's booking-percentage metrics** — need the real tab
   name(s) for the existing "Booked" column (see §2).
-- Get Tomás's sign-off on the 3 `FEW_SHOT_ANCHORS` excerpts in
-  `Phase2_CallScoring.gs` (draft email sent to him this session, cc Kris —
-  check it was actually sent, it landed in a draft under Joana's connected
-  mailbox rather than Kris's own, per this session's Gmail-connector mixup).
+- ~~Get Tomás's sign-off on the 3 `FEW_SHOT_ANCHORS` excerpts~~ — RESOLVED
+  21/08, see the session-2 handoff above (was a real unsent draft, now sent).
+  Still waiting on Tomás's actual reply confirming the 3 examples.
+- **Sean's Qualification Calls has 9 stuck pending videos**, 4 of them from
+  a single Feb 2026 upload batch (`Hyrum Worthen`, `Mark Gordon`,
+  `Scott Felske`, `Andrew Farley & Lisa Briganti`) that never got picked up
+  despite the rest of the queue being current. Checked sizes/names/dates
+  (21/08 session) — nothing structurally wrong, no lock file on any of
+  them. Likely just never reached yet (listing order isn't chronological),
+  not a code bug — but if still untouched after several more OVH cycles,
+  worth a real investigation.
 - Decide/confirm Tomás's `call_role` split is producing sensible results
   once his backlog (Sales Calls + Second Calls) finishes scoring — spot-check
   a few `teachable_strength`/`coach_this` entries before circulating any of
