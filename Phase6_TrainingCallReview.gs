@@ -196,6 +196,22 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
   };
 }
 
+/** Small colored pill for a yes/no stat — green when true, red when false. */
+function trainingReviewStatBadge_(label, value) {
+  var bg = value ? '#e6f4ea' : '#fce8e6';
+  var fg = value ? '#137333' : '#c5221f';
+  return '<span style="display:inline-block;background:' + bg + ';color:' + fg + ';' +
+    'padding:4px 10px;border-radius:12px;font-size:12px;font-weight:bold;margin:0 6px 6px 0;">' +
+    label + ': ' + (value ? 'Yes' : 'No') + '</span>';
+}
+
+/** A left-accented callout box — same shape used for Notes/close-ask/team-note so the email reads as distinct blocks, not one wall of text. */
+function trainingReviewCallout_(accentColor, bgColor, label, text) {
+  return '<div style="border-left:4px solid ' + accentColor + ';background:' + bgColor + ';' +
+    'padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
+    '<b style="color:' + accentColor + ';">' + label + '</b><br>' + text + '</div>';
+}
+
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
   var objections = result.objections_to_drill || [];
@@ -204,13 +220,19 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var objectionsPlain = objections.map(function (o) {
     return '- ' + o.label + ' — ' + o.note;
   }).join('\n');
-  var objectionsHtml = '<ul>' + objections.map(function (o) {
-    return '<li><b>' + o.label + '</b> — ' + o.note + '</li>';
-  }).join('') + '</ul>';
+  var objectionsHtml = objections.length
+    ? '<ul style="margin:0 0 14px;padding-left:20px;">' + objections.map(function (o) {
+        return '<li style="margin-bottom:6px;"><b>' + o.label + '</b> — ' + o.note + '</li>';
+      }).join('') + '</ul>'
+    : '';
 
   var closeAskPlain = closeAsk ? '\nAsking for the money — "' + closeAsk.label + '": ' + closeAsk.note + '\n' : '';
   var closeAskHtml = closeAsk
-    ? '<p><b>Asking for the money:</b> "' + closeAsk.label + '" — ' + closeAsk.note + '</p>' : '';
+    ? trainingReviewCallout_('#f9ab00', '#fef7e0', 'Asking for the money',
+        '"' + closeAsk.label + '" — ' + closeAsk.note)
+    : '';
+
+  var hasTeamNote = result.team_notes && result.team_notes.toLowerCase() !== 'none';
 
   var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
     'Attended: ' + (result.attended ? 'Yes' : 'No') +
@@ -219,20 +241,24 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     'Notes: ' + result.coaching_notes + '\n\n' +
     'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
     closeAskPlain + '\n' +
-    (result.team_notes && result.team_notes.toLowerCase() !== 'none' ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
+    (hasTeamNote ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
     '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
 
   var htmlBody =
-    '<p>Training call with <b>' + rep + '</b> (' + dateLabel + '):</p>' +
-    '<p><b>Attended:</b> ' + (result.attended ? 'Yes' : 'No') +
-    ' &nbsp;|&nbsp; <b>Practiced objection handling:</b> ' + (result.practiced_objections ? 'Yes' : 'No') +
-    ' &nbsp;|&nbsp; <b>Practiced asking for the money:</b> ' + (result.practiced_close_ask ? 'Yes' : 'No') + '</p>' +
-    '<p><b>Notes:</b> ' + result.coaching_notes + '</p>' +
-    '<p><b>This week\'s objections to drill (Agree, Isolate, Repeat):</b></p>' + objectionsHtml +
+    '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
+    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<div style="margin-bottom:14px;">' +
+    trainingReviewStatBadge_('Attended', result.attended) +
+    trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
+    trainingReviewStatBadge_('Asking for the money practiced', result.practiced_close_ask) +
+    '</div>' +
+    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', result.coaching_notes) +
+    '<h3 style="color:#0b8043;font-size:14px;margin:0 0 6px;">This week\'s objections to drill (Agree → Isolate → Repeat)</h3>' +
+    objectionsHtml +
     closeAskHtml +
-    (result.team_notes && result.team_notes.toLowerCase() !== 'none'
-      ? '<p><b>Team-wide note:</b> ' + result.team_notes + '</p>' : '') +
-    '<p><i>— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</i></p>';
+    (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', result.team_notes) : '') +
+    '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
+    '</div>';
 
   return { subject: subject, body: body, htmlBody: htmlBody };
 }
