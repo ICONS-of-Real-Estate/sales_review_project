@@ -29,15 +29,16 @@
  *
  * Kris's ask (20/08/2026): a rep saying "done" in the thread isn't enough —
  * checkDailyPracticeCompliance_ now persistently reply-alls the SAME
- * assignment thread once a day for as long as the correctly-named file is
+ * assignment thread every 12h (NAG_INTERVAL_HOURS, per Kris's follow-up ask
+ * 21/08/2026 — was once a day) for as long as the correctly-named file is
  * still missing from the rep's Drive folder, tracked via the "Daily Practice
  * Follow-ups" sheet tab (one open row per outstanding assignment, not just
  * yesterday's). The only way to stop the nagging on one thread is Kris or
  * Tomás replying-all on it with "cancel" or "stop" — the check looks for
  * that in every message from either of them before deciding whether to nag
  * again. This replaces the old one-shot "alert Kris/Tomás about yesterday"
- * behavior; it runs at the same trigger slot (runDailyPracticeCompliance),
- * no new trigger to install.
+ * behavior; it runs via two triggers 12h apart (runDailyPracticeCompliance,
+ * COMPLIANCE_CHECK_HOUR and COMPLIANCE_CHECK_HOUR_PM).
  *
  * Once the correctly-named file lands AND its transcript is ready, the
  * grading itself also lands as a reply-all on that same tracked thread
@@ -77,6 +78,8 @@ var DAILY_PRACTICE_CONFIG = {
   GRADING_HOUR: 20, // 8pm — after the work day, so today's upload has time to land + get transcribed
   REMINDER_HOUR: 9, // 9am — this is now the day's assignment (objections to drill), not an end-of-day nag, so it goes out in the morning. Was 16:00; flag to Kris if a different time is wanted.
   COMPLIANCE_CHECK_HOUR: 8, // 8am — an hour before REMINDER_HOUR, so it always checks yesterday's assignment before today's goes out.
+  COMPLIANCE_CHECK_HOUR_PM: 20, // 8pm — second daily compliance pass, 12h after COMPLIANCE_CHECK_HOUR, per Kris's ask (21/08/2026) that outstanding assignments get nagged twice a day, not once.
+  NAG_INTERVAL_HOURS: 12, // minimum gap between reply-all nags on the same thread — paired with the two triggers above.
   // Escalate (cc Kris + Tomás) when a graded rep falls at or below this — same
   // "manual review" spirit as Phase 2's severity flag, applied to a rep's own
   // practice quality rather than a real lead's call.
@@ -364,9 +367,10 @@ function sendDailyPracticeReminders_() {
     // the other days once a close-ask drill actually exists on file.
     var assignCloseAskToday = closeAsk && (!objections || !objections.length || (label.day % 2 === 1));
 
+    var subjectPrefix = rep + ' — ' + label.label + ' — Training Plan';
     var subject, body, htmlBody;
     if (assignCloseAskToday) {
-      subject = label.label + ' — Training Plan';
+      subject = subjectPrefix;
       body =
         'Record a video practicing ASKING FOR THE MONEY:\n\n' +
         '"' + closeAsk.label + '" — ' + closeAsk.note + '\n\n' +
@@ -382,7 +386,7 @@ function sendDailyPracticeReminders_() {
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (objections && objections.length) {
-      subject = label.label + ' — Training Plan';
+      subject = subjectPrefix;
       var plainList = objections.map(function (o, i) { return (i + 1) + '. ' + o.label + ' — ' + o.note; }).join('\n');
       var htmlList = '<ol>' + objections.map(function (o) {
         return '<li><b>' + o.label + '</b> — ' + o.note + '</li>';
@@ -391,24 +395,28 @@ function sendDailyPracticeReminders_() {
       body =
         'Record a video practicing objection handling (Agree, Isolate, Repeat):\n\n' +
         plainList + '\n\n' +
+        namingLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
 
       htmlBody =
         '<p>Record a video practicing objection handling (Agree, Isolate, Repeat):</p>' +
         htmlList +
+        '<p>' + namingLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else {
-      subject = label.label + ' — Training Plan';
+      subject = subjectPrefix;
       body =
         'Record a video practicing objection handling (no specific objections on file yet — pick one you ' +
         'want to sharpen).\n\n' +
+        namingLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
         '<p>Record a video practicing objection handling (no specific objections on file yet — pick one ' +
         'you want to sharpen).</p>' +
+        '<p>' + namingLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     }
@@ -436,7 +444,7 @@ function sendDailyPracticeReminders_() {
 // ---------------------------------------------------------------------------
 
 var DAILY_PRACTICE_FOLLOWUP_SHEET_NAME = 'Daily Practice Follow-ups';
-var DAILY_PRACTICE_FOLLOWUP_HEADERS = ['Rep', 'Assignment Date (YYMMDD)', 'Thread ID', 'Status', 'Last Nag Date', 'Nag Count'];
+var DAILY_PRACTICE_FOLLOWUP_HEADERS = ['Rep', 'Assignment Date (YYMMDD)', 'Thread ID', 'Status', 'Last Nag At', 'Nag Count'];
 
 function getOrCreateDailyPracticeFollowupSheet_() {
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
@@ -526,11 +534,14 @@ function dailyPracticeThreadHasStopRequest_(thread) {
  *                      (buildAndMaybeGradeDailyPractice_'s nightly pass does
  *                      the same lookup, so whichever runs first delivers it).
  *
- * Runs once daily at COMPLIANCE_CHECK_HOUR — same trigger slot as before.
+ * Runs twice daily (COMPLIANCE_CHECK_HOUR and COMPLIANCE_CHECK_HOUR_PM, 12h
+ * apart, per Kris's ask 21/08/2026) — a thread's last-nag timestamp (not just
+ * date) gates re-nagging so the two firings actually land ~12h apart instead
+ * of collapsing to once a day.
  */
 function checkDailyPracticeCompliance_(dryRun) {
   RUN_TAG = 'checkDailyPracticeCompliance_';
-  var todayStr = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+  var now = new Date();
   var sheet = getOrCreateDailyPracticeFollowupSheet_();
   var rows = loadDailyPracticeFollowupRows_(sheet, null).filter(function (r) {
     return r.status === 'open' || r.status === 'file_received';
@@ -570,23 +581,25 @@ function checkDailyPracticeCompliance_(dryRun) {
           '") — stopping nag.' + (dryRun ? ' (preview — not written)' : ''));
         row.status = 'file_received'; // fall through to the grading check below in this same pass
       } else {
-        // Sheets may auto-convert this cell to a real Date on read-back even though it was written
-        // as a 'yyyy-MM-dd' string — normalize before comparing rather than assuming the type.
-        var lastNagDateStr = row.lastNagDate instanceof Date
-          ? Utilities.formatDate(row.lastNagDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd')
-          : String(row.lastNagDate || '');
-        if (lastNagDateStr === todayStr) return; // already nagged today
+        // lastNagDate now holds a full timestamp (ISO string, or a real Date if
+        // Sheets auto-converted it on read-back) so the ~12h gate actually works
+        // across the two daily firings instead of just deduping by calendar date.
+        var lastNagMs = row.lastNagDate instanceof Date
+          ? row.lastNagDate.getTime()
+          : (row.lastNagDate ? new Date(row.lastNagDate).getTime() : 0);
+        var hoursSinceLastNag = (now.getTime() - lastNagMs) / (3600 * 1000);
+        if (lastNagMs && hoursSinceLastNag < DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS) return; // nagged too recently
         var nagNum = (row.nagCount || 0) + 1;
         var nagBody = 'Still don\'t see a correctly-named file (starting with ' + row.dateStr + ') in the practice folder ' +
-          '— this is follow-up #' + nagNum + '. This thread will keep getting a daily nag until the file lands, or ' +
-          'Kris or Tomás replies-all here with "cancel" or "stop".\n\nFolder: https://drive.google.com/drive/folders/' +
-          DAILY_PRACTICE_CONFIG.FOLDERS[row.rep];
+          '— this is follow-up #' + nagNum + '. This thread will keep getting a nag every ' +
+          DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS + 'h until the file lands, or Kris or Tomás replies-all here with ' +
+          '"cancel" or "stop".\n\nFolder: https://drive.google.com/drive/folders/' + DAILY_PRACTICE_CONFIG.FOLDERS[row.rep];
         if (dryRun) {
           log_('(preview) would reply-all nag #' + nagNum + ' on thread for [' + row.rep + '/' + row.dateStr + ']\n' + nagBody);
           return;
         }
         thread.replyAll(nagBody, { name: 'Daily Practice Follow-up Bot' });
-        sheet.getRange(row.rowIndex, 5, 1, 2).setValues([[todayStr, nagNum]]);
+        sheet.getRange(row.rowIndex, 5, 1, 2).setValues([[now.toISOString(), nagNum]]);
         log_('[' + row.rep + '/' + row.dateStr + '] NON-COMPLIANT — reply-all nag #' + nagNum + ' sent on the tracked thread.');
         return;
       }
@@ -642,14 +655,21 @@ function installDailySelfPracticeTriggers_() {
     });
   });
 
+  // Two compliance-check firings, 12h apart, so an outstanding assignment gets
+  // nagged every 12h rather than once a day (checkDailyPracticeCompliance_'s
+  // own NAG_INTERVAL_HOURS gate is what actually enforces the spacing; two
+  // triggers just makes sure a check happens often enough to catch each window).
   ScriptApp.newTrigger('runDailyPracticeCompliance')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
+  ScriptApp.newTrigger('runDailyPracticeCompliance')
+    .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR_PM).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('sendDailyPracticeReminders_')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.REMINDER_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('runDailyPracticeGrading')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.GRADING_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
 
-  log_('Daily self-practice triggers installed: compliance check at ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR +
-    ':00, reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR + ':00, grading at ' +
-    DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
+  log_('Daily self-practice triggers installed: compliance checks at ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR +
+    ':00 and ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR_PM + ':00 (nag every ' +
+    DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS + 'h), reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR +
+    ':00, grading at ' + DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
 }

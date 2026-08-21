@@ -422,19 +422,31 @@ function runInboxSlaCheck() {
           return;
         }
 
-        var subject = '[Action needed] ' + unanswered.length + ' email(s) in your inbox over ' +
+        var subject = repCfg.name + ' — [Action needed] ' + unanswered.length + ' email(s) in your inbox over ' +
           INBOX_SLA_CONFIG.SLA_HOURS + 'h old';
         var lines = unanswered.map(function (u) {
           return '• ' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — "' + u.subject + '"';
         });
+        var htmlLines = unanswered.map(function (u) {
+          return '<li>' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — &quot;' + u.subject + '&quot;</li>';
+        });
         var body =
           'Hi ' + repCfg.name + ',\n\n' +
           'These emails in your inbox have gone unanswered for more than ' + INBOX_SLA_CONFIG.SLA_HOURS +
-          ' hours:\n' + lines.join('\n') + '\n\n' +
+          ' hours:\n\n' + lines.join('\n\n') + '\n\n' +
           'Please reply, or archive/label them so nothing sits past a day.\n\n' +
           '— This is an automated check reading your inbox metadata only (sender/subject/date, never ' +
           'message bodies). This email was drafted by AI and sent automatically; reply to Kris or Tomás ' +
           'with any issues.';
+        var htmlBody =
+          '<p>Hi ' + repCfg.name + ',</p>' +
+          '<p>These emails in your inbox have gone unanswered for more than ' + INBOX_SLA_CONFIG.SLA_HOURS +
+          ' hours:</p>' +
+          '<ul>' + htmlLines.join('') + '</ul>' +
+          '<p>Please reply, or archive/label them so nothing sits past a day.</p>' +
+          '<p><i>— This is an automated check reading your inbox metadata only (sender/subject/date, never ' +
+          'message bodies). This email was drafted by AI and sent automatically; reply to Kris or Tomás ' +
+          'with any issues.</i></p>';
 
         if (!INBOX_SLA_CONFIG.ENABLED) {
           log_('  (INBOX_SLA_CONFIG.ENABLED is false -- logging instead of sending)');
@@ -442,6 +454,7 @@ function runInboxSlaCheck() {
           log_(body);
         } else {
           guardedSend_(repCfg.email, subject, body, {
+            htmlBody: htmlBody,
             cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
             name: 'Inbox SLA Bot'
           }, 3);
