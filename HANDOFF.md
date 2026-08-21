@@ -1,3 +1,60 @@
+# Handoff — 21/08/2026 (session 3)
+
+## 0. What happened this session (read this first)
+
+**Session 2's `clasp push` blocker is resolved — Kris confirmed push, pull,
+and trigger install all done.** Everything through commit `1f28a1e` is now
+live on the Apps Script project. No outstanding deploy blocker.
+
+**Fixed a real gap found while confirming the deploy steps:
+`installDailySelfPracticeTriggers_()` had no dropdown-visible wrapper.**
+Every other phase's entry points follow the `functionName()` calls
+`functionName_()` convention so Apps Script's "Select function to run"
+dropdown can find them — this one was missed, so there was no way to
+re-install Phase 7's triggers (e.g. after the session-2 fix that added the
+new 8pm compliance trigger) without editing code in the browser editor,
+which CLAUDE.md explicitly forbids. Added `installDailySelfPracticeTriggers()`
+wrapper — commit `1f28a1e`. Also confirmed `installAllReadyTriggers()`
+(`Phase1_ComplianceCheck.gs`) already calls the `_` version directly, so
+running that one function reinstalls every enabled phase's triggers,
+Phase 7 included — no need to run phase-specific installers individually.
+
+**Explained the Joana/Tomás "few-shot anchors" email to Kris** — it's Joana
+asking Tomás to confirm 3 real calls (Carolyn Triebold, Tennitia Wilson, Ben
+Sweet) are fair representative examples before they become permanent
+grading references for the AI scorer. Not a code/deploy issue, just needed
+context. Kris is asking Tomás directly — no action needed from a future
+session unless Tomás's reply changes something.
+
+**Built two Google Docs for the sales team** (not code, pure documentation —
+Kris will send this to the reps directly):
+- First pass covered technical pipeline internals (transcription mechanics,
+  deploy steps, "where things live") — Kris pushed back hard: reps don't
+  care about any of that, rewrite it as short and rep-facing as possible.
+- Final version, titled **"How Call Reviews Work — What You Need To Do"**:
+  https://docs.google.com/document/d/1vCyXc_Qe7jCvcoJuyUFPFC9HVBpBoVcaRRpWpu32DfE/edit
+  Two sections only: (1) a table of each rep's own Drive upload folder
+  link(s) — Sean (Sales Calls, Qualification Calls, Daily Practice), Joana
+  (QC & Sales Calls, Daily Practice), Tomás (Sales Calls, Second Calls),
+  Bens (Riverside transcript folder, Daily Practice); (2) a table of every
+  automated email a rep will receive — name, timing, subject-line shape,
+  and what action (if any) to take. Since the team is spread across time
+  zones, every "when" is shown as both PT (the system's actual clock,
+  `CONFIG.BUSINESS_TIMEZONE = 'America/Los_Angeles'`) and ET — e.g. "6:00pm
+  PT / 9:00pm ET" — converted assuming both US zones are currently in
+  daylight time (3h gap), which holds for most of the year but drifts by an
+  hour for a week or two around the DST changeover if PT/ET switch on
+  different dates; not footnoted in the doc itself since it's not worth
+  confusing reps with.
+- Two earlier draft versions of this doc were created and then trashed
+  (`mcp__Google_Drive__trash_file`) as each got superseded — only the final
+  link above is live. There is still no tool available that can edit an
+  existing Google Doc's body content, so any future revision means
+  repeating this create-new/trash-old pattern (same limitation noted for
+  Joana's setup doc in session 2, §0 below).
+
+---
+
 # Handoff — 21/08/2026 (session 2)
 
 ## 0. What happened this session (read this first)
