@@ -95,26 +95,40 @@ def get_drive_service():
 
 
 def list_videos(drive, folder_id):
-    videos, existing_names, page_token = [], set(), None
-    while True:
-        resp = (
-            drive.files()
-            .list(
-                q=f"'{folder_id}' in parents and trashed = false",
-                fields="nextPageToken, files(id, name, mimeType, size)",
-                pageSize=200,
-                pageToken=page_token,
+    """Recurses into subfolders so a rep's videos aren't missed just because
+    someone organized a few of them into a dated/named subfolder (seen for
+    real in Sean's and Joana's folders) -- every subfolder at any depth gets
+    scanned the same as the top folder. Each returned video dict carries its
+    own "parent_folder_id" (where it actually lives) since that's where its
+    transcript doc and lock file need to be created, which can differ from
+    the top-level folder_id callers pass in."""
+    videos, existing_names = [], set()
+    folders_to_scan = [folder_id]
+    while folders_to_scan:
+        current_folder_id = folders_to_scan.pop()
+        page_token = None
+        while True:
+            resp = (
+                drive.files()
+                .list(
+                    q=f"'{current_folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    pageSize=200,
+                    pageToken=page_token,
+                )
+                .execute()
             )
-            .execute()
-        )
-        for f in resp.get("files", []):
-            if f["mimeType"].startswith("video/"):
-                videos.append(f)
-            else:
-                existing_names.add(f["name"])
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
+            for f in resp.get("files", []):
+                if f["mimeType"] == "application/vnd.google-apps.folder":
+                    folders_to_scan.append(f["id"])
+                elif f["mimeType"].startswith("video/"):
+                    f["parent_folder_id"] = current_folder_id
+                    videos.append(f)
+                else:
+                    existing_names.add(f["name"])
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
     return videos, existing_names
 
 
@@ -403,8 +417,9 @@ def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=No
         print(f"\n=== {folder_label} ===")
         for video in videos:
             title = title_fn(video)
+            video_folder_id = video.get("parent_folder_id", folder_id)
 
-            lock_id = try_acquire_lock(drive, folder_id, video["id"])
+            lock_id = try_acquire_lock(drive, video_folder_id, video["id"])
             if lock_id is None:
                 print(f"[skipping] {title} — already claimed by another machine")
                 skipped_locked += 1
@@ -440,7 +455,7 @@ def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=No
                     fresh = True
 
                 t0 = time.time()
-                link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
+                link = save_transcript_doc(drive, video_folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
                 print(f"    done -> {link}")
                 if log_completed_fn:
@@ -507,6 +522,7 @@ def main():
         print(f"\n=== {folder_label} ===")
         for video in videos:
             title = video["name"].strip()
+            video_folder_id = video.get("parent_folder_id", folder_id)
             print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
 
             local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
@@ -535,7 +551,7 @@ def main():
                     fresh = True
 
                 t0 = time.time()
-                link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
+                link = save_transcript_doc(drive, video_folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
                 print(f"    done -> {link}")
                 if os.path.exists(local_path):

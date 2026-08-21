@@ -96,6 +96,7 @@ def main():
         print(f"\n=== {folder_label} ===")
         for video in videos:
             title = video["name"].strip()
+            video_folder_id = video.get("parent_folder_id", folder_id)
             print(f"[transcribing] {title} ({int(video.get('size', 0)) / 1e6:.0f} MB)")
 
             local_path = os.path.join(tempfile.gettempdir(), f"{video['id']}.mp4")
@@ -124,7 +125,7 @@ def main():
                     fresh = True
 
                 t0 = time.time()
-                link = save_transcript_doc(drive, folder_id, video["id"], title, transcript)
+                link = save_transcript_doc(drive, video_folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
                 print(f"    done -> {link}")
                 if os.path.exists(local_path):
