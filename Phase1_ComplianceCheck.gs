@@ -535,7 +535,7 @@ function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
     ? names.join(', ')
     : names.slice(0, 3).join(', ') + ', +' + (names.length - 3) + ' more';
 
-  var subject = '[Action needed] Update your sales tracker — ' + namesForSubject +
+  var subject = repCfg.name + ' — [Action needed] Update your sales tracker — ' + namesForSubject +
     ' (' + n + ' call(s) from ' + priorDay + ') not logged';
 
   // guessProspectFromTitle_ falls back to echoing the raw title verbatim when

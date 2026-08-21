@@ -153,7 +153,7 @@ function priorityToImprove_(stats) {
 function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var weekLabel = Utilities.formatDate(weekStart, tz, 'dd/MM') + '–' +
     Utilities.formatDate(new Date(weekEnd.getTime() - 1), tz, 'dd/MM/yyyy');
-  var subject = 'Your Weekly Call Scorecard — week of ' + weekLabel;
+  var subject = repCfg.name + ' — Your Weekly Call Scorecard — week of ' + weekLabel;
 
   var trendLine = '';
   if (stats.weeklyAvg !== null && stats.historicAvgBeforeThisWeek !== null) {

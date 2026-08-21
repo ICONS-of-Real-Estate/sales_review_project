@@ -374,7 +374,7 @@ function sendUpcomingHandoffBriefs_() {
             priorCallType: prior.callType
           };
           var body = buildHandoffBriefEmailBody_(brief, emailCtx);
-          var subject = '[Handoff Brief] ' + ev.prospectGuess + ' — your ' + emailCtx.nextCallType + ' call in ~24 hrs';
+          var subject = repCfg.name + ' — [Handoff Brief] ' + ev.prospectGuess + ' — your ' + emailCtx.nextCallType + ' call in ~24 hrs';
 
           if (!HANDOFF_CONFIG.ENABLED) {
             log_('  (HANDOFF_CONFIG.ENABLED is false — logging instead of sending)');
