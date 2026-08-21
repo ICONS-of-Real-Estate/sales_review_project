@@ -356,7 +356,9 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
     'Daily reply tracker — ' + Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
     '',
     line('Today', day),
+    '',
     line('Rolling 7-day average', week),
+    '',
     line('Rolling 30-day average', month),
     '',
     bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
