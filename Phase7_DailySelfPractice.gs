@@ -647,6 +647,12 @@ function runDailyPracticeCompliance() {
   checkDailyPracticeCompliance_(/*dryRun=*/false);
 }
 
+/** Dropdown-visible wrapper — installDailySelfPracticeTriggers_() has a
+ * trailing underscore so Apps Script hides it from "Select function to run". */
+function installDailySelfPracticeTriggers() {
+  installDailySelfPracticeTriggers_();
+}
+
 function installDailySelfPracticeTriggers_() {
   RUN_TAG = 'installDailySelfPracticeTriggers_';
   ['runDailyPracticeGrading', 'sendDailyPracticeReminders_', 'runDailyPracticeCompliance'].forEach(function (handler) {
