@@ -92,6 +92,39 @@ overwriting the real one's fixes on every push. Kris deleted the nested
 folder; confirm a future `clasp push` + a look at the compliance email
 formatting (see §3) to be sure this is fully resolved.
 
+**OVH VPS is now running the transcription backlog live, in parallel, at
+idle priority.** Deployed `tools/transcribe_all.py` (Sean + Joana + Tomás,
+Whisper engine — free, local) to the OVH box (`vps-b3e68291`, IP
+`148.113.204.247`, SSH port `2288`, 16 vCores/16GB, also hosts websites via
+FASTPANEL/nginx/php-fpm/mariadb) via `tools/deploy/setup_ovh.sh` — installs
+Python/ffmpeg, builds a venv, and registers a systemd timer
+(`transcribe-all.timer`) that fires every 6h automatically. `credentials.json`/
+`token.json` were copied over from Kris's laptop (they're gitignored,
+per-machine secrets — not something `git pull` brings over).
+
+Added parallel-worker support (`TRANSCRIBE_WORKERS`/`WHISPER_THREADS` env
+vars) once Kris confirmed the box was idle and wanted it maxed out — this
+just runs N copies of the same batch loop as separate processes, safe
+because it reuses the SAME Drive-lock (`.lock-<video_id>`) that already lets
+multiple laptops share one backlog without double-transcribing. Systemd unit
+defaults to `TRANSCRIBE_WORKERS=4` x `WHISPER_THREADS=4` = 16 threads,
+matched to the box's core count. Confirmed live via `top`: all 4 workers
+running at ~380-400% CPU each, `Nice=19`/idle scheduling correctly yielding
+to the box's real websites (`php-fpm`/`mariadb` stayed low-CPU and
+unaffected throughout). Bens is deliberately NOT in this script — his calls
+come pre-transcribed from Riverside, no raw-video folder to point this at.
+
+Useful commands on the VPS (`ssh -p 2288 root@148.113.204.247`):
+```
+systemctl list-timers transcribe-all.timer   # next scheduled fire
+sudo systemctl start transcribe-all.service   # run it right now
+sudo systemctl restart transcribe-all.service # pick up a config change mid-run
+journalctl -u transcribe-all.service -f       # watch a run live
+```
+**Check next session**: how far Sean's 75-video "Qualification Calls"
+backlog got, and whether Joana's/Tomás's batches on this box found anything
+new beyond what the laptops already did.
+
 ## 3. Open items for a future session
 
 - **Re-check Sean's real Phase 5 average** now that the Moonshot direct-call
