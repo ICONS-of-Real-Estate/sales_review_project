@@ -12,6 +12,7 @@ report's CSP guidance).
 Run with: uvicorn app:app --host <bind-host> --port 8000
 (tools/deploy/setup_dashboard.sh installs this as sales-dashboard.service.)
 """
+import json
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -22,7 +23,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
+
 BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parent.parent
 DB_PATH = os.environ.get("DASHBOARD_DB_PATH", str(BASE_DIR / "dashboard.db"))
 FRESHNESS_WARN_MINUTES = int(os.environ.get("DASHBOARD_FRESHNESS_WARN_MINUTES", "15"))
 FRESHNESS_STALE_MINUTES = int(os.environ.get("DASHBOARD_FRESHNESS_STALE_MINUTES", "60"))
@@ -33,6 +37,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# Playbooks are files in the repo (only change on a git pull + restart, not
+# on sync.py's timer), so index once at startup rather than on a schedule.
+try:
+    reindex_playbooks(DB_PATH, REPO_ROOT)
+except Exception as e:
+    print(f"WARNING: could not index playbooks: {e}")
 
 
 def get_conn():
@@ -319,6 +330,62 @@ def overview(request: Request):
             "reps": rep_summary(),
             "failure_modes": failure_mode_breakdown(),
             "pipeline": pipeline_health(),
+        },
+    )
+
+
+def training_assignments():
+    """Reads the "Training Assignments" tab mirror (Phase6_TrainingCallReview.gs)
+    — the only way this state is visible outside Apps Script at all, since the
+    live values are Script Properties no external API can read."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, training_objections_json, close_ask_drill_json, last_updated "
+        "FROM training_assignments ORDER BY rep"
+    ).fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        try:
+            objections = json.loads(r["training_objections_json"]) if r["training_objections_json"] else []
+        except (ValueError, TypeError):
+            objections = []
+        try:
+            close_drill = json.loads(r["close_ask_drill_json"]) if r["close_ask_drill_json"] else None
+        except (ValueError, TypeError):
+            close_drill = None
+        out.append(
+            {
+                "rep": r["rep"],
+                "objections": objections,
+                "close_drill": close_drill,
+                "last_updated": r["last_updated"],
+            }
+        )
+    return out
+
+
+@app.get("/training", response_class=HTMLResponse)
+def training_page(request: Request, q: str = ""):
+    playbook_docs = []
+    for pb in PLAYBOOKS:
+        try:
+            sections = render_playbook(REPO_ROOT, pb["filename"])
+        except FileNotFoundError:
+            sections = None
+        playbook_docs.append({"slug": pb["slug"], "title": pb["title"], "sections": sections})
+
+    return templates.TemplateResponse(
+        request,
+        "training.html",
+        {
+            "active_page": "training",
+            "freshness": freshness_status(),
+            "assignments": training_assignments(),
+            "playbooks": playbook_docs,
+            "query": q,
+            "search_results": search_playbooks(DB_PATH, q) if q else [],
         },
     )
 

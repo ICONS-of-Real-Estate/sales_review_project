@@ -45,12 +45,22 @@
       margin-bottom: 1.5rem;
     }
     .chart-card h2 { margin: 0 0 1rem; font-size: 1rem; color: #c7cee0; }
+    .playbook-body { line-height: 1.6; }
+    .playbook-body blockquote {
+      border-left: 3px solid #262c3d; margin: 0.75rem 0; padding: 0.25rem 1rem;
+      color: #9aa4bb;
+    }
+    .playbook-body code { background: #0f1420; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .playbook-body table { margin: 0.75rem 0; }
+    .playbook-body hr { border: none; border-top: 1px solid #262c3d; margin: 1.5rem 0; }
+    .playbook-body h3 { color: #e8ecf4; }
   </style>
 </head>
 <body>
   <nav class="dashboard-nav">
     <a href="/" class="{{ 'active' if active_page == 'overview' else '' }}">Overview</a>
     <a href="/charts" class="{{ 'active' if active_page == 'charts' else '' }}">Charts</a>
+    <a href="/training" class="{{ 'active' if active_page == 'training' else '' }}">Training</a>
   </nav>
   {% block content %}{% endblock %}
 </body>

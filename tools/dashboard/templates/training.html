@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Training</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<h2>Current practice-drill assignments</h2>
+<table>
+  <thead>
+    <tr><th>Rep</th><th>Objections to drill</th><th>Close-ask drill</th><th>Last updated</th></tr>
+  </thead>
+  <tbody>
+    {% for a in assignments %}
+    <tr>
+      <td>{{ a.rep }}</td>
+      <td>
+        {% if a.objections %}
+          <ul style="margin: 0; padding-left: 1.1rem;">
+            {% for o in a.objections %}<li>{{ o }}</li>{% endfor %}
+          </ul>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>{{ a.close_drill if a.close_drill else "—" }}</td>
+      <td>{{ a.last_updated or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No training assignments synced yet — these land in the "Training Assignments" sheet tab the first time Phase 6 processes a training call.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Playbooks</h2>
+<form method="get" action="/training" style="margin-bottom: 1.5rem;">
+  <input type="text" name="q" value="{{ query }}" placeholder="Search playbooks (e.g. &quot;price objection&quot;)"
+    style="padding: 0.5rem 0.8rem; width: 320px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+  <button type="submit" style="padding: 0.5rem 1rem; border-radius: 6px; border: none; background: #7dc4ff; color: #0f1420; cursor: pointer;">Search</button>
+</form>
+
+{% if query %}
+<div class="chart-card">
+  <h2>Search results for "{{ query }}"</h2>
+  {% for r in search_results %}
+    <p>
+      <a href="/training#{{ r.doc_slug }}-{{ r.anchor }}"><strong>{{ r.doc_title }}</strong> — {{ r.heading }}</a><br>
+      <span class="muted">{{ r.snippet | safe }}</span>
+    </p>
+  {% else %}
+    <p class="muted">No matches.</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% for doc in playbooks %}
+<div class="chart-card">
+  <h2>{{ doc.title }}</h2>
+  {% if doc.sections %}
+    <p>
+      <strong>Contents:</strong>
+      {% for s in doc.sections %}
+        <a href="#{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</a>{% if not loop.last %} · {% endif %}
+      {% endfor %}
+    </p>
+    {% for s in doc.sections %}
+      <h3 id="{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</h3>
+      <div class="playbook-body">{{ s.html | safe }}</div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">Not found on this deploy ({{ doc.slug }}).</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}
