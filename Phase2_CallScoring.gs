@@ -32,7 +32,7 @@
  *                                event (Match Method = exact_key) and that
  *                                haven't been scored yet. Intended to run on
  *                                its own trigger (installPhase2Trigger()).
- *  - scoreLegacyTranscriptFolder(repName, folderId)
+ *  - scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummaryFn)
  *                                One-off backfill: scores a Drive folder of
  *                                already-recorded transcripts that predate the
  *                                Calendar-Event-ID-in-title convention (no
@@ -40,9 +40,14 @@
  *                                date + prospect name instead, per brief.txt
  *                                §6's own "legacy recordings" residual-risk
  *                                case). scoreBensLegacyTranscripts() is the
- *                                zero-argument convenience wrapper for today's
- *                                43-transcript folder so it can be run
- *                                directly from the Apps Script editor.
+ *                                zero-argument convenience wrapper so it can be
+ *                                run directly from the Apps Script editor —
+ *                                it passes scoreBensTranscript_/
+ *                                buildBensFeedbackSummary_ as the optional
+ *                                judgeFn/feedbackSummaryFn overrides, since
+ *                                Bens is NOT a closer (SOP §3C, added
+ *                                22/08/2026) — he books a QC/Sales Call for
+ *                                someone else rather than asking for money.
  *  - scoreSeanTranscripts()      Sean-specific backfill using a deliberately
  *                                stricter rubric than the shared two-failure-
  *                                mode one above (Kris/Thao's explicit ask,
@@ -590,12 +595,174 @@ function migrateAddPrimaryFailureModeColumn_() {
 }
 
 // ---------------------------------------------------------------------------
+// Bens-specific rubric — added 22/08/2026 per Kris: Bens is not a closer.
+// He runs the ICONS 100 lead-gen podcast (interviews a guest, then books a
+// QC or Sales Call for someone else to run) and also runs QCs himself,
+// booking a Sales Call from those — but he never takes a sales call
+// himself. Scoring him against the shared "asked for close" rubric was
+// wrong: that flag was measuring a money-ask he was never supposed to make,
+// which is why his "Asked for close"/"Objections handled" dashboard numbers
+// looked high but weren't actually meaningful. Same field names as the
+// shared rubric are kept (asked_for_close, objections_uncovered/overcome)
+// so the dashboard and Phase 5's scorecard tally keep working unchanged —
+// only what they MEAN is redefined: asked_for_close = did he explicitly ask
+// to book the next concrete step (QC or Sales Call, with an actual date/time),
+// not whether he asked for money.
+// ---------------------------------------------------------------------------
+
+function buildBensJudgeSystemPrompt_() {
+  return [
+    'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a call',
+    'run by Bens. Bens is NOT a closer — he never asks for money or takes a sales call himself. He runs two kinds',
+    'of calls; decide which this one is from the transcript itself:',
+    '  icons_100_interview = a guest interview for the ICONS 100 lead-gen podcast. His job here is to run a genuinely',
+    '    good interview (the content itself becomes marketing) AND, if the guest is a fit, book a QC or Sales Call',
+    '    for someone else on the team to run.',
+    '  qc = a qualification call with a lead already in the funnel. His job is to qualify them and book a Sales',
+    '    Call for someone else to run.',
+    '  unclear = say so rather than guessing if the transcript genuinely doesn\'t make it obvious.',
+    '',
+    'His equivalent of "the close" is NOT asking for money — it is explicitly asking to book the next concrete',
+    'step (a QC or a Sales Call) with someone else on the team, at a specific date/time, not a vague "I\'ll be in',
+    'touch" or "someone will reach out." Score that the same way the shared rubric scores a money-ask: a real,',
+    'explicit ask, not a soft trial-close question.',
+    '',
+    'Be skeptical by default. Every judgment must cite specific transcript evidence.',
+    '',
+    'Answer all of the following, in order, in your reasoning:',
+    '1. Did Bens uncover any objections/hesitations about booking the next step, and address them with something',
+    '   concrete (a case study, a specific benefit, a direct answer) rather than brushing past them?',
+    '2. Did Bens explicitly ask to book a QC or Sales Call, with a specific date/time — not just leave it open-ended?',
+    '3. Did that next step actually get booked? If not, what specifically did Bens fail to do or say that would',
+    '   have gotten it booked?',
+    '4. Did Bens do real discovery — do they demonstrably understand this person\'s business and situation, not a',
+    '   generic read of the room?',
+    '5. If this is an icons_100_interview: was the interview itself genuinely good content — did Bens draw out a',
+    '   specific, interesting story or piece of expertise, not just surface-level small talk? (For a qc call,',
+    '   treat this question as not applicable and answer true.)',
+    '6. Bottom line: if no next step was booked, what is the single root cause? Be specific and causal, not vague.',
+    '',
+    'Score anchors for call_quality_score (1-5):',
+    '5 = next step booked with a specific date/time, objections handled well, and (for an interview) genuinely',
+    '    good content.',
+    '4 = next step booked, but one of discovery/objection-handling/interview-quality was weak.',
+    '3 = next step booked mainly because the person pushed for it, not because Bens earned it; or a real ask was',
+    '    made but discovery was clearly missing.',
+    '2 = no next step booked, the person was a reasonable fit, and the miss is attributable to Bens\' execution.',
+    '1 = no next step booked AND no real attempt at discovery or an ask.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
+    'through all 6 questions with quoted evidence), then the structured fields, in this exact shape:',
+    '',
+    '{',
+    '  "reasoning": "string",',
+    '  "call_role": "icons_100_interview | qc | unclear",',
+    '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
+    '  "call_quality_score": 1,',
+    '  "flags": {',
+    '    "asked_for_close": true,',
+    '    "objections_uncovered": true,',
+    '    "objections_overcome": true,',
+    '    "booked_next_step": true,',
+    '    "discovery_adequate": true,',
+    '    "understood_leads_business": true,',
+    '    "interview_content_quality_good": true',
+    '  },',
+    '  "next_step_type": "QC | Sales Call | none",',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | multiple",',
+    '  "root_cause_if_no_booking": "string — the single specific reason no next step was booked; \\"N/A\\" if one was",',
+    '  "manual_review_recommended": true,',
+    '  "severity": 1,',
+    '  "feedback_summary": "string — 4-6 sentences, coaching-ready, must cover: objection handling, whether he',
+    '   asked to book a next step, whether it got booked, discovery quality, and (for interviews) content quality"',
+    '}'
+  ].join('\n');
+}
+
+function isValidBensJudgeSchema_(obj) {
+  return !!(obj &&
+    typeof obj.call_role === 'string' &&
+    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
+    typeof obj.call_quality_score === 'number' &&
+    obj.flags &&
+    typeof obj.flags.asked_for_close === 'boolean' &&
+    typeof obj.flags.objections_uncovered === 'boolean' &&
+    typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.booked_next_step === 'boolean' &&
+    typeof obj.flags.discovery_adequate === 'boolean' &&
+    typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.interview_content_quality_good === 'boolean' &&
+    typeof obj.next_step_type === 'string' &&
+    typeof obj.manual_review_recommended === 'boolean' &&
+    typeof obj.severity === 'number' &&
+    typeof obj.root_cause_if_no_booking === 'string');
+}
+
+/** Same retry/manual-review shape as scoreTranscript_/scoreSeanTranscript_, against the Bens-specific rubric. */
+function scoreBensTranscript_(ctx) {
+  var systemPrompt = buildBensJudgeSystemPrompt_();
+  var userPrompt = buildJudgeUserPrompt_(ctx);
+  var lastRaw = null;
+
+  for (var attempt = 0; attempt <= PHASE2_CONFIG.MAX_PARSE_RETRIES; attempt++) {
+    var promptForThisAttempt = attempt === 0
+      ? userPrompt
+      : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
+    try {
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var parsed = stripFencesAndParseJson_(lastRaw);
+      if (!isValidBensJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Bens-rubric fields.');
+      return parsed;
+    } catch (e) {
+      log_('    ↳ scoreBensTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+    }
+  }
+
+  log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
+    '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  return {
+    reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
+    call_role: 'unclear',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
+    call_quality_score: 1,
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false,
+      booked_next_step: false, discovery_adequate: false, understood_leads_business: false,
+      interview_content_quality_good: false
+    },
+    next_step_type: 'none',
+    primary_failure_mode: 'none',
+    root_cause_if_no_booking: 'Unscored — parse failure.',
+    manual_review_recommended: true,
+    severity: 5,
+    feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
+    _parseFailed: true
+  };
+}
+
+/** Packs the extra Bens-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
+function buildBensFeedbackSummary_(result) {
+  return [
+    result.feedback_summary,
+    '',
+    'Call type: ' + result.call_role,
+    'Booked next step: ' + result.flags.booked_next_step + ' (' + result.next_step_type + ')',
+    'Discovery adequate: ' + result.flags.discovery_adequate +
+      ' | Understood their business: ' + result.flags.understood_leads_business,
+    (result.call_role === 'icons_100_interview'
+      ? 'Interview content quality: ' + result.flags.interview_content_quality_good
+      : ''),
+    'Root cause if no booking: ' + result.root_cause_if_no_booking
+  ].filter(function (line) { return line !== ''; }).join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // One-off backfill: legacy transcript folders (no Calendar Event ID).
 // ---------------------------------------------------------------------------
 
 /** Zero-arg convenience wrapper so this can be run directly from the editor. */
 function scoreBensLegacyTranscripts() {
-  scoreLegacyTranscriptFolder('Bens', PHASE2_CONFIG.LEGACY_FOLDERS.Bens);
+  scoreLegacyTranscriptFolder('Bens', PHASE2_CONFIG.LEGACY_FOLDERS.Bens, scoreBensTranscript_, buildBensFeedbackSummary_);
 }
 
 /**
@@ -680,9 +847,15 @@ function loadExistingLegacyKeys_(sheet) {
  * Deterministic fields we can't recover from a filename alone (Prospect
  * Email, Source, Outcome Disposition) are left blank for a human to fill in
  * from the rep's own tracker — do not guess at business outcomes.
+ *
+ * judgeFn/feedbackSummaryFn let a rep use a different rubric than the shared
+ * one (e.g. scoreBensTranscript_/buildBensFeedbackSummary_ — Bens isn't a
+ * closer, see the section above) without forking this whole function.
  */
-function scoreLegacyTranscriptFolder(repName, folderId) {
+function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummaryFn) {
   RUN_TAG = 'scoreLegacyTranscriptFolder';
+  judgeFn = judgeFn || scoreTranscript_;
+  feedbackSummaryFn = feedbackSummaryFn || function (result) { return result.feedback_summary; };
   if (!folderId) { log_('No folder ID configured for ' + repName + ' — nothing to do.'); return; }
 
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
@@ -716,7 +889,7 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
         callDate: parsed.dateStr,
         transcriptText: text
       };
-      var result = scoreTranscript_(ctx);
+      var result = judgeFn(ctx);
       var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
 
       sheet.appendRow([
@@ -738,7 +911,7 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
         objectionsHandled,              // Flag: Objections Handled
         true,                           // Manual Review Recommended — forced true for fallback_heuristic
         result.severity,                // Severity
-        result.feedback_summary,        // AI Feedback Summary
+        feedbackSummaryFn(result),      // AI Feedback Summary
         false,                          // Reviewed By Kris
         0,                               // Queue Age
         '',                              // Kris Manual Review Verdict — not yet judged

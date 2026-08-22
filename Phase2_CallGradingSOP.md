@@ -40,7 +40,7 @@ Kris's own framing of what goes wrong on a call reduces to two failure modes. Ev
 
 ### 3B. Sean-specific variant — a deliberately stricter rubric
 
-Kris/Thao's explicit ask (17/08/2026): the shared two-failure-mode rubric above doesn't fit Sean's funnel cleanly enough to catch what actually matters on his calls. Sean's calls end one of two acceptable ways — he closes the money directly, or he books a second call with Tomás to close — and a call that does neither, with no clear evidenced reason, is the specific miss worth catching. This is a **separate rubric variant for Sean only** (`buildSeanJudgeSystemPrompt_()` / `scoreSeanTranscripts()` in `Phase2_CallScoring.gs`), not a change to the shared rubric above — Bens/Joana keep the original two-failure-mode design per this doc's own "resist adding scored dimensions" guidance in Section 3.
+Kris/Thao's explicit ask (17/08/2026): the shared two-failure-mode rubric above doesn't fit Sean's funnel cleanly enough to catch what actually matters on his calls. Sean's calls end one of two acceptable ways — he closes the money directly, or he books a second call with Tomás to close — and a call that does neither, with no clear evidenced reason, is the specific miss worth catching. This is a **separate rubric variant for Sean only** (`buildSeanJudgeSystemPrompt_()` / `scoreSeanTranscripts()` in `Phase2_CallScoring.gs`), not a change to the shared rubric above — Joana keeps the original two-failure-mode design per this doc's own "resist adding scored dimensions" guidance in Section 3. Bens has his own separate variant too — see Section 3C.
 
 Six questions the model must answer, in order, before scoring:
 1. Were objections uncovered *and* overcome with something concrete?
@@ -57,6 +57,26 @@ See `Objection_Handling_Playbook_Sean.md` for the actual objection types Sean's 
 Transcript source for Sean's backfill: `tools/transcribe_sean_calls.py` (Gemini-based, since Sean records on Zoom, not Riverside) writes each transcript as a `"<video title> — Transcript"` Doc directly next to its source video in `PHASE2_CONFIG.SEAN_FOLDERS` — there's no separate transcripts-only folder like Bens' setup, and no Calendar-Event-ID-in-title convention, so every row is forced `Match Method = fallback_heuristic` and `Manual Review Recommended = TRUE`, same policy as the Bens legacy backfill.
 
 A second, cheaper transcription option exists: `tools/transcribe_sean_calls_qwen.py`, using Alibaba's Qwen3-ASR-Flash (~$0.002/min vs. Gemini's much higher effective per-file cost) instead of Gemini. It reuses all of `transcribe_sean_calls.py`'s Drive plumbing and writes to the same `"<video title> — Transcript"` naming, so the two are interchangeable from the scoring side — but the underlying `qwen3-asr-toolkit` doesn't do speaker diarization (no `Rep:`/`Prospect:` labels), unlike Gemini's video-understanding approach. Manually reviewing 12 real Gemini transcripts (17/08/2026) showed speaker roles are reliably inferable from context alone even without labels, which is the working assumption behind using Qwen — but confirm that holds on a real Qwen transcript (`tools/test_single_transcription_qwen.py`) before running it at scale. The Gemini version is kept as-is and works standalone; treat it as the fallback if Qwen's output quality or the missing labels turn out to be a problem.
+
+### 3C. Bens-specific variant — he is not a closer
+
+Kris's explicit correction (22/08/2026, caught live from the dashboard's "Asked for close" numbers looking implausibly high for him): Bens does not sell. He runs the ICONS 100 lead-generation podcast — interviewing a guest, then booking a QC or Sales Call for someone else on the team to run — and he also runs QCs himself, booking a Sales Call for someone else from those. He never takes a sales call or asks for money. Scoring him against the shared rubric's "asked for close" flag was measuring a money-ask he was never supposed to make in the first place.
+
+This is a **separate rubric variant for Bens only** (`buildBensJudgeSystemPrompt_()` / `scoreBensTranscript_()` in `Phase2_CallScoring.gs`, wired in via `scoreBensLegacyTranscripts()` passing it as an override to `scoreLegacyTranscriptFolder()`), not a change to the shared rubric — Joana and Sean are unaffected.
+
+Deliberately reuses the shared schema's field *names* (`asked_for_close`, `objections_uncovered`, `objections_overcome`) so the "Sales Call Log" sheet's existing columns, the dashboard, and Phase 5's weekly-scorecard failure-mode tally all keep working unchanged — only what `asked_for_close` *means* is redefined for him: did he explicitly ask to book the next concrete step (a QC or Sales Call, with a specific date/time), not whether he asked for money.
+
+Six questions the model must answer, in order, before scoring:
+1. Were objections/hesitations about booking the next step uncovered *and* addressed with something concrete?
+2. Did Bens explicitly ask to book a QC or Sales Call, with a specific date/time — not left open-ended?
+3. Did that next step actually get booked? If not, why not?
+4. Did Bens do real discovery — do they demonstrably understand this person's business/situation?
+5. For an ICONS 100 interview specifically: was the interview itself genuinely good content (not applicable, scored true, for a QC)?
+6. Bottom line: if no next step was booked, what's the single root cause — stated causally, not vaguely?
+
+Extra scored fields beyond the shared schema: `call_role` (`icons_100_interview | qc | unclear`), `booked_next_step`, `next_step_type` (`QC | Sales Call | none`), `discovery_adequate`, `understood_leads_business`, `interview_content_quality_good`, and a free-text `root_cause_if_no_booking`. Same as Sean's variant, these get packed into the existing `AI Feedback Summary` column (`buildBensFeedbackSummary_()`) rather than requiring a sheet migration.
+
+**Rows already scored under the old shared rubric before this change are not automatically re-scored** — `scoreLegacyTranscriptFolder()`'s existing-row skip (keyed on prospect name + date) means a call already in the sheet stays exactly as it was scored, under whichever rubric was live at the time. If those older rows need re-scoring under the correct rubric, delete them from the sheet first, then re-run `scoreBensLegacyTranscripts()`.
 
 ## 4. Scoring scale — anchored, not impressionistic
 
