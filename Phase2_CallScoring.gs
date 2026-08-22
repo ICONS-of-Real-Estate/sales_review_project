@@ -1206,10 +1206,42 @@ function scoreJoanaTranscripts() {
 // below manage it; remove it once all three report 0 newly scored.
 // ---------------------------------------------------------------------------
 
+/**
+ * Real bug found live (22/08/2026): Workspace accounts get up to 30-MINUTE
+ * executions, not the 6-minute cap consumer accounts get — so a 10-minute
+ * trigger interval let a second firing start while the first was still
+ * running, and scoreBensLegacyTranscripts() has no lock of its own, so the
+ * two overlapping runs could score (and double-append a row for) the same
+ * call. Fixed with an explicit Script Properties mutex here rather than
+ * nesting LockService calls inside the already-locked scoreJoanaTranscripts_/
+ * scoreSeanTranscripts_ (whether a script can safely re-acquire its own
+ * script lock from the same execution isn't something to bet a live sheet's
+ * integrity on) — this checks/sets one property before either of those ever
+ * runs, so it's a single, unambiguous gate. Self-heals if an execution ever
+ * gets killed mid-run without reaching the `finally`: 30 minutes stale is
+ * strictly longer than any real execution can last, so a flag older than
+ * that is never a real in-progress run.
+ */
 function runAllLegacyBackfills_() {
-  scoreBensLegacyTranscripts();
-  scoreJoanaTranscripts();
-  scoreSeanTranscripts();
+  var props = PropertiesService.getScriptProperties();
+  var lockKey = 'LEGACY_BACKFILL_RUNNING_SINCE';
+  var runningSince = props.getProperty(lockKey);
+  var now = Date.now();
+
+  if (runningSince && (now - Number(runningSince)) < 30 * 60 * 1000) {
+    log_('runAllLegacyBackfills_: a previous firing is still running (started ' +
+      new Date(Number(runningSince)) + ') — skipping this firing to avoid double-scoring a call.');
+    return;
+  }
+
+  props.setProperty(lockKey, String(now));
+  try {
+    scoreBensLegacyTranscripts();
+    scoreJoanaTranscripts();
+    scoreSeanTranscripts();
+  } finally {
+    props.deleteProperty(lockKey);
+  }
 }
 
 /**
