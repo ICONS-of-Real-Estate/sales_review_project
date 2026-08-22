@@ -1193,6 +1193,47 @@ function scoreJoanaTranscripts() {
 }
 
 // ---------------------------------------------------------------------------
+// Temporary backfill helper (22/08/2026) — Bens/Joana/Sean all had real
+// backlogs (61/61/223 files, most unscored) discovered the same day the
+// dashboard went live. A single scoring pass through any one of them
+// regularly exceeds Apps Script's 6-minute execution cap, so this wraps all
+// three behind one repeating trigger instead of hand-clicking "Run" a dozen
+// times. Each underlying function skips already-scored transcripts almost
+// instantly (loadExistingLegacyKeys_ + skip, no model call), so once Bens is
+// fully caught up the remaining time in each firing flows through to Joana,
+// then Sean, rather than one backlog starving the others. NOT meant to run
+// forever — installLegacyBackfillTrigger()/removeLegacyBackfillTrigger()
+// below manage it; remove it once all three report 0 newly scored.
+// ---------------------------------------------------------------------------
+
+function runAllLegacyBackfills_() {
+  scoreBensLegacyTranscripts();
+  scoreJoanaTranscripts();
+  scoreSeanTranscripts();
+}
+
+/** Run this once from the editor to start the temporary backfill. */
+function installLegacyBackfillTrigger() {
+  ScriptApp.newTrigger('runAllLegacyBackfills_').timeBased().everyMinutes(6).create();
+  log_('Installed temporary 6-minute backfill trigger on runAllLegacyBackfills_ — ' +
+    'watch the execution log, then run removeLegacyBackfillTrigger() once Bens/' +
+    'Joana/Sean all report 0 newly scored on a run.');
+}
+
+/** Run this once the backfill has fully caught up — this trigger should not run forever. */
+function removeLegacyBackfillTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var removed = 0;
+  triggers.forEach(function (t) {
+    if (t.getHandlerFunction() === 'runAllLegacyBackfills_') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  log_('Removed ' + removed + ' runAllLegacyBackfills_ trigger(s).');
+}
+
+// ---------------------------------------------------------------------------
 // Tomás's own calls — shared rubric (per Kris/tools/transcribe_tomas_calls.py
 // header note: NOT the Sean stricter variant, that one's built around Tomás
 // being the second-call closer someone else booked, which doesn't describe
