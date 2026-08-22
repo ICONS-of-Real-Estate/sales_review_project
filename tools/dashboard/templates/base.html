@@ -33,7 +33,11 @@
     }
     tbody tr:hover { background: #161c2b; }
     .stat-row { display: flex; gap: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
-    .stat { background: #161c2b; border-radius: 10px; padding: 1rem 1.5rem; min-width: 140px; }
+    .stat {
+      background: #161c2b; border-radius: 10px; padding: 1rem 1.5rem; min-width: 140px;
+      display: block; text-decoration: none; color: inherit;
+    }
+    a.stat:hover { background: #1c2333; }
     .stat .value { font-size: 1.8rem; font-weight: 700; }
     .stat .label { font-size: 0.78rem; color: #9aa4bb; margin-top: 0.15rem; }
     .stat.warn .value { color: #f2c14e; }

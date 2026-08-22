@@ -470,7 +470,7 @@ def rep_detail(rep):
     return calls
 
 
-def review_queue():
+def review_queue(rep=""):
     """A simplified stand-in for Phase 2's actual clustering algorithm
     (buildReviewQueue() in Phase2_CallScoring.gs — capped-count x 1000 +
     top-3 severities, same-rep clustering for a 3-a-day sitting): every
@@ -479,13 +479,18 @@ def review_queue():
     order. Not a replacement for that function, just visibility into the
     same underlying rows."""
     conn = get_conn()
-    rows = conn.execute(
+    sql = (
         "SELECT prospect_name, rep, call_date, call_type, severity, queue_age, "
         "primary_failure_mode, call_quality_score, ai_feedback_summary, transcript_url "
         "FROM sales_call_log "
         "WHERE manual_review_recommended = 1 "
         "AND (reviewed_by_kris IS NULL OR reviewed_by_kris = '' OR reviewed_by_kris = '0' OR reviewed_by_kris = 'FALSE')"
-    ).fetchall()
+    )
+    params = []
+    if rep:
+        sql += " AND rep = ?"
+        params.append(rep)
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     rows = [dict(r) for r in rows]
     rows.sort(key=lambda r: (-(r["severity"] or 0), -(r["queue_age"] or 0)))
@@ -553,7 +558,10 @@ def all_reps_list():
     return [r["rep"] for r in rows]
 
 
-def filtered_calls(rep="", verdict="", failure_mode="", min_score=None, max_score=None, q="", limit=200):
+def filtered_calls(
+    rep="", verdict="", failure_mode="", min_score=None, max_score=None,
+    asked_for_close="", objections_handled="", match_method="", q="", limit=200,
+):
     """Backs the /calls browser. With `q` set, searches call_search (FTS5
     over every call's AI Feedback Summary — sync.py rebuilds this index
     every sync cycle, unlike playbooks.py's FTS5 table which only covers
@@ -597,6 +605,15 @@ def filtered_calls(rep="", verdict="", failure_mode="", min_score=None, max_scor
         if max_score is not None:
             sql += f" AND {prefix}call_quality_score <= ?"
             params.append(max_score)
+        if asked_for_close in ("yes", "no"):
+            sql += f" AND {prefix}flag_asked_for_close = ?"
+            params.append(1 if asked_for_close == "yes" else 0)
+        if objections_handled in ("yes", "no"):
+            sql += f" AND {prefix}flag_objections_handled = ?"
+            params.append(1 if objections_handled == "yes" else 0)
+        if match_method:
+            sql += f" AND {prefix}match_method = ?"
+            params.append(match_method)
 
         if q:
             sql += " ORDER BY rank LIMIT ?"
@@ -625,6 +642,9 @@ def calls_page(
     failure_mode: str = "",
     min_score: int = None,
     max_score: int = None,
+    asked_for_close: str = "",
+    objections_handled: str = "",
+    match_method: str = "",
     q: str = "",
 ):
     return render(
@@ -634,25 +654,31 @@ def calls_page(
             "active_page": "calls",
             "freshness": freshness_status(),
             "all_reps": all_reps_list(),
-            "calls": filtered_calls(rep, verdict, failure_mode, min_score, max_score, q),
+            "calls": filtered_calls(
+                rep, verdict, failure_mode, min_score, max_score,
+                asked_for_close, objections_handled, match_method, q,
+            ),
             "filters": {
                 "rep": rep, "verdict": verdict, "failure_mode": failure_mode,
                 "min_score": min_score, "max_score": max_score, "q": q,
+                "asked_for_close": asked_for_close, "objections_handled": objections_handled,
+                "match_method": match_method,
             },
         },
     )
 
 
 @app.get("/queue", response_class=HTMLResponse)
-def queue_page(request: Request):
+def queue_page(request: Request, rep: str = ""):
     return render(
         request,
         "queue.html",
         {
             "active_page": "queue",
             "freshness": freshness_status(),
-            "queue": review_queue(),
+            "queue": review_queue(rep),
             "calibration": calibration_agreement(),
+            "filter_rep": rep,
         },
     )
 

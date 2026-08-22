@@ -19,18 +19,18 @@
 {% endif %}
 
 <div class="stat-row">
-  <div class="stat">
+  <a href="/calls" class="stat">
     <div class="value">{{ total_calls }}</div>
     <div class="label">Total scored calls</div>
-  </div>
-  <div class="stat {{ 'warn' if pipeline.unmatched else '' }}">
+  </a>
+  <a href="/calls?match_method=no_match" class="stat {{ 'warn' if pipeline.unmatched else '' }}">
     <div class="value">{{ pipeline.unmatched }}</div>
     <div class="label">Calls with no transcript matched</div>
-  </div>
-  <div class="stat">
+  </a>
+  <a href="/calls?match_method=fallback_heuristic" class="stat">
     <div class="value">{{ pipeline.fallback_matched }}</div>
     <div class="label">Matched via fallback heuristic</div>
-  </div>
+  </a>
 </div>
 
 <h2>By rep</h2>
@@ -45,11 +45,11 @@
     {% for r in reps %}
     <tr>
       <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
-      <td>{{ r.total_calls }}</td>
-      <td>{{ r.avg_score if r.avg_score is not none else "—" }}</td>
-      <td>{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</td>
-      <td>{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</td>
-      <td>{{ r.manual_review_count }}</td>
+      <td><a href="/calls?rep={{ r.rep }}">{{ r.total_calls }}</a></td>
+      <td><a href="/calls?rep={{ r.rep }}">{{ r.avg_score if r.avg_score is not none else "—" }}</a></td>
+      <td><a href="/calls?rep={{ r.rep }}&asked_for_close=yes">{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</a></td>
+      <td><a href="/calls?rep={{ r.rep }}&objections_handled=yes">{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</a></td>
+      <td><a href="/queue?rep={{ r.rep }}">{{ r.manual_review_count }}</a></td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="muted">No scored calls yet.</td></tr>
@@ -62,7 +62,7 @@
   <thead><tr><th>Failure mode</th><th>Count</th></tr></thead>
   <tbody>
     {% for f in failure_modes %}
-    <tr><td>{{ f.mode }}</td><td>{{ f.count }}</td></tr>
+    <tr><td><a href="/calls?failure_mode={{ f.mode }}">{{ f.mode }}</a></td><td>{{ f.count }}</td></tr>
     {% else %}
     <tr><td colspan="2" class="muted">No scored calls yet.</td></tr>
     {% endfor %}

@@ -11,8 +11,9 @@
 </span>
 
 <div class="stat-row">
-  <div class="stat"><div class="value">{{ total }}</div><div class="label">Total scored calls</div></div>
-  <div class="stat"><div class="value">{{ avg_score if avg_score is not none else "—" }}</div><div class="label">Avg score</div></div>
+  <a href="/calls?rep={{ rep }}" class="stat"><div class="value">{{ total }}</div><div class="label">Total scored calls</div></a>
+  <a href="/calls?rep={{ rep }}" class="stat"><div class="value">{{ avg_score if avg_score is not none else "—" }}</div><div class="label">Avg score</div></a>
+  <a href="/queue?rep={{ rep }}" class="stat"><div class="value">&rarr;</div><div class="label">Review queue for {{ rep }}</div></a>
 </div>
 
 <div class="chart-card">

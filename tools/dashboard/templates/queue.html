@@ -41,7 +41,7 @@
       <td>{{ r.severity if r.severity is not none else "—" }}</td>
       <td>{{ r.queue_age if r.queue_age is not none else "—" }}</td>
       <td>{{ r.call_quality_score if r.call_quality_score is not none else "—" }}</td>
-      <td>{{ r.primary_failure_mode or "—" }}</td>
+      <td>{% if r.primary_failure_mode %}<a href="/calls?failure_mode={{ r.primary_failure_mode }}">{{ r.primary_failure_mode }}</a>{% else %}—{% endif %}</td>
       <td style="max-width: 320px;"><span class="clamp-text" title="{{ r.ai_feedback_summary or '' }}">{{ r.ai_feedback_summary or "—" }}</span></td>
     </tr>
     {% else %}
