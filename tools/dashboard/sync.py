@@ -93,10 +93,25 @@ INT_COLUMNS = {"call_quality_score", "severity", "queue_age"}
 
 
 def sheets_client():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+    import os
+    from google.oauth2.credentials import Credentials
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    sa_path = os.path.join(base_dir, 'service_account.json')
+    token_path = os.path.abspath(os.path.join(base_dir, '..', 'token.json'))
+
+    if os.path.exists(sa_path):
+        creds = service_account.Credentials.from_service_account_file(
+            sa_path, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+        )
+    elif os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path)
+    else:
+        raise FileNotFoundError(f'Neither {sa_path} nor {token_path} exists.')
+
+    return build('sheets', 'v4', credentials=creds)
 
 
 def fetch_tab(service, tab_name):
