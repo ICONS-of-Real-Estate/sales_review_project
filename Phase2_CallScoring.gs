@@ -1212,10 +1212,18 @@ function runAllLegacyBackfills_() {
   scoreSeanTranscripts();
 }
 
-/** Run this once from the editor to start the temporary backfill. */
+/**
+ * Run this once from the editor to start the temporary backfill. Fires every
+ * 10 minutes, not 6 — ScriptApp's clock trigger only accepts 1/5/10/15/30 for
+ * everyMinutes(), and 10 has the added benefit of guaranteeing no overlap
+ * with the previous firing (execution caps at 6 minutes), which matters
+ * since scoreBensLegacyTranscripts() has no lock of its own the way
+ * scoreJoanaTranscripts()/scoreSeanTranscripts() do — an overlapping run
+ * there really could double-score a file.
+ */
 function installLegacyBackfillTrigger() {
-  ScriptApp.newTrigger('runAllLegacyBackfills_').timeBased().everyMinutes(6).create();
-  log_('Installed temporary 6-minute backfill trigger on runAllLegacyBackfills_ — ' +
+  ScriptApp.newTrigger('runAllLegacyBackfills_').timeBased().everyMinutes(10).create();
+  log_('Installed temporary 10-minute backfill trigger on runAllLegacyBackfills_ — ' +
     'watch the execution log, then run removeLegacyBackfillTrigger() once Bens/' +
     'Joana/Sean all report 0 newly scored on a run.');
 }
