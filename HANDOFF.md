@@ -49,6 +49,89 @@ Not done yet: switch `sync.py` back to the service account, Tailscale
 setup, Phase B (charts, Google OAuth, public access) — see
 `DASHBOARD_RESEARCH_REPORT.md` §6/§7.
 
+## 0b. Later the same session — dashboard fully fleshed out
+
+Everything above got resolved, and a lot more got built. Current state:
+
+- **`sync.py` switched to the service account** — someone (commits `6f46ad7`/
+  `8d7e3d0`, authored "Admin" directly from the VPS) patched it to prefer
+  `service_account.json` when present, falling back to `token.json`
+  otherwise. The real key was placed at
+  `tools/dashboard/service_account.json` and confirmed working (a manual
+  `sync.py` run synced 1,165 rows with no auth error).
+- **Tailscale is live.** VPS tailnet IP is `100.95.253.100`. `kris`'s
+  Windows machine is on the same tailnet. Dashboard is reachable at
+  `http://100.95.253.100:8000/` — still HTTP, not HTTPS (matters for OAuth,
+  below).
+- **Charts** (`/charts`): score-over-time (day/week/month/year/all-time
+  granularity selector, continuous buckets so gaps in the data show as
+  real gaps instead of jamming distant weeks together), lead-quality
+  doughnut, failure-mode bar chart — both click-through to a modal listing
+  the actual calls behind that number. Chart.js vendored locally at
+  `tools/dashboard/static/chart.umd.min.js` (fetched via `npm`, not a CDN —
+  this session's proxy blocks `cdn.jsdelivr.net` directly, and a local copy
+  is the right call anyway per the research report's CSP guidance).
+- **Training** (`/training`): renders `Objection_Handling_Playbook.md`,
+  `_Sean.md`, `Tomas_Playbook.md` as real formatted pages (not raw
+  markdown) with FTS5 search (`playbooks.py`, indexed once at app
+  startup since the source is repo files); shows each rep's current
+  practice-drill assignment (the "Training Assignments" sheet tab added
+  earlier this session); a leaderboard; and Phase 7's daily-practice
+  compliance status (new `daily_practice_followups` table, synced from
+  the "Daily Practice Follow-ups" tab — previously invisible outside
+  Apps Script logs).
+- **Review queue** (`/queue`): every flagged-but-unreviewed call sorted by
+  severity/age, plus the calibration agreement % (SOP §7's 80% go-live
+  gate) — a simplified read-only view of the same rows
+  `buildReviewQueue()` clusters into an actual 3-a-day sitting.
+- **Rep detail pages** (`/reps/{rep}`): full call history + individual
+  score trend, linked from every rep name across the dashboard.
+- **Calls browser** (`/calls`): filter by rep/verdict/failure-mode/score
+  range, plus full-text search across every call's AI Feedback Summary
+  via a second FTS5 index (`call_search` in `sync.py`, rebuilt every sync
+  cycle — separate from `playbooks.py`'s FTS5 table, which only covers the
+  3 curated markdown files and only rebuilds at app startup).
+- **Trend alerts**: Overview shows a banner when a rep's most recent
+  scored week drops sharply vs. the week before, or falls below a floor —
+  deterministic, computed from the same `score_over_time()` data the chart
+  uses.
+- **Google OAuth is coded but NOT live** (`auth.py` + `RequireLoginMiddleware`
+  in `app.py`). Blocked on two things Kris still needs to do:
+  1. An HTTPS URL — Google requires HTTPS redirect URIs for anything but
+     literal `localhost`. Plan is Tailscale's own HTTPS certs
+     (`tailscale serve`), not the full FASTPANEL/domain route Phase B
+     originally sketched, since Tailscale's is already half-set-up.
+  2. A real OAuth Client ID/Secret from GCP Console (Internal consent
+     screen, same `sales-review-dashboard-506303` project).
+  Until both exist, **`/etc/sales-dashboard/env` must keep
+  `DASHBOARD_REQUIRE_LOGIN=false`** or the dashboard locks everyone out
+  with no way back in.
+- **Real bug found and fixed live: overlapping trigger runs.** Workspace
+  accounts get 30-minute Apps Script executions, not the 6-minute cap this
+  was designed around — confirmed two firings of the temporary
+  `runAllLegacyBackfills_` trigger running simultaneously, which could
+  have double-scored a call (`scoreBensLegacyTranscripts()` has no lock of
+  its own). Fixed with an explicit Script Properties mutex in
+  `runAllLegacyBackfills_` itself (commit `e1ed6fb`) rather than nesting
+  `LockService` calls. **Still need to check the Sales Call Log for actual
+  duplicate rows** (same Prospect Name + Call Date, `Rep = Bens`) from the
+  overlap window around 17:19–17:29 on 22/08 — nobody's confirmed this yet.
+  Command to check (from `tools/dashboard/` on the VPS, after a fresh
+  `sync.py` run): `sqlite3 dashboard.db "SELECT prospect_name, call_date,
+  COUNT(*) AS n FROM sales_call_log WHERE rep='Bens' GROUP BY
+  prospect_name, call_date HAVING COUNT(*) > 1;"`
+- Also added this session: real scoring entry points for Joana
+  (`scoreJoanaTranscripts()` — the old `scoreJoanaLegacyTranscripts()`
+  assumed the wrong filename convention and silently scored nothing) and
+  the temporary `runAllLegacyBackfills_` trigger to catch up Bens/Joana/
+  Sean's backlogs (61/all/133 unscored respectively at the time) — check
+  whether that trigger is still running or has been removed via
+  `removeLegacyBackfillTrigger()` once all three report 0 newly scored.
+
+Not done yet: finish OAuth (needs the two Kris-side steps above), the
+duplicate-row check, and whatever's next after that — no fixed plan beyond
+here, built reactively this session based on what Kris asked for live.
+
 ---
 
 **Session 2's `clasp push` blocker is resolved — Kris confirmed push, pull,
