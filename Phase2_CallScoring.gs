@@ -1464,9 +1464,11 @@ function runAllLegacyBackfills_() {
 
 /**
  * Run this once from the editor to start the temporary backfill. Fires every
- * 10 minutes, not 6 — ScriptApp's clock trigger only accepts 1/5/10/15/30 for
- * everyMinutes(), and 10 has the added benefit of guaranteeing no overlap
- * with the previous firing (execution caps at 6 minutes), which matters
+ * 10 minutes — ScriptApp's clock trigger only accepts 1/5/10/15/30 for
+ * everyMinutes(). This account gets 30-minute executions (not the 6-minute
+ * consumer cap), so a single firing can easily still be running when the
+ * next one is due; overlap protection is the 30-minute time-window mutex in
+ * runAllLegacyBackfills_ itself, not the trigger interval — that matters
  * since scoreBensLegacyTranscripts() has no lock of its own the way
  * scoreJoanaTranscripts()/scoreSeanTranscripts() do — an overlapping run
  * there really could double-score a file.

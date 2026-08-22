@@ -181,6 +181,50 @@ here, built reactively this session based on what Kris asked for live.
     Kris was asked whether to identify and delete those rows for a
     re-score, or leave the old numbers as historical — no answer yet as of
     this note.
+
+## 0d. Same night, later — Bens re-score kicked off, daily-practice tracking bug, playbook TOC readability
+
+- **Bens' old-rubric decision resolved: delete and re-score.** Added
+  `deleteBensLegacyRows()` to `Phase2_CallScoring.gs` — deletes every
+  Sales Call Log row where Rep=Bens and Match Method=fallback_heuristic
+  (i.e. exactly his legacy-backfill rows, nothing else). Kris ran it, then
+  `previewBensLegacyTranscripts()` confirmed all 57 correctly-named files
+  now show `[new]`. **In progress as of this note**: `scoreBensLegacyTranscripts()`
+  is re-scoring them under the corrected rubric, but each call is taking
+  ~2-4 minutes (slower than expected, partly `429 engine_overloaded` from
+  Moonshot/Kimi — the retry logic already handles a failed attempt) — far
+  too slow to finish in one 30-minute execution. Kris installed
+  `installLegacyBackfillTrigger()` (fires `runAllLegacyBackfills_` every 10
+  minutes, self-deduping via `loadExistingLegacyKeys_`, protected by the
+  existing 30-minute time-window mutex) to let it grind through unattended
+  overnight. **Next session: check the Apps Script Executions log — once a
+  firing reports Bens `scored 0, already-present 53` (57 minus the 4
+  unparsed odd-filename ones), run `removeLegacyBackfillTrigger()`** so it
+  doesn't fire forever. Also fixed a stale comment on
+  `installLegacyBackfillTrigger()` that still cited the old (already
+  corrected elsewhere) "6-minute execution cap" as the overlap-safety
+  reason — the real protection is the mutex, not the trigger interval.
+- **Fixed a real bug**: `sendDailyPracticeReminders_` searched Gmail for
+  the just-sent thread immediately after sending it; if Gmail's search
+  index hadn't caught up yet, the whole assignment silently dropped out of
+  tracking — no row in "Daily Practice Follow-ups", nothing for `sync.py`
+  to sync, which is exactly what Kris saw ("Sean has daily practice
+  assigned" but the dashboard said "No daily practice assignments synced
+  yet"). Now the row is always registered (with a blank threadId on a
+  search miss, after a 3s delay to reduce misses), and
+  `checkDailyPracticeCompliance_`/nagging fall back to a standalone email
+  instead of crashing on `GmailApp.getThreadById('')`. Today's already-lost
+  assignment isn't retroactively recoverable; tomorrow's should sync fine.
+- **Fixed a readability bug**: the playbook page's "Contents:" line was one
+  long `·`-joined run-on paragraph of anchor links. Now a wrapped pill list
+  (`.toc` CSS in `base.html`).
+- **Branch/workflow note**: this session's designated branch
+  (`claude/repo-handoff-next-task-fzt3rq`) had apparently already been
+  merged and deleted upstream before this session started, so `git
+  checkout -B` + push recreated it fresh from `main`, then everything was
+  fast-forward merged straight back into `main` (commit `6f2fe57`) — Kris's
+  `clasp`/deploy machine tracks `main`, not feature branches, and hadn't
+  seen the new commits with a plain `git pull` otherwise.
 - **Still open / unconfirmed from earlier**: the Bens duplicate-row check
   from the overlapping-trigger bug (§0b) — still nobody has actually run
   that `sqlite3` query and reported back.
