@@ -10,70 +10,140 @@
 </span>
 
 <div class="chart-card">
-  <h2>Call quality score over time, by rep</h2>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2 style="margin: 0;">Call quality score over time, by rep</h2>
+    <select id="granularitySelect" style="padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid #262c3d; background: #0f1420; color: #e8ecf4;">
+      <option value="day">Day</option>
+      <option value="week" selected>Week</option>
+      <option value="month">Month</option>
+      <option value="year">Year</option>
+      <option value="all">All time</option>
+    </select>
+  </div>
   <canvas id="scoreOverTimeChart" height="90"></canvas>
 </div>
 
 <div class="chart-card">
-  <h2>Lead quality verdict distribution</h2>
+  <h2>Lead quality verdict distribution <span class="muted" style="font-size: 0.8rem; font-weight: normal;">— click a slice for the actual leads</span></h2>
   <canvas id="leadQualityChart" height="90"></canvas>
 </div>
 
 <div class="chart-card">
-  <h2>Primary failure mode, all reps</h2>
+  <h2>Primary failure mode, all reps <span class="muted" style="font-size: 0.8rem; font-weight: normal;">— click a bar for the actual calls</span></h2>
   <canvas id="failureModeChart" height="90"></canvas>
+</div>
+
+<!-- Drill-down modal, shared by both clickable charts -->
+<div id="leadsModalBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100;">
+  <div style="max-width: 900px; margin: 4rem auto; max-height: 80vh; overflow-y: auto; background:#161c2b; border-radius:10px; padding:1.5rem 1.75rem;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+      <h2 id="leadsModalTitle" style="margin:0;"></h2>
+      <button onclick="closeLeadsModal()" style="background:none; border:none; color:#9aa4bb; font-size:1.4rem; cursor:pointer; line-height:1;">&times;</button>
+    </div>
+    <div id="leadsModalBody"></div>
+  </div>
 </div>
 
 <script src="/static/chart.umd.min.js"></script>
 <script>
-  // A small, fixed, colorblind-friendlyish palette — one color per rep/category,
-  // reused consistently across charts rather than letting Chart.js auto-pick.
   const PALETTE = ['#7dc4ff', '#7be0a8', '#f2c14e', '#f28b8b', '#c792ea', '#80cbc4'];
-
   Chart.defaults.color = '#9aa4bb';
   Chart.defaults.borderColor = '#262c3d';
   Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
 
-  fetch('/api/charts').then(r => r.json()).then(data => {
-    // --- Score over time (line chart, one line per rep) ---
-    const sot = data.score_over_time;
-    new Chart(document.getElementById('scoreOverTimeChart'), {
-      type: 'line',
-      data: {
-        labels: sot.weeks.map(w => 'Week of ' + w),
-        datasets: sot.series.map((s, i) => ({
-          label: s.rep,
-          data: s.data,
-          borderColor: PALETTE[i % PALETTE.length],
-          backgroundColor: PALETTE[i % PALETTE.length],
-          spanGaps: true,
-          tension: 0.2,
-        })),
-      },
-      options: {
-        scales: { y: { min: 1, max: 5, title: { display: true, text: 'Avg call quality score' } } },
-      },
-    });
+  let scoreChart, leadQualityChart, failureModeChart;
 
-    // --- Lead quality distribution (doughnut) ---
+  function loadScoreOverTime(granularity) {
+    fetch('/api/charts?granularity=' + encodeURIComponent(granularity)).then(r => r.json()).then(data => {
+      const sot = data.score_over_time;
+      if (scoreChart) scoreChart.destroy();
+      scoreChart = new Chart(document.getElementById('scoreOverTimeChart'), {
+        type: 'line',
+        data: {
+          labels: sot.labels,
+          datasets: sot.series.map((s, i) => ({
+            label: s.rep,
+            data: s.data,
+            borderColor: PALETTE[i % PALETTE.length],
+            backgroundColor: PALETTE[i % PALETTE.length],
+            spanGaps: true,
+            tension: 0.2,
+          })),
+        },
+        options: {
+          scales: {
+            y: { min: 1, max: 5, title: { display: true, text: 'Avg call quality score' } },
+            x: { ticks: { autoSkip: true, maxRotation: 45, minRotation: 0, maxTicksLimit: 16 } },
+          },
+        },
+      });
+    });
+  }
+
+  function openLeadsModal(title, leads) {
+    document.getElementById('leadsModalTitle').textContent = title + ' (' + leads.length + ')';
+    const body = document.getElementById('leadsModalBody');
+    if (!leads.length) {
+      body.innerHTML = '<p class="muted">No matching calls.</p>';
+    } else {
+      body.innerHTML = '<table><thead><tr><th>Prospect</th><th>Rep</th><th>Date</th><th>Score</th><th>Why</th></tr></thead><tbody>' +
+        leads.map(l => (
+          '<tr><td>' + (l.transcript_url
+            ? '<a href="' + l.transcript_url + '" target="_blank" rel="noopener">' + escapeHtml(l.prospect_name || '(unnamed)') + '</a>'
+            : escapeHtml(l.prospect_name || '(unnamed)')) + '</td>' +
+          '<td>' + escapeHtml(l.rep || '') + '</td>' +
+          '<td>' + escapeHtml(l.call_date || '') + '</td>' +
+          '<td>' + (l.call_quality_score ?? '—') + '</td>' +
+          '<td style="max-width: 360px;">' + escapeHtml(l.ai_feedback_summary || '—') + '</td></tr>'
+        )).join('') + '</tbody></table>';
+    }
+    document.getElementById('leadsModalBackdrop').style.display = 'block';
+  }
+  function closeLeadsModal() {
+    document.getElementById('leadsModalBackdrop').style.display = 'none';
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fetchLeadsAndShow(title, params) {
+    fetch('/api/leads?' + new URLSearchParams(params)).then(r => r.json()).then(d => openLeadsModal(title, d.leads));
+  }
+
+  document.getElementById('granularitySelect').addEventListener('change', e => loadScoreOverTime(e.target.value));
+  loadScoreOverTime('week');
+
+  fetch('/api/charts').then(r => r.json()).then(data => {
     const lq = data.lead_quality;
-    new Chart(document.getElementById('leadQualityChart'), {
+    leadQualityChart = new Chart(document.getElementById('leadQualityChart'), {
       type: 'doughnut',
       data: {
         labels: lq.map(x => x.verdict),
         datasets: [{ data: lq.map(x => x.count), backgroundColor: PALETTE }],
       },
+      options: {
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const verdict = lq[elements[0].index].verdict;
+          fetchLeadsAndShow('Leads — ' + verdict, { verdict });
+        },
+      },
     });
 
-    // --- Failure mode breakdown (bar) ---
     const fm = data.failure_modes;
-    new Chart(document.getElementById('failureModeChart'), {
+    failureModeChart = new Chart(document.getElementById('failureModeChart'), {
       type: 'bar',
       data: {
         labels: fm.map(x => x.mode),
         datasets: [{ label: 'Calls', data: fm.map(x => x.count), backgroundColor: PALETTE[0] }],
       },
-      options: { plugins: { legend: { display: false } } },
+      options: {
+        plugins: { legend: { display: false } },
+        onClick: (evt, elements) => {
+          if (!elements.length) return;
+          const mode = fm[elements[0].index].mode;
+          fetchLeadsAndShow('Calls — failure mode: ' + mode, { failure_mode: mode });
+        },
+      },
     });
   }).catch(err => {
     document.querySelectorAll('.chart-card').forEach(el => {

@@ -143,10 +143,67 @@ def parse_call_date(raw):
     return None
 
 
-def score_over_time():
-    """Weekly average call-quality score per rep, for a line chart. Weeks are
-    plain calendar weeks (ISO, Monday-start) of the call date itself — no
-    timezone conversion, since Call Date is already a plain date (§5.1)."""
+def _month_add(year, month, delta):
+    idx = (year * 12 + (month - 1)) + delta
+    return idx // 12, idx % 12 + 1
+
+
+def _bucket_key_and_label(d, granularity):
+    """Returns (sort_key, label) for the period `d` falls into. sort_key is
+    always a (year, ...) tuple so buckets order correctly regardless of
+    granularity."""
+    if granularity == "day":
+        return (d.year, d.month, d.day), d.strftime("%b %d")
+    if granularity == "month":
+        return (d.year, d.month), d.strftime("%b %Y")
+    if granularity == "year":
+        return (d.year,), str(d.year)
+    if granularity == "all":
+        return (0,), "All time"
+    # default: week (Monday-start ISO week)
+    week_start = d - timedelta(days=d.weekday())
+    return (week_start.year, week_start.month, week_start.day), "Wk of " + week_start.strftime("%b %d")
+
+
+def _all_bucket_keys(min_d, max_d, granularity):
+    """Every bucket key between min_d and max_d inclusive, even ones with no
+    data — this is what makes the x-axis reflect real elapsed time instead
+    of silently compressing e.g. March next to November because nothing
+    happened in between (the bug the team flagged 22/08/2026)."""
+    if granularity == "all":
+        return [((0,), "All time")]
+
+    keys = []
+    if granularity == "day":
+        d = min_d
+        while d <= max_d:
+            keys.append(_bucket_key_and_label(d, "day"))
+            d += timedelta(days=1)
+    elif granularity == "week":
+        d = min_d - timedelta(days=min_d.weekday())
+        end = max_d - timedelta(days=max_d.weekday())
+        while d <= end:
+            keys.append(_bucket_key_and_label(d, "week"))
+            d += timedelta(weeks=1)
+    elif granularity == "month":
+        y, m = min_d.year, min_d.month
+        end_y, end_m = max_d.year, max_d.month
+        while (y, m) <= (end_y, end_m):
+            keys.append(_bucket_key_and_label(datetime(y, m, 1).date(), "month"))
+            y, m = _month_add(y, m, 1)
+    else:  # year
+        for y in range(min_d.year, max_d.year + 1):
+            keys.append(_bucket_key_and_label(datetime(y, 1, 1).date(), "year"))
+    return keys
+
+
+def score_over_time(granularity="week"):
+    """Average call-quality score per rep, bucketed by `granularity`
+    (day/week/month/year/all), for a line chart. Buckets are plain calendar
+    periods of the call date itself — no timezone conversion, since Call
+    Date is already a plain date (DASHBOARD_RESEARCH_REPORT.md §5.1).
+    Includes every period in range even with no data, so the x-axis spacing
+    reflects real elapsed time instead of jamming distant weeks together."""
     conn = get_conn()
     rows = conn.execute(
         "SELECT rep, call_date, call_quality_score FROM sales_call_log "
@@ -154,25 +211,71 @@ def score_over_time():
     ).fetchall()
     conn.close()
 
-    buckets = {}  # (rep, week_start_iso) -> [scores]
+    parsed = []
     for r in rows:
         d = parse_call_date(r["call_date"])
-        if d is None:
-            continue
-        week_start = d - timedelta(days=d.weekday())
-        key = (r["rep"], week_start.isoformat())
-        buckets.setdefault(key, []).append(r["call_quality_score"])
+        if d is not None:
+            parsed.append((r["rep"], d, r["call_quality_score"]))
 
-    reps = sorted({rep for rep, _ in buckets})
-    weeks = sorted({week for _, week in buckets})
+    if not parsed:
+        return {"labels": [], "series": []}
+
+    buckets = {}  # (rep, sort_key) -> [scores]
+    all_labels_by_key = {}
+    for rep, d, score in parsed:
+        key, label = _bucket_key_and_label(d, granularity)
+        buckets.setdefault((rep, key), []).append(score)
+        all_labels_by_key[key] = label
+
+    if granularity == "all":
+        ordered_keys = [((0,), "All time")]
+    else:
+        min_d = min(d for _, d, _ in parsed)
+        max_d = max(d for _, d, _ in parsed)
+        ordered_keys = _all_bucket_keys(min_d, max_d, granularity)
+
+    reps = sorted({rep for rep, _, _ in parsed})
+    labels = [label for _, label in ordered_keys]
     series = []
     for rep in reps:
         data = []
-        for week in weeks:
-            scores = buckets.get((rep, week))
+        for key, _ in ordered_keys:
+            scores = buckets.get((rep, key))
             data.append(round(sum(scores) / len(scores), 2) if scores else None)
         series.append({"rep": rep, "data": data})
-    return {"weeks": weeks, "series": series}
+    return {"labels": labels, "series": series}
+
+
+def get_leads(verdict=None, failure_mode=None, rep=None, limit=200):
+    """Backs the chart drill-down: clicking a lead-quality slice or a
+    failure-mode bar fetches the actual calls behind that number, with the
+    model's coaching summary as the closest available "why" — there's no
+    separate Lead Quality Justification column synced today, only the
+    combined AI Feedback Summary; a dedicated column could be added later
+    if the summary text isn't specific enough."""
+    conn = get_conn()
+    clauses, params = [], []
+    if verdict:
+        clauses.append("lead_quality_verdict = ?")
+        params.append(verdict)
+    if failure_mode:
+        clauses.append("primary_failure_mode = ?")
+        params.append(failure_mode)
+    if rep:
+        clauses.append("rep = ?")
+        params.append(rep)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = conn.execute(
+        f"SELECT prospect_name, rep, call_date, call_type, lead_quality_verdict, "
+        f"call_quality_score, primary_failure_mode, ai_feedback_summary, transcript_url "
+        f"FROM sales_call_log {where}",
+        params,
+    ).fetchall()
+    conn.close()
+
+    leads = [dict(r) for r in rows]
+    leads.sort(key=lambda x: parse_call_date(x["call_date"]) or datetime.min.date(), reverse=True)
+    return leads[:limit]
 
 
 def lead_quality_distribution():
@@ -230,13 +333,20 @@ def charts_page(request: Request):
 
 
 @app.get("/api/charts")
-def charts_data():
+def charts_data(granularity: str = "week"):
+    if granularity not in ("day", "week", "month", "year", "all"):
+        granularity = "week"
     return {
-        "score_over_time": score_over_time(),
+        "score_over_time": score_over_time(granularity),
         "lead_quality": lead_quality_distribution(),
         "failure_modes": failure_mode_breakdown(),
         "rep_summary": rep_summary(),
     }
+
+
+@app.get("/api/leads")
+def leads_api(verdict: str = "", failure_mode: str = "", rep: str = ""):
+    return {"leads": get_leads(verdict=verdict or None, failure_mode=failure_mode or None, rep=rep or None)}
 
 
 @app.get("/healthz")
