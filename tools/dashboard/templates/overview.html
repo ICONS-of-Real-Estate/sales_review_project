@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sales Review Dashboard</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="value">{{ total_calls }}</div>
+    <div class="label">Total scored calls</div>
+  </div>
+  <div class="stat {{ 'warn' if pipeline.unmatched else '' }}">
+    <div class="value">{{ pipeline.unmatched }}</div>
+    <div class="label">Calls with no transcript matched</div>
+  </div>
+  <div class="stat">
+    <div class="value">{{ pipeline.fallback_matched }}</div>
+    <div class="label">Matched via fallback heuristic</div>
+  </div>
+</div>
+
+<h2>By rep</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Rep</th><th>Calls</th><th>Avg score</th>
+      <th>Asked for close</th><th>Objections handled</th><th>Flagged for review</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in reps %}
+    <tr>
+      <td>{{ r.rep }}</td>
+      <td>{{ r.total_calls }}</td>
+      <td>{{ r.avg_score if r.avg_score is not none else "—" }}</td>
+      <td>{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</td>
+      <td>{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</td>
+      <td>{{ r.manual_review_count }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No scored calls yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Primary failure mode (all reps)</h2>
+<table>
+  <thead><tr><th>Failure mode</th><th>Count</th></tr></thead>
+  <tbody>
+    {% for f in failure_modes %}
+    <tr><td>{{ f.mode }}</td><td>{{ f.count }}</td></tr>
+    {% else %}
+    <tr><td colspan="2" class="muted">No scored calls yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

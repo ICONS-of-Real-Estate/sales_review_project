@@ -301,6 +301,55 @@ function findFlatTrainingTranscripts_(repFolder) {
   return out;
 }
 
+var TRAINING_ASSIGNMENTS_SHEET_NAME = 'Training Assignments';
+var TRAINING_ASSIGNMENTS_HEADERS = ['Rep', 'Training Objections (JSON)', 'Close Ask Drill (JSON)', 'Last Updated'];
+
+function getOrCreateTrainingAssignmentsSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(TRAINING_ASSIGNMENTS_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(TRAINING_ASSIGNMENTS_SHEET_NAME);
+    sheet.getRange(1, 1, 1, TRAINING_ASSIGNMENTS_HEADERS.length).setValues([TRAINING_ASSIGNMENTS_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + TRAINING_ASSIGNMENTS_SHEET_NAME + '" tab.');
+  }
+  return sheet;
+}
+
+/**
+ * Mirrors this rep's current TRAINING_OBJECTIONS_<rep>/TRAINING_CLOSE_DRILL_<rep>
+ * Script Properties into a sheet row — one row per rep, overwritten in place. Script
+ * Properties are only readable from inside Apps Script (no Sheets/Drive API can see
+ * them), so without this mirror a dashboard is structurally blind to the current
+ * drill assignment. Read-only copy: Phase 7 still reads the properties directly, this
+ * changes nothing about how the assignment is actually used, only how it's observed.
+ */
+function mirrorTrainingAssignment_(rep) {
+  var props = PropertiesService.getScriptProperties();
+  var objections = props.getProperty('TRAINING_OBJECTIONS_' + rep) || '';
+  var closeDrill = props.getProperty('TRAINING_CLOSE_DRILL_' + rep) || '';
+
+  var sheet = getOrCreateTrainingAssignmentsSheet_();
+  var lastRow = sheet.getLastRow();
+  var rowIndex = -1;
+  if (lastRow >= 2) {
+    // Column 1 is always "Rep" — this sheet's layout is owned entirely by
+    // getOrCreateTrainingAssignmentsSheet_() above, so no header lookup needed.
+    var reps = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < reps.length; i++) {
+      if (reps[i][0] === rep) { rowIndex = i + 2; break; }
+    }
+  }
+
+  var rowValues = [rep, objections, closeDrill, new Date()];
+  if (rowIndex === -1) {
+    sheet.appendRow(rowValues);
+  } else {
+    sheet.getRange(rowIndex, 1, 1, rowValues.length).setValues([rowValues]);
+  }
+}
+
 /**
  * Grades one training-call transcript, emails the rep (cc Tomás/Kris),
  * persists this week's drill objections for Phase 7, and writes the output
@@ -342,6 +391,11 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
     PropertiesService.getScriptProperties().setProperty(
       'TRAINING_CLOSE_DRILL_' + rep, JSON.stringify(result.close_ask_drill));
   }
+  // Script Properties (above) are invisible to anything outside Apps Script —
+  // no Sheets/Drive API can read them. Mirror the current values into a sheet
+  // tab so the dashboard sync job (and any human) can see the live assignment.
+  // Phase 7 keeps reading the properties directly; this is a read-only copy.
+  mirrorTrainingAssignment_(rep);
 
   var doc = DocumentApp.create(outputDocName);
   doc.getBody().setText(email.body);

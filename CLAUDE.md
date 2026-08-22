@@ -30,6 +30,26 @@ committed), so Claude cannot run `clasp push` itself from here — say so
 explicitly and tell the user to run it, rather than claiming the deploy is
 done once the GitHub push succeeds.
 
+## Deploying changes to the sales review dashboard
+
+Separate from the Apps Script side above. The dashboard (`tools/dashboard/`)
+runs on the OVH VPS as its own systemd units, reading a local SQLite mirror
+of the Sales Call Log — it never talks to Apps Script. After pushing
+changes under `tools/dashboard/` to `main`:
+
+```
+git pull
+tools/dashboard/.venv/bin/pip install -r tools/dashboard/requirements.txt   # only if deps changed
+sudo systemctl restart sales-dashboard
+```
+
+on the VPS. First-time setup is `bash tools/deploy/setup_dashboard.sh` —
+see `tools/dashboard/README.md` and `DASHBOARD_RESEARCH_REPORT.md` for the
+full setup and the reasoning behind it (this box also runs FASTPANEL for
+client sites, so the dashboard deliberately does not touch ports 80/443,
+nginx, or iptables). This sandbox/session has no SSH access to the VPS, so
+Claude cannot run these steps itself — say so and tell the user to run them.
+
 ## Where to look for more context
 
 - `HANDOFF.md` — session-to-session handoff notes (what's live, what's
@@ -37,6 +57,10 @@ done once the GitHub push succeeds.
   touching the Apps Script phases.
 - `brief.txt` — the original architecture/design brief.
 - `Phase2_CallGradingSOP.md` — the call-grading rubric SOP.
+- `SYSTEM_OVERVIEW.md` — single-doc map of the whole system (transcription
+  pipeline, all 8 phases, data spine) — read before `DASHBOARD_RESEARCH_REPORT.md`.
+- `DASHBOARD_RESEARCH_REPORT.md` — the research behind `tools/dashboard/`'s
+  design (stack, auth, security, deploy, phased build plan).
 
 ## Apps Script conventions specific to this project
 

@@ -10,3 +10,9 @@ tools/tomas_transcribed_log.txt
 
 # Per-machine Python virtualenv created by tools/deploy/setup_ovh.sh
 tools/.venv/
+
+# Dashboard: service-account key (never commit secrets), local SQLite mirror
+# (disposable derived data, rebuilt by sync.py), and its per-machine venv
+tools/dashboard/service_account.json
+tools/dashboard/dashboard.db
+tools/dashboard/.venv/
