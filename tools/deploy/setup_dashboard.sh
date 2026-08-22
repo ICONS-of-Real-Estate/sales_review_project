@@ -86,10 +86,18 @@ RestartSec=5
 # Hardening — see DASHBOARD_RESEARCH_REPORT.md §3.4. This box also hosts
 # client websites via FASTPANEL; these directives keep a crash or a bug in
 # this app from touching anything outside its own directory.
+#
+# Deliberately NO ProtectHome=yes here (confirmed by hand 22/08/2026): even
+# with a matching ReadWritePaths= override, ProtectHome=yes reliably breaks
+# exec of anything under the app's own venv (systemd fails with
+# code=exited, status=203/EXEC) — a known quirk where ReadWritePaths
+# doesn't fully restore execute permission when layered under ProtectHome.
+# ProtectSystem=strict already covers the rest of the filesystem; this
+# app's own directory has to stay executable anyway since it lives under
+# /home, so there's nothing ProtectHome would add here besides breakage.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=yes
 ReadWritePaths=$APP_DIR
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 MemoryMax=512M

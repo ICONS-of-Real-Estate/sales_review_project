@@ -1,6 +1,55 @@
-# Handoff — 21/08/2026 (session 3)
+# Handoff — 22/08/2026 (session 4 — dashboard deployment)
 
 ## 0. What happened this session (read this first)
+
+Deployed the sales review dashboard (Phase A) to the live OVH VPS, with a
+security pass along the way:
+
+- **Server hardening.** Created a non-root sudo user `kris`; SSH still
+  works with both key and password for `kris`. The whole repo was moved
+  from `/root/sales_review_project` to `/home/kris/sales_review_project`
+  (it can't stay under `/root` — `/root` itself is `700`, so `kris` can
+  never traverse into it, no matter what a subdirectory is chowned to).
+  `transcribe-all.service`/`.timer` were rebuilt against the new path via
+  `tools/deploy/setup_ovh.sh`, now running as `kris` instead of root.
+- **Dashboard deployed and running.** GCP project `sales-review-dashboard-506303`
+  created under the `iconsofrealestate.com` Workspace org (needed later for
+  Phase B's OAuth "Internal" consent screen). A service account
+  (`sales-dashboard-reader@sales-review-dashboard-506303.iam.gserviceaccount.com`)
+  was created and shared as Viewer on the Sales Call Log — **but `sync.py`
+  on the live box was changed to use the transcription pipeline's OAuth
+  `token.json`/`credentials.json` pattern instead**, and hasn't been
+  switched to the service account yet. Do that switch next session — it's
+  the more robust option per `DASHBOARD_RESEARCH_REPORT.md` §3.1 (a user
+  token can get revoked/expire and needs a browser on an authorized
+  machine to fix; the service account key already exists and is sitting
+  unused).
+- **`sales-dashboard.service` is live** (`active (running)`), synced 1,159
+  real rows from the Sales Call Log. Currently bound to `127.0.0.1:8000`
+  (the env-file placeholder), so **it's only reachable from the box itself
+  right now** — Tailscale hasn't been set up yet. Next session: install
+  Tailscale, get the team on the same tailnet, set `DASHBOARD_BIND_HOST`
+  in `/etc/sales-dashboard/env` to the box's tailnet IP, restart.
+- **Real bug found and fixed: `ProtectHome=yes` breaks this service under
+  systemd.** Confirmed by hand-testing directive-by-directive on the live
+  box: `ProtectHome=yes`, even paired with a matching `ReadWritePaths=`
+  override for the app's own directory, reliably causes
+  `code=exited, status=203/EXEC` — systemd can't execute anything in the
+  app's venv at all. `ProtectSystem=strict` + `ReadWritePaths` alone work
+  fine. Fixed in `tools/deploy/setup_dashboard.sh` (comment there explains
+  why) and manually removed from the live unit file already — don't
+  re-add `ProtectHome=yes` if touching this service again.
+- Also hit and fixed along the way: the dashboard's own venv
+  (`tools/dashboard/.venv`) had been created by copying/cloning the
+  transcription pipeline's venv rather than fresh, so its scripts'
+  shebang lines pointed at the wrong venv's Python — rebuilt clean with
+  `python3 -m venv`.
+
+Not done yet: switch `sync.py` back to the service account, Tailscale
+setup, Phase B (charts, Google OAuth, public access) — see
+`DASHBOARD_RESEARCH_REPORT.md` §6/§7.
+
+---
 
 **Session 2's `clasp push` blocker is resolved — Kris confirmed push, pull,
 and trigger install all done.** Everything through commit `1f28a1e` is now
