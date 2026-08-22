@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review queue</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<p class="muted" style="max-width: 640px;">
+  Every call flagged for manual review that Kris hasn't judged yet, sorted by
+  severity then queue age. This is a simplified view of the same rows
+  Phase 2's <code>buildReviewQueue()</code> clusters into an actual 3-a-day,
+  same-rep sitting — not a replacement for that algorithm, just visibility
+  into the backlog it works from.
+</p>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="value">{{ queue | length }}</div>
+    <div class="label">Awaiting review</div>
+  </div>
+  <div class="stat">
+    <div class="value">{{ calibration.pct if calibration.pct is not none else "—" }}{{ "%" if calibration.pct is not none else "" }}</div>
+    <div class="label">Calibration agreement ({{ calibration.judged }} judged)</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Prospect</th><th>Rep</th><th>Date</th><th>Severity</th><th>Queue age</th><th>Score</th><th>Failure mode</th><th>Why flagged</th></tr>
+  </thead>
+  <tbody>
+    {% for r in queue %}
+    <tr>
+      <td>{% if r.transcript_url %}<a href="{{ r.transcript_url }}" target="_blank" rel="noopener">{{ r.prospect_name or "(unnamed)" }}</a>{% else %}{{ r.prospect_name or "(unnamed)" }}{% endif %}</td>
+      <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
+      <td>{{ r.call_date }}</td>
+      <td>{{ r.severity if r.severity is not none else "—" }}</td>
+      <td>{{ r.queue_age if r.queue_age is not none else "—" }}</td>
+      <td>{{ r.call_quality_score if r.call_quality_score is not none else "—" }}</td>
+      <td>{{ r.primary_failure_mode or "—" }}</td>
+      <td style="max-width: 320px;">{{ r.ai_feedback_summary or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">Nothing awaiting review — queue is clear.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

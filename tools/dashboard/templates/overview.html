@@ -35,7 +35,7 @@
   <tbody>
     {% for r in reps %}
     <tr>
-      <td>{{ r.rep }}</td>
+      <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
       <td>{{ r.total_calls }}</td>
       <td>{{ r.avg_score if r.avg_score is not none else "—" }}</td>
       <td>{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</td>

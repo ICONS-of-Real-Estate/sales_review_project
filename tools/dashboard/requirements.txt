@@ -4,3 +4,5 @@ jinja2==3.1.4
 google-api-python-client==2.140.0
 google-auth==2.34.0
 markdown-it-py==4.2.0
+authlib==1.7.2
+itsdangerous==2.2.0

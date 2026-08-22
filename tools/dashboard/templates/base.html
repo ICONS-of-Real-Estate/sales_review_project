@@ -57,10 +57,18 @@
   </style>
 </head>
 <body>
-  <nav class="dashboard-nav">
-    <a href="/" class="{{ 'active' if active_page == 'overview' else '' }}">Overview</a>
-    <a href="/charts" class="{{ 'active' if active_page == 'charts' else '' }}">Charts</a>
-    <a href="/training" class="{{ 'active' if active_page == 'training' else '' }}">Training</a>
+  <nav class="dashboard-nav" style="display:flex; justify-content: space-between; align-items: baseline;">
+    <div>
+      <a href="/" class="{{ 'active' if active_page == 'overview' else '' }}">Overview</a>
+      <a href="/charts" class="{{ 'active' if active_page == 'charts' else '' }}">Charts</a>
+      <a href="/training" class="{{ 'active' if active_page == 'training' else '' }}">Training</a>
+      <a href="/queue" class="{{ 'active' if active_page == 'queue' else '' }}">Review queue</a>
+    </div>
+    {% if user_email %}
+    <div class="muted" style="font-size: 0.85rem;">
+      {{ user_email }} · <a href="/logout" style="color:#9aa4bb;">Log out</a>
+    </div>
+    {% endif %}
   </nav>
   {% block content %}{% endblock %}
 </body>

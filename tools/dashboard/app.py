@@ -19,10 +19,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
+import auth
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,6 +40,44 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+class RequireLoginMiddleware(BaseHTTPMiddleware):
+    """Gates every route except auth.PUBLIC_PATHS + /static behind a
+    session. Added AFTER SessionMiddleware below so it runs as the outer
+    layer at request time — Starlette executes middleware in reverse
+    registration order, so SessionMiddleware (registered second) wraps
+    around this one and populates request.session before this dispatch
+    runs. If DASHBOARD_REQUIRE_LOGIN=false (local dev, before OAuth
+    credentials exist), this is a no-op — see setup instructions in
+    tools/dashboard/README.md."""
+
+    async def dispatch(self, request: Request, call_next):
+        if os.environ.get("DASHBOARD_REQUIRE_LOGIN", "true").lower() == "false":
+            return await call_next(request)
+        path = request.url.path
+        if path in auth.PUBLIC_PATHS or path.startswith("/static/"):
+            return await call_next(request)
+        if not request.session.get("user_email"):
+            return RedirectResponse(url="/login")
+        return await call_next(request)
+
+
+app.add_middleware(RequireLoginMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("DASHBOARD_SESSION_SECRET", "dev-only-insecure-secret-change-me"),
+    same_site="lax",
+)
+app.include_router(auth.router)
+
+
+def render(request: Request, name: str, context: dict):
+    """templates.TemplateResponse, plus the logged-in user's email on every
+    page (for the nav bar's "logged in as ..." + logout link) so every
+    route doesn't have to remember to pass it themselves."""
+    context = {**context, "user_email": request.session.get("user_email")}
+    return templates.TemplateResponse(request, name, context)
 
 # Playbooks are files in the repo (only change on a git pull + restart, not
 # on sync.py's timer), so index once at startup rather than on a schedule.
@@ -320,7 +361,7 @@ def overview(request: Request):
     conn = get_conn()
     total_calls = conn.execute("SELECT COUNT(*) AS n FROM sales_call_log").fetchone()["n"]
     conn.close()
-    return templates.TemplateResponse(
+    return render(
         request,
         "overview.html",
         {
@@ -366,6 +407,108 @@ def training_assignments():
     return out
 
 
+def rep_detail(rep):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
+        "flag_asked_for_close, flag_objections_handled, primary_failure_mode, manual_review_recommended, "
+        "ai_feedback_summary, transcript_url FROM sales_call_log WHERE rep = ?",
+        (rep,),
+    ).fetchall()
+    conn.close()
+    calls = [dict(r) for r in rows]
+    calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
+    return calls
+
+
+def review_queue():
+    """A simplified stand-in for Phase 2's actual clustering algorithm
+    (buildReviewQueue() in Phase2_CallScoring.gs — capped-count x 1000 +
+    top-3 severities, same-rep clustering for a 3-a-day sitting): every
+    flagged-but-unreviewed call, sorted by severity then queue age, so
+    Kris can see the real backlog without re-deriving Kris's own review
+    order. Not a replacement for that function, just visibility into the
+    same underlying rows."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT prospect_name, rep, call_date, call_type, severity, queue_age, "
+        "primary_failure_mode, call_quality_score, ai_feedback_summary, transcript_url "
+        "FROM sales_call_log "
+        "WHERE manual_review_recommended = 1 "
+        "AND (reviewed_by_kris IS NULL OR reviewed_by_kris = '' OR reviewed_by_kris = '0' OR reviewed_by_kris = 'FALSE')"
+    ).fetchall()
+    conn.close()
+    rows = [dict(r) for r in rows]
+    rows.sort(key=lambda r: (-(r["severity"] or 0), -(r["queue_age"] or 0)))
+    return rows
+
+
+def calibration_agreement():
+    """Percent agreement between the model's manual_review_recommended and
+    Kris's own Kris Manual Review Verdict, on rows she's actually judged —
+    the same signal Phase 2's weekly calibration job tracks (SOP §7's
+    80%-agreement go-live gate), surfaced here instead of only in an
+    Apps Script log."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT manual_review_recommended, kris_manual_review_verdict FROM sales_call_log "
+        "WHERE kris_manual_review_verdict IS NOT NULL AND kris_manual_review_verdict != ''"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return {"judged": 0, "agree": 0, "pct": None}
+    agree = 0
+    for r in rows:
+        model_flagged = bool(r["manual_review_recommended"])
+        kris_said_yes = str(r["kris_manual_review_verdict"]).strip().lower() == "yes"
+        if model_flagged == kris_said_yes:
+            agree += 1
+    return {"judged": len(rows), "agree": agree, "pct": round(100 * agree / len(rows))}
+
+
+@app.get("/reps/{rep}", response_class=HTMLResponse)
+def rep_detail_page(request: Request, rep: str):
+    calls = rep_detail(rep)
+    total = len(calls)
+    scored = [c for c in calls if c["call_quality_score"] is not None]
+    avg_score = round(sum(c["call_quality_score"] for c in scored) / len(scored), 2) if scored else None
+    return render(
+        request,
+        "rep_detail.html",
+        {
+            "active_page": "",
+            "freshness": freshness_status(),
+            "rep": rep,
+            "total": total,
+            "avg_score": avg_score,
+            "calls": calls,
+            "score_over_time": _rep_score_series(rep),
+        },
+    )
+
+
+def _rep_score_series(rep):
+    full = score_over_time("week")
+    for s in full["series"]:
+        if s["rep"] == rep:
+            return {"labels": full["labels"], "data": s["data"]}
+    return {"labels": [], "data": []}
+
+
+@app.get("/queue", response_class=HTMLResponse)
+def queue_page(request: Request):
+    return render(
+        request,
+        "queue.html",
+        {
+            "active_page": "queue",
+            "freshness": freshness_status(),
+            "queue": review_queue(),
+            "calibration": calibration_agreement(),
+        },
+    )
+
+
 @app.get("/training", response_class=HTMLResponse)
 def training_page(request: Request, q: str = ""):
     playbook_docs = []
@@ -376,7 +519,7 @@ def training_page(request: Request, q: str = ""):
             sections = None
         playbook_docs.append({"slug": pb["slug"], "title": pb["title"], "sections": sections})
 
-    return templates.TemplateResponse(
+    return render(
         request,
         "training.html",
         {
@@ -392,7 +535,7 @@ def training_page(request: Request, q: str = ""):
 
 @app.get("/charts", response_class=HTMLResponse)
 def charts_page(request: Request):
-    return templates.TemplateResponse(
+    return render(
         request,
         "charts.html",
         {"active_page": "charts", "freshness": freshness_status()},

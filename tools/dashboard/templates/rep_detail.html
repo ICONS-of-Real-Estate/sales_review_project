@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/" class="muted">&larr; Back to overview</a></p>
+<h1>{{ rep }}</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<div class="stat-row">
+  <div class="stat"><div class="value">{{ total }}</div><div class="label">Total scored calls</div></div>
+  <div class="stat"><div class="value">{{ avg_score if avg_score is not none else "—" }}</div><div class="label">Avg score</div></div>
+</div>
+
+<div class="chart-card">
+  <h2>Score over time</h2>
+  <canvas id="repScoreChart" height="70"></canvas>
+</div>
+
+<h2>All calls</h2>
+<table>
+  <thead>
+    <tr><th>Prospect</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Close?</th><th>Objections?</th><th>Failure mode</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    {% for c in calls %}
+    <tr>
+      <td>{% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
+      <td>{{ c.call_date }}</td>
+      <td>{{ c.call_type or "—" }}</td>
+      <td>{{ c.lead_quality_verdict or "—" }}</td>
+      <td>{{ c.call_quality_score if c.call_quality_score is not none else "—" }}</td>
+      <td>{{ "Yes" if c.flag_asked_for_close else "No" }}</td>
+      <td>{{ "Yes" if c.flag_objections_handled else "No" }}</td>
+      <td>{{ c.primary_failure_mode or "—" }}</td>
+      <td style="max-width: 320px;">{{ c.ai_feedback_summary or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="muted">No scored calls for this rep yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<script src="/static/chart.umd.min.js"></script>
+<script>
+  Chart.defaults.color = '#9aa4bb';
+  Chart.defaults.borderColor = '#262c3d';
+  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+  const sot = {{ score_over_time | tojson }};
+  new Chart(document.getElementById('repScoreChart'), {
+    type: 'line',
+    data: { labels: sot.labels, datasets: [{ data: sot.data, borderColor: '#7dc4ff', backgroundColor: '#7dc4ff', spanGaps: true, tension: 0.2 }] },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { min: 1, max: 5 },
+        x: { ticks: { autoSkip: true, maxRotation: 45, maxTicksLimit: 16 } },
+      },
+    },
+  });
+</script>
+{% endblock %}
