@@ -59,12 +59,16 @@ Before anything can be scored, a call has to become text.
   transcripts — a transcription-pipeline failure mode, not a scoring
   problem. Worth monitoring for on any future dashboard.
 
-**Riverside sync (`Phase0_RiversideSync.gs`, Apps Script):**
-- For Riverside-recorded calls, the Calendar Event ID is written into the
-  Riverside session title at booking time, so the transcript join to the
-  tracker row is an exact key match rather than a fuzzy date/name guess.
-  Legacy or malformed titles fall back to a heuristic match and get flagged
-  `fallback_heuristic`/`no_match` for manual confirmation.
+**Riverside transcripts (manual, no sync job):**
+- Bens' calls are recorded on Riverside and arrive already transcribed, so
+  there is no raw-video folder and no transcription step for him. He
+  downloads the `.txt` transcripts himself into a Drive folder
+  (`PHASE2_CONFIG.LEGACY_FOLDERS.Bens`), which Phase 2 scores in batches via
+  `scoreBensLegacyTranscripts()`.
+- An automated Riverside pull (`Phase0_RiversideSync.gs`) was built and then
+  **deleted on 21/08/2026** — Riverside's API is Business-plan-only. Nothing
+  depends on it; don't recreate it unless that plan is upgraded. See
+  `HANDOFF.md` §1.
 
 ## 3. The data spine — "Sales Call Log"
 
@@ -91,7 +95,6 @@ going live.
 
 | Phase | File | What it does |
 |---|---|---|
-| 0 | `Phase0_RiversideSync.gs` | Pulls Riverside recordings, joins to tracker rows by embedded Calendar Event ID, downloads transcripts. |
 | 1 | `Phase1_ComplianceCheck.gs` | Deterministic: did each rep log an outcome for every calendar sales/QC call from the prior business day? If not, nudge email (CC Kris, Tomás). No LLM. Also home to `installAllReadyTriggers()`, the single "reinstall every enabled phase's triggers" entry point. |
 | 2 | `Phase2_CallScoring.gs` | The core AI grader. Two-pass judgment call (lead-quality verdict, then call-quality score + failure-mode flags) against a shared rubric — with a **stricter Sean-specific variant** (did he close the money or book a second call with Tomás?) and a **Tomás-specific variant** that also extracts `teachable_strength`/`coach_this` per call, since his calls double as training material. Also owns the review-queue builder (3 calls/day, clustered by rep) and the weekly calibration job against Kris's own manual verdicts. |
 | 3 | `Phase3_HandoffBrief.gs` | ~24h before a rep's next call with a known prospect, emails them a synthesized brief of what happened last time — goals stated, how the offer was pitched, unresolved objections — pulled fresh from the prior transcript, not the terse feedback column. |
@@ -155,3 +158,6 @@ playbooks together. That's the next piece: a web application, hosted on
 the team's own OVH Cloud server, that turns this same data (Sales Call Log
 rows, playbook markdown, training-cycle state) into something visual and
 easy for every team member to check.
+
+The brief for researching that piece — data-access strategy, stack, auth,
+hardening, deploy model — is checked in as `Dashboard_Research_Prompt.md`.
