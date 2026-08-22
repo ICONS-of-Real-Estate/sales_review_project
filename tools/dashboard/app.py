@@ -407,6 +407,27 @@ def training_assignments():
     return out
 
 
+def daily_practice_status():
+    """Phase 7's drill compliance (Daily Practice Follow-ups tab) — who's
+    done today's assignment, who's overdue and how many times they've
+    been nagged. Most-recent assignment per rep first."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, assignment_date, status, last_nag_at, nag_count "
+        "FROM daily_practice_followups ORDER BY assignment_date DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def leaderboard():
+    """Simple rep ranking by avg score then close rate — reuses rep_summary()
+    rather than re-querying, just re-sorted for a leaderboard framing."""
+    reps = [r for r in rep_summary() if r["avg_score"] is not None]
+    reps.sort(key=lambda r: (r["avg_score"], r["pct_asked_for_close"] or 0), reverse=True)
+    return reps
+
+
 def rep_detail(rep):
     conn = get_conn()
     rows = conn.execute(
@@ -526,6 +547,8 @@ def training_page(request: Request, q: str = ""):
             "active_page": "training",
             "freshness": freshness_status(),
             "assignments": training_assignments(),
+            "practice_status": daily_practice_status(),
+            "leaderboard": leaderboard(),
             "playbooks": playbook_docs,
             "query": q,
             "search_results": search_playbooks(DB_PATH, q) if q else [],

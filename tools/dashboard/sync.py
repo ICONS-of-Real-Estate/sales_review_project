@@ -43,6 +43,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 SALES_CALL_LOG_TAB = "Sales Call Log"
 TRAINING_ASSIGNMENTS_TAB = "Training Assignments"
+DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
 
 # Sheet header name -> SQLite column name, looked up by name rather than
 # position — a reordered or newly-inserted column in the Sheet (which has
@@ -83,13 +84,25 @@ TRAINING_ASSIGNMENTS_COLUMNS = {
     "Last Updated": "last_updated",
 }
 
+# Must match DAILY_PRACTICE_FOLLOWUP_HEADERS in Phase7_DailySelfPractice.gs.
+# One row per rep per assignment day — this is the only place "did today's
+# drill actually get done" is visible at all outside Apps Script.
+DAILY_PRACTICE_FOLLOWUP_COLUMNS = {
+    "Rep": "rep",
+    "Assignment Date (YYMMDD)": "assignment_date",
+    "Thread ID": "thread_id",
+    "Status": "status",
+    "Last Nag At": "last_nag_at",
+    "Nag Count": "nag_count",
+}
+
 BOOLEAN_COLUMNS = {
     "outcome_logged",
     "flag_asked_for_close",
     "flag_objections_handled",
     "manual_review_recommended",
 }
-INT_COLUMNS = {"call_quality_score", "severity", "queue_age"}
+INT_COLUMNS = {"call_quality_score", "severity", "queue_age", "nag_count"}
 
 
 def sheets_client():
@@ -170,6 +183,11 @@ def init_schema(conn):
             close_ask_drill_json TEXT,
             last_updated TEXT
         );
+        CREATE TABLE IF NOT EXISTS daily_practice_followups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rep TEXT, assignment_date TEXT, thread_id TEXT, status TEXT,
+            last_nag_at TEXT, nag_count INTEGER
+        );
         CREATE TABLE IF NOT EXISTS sync_meta (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -207,9 +225,11 @@ def main():
     service = sheets_client()
     call_log_rows = fetch_tab(service, SALES_CALL_LOG_TAB)
     training_rows = fetch_tab(service, TRAINING_ASSIGNMENTS_TAB)
+    practice_rows = fetch_tab(service, DAILY_PRACTICE_FOLLOWUP_TAB)
 
     replace_table(conn, "sales_call_log", SALES_CALL_LOG_COLUMNS, call_log_rows)
     replace_table(conn, "training_assignments", TRAINING_ASSIGNMENTS_COLUMNS, training_rows)
+    replace_table(conn, "daily_practice_followups", DAILY_PRACTICE_FOLLOWUP_COLUMNS, practice_rows)
 
     conn.execute(
         "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)",
@@ -220,7 +240,8 @@ def main():
 
     print(
         f"Synced {len(call_log_rows)} call-log row(s), "
-        f"{len(training_rows)} training-assignment row(s) into {DB_PATH}"
+        f"{len(training_rows)} training-assignment row(s), "
+        f"{len(practice_rows)} daily-practice-followup row(s) into {DB_PATH}"
     )
 
 

@@ -9,6 +9,42 @@
   {% endif %}
 </span>
 
+<h2>Leaderboard</h2>
+<table>
+  <thead><tr><th>#</th><th>Rep</th><th>Avg score</th><th>Asked for close</th><th>Objections handled</th></tr></thead>
+  <tbody>
+    {% for r in leaderboard %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
+      <td>{{ r.avg_score }}</td>
+      <td>{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</td>
+      <td>{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No scored calls yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Daily practice status</h2>
+<table>
+  <thead><tr><th>Rep</th><th>Assignment date</th><th>Status</th><th>Nag count</th><th>Last nagged</th></tr></thead>
+  <tbody>
+    {% for p in practice_status %}
+    <tr>
+      <td>{{ p.rep }}</td>
+      <td>{{ p.assignment_date }}</td>
+      <td>{{ p.status }}</td>
+      <td>{{ p.nag_count if p.nag_count is not none else "—" }}</td>
+      <td>{{ p.last_nag_at or "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No daily practice assignments synced yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
 <h2>Current practice-drill assignments</h2>
 <table>
   <thead>
