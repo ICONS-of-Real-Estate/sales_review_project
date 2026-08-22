@@ -95,12 +95,14 @@
 <div class="chart-card">
   <h2>{{ doc.title }}</h2>
   {% if doc.sections %}
-    <p>
-      <strong>Contents:</strong>
-      {% for s in doc.sections %}
-        <a href="#{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</a>{% if not loop.last %} · {% endif %}
-      {% endfor %}
-    </p>
+    <div class="toc">
+      <strong>Contents</strong>
+      <ul>
+        {% for s in doc.sections %}
+          <li><a href="#{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
     {% for s in doc.sections %}
       <h3 id="{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</h3>
       <div class="playbook-body">{{ s.html | safe }}</div>

@@ -425,16 +425,22 @@ function sendDailyPracticeReminders_() {
       log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject + ' (cc ' + CONFIG.TOMAS_EMAIL + ')\n' + body + '\n');
       return;
     }
-    guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+    var sent = guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
     log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).') + ' (cc\'d Tomás)');
+    if (!sent) return;
 
-    // Track this thread so checkDailyPracticeCompliance_ can nag/resolve it later.
+    // Register the assignment as tracked regardless of whether Gmail's search
+    // index has caught up with the send yet — a missing threadId only means
+    // checkDailyPracticeCompliance_ can't reply-all on the original thread
+    // later (it falls back to a fresh nag email), it must not mean the
+    // assignment silently vanishes from the follow-up sheet/dashboard.
+    // Utilities.sleep gives the index a moment before we try once.
+    Utilities.sleep(3000);
     var thread = GmailApp.search('subject:"' + subject + '" to:' + repCfg.email + ' newer_than:1d', 0, 1)[0];
-    if (thread) {
-      registerDailyPracticeFollowup_(rep, dateStr, thread.getId());
-    } else {
-      log_('[' + rep + '] Could not find the just-sent thread to track for follow-up — will retry next run.');
+    if (!thread) {
+      log_('[' + rep + '] Could not find the just-sent thread (search-index lag) — tracking without a threadId.');
     }
+    registerDailyPracticeFollowup_(rep, dateStr, thread ? thread.getId() : '');
   });
 }
 
@@ -553,13 +559,18 @@ function checkDailyPracticeCompliance_(dryRun) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === row.rep; })[0];
     if (!repCfg) { log_('No CONFIG.REPS entry for "' + row.rep + '" — skipping row ' + row.rowIndex); return; }
 
-    var thread = GmailApp.getThreadById(row.threadId);
-    if (!thread) {
+    // row.threadId can be blank — sendDailyPracticeReminders_ registers the
+    // row even when Gmail's search index hadn't caught up with the send yet.
+    // getThreadById('') throws rather than returning null, so guard on the
+    // string first; an uncaught throw here would abort every other rep's row
+    // in this same forEach pass, not just this one.
+    var thread = row.threadId ? GmailApp.getThreadById(row.threadId) : null;
+    if (row.threadId && !thread) {
       log_('[' + row.rep + '/' + row.dateStr + '] Tracked thread ' + row.threadId + ' no longer exists — leaving row as-is.');
       return;
     }
 
-    if (dailyPracticeThreadHasStopRequest_(thread)) {
+    if (thread && dailyPracticeThreadHasStopRequest_(thread)) {
       if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('cancelled');
       log_('[' + row.rep + '/' + row.dateStr + '] Kris or Tomás said cancel/stop on the thread — stopping follow-up.' +
         (dryRun ? ' (preview — not written)' : ''));
@@ -595,10 +606,16 @@ function checkDailyPracticeCompliance_(dryRun) {
           DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS + 'h until the file lands, or Kris or Tomás replies-all here with ' +
           '"cancel" or "stop".\n\nFolder: https://drive.google.com/drive/folders/' + DAILY_PRACTICE_CONFIG.FOLDERS[row.rep];
         if (dryRun) {
-          log_('(preview) would reply-all nag #' + nagNum + ' on thread for [' + row.rep + '/' + row.dateStr + ']\n' + nagBody);
+          log_('(preview) would ' + (thread ? 'reply-all' : 'send a standalone email (no tracked thread)') +
+            ' nag #' + nagNum + ' for [' + row.rep + '/' + row.dateStr + ']\n' + nagBody);
           return;
         }
-        thread.replyAll(nagBody, { name: 'Daily Practice Follow-up Bot' });
+        if (thread) {
+          thread.replyAll(nagBody, { name: 'Daily Practice Follow-up Bot' });
+        } else {
+          guardedSend_(repCfg.email, row.rep + ' — daily practice follow-up #' + nagNum, nagBody,
+            { name: 'Daily Practice Follow-up Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+        }
         sheet.getRange(row.rowIndex, 5, 1, 2).setValues([[now.toISOString(), nagNum]]);
         log_('[' + row.rep + '/' + row.dateStr + '] NON-COMPLIANT — reply-all nag #' + nagNum + ' sent on the tracked thread.');
         return;
