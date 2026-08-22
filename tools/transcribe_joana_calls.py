@@ -10,11 +10,13 @@ recordings. Works exactly like transcribe_sean_calls.py: skip
 already-transcribed videos, retry on quota/connection errors, stop cleanly
 on a real billing wall instead of grinding through the whole folder.
 
-Once transcripts exist, also set PHASE2_CONFIG.LEGACY_FOLDERS.Joana in
-Phase2_CallScoring.gs to the SAME folder ID (or wherever the transcript
-Docs land) and run scoreJoanaLegacyTranscripts() in the Apps Script editor
-to backfill them into the Sales Call Log, against the shared Bens/Joana
-rubric — Joana is not on Sean's stricter variant.
+Once transcripts exist, run previewJoanaTranscripts() then
+scoreJoanaTranscripts() (Phase2_CallScoring.gs, PHASE2_CONFIG.JOANA_FOLDERS
+already points at this same folder) in the Apps Script editor to backfill
+them into the Sales Call Log, against the shared Bens/Joana rubric — Joana
+is not on Sean's stricter variant. (Not scoreJoanaLegacyTranscripts() —
+that one assumes a Bens-style flat-folder filename convention these
+transcripts don't use, so it would silently match nothing.)
 
 Setup: identical to transcribe_sean_calls.py (see that file's docstring).
 """

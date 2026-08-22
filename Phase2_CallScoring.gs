@@ -62,6 +62,17 @@
  *                                not just a score. Reads the same
  *                                "<video title> — Transcript" Doc convention
  *                                from PHASE2_CONFIG.TOMAS_FOLDERS.
+ *  - scoreJoanaTranscripts()     Joana's calls — shared rubric (not Sean's
+ *                                stricter variant), same "<video title> —
+ *                                Transcript" Doc convention as Sean/Tomás,
+ *                                from PHASE2_CONFIG.JOANA_FOLDERS. Added
+ *                                22/08/2026 — the older
+ *                                scoreJoanaLegacyTranscripts()/
+ *                                LEGACY_FOLDERS.Joana pair assumed a
+ *                                Bens-style flat-folder filename convention
+ *                                her transcripts don't actually use, so it
+ *                                silently scored nothing; left in place as a
+ *                                harmless no-op, this is the real entry point.
  */
 
 // ---------------------------------------------------------------------------
@@ -125,6 +136,21 @@ var PHASE2_CONFIG = {
   TOMAS_FOLDERS: {
     'Sales Calls': '1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_',
     'Second Calls': '1ohbJInhrWg_toyrGNr39ba7VzzAojmqE' // his closing calls as the second-call closer — added 20/08/2026
+  },
+
+  // Joana's calls: raw Zoom recordings backfilled with Gemini transcripts by
+  // tools/transcribe_joana_calls.py, same "<video title> — Transcript" Doc
+  // convention as Sean's/Tomás's folders above — NOT the Bens-style flat
+  // "legacy transcripts" folder with a YYYY-MM-DD_Name_Transcript.txt
+  // filename (PHASE2_CONFIG.LEGACY_FOLDERS.Joana/scoreJoanaLegacyTranscripts()
+  // predate this and would silently match nothing against her real files —
+  // left in place as a harmless no-op, but scoreJoanaTranscripts() below is
+  // the real entry point). Her one folder mixes QC and Sales Calls with no
+  // way to tell them apart by folder alone, unlike Sean's two-folder split —
+  // added 22/08/2026, added because the dashboard showed zero scored rows for
+  // her despite transcripts existing.
+  JOANA_FOLDERS: {
+    'QC & Sales Calls': '17YaE4fBjEBFissvR-l7_GOkoTnZjdQq5'
   },
 
   // Filename convention for legacy transcripts: YYYY-MM-DD_ProspectName_Transcript.txt
@@ -1016,6 +1042,148 @@ function scoreSeanTranscripts() {
     });
 
     log_('scoreSeanTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
+      ', failed ' + failed + '.');
+    log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
+      'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Joana's calls — "<video title> — Transcript" Docs across JOANA_FOLDERS,
+// same shape as Sean's folder-scan above but against the SHARED rubric
+// (scoreTranscript_/buildJudgeSystemPrompt_) since she is not on Sean's
+// stricter variant — same funnel/objection shape as Bens. Added 22/08/2026:
+// the pre-existing scoreJoanaLegacyTranscripts()/LEGACY_FOLDERS.Joana pair
+// assumed her transcripts would land in a Bens-style flat folder with a
+// YYYY-MM-DD_Name_Transcript.txt filename; they actually land as
+// "<video title> — Transcript" Docs next to each source video, same as
+// Sean's, so that pair would silently match nothing. This is the real
+// entry point.
+// ---------------------------------------------------------------------------
+
+/** Dry-run — mirrors previewSeanTranscripts. Calls no model, writes nothing. */
+function previewJoanaTranscripts() {
+  RUN_TAG = 'previewJoanaTranscripts';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var existing = loadExistingLegacyKeys_(sheet);
+  var n = 0;
+
+  Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
+    var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var file = files.next();
+      var name = file.getName();
+      if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
+      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+      var dateStr = Utilities.formatDate(file.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+      var key = normalize_(prospectName) + '|' + dateStr;
+      n++;
+      log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
+        (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
+    }
+  });
+  log_('previewJoanaTranscripts — ' + n + ' transcript doc(s) found.');
+}
+
+/**
+ * Scores every unscored "<video title> — Transcript" Doc across
+ * PHASE2_CONFIG.JOANA_FOLDERS against the shared rubric and appends one
+ * "Sales Call Log" row per call — same appendRow shape and same
+ * fallback_heuristic / forced-manual-review policy as scoreLegacyTranscriptFolder,
+ * since these too predate the Calendar-Event-ID-in-title convention. Her one
+ * folder mixes QC and Sales Calls with no way to tell them apart by folder
+ * alone (unlike Sean's two-folder split), so Call Type falls back to
+ * PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE — same best-effort-guess-confirm
+ * policy as the Bens backfill.
+ */
+function scoreJoanaTranscripts() {
+  RUN_TAG = 'scoreJoanaTranscripts';
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('scoreJoanaTranscripts: another scoring run holds the lock, skipping this firing.');
+    return;
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
+
+    var existing = loadExistingLegacyKeys_(sheet);
+    var scored = 0, skippedExisting = 0, failed = 0;
+
+    Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
+      var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var file = files.next();
+        var name = file.getName();
+        if (name.indexOf('Transcript') === -1) continue; // skip source videos
+
+        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+        var callDate = file.getDateCreated();
+        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+        var key = normalize_(prospectName) + '|' + dateStr;
+        if (existing[key]) { skippedExisting++; continue; }
+
+        try {
+          var ctx = {
+            rep: 'Joana',
+            prospectName: prospectName,
+            callType: PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE,
+            source: '',
+            callDate: dateStr,
+            transcriptText: getTranscriptText_(file)
+          };
+          var result = scoreTranscript_(ctx);
+          var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+
+          sheet.appendRow([
+            prospectName,                    // Prospect Name
+            '',                               // Prospect Email — fill from Joana's tracker
+            '',                               // Source — fill from Joana's tracker
+            callDate,                        // Call Date
+            'Joana',                          // Rep
+            PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, // Call Type (best-effort guess — confirm)
+            true,                             // Outcome Logged
+            '',                               // Outcome Disposition — fill from Joana's tracker
+            '',                               // Calendar Event ID — none (predates convention)
+            '',                               // Riverside Recording ID — n/a, Joana uses Zoom
+            file.getUrl(),                    // Transcript URL
+            'fallback_heuristic',             // Match Method
+            result.lead_quality.verdict,      // Lead Quality Verdict
+            result.call_quality_score,        // Call Quality Score
+            result.flags.asked_for_close,     // Flag: Asked For Close
+            objectionsHandled,                // Flag: Objections Handled
+            true,                             // Manual Review Recommended — forced true
+            result.severity,                  // Severity
+            result.feedback_summary,          // AI Feedback Summary
+            false,                            // Reviewed By Kris
+            0,                                // Queue Age
+            '',                               // Kris Manual Review Verdict — not yet judged
+            result.primary_failure_mode || 'none' // Primary Failure Mode
+          ]);
+
+          existing[key] = true;
+
+          log_('  Scored "' + prospectName + '" (' + dateStr + '): ' + result.lead_quality.verdict +
+            ', score ' + result.call_quality_score + ', severity ' + result.severity +
+            (result._parseFailed ? ' [PARSE FAILED]' : ''));
+          scored++;
+          Utilities.sleep(300);
+        } catch (e) {
+          log_('  FAILED "' + name + '": ' + e);
+          failed++;
+        }
+      }
+    });
+
+    log_('scoreJoanaTranscripts done — scored ' + scored + ', already-present ' + skippedExisting +
       ', failed ' + failed + '.');
     log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) — ' +
       'Kris/Tomás should confirm before trusting a score, same policy as the Bens backfill.');
