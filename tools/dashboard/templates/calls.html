@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Calls</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<form method="get" action="/calls" style="display:flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin: 1.25rem 0 1.5rem;">
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Search feedback text</label>
+    <input type="text" name="q" value="{{ filters.q }}" placeholder="e.g. &quot;never asked for close&quot;"
+      style="padding: 0.5rem 0.7rem; width: 260px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+  </div>
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Rep</label>
+    <select name="rep" style="padding: 0.5rem 0.6rem; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+      <option value="">All</option>
+      {% for r in all_reps %}<option value="{{ r }}" {{ "selected" if filters.rep == r else "" }}>{{ r }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Verdict</label>
+    <select name="verdict" style="padding: 0.5rem 0.6rem; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+      <option value="">All</option>
+      <option value="good_to_book" {{ "selected" if filters.verdict == "good_to_book" else "" }}>good_to_book</option>
+      <option value="should_screen_out" {{ "selected" if filters.verdict == "should_screen_out" else "" }}>should_screen_out</option>
+    </select>
+  </div>
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Failure mode</label>
+    <input type="text" name="failure_mode" value="{{ filters.failure_mode }}" placeholder="e.g. no_close_ask"
+      style="padding: 0.5rem 0.7rem; width: 160px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+  </div>
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Min score</label>
+    <input type="number" name="min_score" value="{{ filters.min_score if filters.min_score is not none else '' }}" min="1" max="5"
+      style="padding: 0.5rem 0.7rem; width: 70px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+  </div>
+  <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Max score</label>
+    <input type="number" name="max_score" value="{{ filters.max_score if filters.max_score is not none else '' }}" min="1" max="5"
+      style="padding: 0.5rem 0.7rem; width: 70px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+  </div>
+  <button type="submit" style="padding: 0.55rem 1.1rem; border-radius: 6px; border: none; background: #7dc4ff; color: #0f1420; cursor: pointer;">Filter</button>
+  <a href="/calls" class="muted" style="padding: 0.55rem 0;">Clear</a>
+</form>
+
+<table>
+  <thead>
+    <tr><th>Prospect</th><th>Rep</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Failure mode</th><th>Feedback</th></tr>
+  </thead>
+  <tbody>
+    {% for c in calls %}
+    <tr>
+      <td>{% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
+      <td><a href="/reps/{{ c.rep }}">{{ c.rep }}</a></td>
+      <td>{{ c.call_date }}</td>
+      <td>{{ c.call_type or "—" }}</td>
+      <td>{{ c.lead_quality_verdict or "—" }}</td>
+      <td>{{ c.call_quality_score if c.call_quality_score is not none else "—" }}</td>
+      <td>{{ c.primary_failure_mode or "—" }}</td>
+      <td style="max-width: 360px;">{{ c.snippet | safe if filters.q else (c.snippet or "—") }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">No calls match these filters.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

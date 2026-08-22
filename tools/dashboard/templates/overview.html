@@ -9,6 +9,15 @@
   {% endif %}
 </span>
 
+{% if alerts %}
+<div class="chart-card" style="border: 1px solid #4a1414;">
+  <h2 style="color: #f28b8b;">⚠ Trend alerts</h2>
+  <ul style="margin: 0; padding-left: 1.1rem;">
+    {% for a in alerts %}<li><a href="/reps/{{ a.rep }}">{{ a.message }}</a></li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <div class="stat-row">
   <div class="stat">
     <div class="value">{{ total_calls }}</div>

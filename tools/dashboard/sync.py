@@ -197,6 +197,32 @@ def init_schema(conn):
     conn.commit()
 
 
+def rebuild_call_search_index(conn):
+    """FTS5 index over every call's AI Feedback Summary — separate from
+    playbooks.py's own FTS5 table (that one indexes the 3 curated markdown
+    playbooks and is rebuilt at app startup since its source is repo files;
+    this one indexes live call data and must be rebuilt every sync cycle
+    instead, here, right after sales_call_log itself is refreshed)."""
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS call_search;
+        CREATE VIRTUAL TABLE call_search USING fts5(
+            call_id UNINDEXED, prospect_name, rep, call_date UNINDEXED, body
+        );
+        """
+    )
+    rows = conn.execute(
+        "SELECT id, prospect_name, rep, call_date, ai_feedback_summary FROM sales_call_log "
+        "WHERE ai_feedback_summary IS NOT NULL AND ai_feedback_summary != ''"
+    ).fetchall()
+    for call_id, prospect_name, rep, call_date, summary in rows:
+        conn.execute(
+            "INSERT INTO call_search (call_id, prospect_name, rep, call_date, body) VALUES (?, ?, ?, ?, ?)",
+            (call_id, prospect_name or "", rep or "", call_date or "", summary),
+        )
+    conn.commit()
+
+
 def replace_table(conn, table, columns_map, rows):
     """Full-refresh a table: delete everything, reinsert from the current
     sheet pull. Safe at this data volume (~400 rows) and much simpler than
@@ -230,6 +256,7 @@ def main():
     replace_table(conn, "sales_call_log", SALES_CALL_LOG_COLUMNS, call_log_rows)
     replace_table(conn, "training_assignments", TRAINING_ASSIGNMENTS_COLUMNS, training_rows)
     replace_table(conn, "daily_practice_followups", DAILY_PRACTICE_FOLLOWUP_COLUMNS, practice_rows)
+    rebuild_call_search_index(conn)
 
     conn.execute(
         "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)",

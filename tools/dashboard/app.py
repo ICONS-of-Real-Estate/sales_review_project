@@ -298,6 +298,33 @@ def score_over_time(granularity="week"):
     return {"labels": labels, "series": series}
 
 
+def trend_alerts(threshold_drop=1.0, low_score_floor=2.5):
+    """A rep's most recent scored week compared to the week before it —
+    flags either a sharp week-over-week drop or an absolute score below
+    the floor, so this shows up on Overview without anyone having to
+    notice it on the chart themselves. Deliberately simple (two-week
+    comparison, not a full statistical trend) — good enough to catch
+    "something just got worse," which is the actual ask."""
+    data = score_over_time("week")
+    alerts = []
+    for s in data["series"]:
+        points = [(i, v) for i, v in enumerate(s["data"]) if v is not None]
+        if not points:
+            continue
+        _, latest = points[-1]
+        message = None
+        if latest < low_score_floor:
+            message = f"{s['rep']}'s most recent week averaged {latest} — below the {low_score_floor} floor."
+        if len(points) >= 2:
+            _, prev = points[-2]
+            drop = round(prev - latest, 2)
+            if drop >= threshold_drop:
+                message = f"{s['rep']}'s score dropped {drop} points week-over-week ({prev} → {latest})."
+        if message:
+            alerts.append({"rep": s["rep"], "message": message})
+    return alerts
+
+
 def get_leads(verdict=None, failure_mode=None, rep=None, limit=200):
     """Backs the chart drill-down: clicking a lead-quality slice or a
     failure-mode bar fetches the actual calls behind that number, with the
@@ -371,6 +398,7 @@ def overview(request: Request):
             "reps": rep_summary(),
             "failure_modes": failure_mode_breakdown(),
             "pipeline": pipeline_health(),
+            "alerts": trend_alerts(),
         },
     )
 
@@ -514,6 +542,105 @@ def _rep_score_series(rep):
         if s["rep"] == rep:
             return {"labels": full["labels"], "data": s["data"]}
     return {"labels": [], "data": []}
+
+
+def all_reps_list():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT rep FROM sales_call_log WHERE rep IS NOT NULL AND rep != '' ORDER BY rep"
+    ).fetchall()
+    conn.close()
+    return [r["rep"] for r in rows]
+
+
+def filtered_calls(rep="", verdict="", failure_mode="", min_score=None, max_score=None, q="", limit=200):
+    """Backs the /calls browser. With `q` set, searches call_search (FTS5
+    over every call's AI Feedback Summary — sync.py rebuilds this index
+    every sync cycle, unlike playbooks.py's FTS5 table which only covers
+    the 3 curated markdown playbooks and only rebuilds at app startup).
+    Other filters combine with the search rather than being mutually
+    exclusive with it."""
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        if q:
+            sql = (
+                "SELECT s.id, s.prospect_name, s.rep, s.call_date, s.call_type, s.lead_quality_verdict, "
+                "s.call_quality_score, s.primary_failure_mode, s.transcript_url, "
+                "snippet(call_search, 4, '<mark>', '</mark>', '…', 20) AS snippet "
+                "FROM call_search cs JOIN sales_call_log s ON s.id = cs.call_id "
+                "WHERE call_search MATCH ?"
+            )
+            params = [q]
+        else:
+            sql = (
+                "SELECT id, prospect_name, rep, call_date, call_type, lead_quality_verdict, "
+                "call_quality_score, primary_failure_mode, transcript_url, "
+                "ai_feedback_summary AS snippet "
+                "FROM sales_call_log s WHERE 1=1"
+            )
+            params = []
+
+        prefix = "s." if q else ""
+        if rep:
+            sql += f" AND {prefix}rep = ?"
+            params.append(rep)
+        if verdict:
+            sql += f" AND {prefix}lead_quality_verdict = ?"
+            params.append(verdict)
+        if failure_mode:
+            sql += f" AND {prefix}primary_failure_mode = ?"
+            params.append(failure_mode)
+        if min_score is not None:
+            sql += f" AND {prefix}call_quality_score >= ?"
+            params.append(min_score)
+        if max_score is not None:
+            sql += f" AND {prefix}call_quality_score <= ?"
+            params.append(max_score)
+
+        if q:
+            sql += " ORDER BY rank LIMIT ?"
+        else:
+            sql += " LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        # malformed FTS5 query syntax (e.g. an unbalanced quote in the search box)
+        rows = []
+    finally:
+        conn.close()
+
+    calls = [dict(r) for r in rows]
+    if not q:
+        calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
+    return calls
+
+
+@app.get("/calls", response_class=HTMLResponse)
+def calls_page(
+    request: Request,
+    rep: str = "",
+    verdict: str = "",
+    failure_mode: str = "",
+    min_score: int = None,
+    max_score: int = None,
+    q: str = "",
+):
+    return render(
+        request,
+        "calls.html",
+        {
+            "active_page": "calls",
+            "freshness": freshness_status(),
+            "all_reps": all_reps_list(),
+            "calls": filtered_calls(rep, verdict, failure_mode, min_score, max_score, q),
+            "filters": {
+                "rep": rep, "verdict": verdict, "failure_mode": failure_mode,
+                "min_score": min_score, "max_score": max_score, "q": q,
+            },
+        },
+    )
 
 
 @app.get("/queue", response_class=HTMLResponse)
