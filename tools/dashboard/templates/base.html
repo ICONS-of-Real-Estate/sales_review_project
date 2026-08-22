@@ -22,7 +22,11 @@
     .freshness.warn { background: #4a3a12; color: #f2c14e; }
     .freshness.stale { background: #4a1414; color: #f28b8b; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
-    th, td { text-align: left; padding: 0.55rem 0.9rem; border-bottom: 1px solid #262c3d; }
+    th, td { text-align: left; padding: 0.55rem 0.9rem; border-bottom: 1px solid #262c3d; vertical-align: top; }
+    .clamp-text {
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+      overflow: hidden; line-height: 1.4;
+    }
     th {
       color: #9aa4bb; font-weight: 600; font-size: 0.78rem;
       text-transform: uppercase; letter-spacing: 0.03em;

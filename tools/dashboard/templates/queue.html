@@ -42,7 +42,7 @@
       <td>{{ r.queue_age if r.queue_age is not none else "—" }}</td>
       <td>{{ r.call_quality_score if r.call_quality_score is not none else "—" }}</td>
       <td>{{ r.primary_failure_mode or "—" }}</td>
-      <td style="max-width: 320px;">{{ r.ai_feedback_summary or "—" }}</td>
+      <td style="max-width: 320px;"><span class="clamp-text" title="{{ r.ai_feedback_summary or '' }}">{{ r.ai_feedback_summary or "—" }}</span></td>
     </tr>
     {% else %}
     <tr><td colspan="8" class="muted">Nothing awaiting review — queue is clear.</td></tr>

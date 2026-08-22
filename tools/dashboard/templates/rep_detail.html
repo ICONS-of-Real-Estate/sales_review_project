@@ -36,7 +36,7 @@
       <td>{{ "Yes" if c.flag_asked_for_close else "No" }}</td>
       <td>{{ "Yes" if c.flag_objections_handled else "No" }}</td>
       <td>{{ c.primary_failure_mode or "—" }}</td>
-      <td style="max-width: 320px;">{{ c.ai_feedback_summary or "—" }}</td>
+      <td style="max-width: 320px;"><span class="clamp-text" title="{{ c.ai_feedback_summary or '' }}">{{ c.ai_feedback_summary or "—" }}</span></td>
     </tr>
     {% else %}
     <tr><td colspan="9" class="muted">No scored calls for this rep yet.</td></tr>

@@ -94,7 +94,7 @@
           '<td>' + escapeHtml(l.rep || '') + '</td>' +
           '<td>' + escapeHtml(l.call_date || '') + '</td>' +
           '<td>' + (l.call_quality_score ?? '—') + '</td>' +
-          '<td style="max-width: 360px;">' + escapeHtml(l.ai_feedback_summary || '—') + '</td></tr>'
+          '<td style="max-width: 360px;"><span class="clamp-text">' + escapeHtml(l.ai_feedback_summary || '—') + '</span></td></tr>'
         )).join('') + '</tbody></table>';
     }
     document.getElementById('leadsModalBackdrop').style.display = 'block';
