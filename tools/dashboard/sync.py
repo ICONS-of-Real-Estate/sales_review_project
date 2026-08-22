@@ -107,9 +107,7 @@ def sheets_client():
             sa_path, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
         )
     elif os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(
-            token_path, scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-        )
+        creds = Credentials.from_authorized_user_file(token_path)
     else:
         raise FileNotFoundError(f'Neither {sa_path} nor {token_path} exists.')
 
