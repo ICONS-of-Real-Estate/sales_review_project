@@ -766,6 +766,51 @@ function scoreBensLegacyTranscripts() {
 }
 
 /**
+ * ONE-TIME cleanup (22/08/2026): deletes every "Sales Call Log" row for Bens
+ * that was scored under the old shared closer rubric (asked_for_close etc.
+ * against a rep who never asks for money) before buildBensJudgeSystemPrompt_
+ * existed. Every Bens row was written by scoreLegacyTranscriptFolder with
+ * Match Method = 'fallback_heuristic', so that's the deletion filter — this
+ * intentionally does not touch any other rep's rows.
+ *
+ * Run this once, confirm the logged count matches what you expect (~42),
+ * then run scoreBensLegacyTranscripts() to re-score everything from Drive
+ * under the corrected rubric — loadExistingLegacyKeys_ will no longer see
+ * these prospect/date pairs as already scored, so they'll be re-judged
+ * fresh rather than skipped.
+ */
+function deleteBensLegacyRows() {
+  RUN_TAG = 'deleteBensLegacyRows';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('Sheet is empty — nothing to delete.'); return; }
+
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var repCol = SALES_CALL_LOG_HEADERS.indexOf('Rep');
+  var matchCol = SALES_CALL_LOG_HEADERS.indexOf('Match Method');
+  var nameCol = SALES_CALL_LOG_HEADERS.indexOf('Prospect Name');
+  var dateCol = SALES_CALL_LOG_HEADERS.indexOf('Call Date');
+
+  var deleted = 0;
+  // Walk bottom-up so deleteRow() doesn't shift the indices of rows not yet visited.
+  for (var i = values.length - 1; i >= 0; i--) {
+    var row = values[i];
+    if (row[repCol] === 'Bens' && row[matchCol] === 'fallback_heuristic') {
+      var sheetRow = i + 2; // +2: 1-indexed, plus header row
+      log_('  Deleting row ' + sheetRow + ': "' + row[nameCol] + '" (' + row[dateCol] + ')');
+      sheet.deleteRow(sheetRow);
+      deleted++;
+    }
+  }
+
+  log_('deleteBensLegacyRows() done — deleted ' + deleted + ' row(s). ' +
+    'Run scoreBensLegacyTranscripts() next to re-score them under the corrected rubric.');
+}
+
+/**
  * Same wrapper for Joana, against the shared rubric (she is not on the
  * stricter Sean variant — same funnel/objection shape as Bens). Safely a
  * no-op (scoreLegacyTranscriptFolder logs and returns) until
