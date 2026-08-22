@@ -132,6 +132,64 @@ Not done yet: finish OAuth (needs the two Kris-side steps above), the
 duplicate-row check, and whatever's next after that — no fixed plan beyond
 here, built reactively this session based on what Kris asked for live.
 
+## 0c. Later still — OAuth went live, UI click-through everywhere, Bens got his own rubric
+
+- **Google OAuth is now actually live**, not just coded. Tailscale HTTPS is
+  up (`sudo tailscale serve --bg http://127.0.0.1:8000`, not the `tailscale
+  serve https / http://...` syntax the docs imply — that's deprecated on
+  current Tailscale). Public-ish URL is
+  `https://vps-b3e68291.tail9f0adb.ts.net/`. A real GCP OAuth client exists
+  under project `sales-review-dashboard-506303` (Internal consent screen),
+  redirect URI `.../auth/callback`. `/etc/sales-dashboard/env` has
+  `DASHBOARD_REQUIRE_LOGIN=true` and the 5-email allowlist. Hit and fixed
+  two real bugs getting here:
+  - `requirements.txt` was missing `httpx` — `authlib`'s Starlette
+    integration imports it transitively, so the service crashed on start
+    with `ModuleNotFoundError` the moment OAuth code actually got deployed
+    (fixed, `204d3db`).
+  - The very first env-var command used a quoted heredoc (`<<'EOF'`), which
+    disables all shell substitution, so `DASHBOARD_SESSION_SECRET=$(openssl
+    rand -hex 32)` got written as that literal string instead of a real
+    secret — re-run with an unquoted heredoc to actually generate one if
+    that hasn't been double-checked since.
+- **Every stat tile and table cell is now clickable**, drilling into a
+  filtered `/calls` or `/queue` view — Overview's 3 top tiles, the "By rep"
+  table's every column, the failure-mode tables on both Overview and
+  `/queue`, and the rep-detail page's stat tiles. `filtered_calls()` grew
+  `asked_for_close`/`objections_handled`/`match_method` filters and
+  `/queue` grew a `rep` filter to back all of this (commit `945e17e`).
+- **Fixed a real readability bug**: table cells default to
+  `vertical-align: middle`, so any row with a long AI Feedback Summary
+  paragraph became enormous with the short cells floating in empty space —
+  reported directly off the live `/reps` page. Fixed with a global
+  `vertical-align: top` plus a 3-line-clamp class on every long-text cell
+  (`04f20df`).
+- **Bens got his own grading rubric** (`Phase2_CallGradingSOP.md` §3C,
+  `Phase2_CallScoring.gs` commit `833c3b4`) — caught live because his
+  "Asked for close" number looked implausibly high on the dashboard. He is
+  not a closer: ICONS 100 lead-gen podcast interviews + QCs, booking a
+  QC/Sales Call for someone else to run, never taking a sales call himself.
+  New `scoreBensTranscript_`/`buildBensFeedbackSummary_`, wired in via
+  optional `judgeFn`/`feedbackSummaryFn` params on
+  `scoreLegacyTranscriptFolder()` rather than forking it. Reuses the shared
+  schema's field *names* so the sheet/dashboard/Phase 5 scorecard keep
+  working — only what `asked_for_close` *means* for him changed (booking a
+  concrete next step, not asking for money).
+  - **Open decision, not yet actioned**: the ~42 Bens rows already in the
+    sheet were scored under the OLD wrong rubric and will NOT
+    auto-correct (the existing-row skip is keyed on prospect name + date).
+    Kris was asked whether to identify and delete those rows for a
+    re-score, or leave the old numbers as historical — no answer yet as of
+    this note.
+- **Still open / unconfirmed from earlier**: the Bens duplicate-row check
+  from the overlapping-trigger bug (§0b) — still nobody has actually run
+  that `sqlite3` query and reported back.
+- Both `runAllLegacyBackfills_` (temporary trigger, §0b) and the OAuth
+  setup above landed on the live systems via a mix of `clasp push` (Apps
+  Script) and `git pull` + `pip install` + `systemctl restart` (dashboard)
+  — check current systemd/trigger state before assuming either is still
+  running the way this note describes it, state may have moved on.
+
 ---
 
 **Session 2's `clasp push` blocker is resolved — Kris confirmed push, pull,
