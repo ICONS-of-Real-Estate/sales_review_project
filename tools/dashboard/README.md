@@ -98,6 +98,25 @@ tools/dashboard/.venv/bin/pip install -r tools/dashboard/requirements.txt   # on
 sudo systemctl restart sales-dashboard
 ```
 
+## Running tests
+
+Every route and every business-logic function (`rep_summary`,
+`score_over_time`, `filtered_calls`, the FTS search, the review queue and
+calibration math, etc.) has a test against a throwaway per-test SQLite
+file — no real `dashboard.db`, no network, no Google credentials needed.
+
+```bash
+cd tools/dashboard
+pip install -r requirements-dev.txt   # adds pytest on top of requirements.txt
+pytest tests/ -v
+```
+
+Nothing here talks to the live Sales Call Log sheet — `sync.py`'s own
+`init_schema()`/`rebuild_call_search_index()` build a fresh schema per test,
+seeded with fixture rows (`tests/conftest.py`), so this is safe to run
+anywhere, anytime, including on the VPS against a copy of `dashboard.db`
+without touching the real file.
+
 ## Moving to Phase B (public access + Google login)
 
 Not built yet — see the research report §6 (Phase B) and §3.3 for the
