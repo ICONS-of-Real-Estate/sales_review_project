@@ -612,3 +612,47 @@ new beyond what the laptops already did.
 - **Reply-tracker forward address**: `network@ardorseo.com` is the one
   consistent thread despite hundreds of different Maildoso sending domains —
   confirmed by reading real inbox threads, not assumed.
+
+## 0e. Session handoff point — everything below is committed and pushed to `main`
+
+Picking this up in a fresh session/account: nothing is stuck in an
+uncommitted or unpushed state as of this note (`git status` clean, HEAD =
+`fda1818` on `main`). In order, most recent first:
+
+- **`fda1818`** — `deep_research_prompt.md` at the repo root: a
+  ready-to-paste prompt for Claude's Research feature (or another deep
+  research tool) covering LLM-as-judge reliability, sales coaching program
+  design, build-vs-buy vs. commercial call-intelligence platforms,
+  Sheet-as-database architecture risk, and the missing
+  score-vs-close-rate/revenue feedback loop. Not yet run — Kris was
+  planning to run it via claude.ai's Research feature (Opus, high/xhigh
+  effort), not Claude Code, since it's pure web research/synthesis with no
+  repo interaction.
+- **`90342f1`** — `tools/dashboard/tests/` — a full pytest suite (76 tests,
+  previously zero) covering every `app.py` business-logic function and
+  every route, against a per-test throwaway SQLite fixture. Run with
+  `cd tools/dashboard && pip install -r requirements-dev.txt && pytest tests/ -v`.
+  Doesn't touch the live dashboard/VPS at all.
+- **`9262218`/`6f2fe57`** — the still-open action item from earlier
+  tonight: **`installLegacyBackfillTrigger()` was run to re-score Bens'
+  ~57 legacy transcripts under his corrected (booking, not closing)
+  rubric** after `deleteBensLegacyRows()` cleared the ~42 old-rubric rows.
+  As of this note it's unconfirmed whether that finished — **next session
+  should check the Apps Script Executions log for a `scoreBensLegacyTranscripts`
+  firing reporting `scored 0, already-present 53`** (57 minus the 4
+  oddly-named files it correctly skips), then run
+  `removeLegacyBackfillTrigger()` so the 10-minute trigger doesn't fire
+  forever. Also in this range: the daily-practice thread-tracking race fix
+  (root cause of a rep's assignment not showing as synced) and the
+  playbook Contents-line readability fix.
+- **Deploy status**: all `.gs` changes through `1fda8f9` were confirmed
+  live via `clasp push` by Kris. The two commits after that
+  (`6f2fe57` Phase7 fix, `9262218`/`90342f1`/`fda1818` non-Apps-Script
+  files) — the Phase7 fix specifically still needs a `git pull` +
+  `clasp push` on Kris's machine to actually take effect; the dashboard
+  test suite and the research prompt don't need any deploy at all.
+- **Open decisions nobody has answered yet**: the Bens duplicate-row
+  sqlite check (query given to Kris, never confirmed either way), and
+  whether `DASHBOARD_SESSION_SECRET` on the VPS actually got regenerated
+  as a real secret (see §0c) rather than the literal
+  `$(openssl rand -hex 32)` string from the quoted-heredoc bug.
