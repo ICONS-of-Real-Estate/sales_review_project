@@ -34,9 +34,24 @@
     .stat .label { font-size: 0.78rem; color: #9aa4bb; margin-top: 0.15rem; }
     .stat.warn .value { color: #f2c14e; }
     .muted { color: #9aa4bb; }
+    nav.dashboard-nav { margin-bottom: 1.5rem; }
+    nav.dashboard-nav a {
+      color: #9aa4bb; text-decoration: none; margin-right: 1.5rem;
+      font-size: 0.9rem; padding-bottom: 0.25rem; border-bottom: 2px solid transparent;
+    }
+    nav.dashboard-nav a.active { color: #e8ecf4; border-bottom-color: #7dc4ff; }
+    .chart-card {
+      background: #161c2b; border-radius: 10px; padding: 1.25rem 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .chart-card h2 { margin: 0 0 1rem; font-size: 1rem; color: #c7cee0; }
   </style>
 </head>
 <body>
+  <nav class="dashboard-nav">
+    <a href="/" class="{{ 'active' if active_page == 'overview' else '' }}">Overview</a>
+    <a href="/charts" class="{{ 'active' if active_page == 'charts' else '' }}">Charts</a>
+  </nav>
   {% block content %}{% endblock %}
 </body>
 </html>

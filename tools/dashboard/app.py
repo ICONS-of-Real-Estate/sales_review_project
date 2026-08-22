@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Sales Review Dashboard — Phase A (per DASHBOARD_RESEARCH_REPORT.md §6).
+Sales Review Dashboard — Phase A + charts (Phase B, partial) per
+DASHBOARD_RESEARCH_REPORT.md §6.
 
-Read-only team overview: total scored calls, per-rep averages/flags, and
-the primary-failure-mode breakdown, read from the local SQLite mirror
-sync.py maintains. No charts yet, no auth yet — this phase deliberately
-ships behind Tailscale-only access so the data path can be proven before
-either of those is built (Phase B).
+Read-only team overview + trend charts, read from the local SQLite mirror
+sync.py maintains. Still no auth — that's the rest of Phase B (Google OAuth
++ public access), not done yet. Charts render with a locally-vendored
+Chart.js (tools/dashboard/static/chart.umd.min.js — no CDN, per the
+report's CSP guidance).
 
 Run with: uvicorn app:app --host <bind-host> --port 8000
 (tools/deploy/setup_dashboard.sh installs this as sales-dashboard.service.)
 """
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -112,6 +113,79 @@ def failure_mode_breakdown():
     return [{"mode": r["primary_failure_mode"], "count": r["n"]} for r in rows]
 
 
+_DATE_PATTERNS = (
+    # Project convention (brief.txt §2) is DD/MM/YYYY — try that first so an
+    # ambiguous "05/08/2026" is read as 5 August, not May 8th. ISO and a
+    # Sheets-style datetime-with-time are the other shapes actually seen in
+    # this sheet (appendRow with a raw JS Date renders with a time part).
+    "%d/%m/%Y",
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M:%S",
+)
+
+
+def parse_call_date(raw):
+    """Best-effort parse of whatever string the Sheets API handed back for
+    Call Date into a plain date — deliberately not timezone-aware, per
+    DASHBOARD_RESEARCH_REPORT.md §5.1: a call date is a day, not an instant,
+    and must render identically for every viewer regardless of timezone.
+    Returns None on anything unparseable rather than raising, so one bad
+    legacy row doesn't break the whole chart."""
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    for fmt in _DATE_PATTERNS:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def score_over_time():
+    """Weekly average call-quality score per rep, for a line chart. Weeks are
+    plain calendar weeks (ISO, Monday-start) of the call date itself — no
+    timezone conversion, since Call Date is already a plain date (§5.1)."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, call_date, call_quality_score FROM sales_call_log "
+        "WHERE rep IS NOT NULL AND rep != '' AND call_quality_score IS NOT NULL"
+    ).fetchall()
+    conn.close()
+
+    buckets = {}  # (rep, week_start_iso) -> [scores]
+    for r in rows:
+        d = parse_call_date(r["call_date"])
+        if d is None:
+            continue
+        week_start = d - timedelta(days=d.weekday())
+        key = (r["rep"], week_start.isoformat())
+        buckets.setdefault(key, []).append(r["call_quality_score"])
+
+    reps = sorted({rep for rep, _ in buckets})
+    weeks = sorted({week for _, week in buckets})
+    series = []
+    for rep in reps:
+        data = []
+        for week in weeks:
+            scores = buckets.get((rep, week))
+            data.append(round(sum(scores) / len(scores), 2) if scores else None)
+        series.append({"rep": rep, "data": data})
+    return {"weeks": weeks, "series": series}
+
+
+def lead_quality_distribution():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT lead_quality_verdict, COUNT(*) AS n FROM sales_call_log "
+        "WHERE lead_quality_verdict IS NOT NULL AND lead_quality_verdict != '' "
+        "GROUP BY lead_quality_verdict"
+    ).fetchall()
+    conn.close()
+    return [{"verdict": r["lead_quality_verdict"], "count": r["n"]} for r in rows]
+
+
 def pipeline_health():
     """Surfaces the known transcription-failure pattern (SYSTEM_OVERVIEW.md
     §2) directly on the dashboard: rows scored from a blank/corrupted
@@ -136,6 +210,7 @@ def overview(request: Request):
         request,
         "overview.html",
         {
+            "active_page": "overview",
             "freshness": freshness_status(),
             "total_calls": total_calls,
             "reps": rep_summary(),
@@ -143,6 +218,25 @@ def overview(request: Request):
             "pipeline": pipeline_health(),
         },
     )
+
+
+@app.get("/charts", response_class=HTMLResponse)
+def charts_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "charts.html",
+        {"active_page": "charts", "freshness": freshness_status()},
+    )
+
+
+@app.get("/api/charts")
+def charts_data():
+    return {
+        "score_over_time": score_over_time(),
+        "lead_quality": lead_quality_distribution(),
+        "failure_modes": failure_mode_breakdown(),
+        "rep_summary": rep_summary(),
+    }
 
 
 @app.get("/healthz")

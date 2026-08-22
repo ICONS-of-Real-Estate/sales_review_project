@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Charts</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+
+<div class="chart-card">
+  <h2>Call quality score over time, by rep</h2>
+  <canvas id="scoreOverTimeChart" height="90"></canvas>
+</div>
+
+<div class="chart-card">
+  <h2>Lead quality verdict distribution</h2>
+  <canvas id="leadQualityChart" height="90"></canvas>
+</div>
+
+<div class="chart-card">
+  <h2>Primary failure mode, all reps</h2>
+  <canvas id="failureModeChart" height="90"></canvas>
+</div>
+
+<script src="/static/chart.umd.min.js"></script>
+<script>
+  // A small, fixed, colorblind-friendlyish palette — one color per rep/category,
+  // reused consistently across charts rather than letting Chart.js auto-pick.
+  const PALETTE = ['#7dc4ff', '#7be0a8', '#f2c14e', '#f28b8b', '#c792ea', '#80cbc4'];
+
+  Chart.defaults.color = '#9aa4bb';
+  Chart.defaults.borderColor = '#262c3d';
+  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif";
+
+  fetch('/api/charts').then(r => r.json()).then(data => {
+    // --- Score over time (line chart, one line per rep) ---
+    const sot = data.score_over_time;
+    new Chart(document.getElementById('scoreOverTimeChart'), {
+      type: 'line',
+      data: {
+        labels: sot.weeks.map(w => 'Week of ' + w),
+        datasets: sot.series.map((s, i) => ({
+          label: s.rep,
+          data: s.data,
+          borderColor: PALETTE[i % PALETTE.length],
+          backgroundColor: PALETTE[i % PALETTE.length],
+          spanGaps: true,
+          tension: 0.2,
+        })),
+      },
+      options: {
+        scales: { y: { min: 1, max: 5, title: { display: true, text: 'Avg call quality score' } } },
+      },
+    });
+
+    // --- Lead quality distribution (doughnut) ---
+    const lq = data.lead_quality;
+    new Chart(document.getElementById('leadQualityChart'), {
+      type: 'doughnut',
+      data: {
+        labels: lq.map(x => x.verdict),
+        datasets: [{ data: lq.map(x => x.count), backgroundColor: PALETTE }],
+      },
+    });
+
+    // --- Failure mode breakdown (bar) ---
+    const fm = data.failure_modes;
+    new Chart(document.getElementById('failureModeChart'), {
+      type: 'bar',
+      data: {
+        labels: fm.map(x => x.mode),
+        datasets: [{ label: 'Calls', data: fm.map(x => x.count), backgroundColor: PALETTE[0] }],
+      },
+      options: { plugins: { legend: { display: false } } },
+    });
+  }).catch(err => {
+    document.querySelectorAll('.chart-card').forEach(el => {
+      el.insertAdjacentHTML('beforeend', '<p class="muted">Could not load chart data: ' + err + '</p>');
+    });
+  });
+</script>
+{% endblock %}
