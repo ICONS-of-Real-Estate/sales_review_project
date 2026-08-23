@@ -1,3 +1,72 @@
+# Handoff — 23/08/2026 (session 5 — acting on the QA/coaching research report)
+
+## 0. What happened this session (read this first)
+
+Worked through `QA_COACHING_RESEARCH_REPORT.md`'s "five things" list end to
+end. All code-only, no deploy access from this session (see deploy notes at
+the top of this file) — **everything below still needs `git pull` + `clasp
+push`** for the `.gs` changes, no dashboard deploy needed (no
+`tools/dashboard/` files touched this session). Commits, in order:
+
+- **`a86d524`** — new Phase 2 feature: a weekly random calibration holdout
+  (3-5 calls, blind of the AI's own flag/score, feeding the existing "Kris
+  Manual Review Verdict" column) so `runWeeklyCalibration()` can finally see
+  false negatives, not just calls the model already flagged as hard. Ships
+  **disabled** (`RANDOM_CALIBRATION_CONFIG.ENABLED = false`) — run
+  `previewRandomCalibrationSample()` first, confirm it looks right, then
+  flip `ENABLED` and run `installRandomCalibrationSampleTrigger()` (or
+  re-run `installAllReadyTriggers_()`). Also added Phase 5's rolling
+  4-week average (with its own n) alongside the single-week number.
+- **`dbb1056`** — dashboard leaderboard (`/training`) converted from a
+  cross-rep ranking to self-comparison: each rep's own recent-10-calls
+  average vs. their own prior average, sorted alphabetically, not by score.
+  At 3-4 reps a ranked leaderboard structurally punishes whoever's last,
+  every week, forever.
+- **`58c202f`** — rewrote every rep-facing feedback surface (Phase 5 weekly
+  scorecard, Phase 7 daily practice drill feedback) to lead with a quoted
+  transcript moment and one behavior to change, with score/averages moved
+  into a "For the record" section below the fold. **Also changed every
+  judge prompt's `feedback_summary` field spec** (shared rubric, Sean's,
+  Tomás's, daily-practice) to require quoting the rep's own words and
+  naming exactly one behavior — this is a live prompt-wording change
+  affecting every phase that scores real calls. **Worth spot-checking a
+  few real `feedback_summary` outputs against real transcripts** before
+  fully trusting it, same as any other rubric change here.
+- **`6f81eed`** — weekly scorecard now also nudges each rep, once a week,
+  about scored calls still missing an Outcome Disposition
+  (Sold/Not Sold/Follow-up/No-show) — that column has existed since Phase 0
+  but nothing has ever prompted anyone to actually fill it in, so in
+  practice it's sat empty. Confirmed the "rep's tracker" comments on that
+  column refer to this SAME Sales Call Log sheet, not a separate one.
+
+**One thing flagged, not acted on**: the report's §4 claim that "the old
+30-minute Workspace execution tier was retired, 6-minute cap now applies to
+everyone" directly contradicts the 30-minute mutex window
+`installLegacyBackfillTrigger()`'s overlap fix relies on (see the 22/08
+handoff below). Could not independently verify —
+`developers.google.com`/`groups.google.com` are both blocked by this
+session's egress proxy, and every source actually reachable traces back to
+the same claim the report itself already cited as its own source. **Left
+the mutex window unchanged.** Someone with real access to
+`developers.google.com/apps-script/guides/services/quotas` should settle
+this before it's acted on either way.
+
+**Not done / follow-ups**:
+- Dashboard has synced `outcome_disposition` into SQLite since `sync.py`
+  was written, but nothing in `app.py`/templates surfaces it yet — worth
+  wiring up once real disposition data starts landing (closes the
+  score-vs-outcome loop the report flags as the real missing piece).
+- Report's other recommendations (analytic sub-scores instead of one 1-5,
+  a frozen regression set for drift detection, `rubric_version` column,
+  build-vs-buy analysis) not started this session — see the report itself
+  for the full ranked list.
+- All new logic covered by `tests/run_tests.js` (28 tests, up from 18 at
+  the start of this session) and `tools/dashboard/tests/` (78 tests,
+  unchanged — no dashboard code touched). Run `node tests/run_tests.js`
+  before trusting any further `.gs` change in this area.
+
+---
+
 # Handoff — 22/08/2026 (session 4 — dashboard deployment)
 
 ## 0. What happened this session (read this first)
