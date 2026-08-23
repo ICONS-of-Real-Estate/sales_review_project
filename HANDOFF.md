@@ -48,25 +48,39 @@ Log directly (not just the Executions log summary) and confirmed:
    first and sanity-check the count (~302 expected) before running the live
    version** — this permanently deletes rows.
 
+**Update, same session**: `installAllReadyTriggers_()` was run (confirmed
+live — Joana's new dedicated trigger installed cleanly alongside
+everything else) and `previewLegacyBackfillDuplicates()` was run, reporting
+306 duplicate rows (close enough to the ~302 estimate above — live data
+shifts a little between reads, not a concern). **`dedupeLegacyBackfillDuplicates()`
+itself has NOT been run yet** — that's the step that actually deletes them.
+
+Also this session: `tools/deploy/setup_daily_practice_transcription.sh`
+added — a new, separate systemd service/timer (hourly) for
+`transcribe_daily_practice.py` on the OVH box, since it needs a paid Gemini
+key `transcribe-all.timer` never required. Run once on the VPS:
+`git pull && bash tools/deploy/setup_daily_practice_transcription.sh "<gemini key>"`.
+For an immediate one-off run instead of waiting for the timer:
+`cd tools && GEMINI_API_KEY="<key>" .venv/bin/python transcribe_daily_practice.py`.
+
 **Not done / needs Kris**:
-- Deploy: `git pull` + `clasp push`, then re-run `installAllReadyTriggers_()`
-  to pick up Joana's new dedicated trigger.
-- Run `previewLegacyBackfillDuplicates()` → `dedupeLegacyBackfillDuplicates()`
-  to clean up the ~302 duplicate Bens rows already written — until this
-  runs, every downstream number for Bens (dashboard averages, weekly
-  scorecard, review queue) is skewed by the duplication.
+- Deploy: `git pull` + `clasp push` (Apps Script side — already done per the
+  Executions log above) and the OVH daily-practice-transcribe setup above
+  (not yet confirmed done).
+- Run `dedupeLegacyBackfillDuplicates()` to actually delete the 306 duplicate
+  Bens rows the preview identified — until this runs, every downstream
+  number for Bens (dashboard averages, weekly scorecard, review queue) is
+  skewed by the duplication.
 - Check whether `installLegacyBackfillTrigger()` still has duplicate copies
   stacked live (Triggers page, clock icon) — the dedupe fix from earlier
   this session only prevents new stacking, doesn't clean up what's already
   there.
 - **Separately, Sean's Daily Practice folder**
   (`1SJJ5Jek_4vEzmS907NQofDYq6bl-Mnr1`) has two practice uploads (260820,
-  260821) sitting ungraded — `tools/transcribe_daily_practice.py` has never
-  been run for them (it's not part of the automated OVH `transcribe-all.timer`
-  job, still fully manual), so no `"— Transcript"` Doc exists yet for Phase
-  7's grading scan to find. Needs someone to run that script by hand (needs
-  `GEMINI_API_KEY` + Drive credentials) — worth also considering wiring it
-  into the OVH automation so this doesn't keep silently stalling.
+  260821) sitting ungraded — needs the manual one-off run above (or the new
+  OVH timer's first firing, once `setup_daily_practice_transcription.sh`
+  is actually run on the VPS) to produce their Transcript Docs before
+  Phase 7 can grade them.
 
 ---
 
