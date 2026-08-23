@@ -1,3 +1,78 @@
+# Handoff — 23/08/2026 (session 7 — Call Date bug fully closed out, deployed, and repaired live)
+
+## Status: everything below this section is DONE. Read this first, it supersedes the "NOT yet run" note in the section right below it.
+
+Picking up from the session 6 addendum directly below: the Call Date fix
+(`f7830a0`) has now been fully deployed and the live repair has run
+successfully. Nothing from that addendum is still pending.
+
+**What happened this session, in order:**
+
+1. **Business timezone changed to Eastern**, per explicit instruction from
+   Kris: `CONFIG.BUSINESS_TIMEZONE` is now `'America/New_York'` (was
+   `'America/Los_Angeles'`) — commit `e6bb891`. Most of the client base is
+   Eastern; the old Pacific setting was a holdover from "6pm PST = day's
+   done," not a real business-timezone requirement. **All existing hour
+   constants (GRADING_HOUR, REMINDER_HOUR, COMPLIANCE_CHECK_HOUR, etc.) are
+   unchanged in value but now mean Eastern instead of Pacific — everything
+   fires 3 hours earlier in absolute time.** If any of those hours were
+   meant to anchor a specific real-world moment rather than "X o'clock local
+   business time," they need a separate look — not done this session.
+
+2. **Found and fixed a second, more subtle bug in the Call Date fix itself**,
+   caught via `previewCallDateRepair()` before any live write:
+   `resolveYearForMonthDay_` was comparing a computed "midnight of the
+   titled day in BUSINESS_TIMEZONE" against a sibling video's exact creation
+   instant, and rolling the year back a full year if that instant came out
+   "later." Drive's `createdTime` is UTC — a video created a few minutes
+   after UTC midnight reads back as the EVENING BEFORE once converted to
+   America/New_York, which falsely tripped the "must be next year" rollback
+   for videos created close to a UTC/Eastern day boundary. Confirmed live:
+   Sean's `"4/2  Margaret Bruno  prep call for DISCO"` resolved to
+   `2025-04-02` instead of `2026-04-02`; every other April row in the same
+   preview correctly stayed in 2026, which is what exposed it. Fixed by
+   requiring the "future" gap to exceed 2 days before rolling back a year —
+   a real year mismatch is always ~365 days off, so this slack can never
+   mask a genuine one. Commit `6f7f175`, with a regression test
+   reproducing the exact scenario (`tests/run_tests.js`, 43 tests total, all
+   passing). This bug lived in a function shared by both the repair tool
+   AND live scoring going forward (`resolveRealCallDate_`), so it would have
+   kept silently mis-dating future Sean/Joana/Tomás calls near that boundary
+   if it hadn't been caught here.
+
+3. **Both fixes deployed live** (`clasp push` run by Kris after `git pull`).
+
+4. **`previewCallDateRepair()` re-run fresh post-deploy** — 153 rows, all
+   correct (including the Margaret Bruno row, now `2026-04-02`).
+
+5. **`repairCallDates()` run live** — same 153 rows, same output, sheet
+   corrected. **This is done. Do not re-run it** — it's a one-time repair
+   for legacy Match Method = `fallback_heuristic` rows; running it again on
+   an already-corrected sheet should be a no-op (nothing left with a wrong
+   date to find) but there's no need to re-verify unless a new symptom shows
+   up.
+
+6. **Sean's daily-practice transcription pipeline confirmed working live**:
+   `260820 — Transcript` and `260821 — Transcript` both exist in Sean's
+   Daily Practice folder (Whisper-transcribed, per the `transcribe_all.py`
+   fix from earlier this session). `previewDailyPracticeGrading_()` graded
+   both correctly — quoted feedback lead, one behavior to sharpen, score
+   below the fold. Left to fire naturally via the `GRADING_HOUR: 20`
+   trigger tonight rather than force-sending; not manually run live.
+
+**Still open / carried forward, nothing new:**
+
+- **`runAllLegacyBackfills_` temporary trigger** — still installed, still
+  firing every 10 minutes. Watch for a firing that logs `scored 0` across
+  Bens/Joana/Sean together (i.e. the backlog is fully drained), then run
+  `removeLegacyBackfillTrigger()` to retire it. Not yet observed as of this
+  session.
+- Longer-tail backlog, not touched this session: `DASHBOARD_SESSION_SECRET`
+  verification, Joana's stale "NOT YET READY" banner in her setup Google
+  Doc, dashboard surfacing `outcome_disposition` in the UI.
+
+---
+
 # Handoff — 23/08/2026 (session 6 addendum — CRITICAL: Call Date bug, all three reps)
 
 ## -1. Read this first, even before section 0 below
@@ -22,15 +97,10 @@ paired original video's own upload date for Joana (whose titles have no
 date at all) — never the transcript doc's creation date. Wired into all
 three scoring functions.
 
-**NOT yet run — needs Kris, from the Apps Script editor**:
-`previewCallDateRepair()` then `repairCallDates()` — one-time repair that
-re-derives the correct Call Date for every already-scored Sean/Joana/Tomás
-row and corrects the ones that are wrong (likely most of Sean's 131 rows,
-Tomás's 80, and every one of Joana's ~15+ so far — check the preview count).
-This needs live Drive access to find each row's paired video, so it can
-only run from the editor, not from a Claude session. **Run this before
-trusting any date-bucketed report (weekly scorecard, dashboard charts) for
-these three reps.**
+~~**NOT yet run — needs Kris, from the Apps Script editor**~~ **UPDATE
+(session 7, see top of file): done.** `repairCallDates()` ran live and
+corrected 153 rows. See the session 7 section above for the full story,
+including a second bug found and fixed in this repair before it ran.
 
 ---
 
