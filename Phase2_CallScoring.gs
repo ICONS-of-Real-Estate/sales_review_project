@@ -914,6 +914,109 @@ function dedupeLegacyBackfillDuplicates() {
   log_('dedupeLegacyBackfillDuplicates() done — deleted ' + toDelete.length + ' duplicate row(s).');
 }
 
+// ---------------------------------------------------------------------------
+// ONE-TIME data repair (23/08/2026): fixes already-written Call Date values
+// for every Sean/Joana/Tomás row scored before resolveRealCallDate_() above
+// existed — every one of these was silently written as the TRANSCRIPT DOC's
+// own creation date (whenever the pipeline happened to run), not the real
+// call date. Confirmed live: rows whose own Prospect Name starts with the
+// real date ("1/21 Anthony Camperi") were logged with a Call Date from a
+// bulk backlog transcription run days or weeks later. Bens is unaffected
+// (his date comes straight from the legacy filename, never from
+// getDateCreated()) and is intentionally excluded here.
+// ---------------------------------------------------------------------------
+
+var CALL_DATE_REPAIR_FOLDERS_ = {
+  Sean: PHASE2_CONFIG.SEAN_FOLDERS,
+  'Tomás': PHASE2_CONFIG.TOMAS_FOLDERS,
+  Joana: PHASE2_CONFIG.JOANA_FOLDERS
+};
+
+/** First matching sibling file's creation date across every folder configured for a rep — checks each in turn, stops at the first hit. */
+function findVideoCreatedDateAcrossFolders_(folderIds, name) {
+  for (var i = 0; i < folderIds.length; i++) {
+    var date = findSiblingFileCreatedDate_(DriveApp.getFolderById(folderIds[i]), name);
+    if (date) return date;
+  }
+  return null;
+}
+
+/**
+ * Re-derives the correct Call Date for every in-scope row using the same
+ * logic resolveRealCallDate_() applies going forward, and returns only the
+ * ones that actually need correcting. Skipped (left alone) when neither a
+ * title date nor a sibling video can be found — better to leave a wrong-but-
+ * already-known date than silently guess with nothing to anchor it to.
+ */
+function computeCallDateFixes_(sheet) {
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var fixes = [];
+
+  values.forEach(function (row, i) {
+    var rep = row[col['Rep'] - 1];
+    var folders = CALL_DATE_REPAIR_FOLDERS_[rep];
+    if (!folders) return; // Bens, or an unrecognized rep -- not in scope
+    if (row[col['Match Method'] - 1] !== 'fallback_heuristic') return;
+
+    var prospectName = row[col['Prospect Name'] - 1];
+    var storedDate = row[col['Call Date'] - 1];
+    var folderIds = Object.keys(folders).map(function (k) { return folders[k]; });
+
+    var monthDay = parseDateFromTitlePrefix_(prospectName);
+    var siblingDate = findVideoCreatedDateAcrossFolders_(folderIds, prospectName);
+    if (!monthDay && !siblingDate) return; // nothing to anchor a correction to -- leave as-is
+
+    var ceilingDate = siblingDate || (storedDate instanceof Date ? storedDate : new Date());
+    var correctDate = monthDay ? resolveYearForMonthDay_(monthDay, ceilingDate) : ceilingDate;
+
+    var storedStr = storedDate instanceof Date
+      ? Utilities.formatDate(storedDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd')
+      : String(storedDate);
+    var correctStr = Utilities.formatDate(correctDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+    if (storedStr === correctStr) return; // already correct
+
+    fixes.push({
+      rowIndex: i + 2, rep: rep, prospectName: prospectName,
+      oldDateStr: storedStr, newDate: correctDate, newDateStr: correctStr
+    });
+  });
+
+  return fixes;
+}
+
+/** Run this FIRST. Logs every Call Date correction it would make — writes nothing. */
+function previewCallDateRepair() {
+  RUN_TAG = 'previewCallDateRepair';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var fixes = computeCallDateFixes_(sheet);
+  if (!fixes.length) { log_('No Call Date corrections found.'); return; }
+  log_('Found ' + fixes.length + ' row(s) needing a Call Date correction:');
+  fixes.forEach(function (f) {
+    log_('  Row ' + f.rowIndex + ' (' + f.rep + ', "' + f.prospectName + '"): ' + f.oldDateStr + ' -> ' + f.newDateStr);
+  });
+}
+
+/** Run previewCallDateRepair() first. Actually writes every correction it found. */
+function repairCallDates() {
+  RUN_TAG = 'repairCallDates';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var col = getValidatedColumnMap_(sheet);
+  var fixes = computeCallDateFixes_(sheet);
+  if (!fixes.length) { log_('No Call Date corrections found — nothing to do.'); return; }
+  fixes.forEach(function (f) {
+    sheet.getRange(f.rowIndex, col['Call Date']).setValue(f.newDate);
+    log_('  Row ' + f.rowIndex + ' (' + f.rep + ', "' + f.prospectName + '"): ' + f.oldDateStr + ' -> ' + f.newDateStr);
+  });
+  log_('repairCallDates() done — corrected ' + fixes.length + ' row(s).');
+}
+
 /**
  * Same wrapper for Joana, against the shared rubric (she is not on the
  * stricter Sean variant — same funnel/objection shape as Bens). Safely a
@@ -1277,6 +1380,68 @@ function previewSeanTranscripts() {
 }
 
 /**
+ * Real bug found live (23/08/2026), affecting scoreSeanTranscripts(),
+ * scoreJoanaTranscripts(), and scoreTomasTranscripts() identically: all
+ * three wrote Call Date as file.getDateCreated() on the TRANSCRIPT DOC
+ * itself — whenever the Whisper/Gemini pipeline happened to actually
+ * transcribe it — not when the call happened. Confirmed live: Sean's rows
+ * whose own prospect name STARTS WITH the real date ("1/21 Anthony
+ * Camperi") were logged with Call Date = the day of a bulk backlog
+ * transcription run instead. This silently corrupts every date-based
+ * feature downstream — weekly scorecard week-bucketing, the rolling
+ * 4-week average, the dashboard's score-over-time chart — a whole backlog
+ * transcribed in one sitting reads as "all happened this week."
+ *
+ * Fix: parse a real "M/D " date prefix out of the title first (Sean's and
+ * Tomás's convention); Joana's titles have no date in them at all, so fall
+ * back to the paired ORIGINAL VIDEO's own creation date (found by name
+ * match in the same folder) — not the transcript doc's, which only
+ * reflects pipeline timing, not the real world.
+ */
+function parseDateFromTitlePrefix_(title) {
+  var m = String(title || '').match(/^\s*(\d{1,2})\/(\d{1,2})\s+\S/);
+  if (!m) return null;
+  var month = parseInt(m[1], 10), day = parseInt(m[2], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { month: month, day: day };
+}
+
+/**
+ * Picks the year for a parsed month/day: the call can't have happened AFTER
+ * ceilingDate (the video's own upload date, at the latest), so this prefers
+ * ceilingDate's year, falling back to the year before if the same-year
+ * candidate would land in the future relative to ceilingDate.
+ */
+function resolveYearForMonthDay_(monthDay, ceilingDate) {
+  var year = ceilingDate.getFullYear();
+  var candidate = new Date(year, monthDay.month - 1, monthDay.day);
+  if (candidate.getTime() > ceilingDate.getTime()) {
+    candidate = new Date(year - 1, monthDay.month - 1, monthDay.day);
+  }
+  return candidate;
+}
+
+/** The paired original video's own creation date, found by exact name match in the same (non-recursive) folder. Null if no match. */
+function findSiblingFileCreatedDate_(folder, name) {
+  var candidates = folder.getFilesByName(name);
+  if (candidates.hasNext()) return candidates.next().getDateCreated();
+  return null;
+}
+
+/**
+ * Best-effort real call date for a legacy transcript: a date parsed from the
+ * title wins if present; otherwise falls back to the paired video's own
+ * creation date; otherwise (no sibling video found — shouldn't normally
+ * happen) the transcript doc's own creation date, same as the old behavior.
+ */
+function resolveRealCallDate_(folder, prospectName, transcriptFile) {
+  var siblingDate = findSiblingFileCreatedDate_(folder, prospectName);
+  var ceilingDate = siblingDate || transcriptFile.getDateCreated();
+  var monthDay = parseDateFromTitlePrefix_(prospectName);
+  return monthDay ? resolveYearForMonthDay_(monthDay, ceilingDate) : ceilingDate;
+}
+
+/**
  * Scores every unscored "<video title> — Transcript" Doc across
  * PHASE2_CONFIG.SEAN_FOLDERS against the stricter Sean rubric and appends one
  * "Sales Call Log" row per call — same appendRow shape and same
@@ -1314,7 +1479,7 @@ function scoreSeanTranscripts() {
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
         var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = file.getDateCreated();
+        var callDate = resolveRealCallDate_(folder, prospectName, file);
         var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
         var key = normalize_(prospectName) + '|' + dateStr;
         if (existing[key]) { skippedExisting++; continue; }
@@ -1461,7 +1626,7 @@ function scoreJoanaTranscripts() {
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
         var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = file.getDateCreated();
+        var callDate = resolveRealCallDate_(folder, prospectName, file);
         var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
         var key = normalize_(prospectName) + '|' + dateStr;
         if (existing[key]) { skippedExisting++; continue; }
@@ -1853,7 +2018,7 @@ function scoreTomasTranscripts() {
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
         var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = file.getDateCreated();
+        var callDate = resolveRealCallDate_(folder, prospectName, file);
         var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
         var key = normalize_(prospectName) + '|' + dateStr;
         if (existing[key]) { skippedExisting++; continue; }

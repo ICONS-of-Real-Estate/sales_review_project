@@ -171,6 +171,76 @@ test('pickDuplicateRowsToDelete_ groups separately per rep even with the same na
   assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
 });
 
+// Plain object returns here come from the vm sandbox's own realm (see
+// gas_env.js's Date comment) — assert.deepEqual's constructor-identity check
+// fails against this file's plain object literals for realm reasons, not a
+// real mismatch, so compare fields individually, same workaround as the
+// other cross-realm tests above.
+test('parseDateFromTitlePrefix_ extracts M/D from Sean/Tomás-style titles', () => {
+  const a = gas.parseDateFromTitlePrefix_('1/21 Anthony Camperi');
+  assert.equal(a.month, 1); assert.equal(a.day, 21);
+  const b = gas.parseDateFromTitlePrefix_('6/3  Tyrone Mingo');
+  assert.equal(b.month, 6); assert.equal(b.day, 3);
+  const c = gas.parseDateFromTitlePrefix_('07/13  Patrick Beam');
+  assert.equal(c.month, 7); assert.equal(c.day, 13);
+});
+
+test('parseDateFromTitlePrefix_ returns null for titles with no date prefix (Joana\'s convention)', () => {
+  assert.equal(gas.parseDateFromTitlePrefix_('Kelli Eggen QC & SC.mp4'), null);
+  assert.equal(gas.parseDateFromTitlePrefix_('Will Salinas SC.mp4'), null);
+});
+
+test('parseDateFromTitlePrefix_ rejects an out-of-range month/day rather than misparsing something else that looks like M/D', () => {
+  assert.equal(gas.parseDateFromTitlePrefix_('13/40 Not A Date'), null);
+});
+
+test('resolveYearForMonthDay_ uses the ceiling date\'s own year when the month/day already falls on or before it', () => {
+  // Video uploaded 2026-08-21; call on 1/21 -> clearly earlier the same year.
+  const result = gas.resolveYearForMonthDay_({ month: 1, day: 21 }, new gas.Date(2026, 7, 21));
+  assert.equal(result.getFullYear(), 2026);
+  assert.equal(result.getMonth(), 0);
+  assert.equal(result.getDate(), 21);
+});
+
+test('resolveYearForMonthDay_ steps back a year when the same-year candidate would be in the future relative to the ceiling', () => {
+  // Video uploaded 2026-02-01; a "12/15" call can't have happened in the same
+  // year AFTER the upload -- must be 12/15 of the PRIOR year.
+  const result = gas.resolveYearForMonthDay_({ month: 12, day: 15 }, new gas.Date(2026, 1, 1));
+  assert.equal(result.getFullYear(), 2025);
+});
+
+test('resolveRealCallDate_ prefers a parsed title date over the sibling video\'s own date (Sean/Tomás convention)', () => {
+  const fakeFolder = {
+    getFilesByName: () => ({
+      hasNext: () => true,
+      next: () => ({ getDateCreated: () => new gas.Date(2026, 7, 20) }) // video uploaded 8/20, well after the call
+    })
+  };
+  const fakeTranscriptFile = { getDateCreated: () => new gas.Date(2026, 7, 21) }; // transcribed even later
+  const result = gas.resolveRealCallDate_(fakeFolder, '1/21 Anthony Camperi', fakeTranscriptFile);
+  assert.equal(result.getFullYear(), 2026);
+  assert.equal(result.getMonth(), 0);
+  assert.equal(result.getDate(), 21);
+});
+
+test('resolveRealCallDate_ falls back to the sibling video\'s own date when the title has no date (Joana\'s convention)', () => {
+  const videoDate = new gas.Date(2026, 7, 11); // real upload date
+  const fakeFolder = {
+    getFilesByName: () => ({ hasNext: () => true, next: () => ({ getDateCreated: () => videoDate }) })
+  };
+  const fakeTranscriptFile = { getDateCreated: () => new gas.Date(2026, 7, 21) }; // transcribed 10 days later
+  const result = gas.resolveRealCallDate_(fakeFolder, 'Kelli Eggen QC & SC.mp4', fakeTranscriptFile);
+  assert.equal(result.getTime(), videoDate.getTime());
+});
+
+test('resolveRealCallDate_ falls back to the transcript\'s own date only when no sibling video is found at all', () => {
+  const fakeFolder = { getFilesByName: () => ({ hasNext: () => false }) };
+  const transcriptDate = new gas.Date(2026, 7, 21);
+  const fakeTranscriptFile = { getDateCreated: () => transcriptDate };
+  const result = gas.resolveRealCallDate_(fakeFolder, 'Some Orphaned Transcript', fakeTranscriptFile);
+  assert.equal(result.getTime(), transcriptDate.getTime());
+});
+
 test('computeAgreementStats_ returns kappa=1 for perfect agreement', () => {
   const stats = gas.computeAgreementStats_(10, 0, 0, 10);
   assert.equal(stats.n, 20);
