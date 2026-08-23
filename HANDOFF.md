@@ -1,3 +1,39 @@
+# Handoff — 23/08/2026 (session 6 addendum — CRITICAL: Call Date bug, all three reps)
+
+## -1. Read this first, even before section 0 below
+
+**A second, unrelated critical bug found later the same session, while spot-
+checking Joana's first-ever scored calls**: `scoreSeanTranscripts()`,
+`scoreJoanaTranscripts()`, and `scoreTomasTranscripts()` all wrote **Call
+Date as the TRANSCRIPT DOC's own creation date** (whenever the
+Whisper/Gemini pipeline happened to transcribe it) instead of the real call
+date. Confirmed live: Sean's own Prospect Names literally start with the
+real date ("1/21 Anthony Camperi"), but the row showed a Call Date from
+days/weeks later — the day of a bulk backlog transcription run. **This
+silently corrupts every date-based feature**: weekly scorecard
+week-bucketing, the rolling 4-week average added this session, the
+dashboard's score-over-time chart — a whole backlog transcribed in one
+sitting reads as "all happened this week." Bens is unaffected (his date
+comes from the legacy filename directly).
+
+**Fixed** (`f7830a0`): new `resolveRealCallDate_()` parses a real date out
+of Sean's/Tomás's title convention ("M/D Name"), or falls back to the
+paired original video's own upload date for Joana (whose titles have no
+date at all) — never the transcript doc's creation date. Wired into all
+three scoring functions.
+
+**NOT yet run — needs Kris, from the Apps Script editor**:
+`previewCallDateRepair()` then `repairCallDates()` — one-time repair that
+re-derives the correct Call Date for every already-scored Sean/Joana/Tomás
+row and corrects the ones that are wrong (likely most of Sean's 131 rows,
+Tomás's 80, and every one of Joana's ~15+ so far — check the preview count).
+This needs live Drive access to find each row's paired video, so it can
+only run from the editor, not from a Claude session. **Run this before
+trusting any date-bucketed report (weekly scorecard, dashboard charts) for
+these three reps.**
+
+---
+
 # Handoff — 23/08/2026 (session 6 — CRITICAL: legacy backfill duplicate-row bug + Joana fix)
 
 ## 0. What happened this session (read this first)
