@@ -817,6 +817,104 @@ function deleteBensLegacyRows() {
 }
 
 /**
+ * ONE-TIME cleanup (23/08/2026): the runAllLegacyBackfills_ mutex race (fixed
+ * above the same day) let concurrent executions each re-score the same early
+ * files in Bens' folder against a stale "what's already scored" snapshot —
+ * confirmed live: 316 Bens rows for what should have been 14 distinct
+ * transcripts, one duplicated up to 35 times. Pure grouping logic pulled out
+ * as pickDuplicateRowsToDelete_ so it's unit-testable without a live sheet.
+ *
+ * Within each duplicate group, keeps the row most likely to carry real human
+ * work rather than just the first one written: a row with a real Kris
+ * Manual Review Verdict (Yes/No) wins first, then a row marked Reviewed By
+ * Kris, then simply the lowest row number (oldest = least likely to be a
+ * still-mid-flight duplicate write). Everything else in the group is
+ * deleted. Scoped to Match Method = 'fallback_heuristic' rows only, same as
+ * deleteBensLegacyRows() above — never touches a real exact_key-matched row.
+ */
+function pickDuplicateRowsToDelete_(rows) {
+  var groups = {};
+  rows.forEach(function (r) {
+    if (r.matchMethod !== 'fallback_heuristic') return;
+    var key = r.rep + '|' + normalize_(r.prospectName) + '|' + r.dateKey;
+    (groups[key] = groups[key] || []).push(r);
+  });
+
+  function rowRank(r) {
+    if (r.krisVerdict === 'Yes' || r.krisVerdict === 'No') return 0;
+    if (r.reviewedByKris) return 1;
+    return 2;
+  }
+
+  var toDelete = [];
+  Object.keys(groups).forEach(function (key) {
+    var group = groups[key];
+    if (group.length < 2) return;
+    var sorted = group.slice().sort(function (a, b) {
+      var rankDiff = rowRank(a) - rowRank(b);
+      if (rankDiff !== 0) return rankDiff;
+      return a.rowIndex - b.rowIndex;
+    });
+    // sorted[0] is the keeper; everything else in this group is a duplicate.
+    sorted.slice(1).forEach(function (r) { toDelete.push(r); });
+  });
+  return toDelete;
+}
+
+/** Run this FIRST — logs what dedupeLegacyBackfillDuplicates() would delete, deletes nothing. */
+function previewLegacyBackfillDuplicates() {
+  RUN_TAG = 'previewLegacyBackfillDuplicates';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var toDelete = findLegacyBackfillDuplicates_(sheet);
+  if (!toDelete.length) { log_('No duplicate legacy-backfill rows found.'); return; }
+  log_('Found ' + toDelete.length + ' duplicate row(s) that dedupeLegacyBackfillDuplicates() would delete:');
+  toDelete.forEach(function (r) {
+    log_('  Row ' + r.rowIndex + ': "' + r.prospectName + '" (' + r.dateKey + ', ' + r.rep + ')');
+  });
+}
+
+function findLegacyBackfillDuplicates_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var col = getValidatedColumnMap_(sheet);
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var rows = values.map(function (row, i) {
+    var date = row[col['Call Date'] - 1];
+    var dateKey = date instanceof Date ? Utilities.formatDate(date, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd') : String(date || '');
+    return {
+      rowIndex: i + 2,
+      rep: row[col['Rep'] - 1],
+      prospectName: row[col['Prospect Name'] - 1],
+      dateKey: dateKey,
+      matchMethod: row[col['Match Method'] - 1],
+      reviewedByKris: !!row[col['Reviewed By Kris'] - 1],
+      krisVerdict: String(row[col['Kris Manual Review Verdict'] - 1] || '').trim()
+    };
+  });
+  return pickDuplicateRowsToDelete_(rows);
+}
+
+/** Run previewLegacyBackfillDuplicates() first. Deletes every row it identified as a duplicate. */
+function dedupeLegacyBackfillDuplicates() {
+  RUN_TAG = 'dedupeLegacyBackfillDuplicates';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var toDelete = findLegacyBackfillDuplicates_(sheet);
+  if (!toDelete.length) { log_('No duplicate legacy-backfill rows found — nothing to delete.'); return; }
+
+  // Bottom-to-top so deleteRow() doesn't shift the indices of rows not yet visited.
+  toDelete.sort(function (a, b) { return b.rowIndex - a.rowIndex; });
+  toDelete.forEach(function (r) {
+    sheet.deleteRow(r.rowIndex);
+    log_('  Deleted row ' + r.rowIndex + ': "' + r.prospectName + '" (' + r.dateKey + ', ' + r.rep + ')');
+  });
+  log_('dedupeLegacyBackfillDuplicates() done — deleted ' + toDelete.length + ' duplicate row(s).');
+}
+
+/**
  * Same wrapper for Joana, against the shared rubric (she is not on the
  * stricter Sean variant — same funnel/objection shape as Bens). Safely a
  * no-op (scoreLegacyTranscriptFolder logs and returns) until
@@ -968,6 +1066,17 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         '',                              // Kris Manual Review Verdict — not yet judged
         result.primary_failure_mode || 'none' // Primary Failure Mode
       ]);
+
+      // Real bug found live (23/08/2026): this in-memory update was missing
+      // here even though loadExistingLegacyKeys_'s whole purpose is
+      // per-file dedup — Joana's separate copy of this loop (scoreJoanaTranscripts)
+      // already did this correctly. Without it, two files in the same folder
+      // pass that parse to the same (name, date) key would both get scored
+      // and appended in a single run. The dominant cause of the ~300 duplicate
+      // Bens rows found the same day was actually concurrent executions (see
+      // the atomic-mutex fix on runAllLegacyBackfills_ below), but this was a
+      // real, separate gap worth closing regardless.
+      existing[key] = true;
 
       log_('  Scored "' + parsed.prospectName + '" (' + parsed.dateStr + '): ' +
         result.lead_quality.verdict + ', score ' + result.call_quality_score +
@@ -1447,24 +1556,67 @@ function scoreJoanaTranscripts() {
  * gets killed mid-run without reaching the `finally`: 30 minutes stale is
  * strictly longer than any real execution can last, so a flag older than
  * that is never a real in-progress run.
+ *
+ * Real bug found live (23/08/2026), and confirmed in the actual Sales Call
+ * Log — this mutex's check-then-set was NOT atomic. installLegacyBackfillTrigger()
+ * not deduping its own trigger (fixed separately, same day) meant several
+ * copies of this trigger could exist, firing close enough together that
+ * multiple executions could each call getProperty() and see the gate as
+ * free before any of them called setProperty() — each then proceeded
+ * concurrently with its own stale "what's already scored" snapshot. Bens'
+ * legacy scorer has no lock of its own (see above), so it took the hit:
+ * confirmed 316 rows for what should have been 14 distinct transcripts, the
+ * earliest-iterated files duplicated up to 35 times. Sean/Joana were
+ * protected from the same fate by their own internal LockService locks.
+ * Fixed by making the check-and-set itself atomic with a short-lived
+ * LockService hold, released immediately after — NOT held across the actual
+ * scoring calls below, so it can never nest with scoreJoanaTranscripts_'s/
+ * scoreSeanTranscripts_'s own internal lock.tryLock() on the same script lock.
+ *
+ * Real bug found live (23/08/2026): Joana has no dedicated scoring trigger
+ * of her own the way Sean/Tomás do (installSeanScoringAutomation(),
+ * installTomasScoringAutomation()) — this function is the ONLY path that
+ * ever calls scoreJoanaTranscripts(), and it ran AFTER Bens. Bens' real
+ * backlog alone (14 distinct transcripts, ~2-4 min each via the Kimi API)
+ * already exceeds this account's 30-minute execution cap on a single clean
+ * pass, so this almost certainly timed out inside Bens' loop on every
+ * firing and never reached Joana at all — confirmed live: Joana has zero
+ * rows in the Sales Call Log. Reordered so Joana (and Sean, who's
+ * self-healing via his own separate trigger anyway) get a chance before
+ * Bens can starve the rest of the execution budget.
  */
 function runAllLegacyBackfills_() {
   var props = PropertiesService.getScriptProperties();
   var lockKey = 'LEGACY_BACKFILL_RUNNING_SINCE';
-  var runningSince = props.getProperty(lockKey);
   var now = Date.now();
 
-  if (runningSince && (now - Number(runningSince)) < 30 * 60 * 1000) {
-    log_('runAllLegacyBackfills_: a previous firing is still running (started ' +
-      new Date(Number(runningSince)) + ') — skipping this firing to avoid double-scoring a call.');
+  // Brief real lock, held only long enough to make the check-and-set atomic —
+  // released before any actual scoring runs, so it never overlaps with
+  // scoreJoanaTranscripts_/scoreSeanTranscripts_'s own internal script lock.
+  var gate = LockService.getScriptLock();
+  if (!gate.tryLock(5 * 1000)) {
+    log_('runAllLegacyBackfills_: could not acquire the gate lock within 5s — skipping this firing.');
     return;
   }
-
-  props.setProperty(lockKey, String(now));
+  var shouldRun = false;
   try {
-    scoreBensLegacyTranscripts();
+    var runningSince = props.getProperty(lockKey);
+    if (runningSince && (now - Number(runningSince)) < 30 * 60 * 1000) {
+      log_('runAllLegacyBackfills_: a previous firing is still running (started ' +
+        new Date(Number(runningSince)) + ') — skipping this firing to avoid double-scoring a call.');
+    } else {
+      props.setProperty(lockKey, String(now));
+      shouldRun = true;
+    }
+  } finally {
+    gate.releaseLock();
+  }
+  if (!shouldRun) return;
+
+  try {
     scoreJoanaTranscripts();
     scoreSeanTranscripts();
+    scoreBensLegacyTranscripts();
   } finally {
     props.deleteProperty(lockKey);
   }
@@ -1776,6 +1928,23 @@ function installTomasScoringAutomation() {
   RUN_TAG = 'installTomasScoringAutomation';
   reinstallHourlyTrigger_('scoreTomasTranscripts', 4);
   log_('Tomás auto-scoring installed: scoreTomasTranscripts() now runs every 4 hours.');
+}
+
+/**
+ * Real gap found live (23/08/2026): unlike Sean/Tomás, Joana never had a
+ * dedicated scoring trigger of her own — scoreJoanaTranscripts() was ONLY
+ * ever reachable through runAllLegacyBackfills_, sequentially after Bens'
+ * legacy folder, which alone can exceed this account's 30-minute execution
+ * cap. Confirmed live: zero Joana rows in the Sales Call Log. This gives her
+ * the same standalone cadence Sean/Tomás already have, independent of
+ * whatever state the temporary Bens/Sean/Joana backfill trigger is in.
+ * ONE-TIME setup — select installJoanaScoringAutomation in the Apps Script
+ * editor's "Select function" dropdown and run it once.
+ */
+function installJoanaScoringAutomation() {
+  RUN_TAG = 'installJoanaScoringAutomation';
+  reinstallHourlyTrigger_('scoreJoanaTranscripts', 4);
+  log_('Joana auto-scoring installed: scoreJoanaTranscripts() now runs every 4 hours.');
 }
 
 /**

@@ -1,3 +1,75 @@
+# Handoff — 23/08/2026 (session 6 — CRITICAL: legacy backfill duplicate-row bug + Joana fix)
+
+## 0. What happened this session (read this first)
+
+**Real, severe bug found live and fixed — verify the fix actually stopped it
+before trusting Bens' numbers for anything.** Pulled the actual Sales Call
+Log directly (not just the Executions log summary) and confirmed:
+
+- **Bens: 316 rows for what should be 14 distinct transcripts.** One
+  prospect/date pair was duplicated up to 35 times. Root cause:
+  `installLegacyBackfillTrigger()` not deduping its own trigger (found
+  earlier this session, already fixed) meant multiple copies of the
+  10-minute trigger could exist; `runAllLegacyBackfills_`'s own mutex was a
+  plain `getProperty`/`setProperty` check, not atomic, so several
+  overlapping firings could each see the gate as free before any of them
+  set it, then each proceeded with its own stale "what's already scored"
+  snapshot. Bens' legacy scorer has no lock of its own (Sean/Joana's own
+  functions do, via their own internal `LockService` calls — that's why
+  only Bens took the hit).
+- **Joana: zero rows, still.** `scoreJoanaTranscripts()` is only ever
+  reachable through `runAllLegacyBackfills_`, which ran Bens FIRST — and
+  Bens' real backlog alone (14 files × ~2-4 min via Kimi) already exceeds
+  the 30-minute execution cap on a clean pass, so the function almost
+  certainly timed out inside Bens' loop every single firing and never
+  reached Joana at all.
+
+**Fixed this session** (commit after this note):
+1. `runAllLegacyBackfills_`'s mutex is now atomic — a brief real
+   `LockService` hold around just the check-and-set, released before any
+   actual scoring runs (so it never nests with Joana/Sean's own internal
+   locks).
+2. Reordered to Joana → Sean → Bens so Bens can't starve the others.
+3. **Joana now has her own dedicated 4-hour trigger**
+   (`installJoanaScoringAutomation()`, wired into `installAllReadyTriggers_`)
+   — same pattern as Sean/Tomás, no longer solely dependent on the fragile
+   temporary backfill chain. **Needs to actually be run once** (or just
+   re-run `installAllReadyTriggers_()`).
+4. Fixed a real missing-line bug: `scoreLegacyTranscriptFolder` (Bens' path)
+   never updated its in-memory dedup set after appending a row — Joana's
+   separate copy of this loop already did. Closed for consistency/defense
+   in depth, though the dominant cause of the duplication was #1 above, not
+   this.
+5. **New cleanup functions, not yet run**: `previewLegacyBackfillDuplicates()`
+   then `dedupeLegacyBackfillDuplicates()` — finds every duplicate
+   (rep, prospect, date) group among `fallback_heuristic` rows and deletes
+   all but one (preferring a row with a real Kris verdict if any duplicate
+   in the group has one, else the lowest row number). **Run the preview
+   first and sanity-check the count (~302 expected) before running the live
+   version** — this permanently deletes rows.
+
+**Not done / needs Kris**:
+- Deploy: `git pull` + `clasp push`, then re-run `installAllReadyTriggers_()`
+  to pick up Joana's new dedicated trigger.
+- Run `previewLegacyBackfillDuplicates()` → `dedupeLegacyBackfillDuplicates()`
+  to clean up the ~302 duplicate Bens rows already written — until this
+  runs, every downstream number for Bens (dashboard averages, weekly
+  scorecard, review queue) is skewed by the duplication.
+- Check whether `installLegacyBackfillTrigger()` still has duplicate copies
+  stacked live (Triggers page, clock icon) — the dedupe fix from earlier
+  this session only prevents new stacking, doesn't clean up what's already
+  there.
+- **Separately, Sean's Daily Practice folder**
+  (`1SJJ5Jek_4vEzmS907NQofDYq6bl-Mnr1`) has two practice uploads (260820,
+  260821) sitting ungraded — `tools/transcribe_daily_practice.py` has never
+  been run for them (it's not part of the automated OVH `transcribe-all.timer`
+  job, still fully manual), so no `"— Transcript"` Doc exists yet for Phase
+  7's grading scan to find. Needs someone to run that script by hand (needs
+  `GEMINI_API_KEY` + Drive credentials) — worth also considering wiring it
+  into the OVH automation so this doesn't keep silently stalling.
+
+---
+
 # Handoff — 23/08/2026 (session 5 — acting on the QA/coaching research report)
 
 ## 0. What happened this session (read this first)

@@ -122,6 +122,55 @@ test('pickRandomSample_ returns empty for an empty pool or n=0', () => {
   assert.equal(gas.pickRandomSample_(['a'], 0, () => 0).length, 0);
 });
 
+test('pickDuplicateRowsToDelete_ leaves distinct (rep, name, date) rows alone', () => {
+  const rows = [
+    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Bens', prospectName: 'B', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+  ];
+  assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
+});
+
+test('pickDuplicateRowsToDelete_ never touches exact_key rows, even with a repeated (name, date)', () => {
+  const rows = [
+    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' }
+  ];
+  assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
+});
+
+test('pickDuplicateRowsToDelete_ keeps the lowest row number among otherwise-equal duplicates, deletes the rest', () => {
+  const rows = [
+    { rowIndex: 5, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 9, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+  ];
+  const toDelete = gas.pickDuplicateRowsToDelete_(rows);
+  assert.equal(toDelete.length, 2);
+  // .map/.sort on an array from the vm sandbox's realm still return a
+  // sandbox-realm array (species-constructed) — deepEqual's constructor
+  // check fails against this file's plain array literal for realm reasons,
+  // not a real mismatch, same workaround as the other cross-realm tests above.
+  assert.deepEqual(Array.prototype.slice.call(toDelete.map((r) => r.rowIndex)).sort(), [5, 9]);
+});
+
+test('pickDuplicateRowsToDelete_ preserves a row with a real Kris verdict over an unreviewed duplicate, regardless of row order', () => {
+  const rows = [
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 20, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: true, krisVerdict: 'Yes' }
+  ];
+  const toDelete = gas.pickDuplicateRowsToDelete_(rows);
+  assert.equal(toDelete.length, 1);
+  assert.equal(toDelete[0].rowIndex, 2, 'should delete the unreviewed row, keeping the one with a real Kris verdict');
+});
+
+test('pickDuplicateRowsToDelete_ groups separately per rep even with the same name/date', () => {
+  const rows = [
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Chad Davis', dateKey: '2026-08-11', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Sean', prospectName: 'Chad Davis', dateKey: '2026-08-11', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+  ];
+  assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
+});
+
 test('computeAgreementStats_ returns kappa=1 for perfect agreement', () => {
   const stats = gas.computeAgreementStats_(10, 0, 0, 10);
   assert.equal(stats.n, 20);
