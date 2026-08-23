@@ -9,20 +9,25 @@
   {% endif %}
 </span>
 
-<h2>Leaderboard</h2>
+<h2>Progress</h2>
+<p class="muted">Each rep vs. their own baseline — not a ranking. "Recent" is each rep's last {{ leaderboard_recent_calls }} scored calls; "Prior" is everything before that.</p>
 <table>
-  <thead><tr><th>#</th><th>Rep</th><th>Avg score</th><th>Asked for close</th><th>Objections handled</th></tr></thead>
+  <thead><tr><th>Rep</th><th>Recent avg</th><th>Prior avg</th><th>Change</th></tr></thead>
   <tbody>
     {% for r in leaderboard %}
     <tr>
-      <td>{{ loop.index }}</td>
       <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
-      <td>{{ r.avg_score }}</td>
-      <td>{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</td>
-      <td>{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</td>
+      <td>{{ r.recent_avg if r.recent_avg is not none else "—" }}{% if r.recent_count %} <span class="muted">(n={{ r.recent_count }})</span>{% endif %}</td>
+      <td>{{ r.prior_avg if r.prior_avg is not none else "not enough history yet" }}{% if r.prior_count %} <span class="muted">(n={{ r.prior_count }})</span>{% endif %}</td>
+      <td>
+        {% if r.delta is not none %}
+          {% if r.delta > 0.05 %}▲{% elif r.delta < -0.05 %}▼{% else %}–{% endif %}
+          {{ "+%.2f"|format(r.delta) if r.delta >= 0 else "%.2f"|format(r.delta) }}
+        {% else %}—{% endif %}
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="muted">No scored calls yet.</td></tr>
+    <tr><td colspan="4" class="muted">No scored calls yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

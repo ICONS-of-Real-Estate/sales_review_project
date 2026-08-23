@@ -448,12 +448,56 @@ def daily_practice_status():
     return [dict(r) for r in rows]
 
 
+# QA_COACHING_RESEARCH_REPORT.md's "five things" #4: at 3-4 reps, a ranked
+# cross-rep leaderboard structurally punishes whoever's last every single
+# week, forever — there's no version of "last of 3" that isn't demoralizing,
+# regardless of how much everyone actually improved. "Recent" here means each
+# rep's own most recent N scored calls, not a calendar window, so a rep with
+# a sparse call volume still gets a real comparison instead of an empty bucket.
+LEADERBOARD_RECENT_CALLS = 10
+
+
 def leaderboard():
-    """Simple rep ranking by avg score then close rate — reuses rep_summary()
-    rather than re-querying, just re-sorted for a leaderboard framing."""
-    reps = [r for r in rep_summary() if r["avg_score"] is not None]
-    reps.sort(key=lambda r: (r["avg_score"], r["pct_asked_for_close"] or 0), reverse=True)
-    return reps
+    """Self-comparison, not cross-rep ranking: each rep's own recent average
+    against their own prior average, so the number a rep sees is "am I
+    improving on my own baseline" rather than "who's ahead of whom." Sorted
+    alphabetically by rep — deliberately NOT by score or by improvement, so
+    the list itself doesn't read as a ranking regardless of column order."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, call_date, call_quality_score FROM sales_call_log "
+        "WHERE rep IS NOT NULL AND rep != '' AND call_quality_score IS NOT NULL"
+    ).fetchall()
+    conn.close()
+
+    by_rep = {}
+    for r in rows:
+        d = parse_call_date(r["call_date"])
+        if d is None:
+            continue
+        by_rep.setdefault(r["rep"], []).append((d, r["call_quality_score"]))
+
+    out = []
+    for rep, calls in by_rep.items():
+        calls.sort(key=lambda c: c[0])  # oldest first, so "recent" = the tail
+        recent = calls[-LEADERBOARD_RECENT_CALLS:]
+        prior = calls[:-LEADERBOARD_RECENT_CALLS] if len(calls) > LEADERBOARD_RECENT_CALLS else []
+        recent_avg = round(sum(s for _, s in recent) / len(recent), 2) if recent else None
+        prior_avg = round(sum(s for _, s in prior) / len(prior), 2) if prior else None
+        delta = round(recent_avg - prior_avg, 2) if recent_avg is not None and prior_avg is not None else None
+        out.append(
+            {
+                "rep": rep,
+                "recent_avg": recent_avg,
+                "recent_count": len(recent),
+                "prior_avg": prior_avg,
+                "prior_count": len(prior),
+                "delta": delta,
+                "total_calls": len(calls),
+            }
+        )
+    out.sort(key=lambda r: r["rep"])
+    return out
 
 
 def rep_detail(rep):
@@ -702,6 +746,7 @@ def training_page(request: Request, q: str = ""):
             "assignments": training_assignments(),
             "practice_status": daily_practice_status(),
             "leaderboard": leaderboard(),
+            "leaderboard_recent_calls": LEADERBOARD_RECENT_CALLS,
             "playbooks": playbook_docs,
             "query": q,
             "search_results": search_playbooks(DB_PATH, q) if q else [],

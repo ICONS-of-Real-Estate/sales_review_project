@@ -225,13 +225,46 @@ class TestRepDetail:
 
 
 class TestLeaderboard:
+    """Self-comparison, not a cross-rep ranking (QA_COACHING_RESEARCH_REPORT.md
+    "five things" #4) — each rep's own recent-N-calls average against their
+    own prior average."""
+
     def test_excludes_reps_with_no_scored_calls(self, db_path, conn):
         insert_call(conn, rep="Henry", call_quality_score=None)
         conn.commit()
         board = app_module.leaderboard()
         assert not any(r["rep"] == "Henry" for r in board)
 
-    def test_sorted_best_first(self, seeded_db):
+    def test_sorted_alphabetically_not_by_score(self, seeded_db):
+        # Deliberately not sorted by any score field — a self-comparison
+        # list shouldn't read as a ranking even by accident of ordering.
         board = app_module.leaderboard()
-        avgs = [r["avg_score"] for r in board]
-        assert avgs == sorted(avgs, reverse=True)
+        assert [r["rep"] for r in board] == sorted(r["rep"] for r in board)
+        for r in board:
+            assert "avg_score" not in r
+            assert "recent_avg" in r and "prior_avg" in r and "delta" in r
+
+    def test_prior_avg_is_none_below_the_recent_window(self, db_path, conn):
+        # Fewer scored calls than LEADERBOARD_RECENT_CALLS -> everything is
+        # "recent", there's no prior baseline to compare against yet.
+        for i in range(3):
+            insert_call(conn, rep="Dana", call_quality_score=4, call_date=f"0{i + 1}/07/2026")
+        conn.commit()
+        dana = {r["rep"]: r for r in app_module.leaderboard()}["Dana"]
+        assert dana["recent_count"] == 3
+        assert dana["prior_avg"] is None
+        assert dana["delta"] is None
+
+    def test_delta_compares_recent_window_against_everything_before_it(self, db_path, conn):
+        # 2 old calls scoring 1, then LEADERBOARD_RECENT_CALLS (10) calls scoring 5.
+        for i in range(2):
+            insert_call(conn, rep="Erin", call_quality_score=1, call_date=f"0{i + 1}/01/2026")
+        for i in range(app_module.LEADERBOARD_RECENT_CALLS):
+            insert_call(conn, rep="Erin", call_quality_score=5, call_date=f"{i + 1:02d}/07/2026")
+        conn.commit()
+        erin = {r["rep"]: r for r in app_module.leaderboard()}["Erin"]
+        assert erin["prior_count"] == 2
+        assert erin["prior_avg"] == 1
+        assert erin["recent_count"] == app_module.LEADERBOARD_RECENT_CALLS
+        assert erin["recent_avg"] == 5
+        assert erin["delta"] == 4
