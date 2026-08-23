@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Loads the three .gs files the way Apps Script actually runs them: all
+ * Loads the .gs files listed below the way Apps Script actually runs them: all
  * concatenated into one shared global scope (that's why they freely
  * cross-reference each other's functions/vars with no import statements —
  * see the file-header comments in Phase2_CallScoring.gs). Runs the concatenated source inside a Node vm
@@ -24,7 +24,8 @@ const vm = require('vm');
 const GAS_FILES = [
   'Phase1_ComplianceCheck.gs',
   'Phase2_CallScoring.gs',
-  'Phase5_WeeklyScorecard.gs'
+  'Phase5_WeeklyScorecard.gs',
+  'Phase7_DailySelfPractice.gs'
 ];
 
 function stubApi(name) {

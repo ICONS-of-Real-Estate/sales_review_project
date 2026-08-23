@@ -330,7 +330,10 @@ function buildJudgeSystemPrompt_() {
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | both",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
-    '  "feedback_summary": "string — 2-3 sentences, coaching-ready"',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
+    '    words from the transcript for the single most important moment (a real line they actually said,',
+    '    in quotation marks) before saying anything else — a specific moment lands, a bare evaluation does',
+    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name."',
     '}'
   ].join('\n');
 }
@@ -674,7 +677,10 @@ function buildBensJudgeSystemPrompt_() {
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
     '  "feedback_summary": "string — 4-6 sentences, coaching-ready, must cover: objection handling, whether he',
-    '   asked to book a next step, whether it got booked, discovery quality, and (for interviews) content quality"',
+    '   asked to book a next step, whether it got booked, discovery quality, and (for interviews) content quality.',
+    '   MUST open by quoting his own words from the transcript for the single most important moment before',
+    '   saying anything else. End with ONE specific behavior to change, not a list. Never compare him to any',
+    '   other rep by name."',
     '}'
   ].join('\n');
 }
@@ -1049,7 +1055,9 @@ function buildSeanJudgeSystemPrompt_() {
     '  "severity": 1,',
     '  "feedback_summary": "string — 4-6 sentences, coaching-ready, must explicitly cover: objection',
     '   handling, whether he asked for the money, why a second call with Tomás was/wasn\'t booked, discovery',
-    '   quality, goal-alignment, and the root cause if nothing closed"',
+    '   quality, goal-alignment, and the root cause if nothing closed. MUST open by quoting his own words',
+    '   from the transcript for the single most important moment before saying anything else. End with ONE',
+    '   specific behavior to change, not a list. Never compare him to any other rep by name."',
     '}'
   ].join('\n');
 }
@@ -1552,7 +1560,10 @@ function buildTomasJudgeSystemPrompt_() {
     '  "coach_this": "string",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
-    '  "feedback_summary": "string — 2-3 sentences, coaching-ready"',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
+    '    words from the transcript for the single most important moment (a real line they actually said,',
+    '    in quotation marks) before saying anything else — a specific moment lands, a bare evaluation does',
+    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name."',
     '}'
   ].join('\n');
 }

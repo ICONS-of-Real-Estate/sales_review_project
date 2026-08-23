@@ -138,7 +138,11 @@ function buildDailyPracticeSystemPrompt_() {
     '  "delivery_quality": "confident | hesitant | mixed",',
     '  "overall_score": 1,',
     '  "sharpen_next": "string — one concrete, specific thing to work on next",',
-    '  "feedback_summary": "string — 3-4 sentences, coaching-ready, addressed to the rep directly"',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready, addressed to the rep directly. MUST',
+    '    open by quoting their own words from the transcript for the single most important moment (a real',
+    '    line they actually said, in quotation marks) before saying anything else — task-level feedback',
+    '    tied to a specific moment lands, a bare evaluation of the person does not. Never compare this rep',
+    '    to any other rep by name."',
     '}'
   ].join('\n');
 }
@@ -195,20 +199,31 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
   };
 }
 
+/**
+ * QA_COACHING_RESEARCH_REPORT.md §2.1: task-level feedback ("your second
+ * question closed off the discovery") helps; person-level feedback ("you
+ * scored 2/5") often hurts, because it's self-directed and evaluative with
+ * no task detail to act on. This leads with the judge's quoted-moment
+ * feedback_summary and the single sharpen_next behavior, and pushes the
+ * score/technique/delivery breakdown below the fold as a "for the record"
+ * section rather than the headline — same information, reordered so the
+ * first thing a rep reads is a concrete moment, not a number.
+ */
 function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
-  var subject = 'Practice Drill Feedback — ' + fileName + ' (' + result.overall_score + '/5)';
+  var subject = 'Practice Drill Feedback — ' + fileName;
   var focusLine = result.drill_type === 'close_ask'
     ? 'Drill: Asking for the money'
     : 'Objection practiced: ' + result.objection_type;
   var body =
     'Hi ' + rep + ',\n\n' +
-    'Feedback on today\'s practice drill ("' + fileName + '"):\n\n' +
+    'On today\'s practice drill ("' + fileName + '"):\n\n' +
+    result.feedback_summary + '\n\n' +
+    'One thing to sharpen next: ' + result.sharpen_next + '\n\n' +
+    '— For the record —\n' +
     focusLine + '\n' +
-    'Technique used: ' + (result.technique_used ? 'Yes — ' + result.technique_description : 'No — see below') + '\n' +
+    'Technique used: ' + (result.technique_used ? 'Yes — ' + result.technique_description : 'No') + '\n' +
     'Delivery: ' + result.delivery_quality + '\n' +
     'Score: ' + result.overall_score + '/5\n\n' +
-    result.feedback_summary + '\n\n' +
-    'Sharpen next: ' + result.sharpen_next + '\n\n' +
     '— This is an automated review of your practice drill. Drafted by AI; reply to Kris or Tomás with any issues.';
   return { subject: subject, body: body };
 }

@@ -165,11 +165,12 @@ test('mostFrequent_ picks the most common value, alphabetical tie-break for dete
 // indices are arbitrary as long as they're consistent with the row arrays below.
 const SCORECARD_COL = {
   'Rep': 1, 'Prospect Name': 2, 'Call Date': 3, 'Call Quality Score': 4,
-  'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7
+  'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7,
+  'AI Feedback Summary': 8
 };
 
-function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled }) {
-  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled];
+function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary }) {
+  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || ''];
 }
 
 test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, per rep, and tallies flags/failure modes', () => {
@@ -220,6 +221,62 @@ test('computeRepWeeklyStats_ rolling 4-week average excludes calls older than th
   assert.equal(stats.historicCount, 2);
 });
 
+test('computeRepWeeklyStats_ identifies the week\'s lowest-scoring call as worstCall, carrying its feedback summary', () => {
+  const weekStart = new gas.Date(2026, 7, 10);
+  const weekEnd = new gas.Date(2026, 7, 17);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, feedbackSummary: 'Good call.' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  assert.equal(stats.worstCall.name, 'B');
+  assert.equal(stats.worstCall.score, 2);
+  assert.ok(stats.worstCall.feedbackSummary.indexOf('isolating') !== -1);
+});
+
+test('computeRepWeeklyStats_ worstCall is null when the rep had no calls this week', () => {
+  const weekStart = new gas.Date(2026, 7, 10);
+  const weekEnd = new gas.Date(2026, 7, 17);
+  const stats = gas.computeRepWeeklyStats_([], SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  assert.equal(stats.worstCall, null);
+});
+
+test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushes the score below the fold', () => {
+  const stats = {
+    weekCalls: [{ name: 'Jane Doe', score: 2 }],
+    weeklyAvg: 2,
+    historicAvg: 3,
+    historicAvgBeforeThisWeek: 3.2,
+    historicCount: 10,
+    rolling4WeekAvg: 2.8,
+    rolling4WeekCount: 6,
+    worstCall: { name: 'Jane Doe', score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' },
+    weekFailureModes: ['objections_missed'],
+    weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 }
+  };
+  const repCfg = { name: 'Sean', email: 'sean@example.com' };
+  // buildWeeklyScorecardEmail_ calls Utilities.formatDate purely to render the
+  // week-label string — reassigning the sandbox's global Utilities (stubbed
+  // to throw by default, see gas_env.js) to a minimal real implementation for
+  // just the two format strings this function actually uses.
+  gas.Utilities = {
+    formatDate: (d, tz, fmt) => {
+      const pad = (n) => String(n).padStart(2, '0');
+      if (fmt === 'dd/MM') return pad(d.getDate()) + '/' + pad(d.getMonth() + 1);
+      return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+    }
+  };
+  const email = gas.buildWeeklyScorecardEmail_(repCfg, stats, new gas.Date(2026, 7, 10), new gas.Date(2026, 7, 17), 'UTC');
+
+  const quoteIdx = email.body.indexOf('I guess we could talk price');
+  const scoreIdx = email.body.indexOf('2/5');
+  const forTheRecordIdx = email.body.indexOf('For the record');
+  assert.ok(quoteIdx !== -1, 'expected the worst call\'s quote to appear in the body');
+  assert.ok(forTheRecordIdx !== -1, 'expected a "For the record" section');
+  assert.ok(quoteIdx < forTheRecordIdx, 'quote should appear before the numeric section');
+  assert.ok(scoreIdx > forTheRecordIdx, 'score should appear after the "For the record" marker, not before it');
+});
+
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {
   const stats = {
     weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 2 }],
@@ -240,4 +297,28 @@ test('priorityToImprove_ falls back to the Objections Handled flag when no Prima
 
 test('priorityToImprove_ returns null when the rep had no calls scored this week', () => {
   assert.equal(gas.priorityToImprove_({ weekCalls: [], weekFailureModes: [], weekFlagMiss: {} }), null);
+});
+
+test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, keeps the score out of the subject and body lead', () => {
+  const result = {
+    drill_type: 'objection',
+    objection_type: 'budget',
+    technique_used: true,
+    technique_description: 'Agree/Isolate/Repeat, then cited a case study.',
+    delivery_quality: 'confident',
+    overall_score: 4,
+    sharpen_next: 'Slow down before repeating the objection back.',
+    feedback_summary: '"I mean, it\'s just a lot of money right now" — you agreed and isolated it well, then landed a concrete case study.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Sean', '260823_objection_practice.mp4', result);
+
+  assert.ok(email.subject.indexOf('4/5') === -1, 'subject should not lead with the numeric score');
+  const quoteIdx = email.body.indexOf('a lot of money right now');
+  const forTheRecordIdx = email.body.indexOf('For the record');
+  const scoreIdx = email.body.indexOf('4/5');
+  assert.ok(quoteIdx !== -1, 'expected the quoted feedback summary in the body');
+  assert.ok(forTheRecordIdx !== -1, 'expected a "For the record" section');
+  assert.ok(quoteIdx < forTheRecordIdx, 'quote should come before the numeric section');
+  assert.ok(scoreIdx > forTheRecordIdx, 'score should come after the "For the record" marker');
+  assert.ok(email.body.indexOf(result.sharpen_next) < forTheRecordIdx, 'the one behavior to change should also be above the fold');
 });

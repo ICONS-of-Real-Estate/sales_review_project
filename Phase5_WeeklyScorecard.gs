@@ -124,7 +124,11 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     if (inRolling4Weeks) rolling4WeekScores.push(score);
 
     if (inWeek) {
-      weekCalls.push({ name: row[col['Prospect Name'] - 1] || '(unnamed)', score: score });
+      weekCalls.push({
+        name: row[col['Prospect Name'] - 1] || '(unnamed)',
+        score: score,
+        feedbackSummary: String(row[col['AI Feedback Summary'] - 1] || '').trim()
+      });
       var pfm = String(row[col['Primary Failure Mode'] - 1] || '').trim();
       if (pfm && pfm !== 'none') weekFailureModes.push(pfm);
       if (row[col['Flag: Asked For Close'] - 1] === false) weekFlagMiss.askedForClose++;
@@ -132,6 +136,15 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     } else {
       priorScores.push(score);
     }
+  });
+
+  // Lowest-scoring call of the week, if any — the task-level example the
+  // email leads with (QA_COACHING_RESEARCH_REPORT.md §2.1). First-encountered
+  // wins a tie, which is fine: this only needs to be A real concrete moment,
+  // not THE single worst one by some exact tiebreak.
+  var worstCall = null;
+  weekCalls.forEach(function (c) {
+    if (!worstCall || c.score < worstCall.score) worstCall = c;
   });
 
   return {
@@ -142,6 +155,7 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     historicCount: allScores.length,
     rolling4WeekAvg: mean_(rolling4WeekScores),
     rolling4WeekCount: rolling4WeekScores.length,
+    worstCall: worstCall,
     weekFailureModes: weekFailureModes,
     weekFlagMiss: weekFlagMiss
   };
@@ -167,10 +181,31 @@ function priorityToImprove_(stats) {
   return 'No major gaps flagged this week — keep it up, and use Tuesday\'s call to sharpen further.';
 }
 
+/**
+ * QA_COACHING_RESEARCH_REPORT.md §2.1: task-level feedback tied to a real
+ * moment helps; a bare number is close to a worst case for a machine-
+ * delivered message — self-directed, evaluative, no task detail, no
+ * relationship to soften it. Leads with the worst call's own (now
+ * quote-first, per the updated judge prompts) AI Feedback Summary and the
+ * week's single priority to improve; every score — this week's, the rolling
+ * average, all-time — moves below the fold into a "For the record" section
+ * instead of the headline.
+ */
 function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var weekLabel = Utilities.formatDate(weekStart, tz, 'dd/MM') + '–' +
     Utilities.formatDate(new Date(weekEnd.getTime() - 1), tz, 'dd/MM/yyyy');
   var subject = repCfg.name + ' — Your Weekly Call Scorecard — week of ' + weekLabel;
+
+  var priority = priorityToImprove_(stats);
+
+  var taskLevelSection = stats.worstCall && stats.worstCall.feedbackSummary
+    ? 'From ' + stats.worstCall.name + ' this week:\n' + stats.worstCall.feedbackSummary + '\n\n'
+    : (stats.weekCalls.length
+      ? ''
+      : 'No calls were scored this week.\n\n');
+
+  var prioritySection = 'One thing to work on this week: ' +
+    (priority || 'Not enough scored calls this week to identify a pattern.') + '\n\n';
 
   var trendLine = '';
   if (stats.weeklyAvg !== null && stats.historicAvgBeforeThisWeek !== null) {
@@ -180,35 +215,32 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   }
 
   var thisWeekSection = stats.weekCalls.length
-    ? 'This week: ' + stats.weekCalls.length + ' call(s) scored, average ' +
-      stats.weeklyAvg.toFixed(1) + '/5' + trendLine + '\n' +
+    ? stats.weekCalls.length + ' call(s) scored, average ' + stats.weeklyAvg.toFixed(1) + '/5' + trendLine + '\n' +
       stats.weekCalls.map(function (c) { return '• ' + c.name + ' — ' + c.score + '/5'; }).join('\n') + '\n\n'
-    : 'No calls were scored this week.\n\n';
+    : '';
 
   // A single week is a noisy sample — 2-3 calls either way can swing "This
   // week" a full point. The rolling 4-week average is the more reliable read;
   // its own n is shown alongside it so a 3-call rolling average doesn't get
-  // mistaken for a 30-call one (QA_COACHING_RESEARCH_REPORT.md §2).
+  // mistaken for a 30-call one.
   var rollingSection = 'Rolling 4-week average: ' + (stats.rolling4WeekAvg !== null
-    ? stats.rolling4WeekAvg.toFixed(1) + '/5 across ' + stats.rolling4WeekCount + ' call(s) — treat "This week" above as noise until it shows up here too'
+    ? stats.rolling4WeekAvg.toFixed(1) + '/5 across ' + stats.rolling4WeekCount + ' call(s)'
     : 'not enough data yet') + '\n\n';
 
   var historicSection = 'All-time average: ' + (stats.historicAvg !== null
     ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
     : 'not enough data yet') + '\n\n';
 
-  var priority = priorityToImprove_(stats);
-  var prioritySection = 'Priority to improve this week: ' +
-    (priority || 'Not enough scored calls this week to identify a pattern.') + '\n\n';
-
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
     'Weekly call scorecard for ' + weekLabel + ':\n\n' +
+    taskLevelSection +
+    prioritySection +
+    'Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.\n\n' +
+    '— For the record —\n' +
     thisWeekSection +
     rollingSection +
     historicSection +
-    prioritySection +
-    'Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.\n\n' +
     '— This is an automated weekly report. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
 
