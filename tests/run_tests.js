@@ -166,11 +166,11 @@ test('mostFrequent_ picks the most common value, alphabetical tie-break for dete
 const SCORECARD_COL = {
   'Rep': 1, 'Prospect Name': 2, 'Call Date': 3, 'Call Quality Score': 4,
   'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7,
-  'AI Feedback Summary': 8
+  'AI Feedback Summary': 8, 'Outcome Disposition': 9
 };
 
-function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary }) {
-  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || ''];
+function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary, outcomeDisposition }) {
+  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || ''];
 }
 
 test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, per rep, and tallies flags/failure modes', () => {
@@ -234,6 +234,19 @@ test('computeRepWeeklyStats_ identifies the week\'s lowest-scoring call as worst
   assert.ok(stats.worstCall.feedbackSummary.indexOf('isolating') !== -1);
 });
 
+test('computeRepWeeklyStats_ counts this week\'s calls missing an Outcome Disposition', () => {
+  const weekStart = new gas.Date(2026, 7, 10);
+  const weekEnd = new gas.Date(2026, 7, 17);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, outcomeDisposition: 'Sold' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, outcomeDisposition: '' }),
+    // Before this week — should not count toward the weekly figure.
+    scorecardRow(gas, { rep: 'Sean', name: 'C', date: new gas.Date(2026, 7, 3), score: 3, outcomeDisposition: '' })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  assert.equal(stats.weekMissingOutcomeDisposition, 1);
+});
+
 test('computeRepWeeklyStats_ worstCall is null when the rep had no calls this week', () => {
   const weekStart = new gas.Date(2026, 7, 10);
   const weekEnd = new gas.Date(2026, 7, 17);
@@ -252,7 +265,8 @@ test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushe
     rolling4WeekCount: 6,
     worstCall: { name: 'Jane Doe', score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' },
     weekFailureModes: ['objections_missed'],
-    weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 }
+    weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
+    weekMissingOutcomeDisposition: 1
   };
   const repCfg = { name: 'Sean', email: 'sean@example.com' };
   // buildWeeklyScorecardEmail_ calls Utilities.formatDate purely to render the
@@ -275,6 +289,8 @@ test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushe
   assert.ok(forTheRecordIdx !== -1, 'expected a "For the record" section');
   assert.ok(quoteIdx < forTheRecordIdx, 'quote should appear before the numeric section');
   assert.ok(scoreIdx > forTheRecordIdx, 'score should appear after the "For the record" marker, not before it');
+  assert.ok(email.body.indexOf('Outcome Disposition') > forTheRecordIdx,
+    'the outcome-disposition nudge should be a data-hygiene note below the fold, not the lead coaching point');
 });
 
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {

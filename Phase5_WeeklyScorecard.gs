@@ -108,6 +108,7 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
   var weekCalls = [];
   var weekFailureModes = [];
   var weekFlagMiss = { askedForClose: 0, objectionsHandled: 0 };
+  var weekMissingOutcomeDisposition = 0;
   var rolling4WeekScores = [];
   var rolling4WeekStart = new Date(weekEnd.getTime() - 4 * 7 * 24 * 3600 * 1000);
 
@@ -133,6 +134,15 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
       if (pfm && pfm !== 'none') weekFailureModes.push(pfm);
       if (row[col['Flag: Asked For Close'] - 1] === false) weekFlagMiss.askedForClose++;
       if (row[col['Flag: Objections Handled'] - 1] === false) weekFlagMiss.objectionsHandled++;
+      // QA_COACHING_RESEARCH_REPORT.md: "start logging call outcome today,
+      // even before you can analyze it — the clock only starts once you
+      // begin." Outcome Disposition has had a column and a dropdown since
+      // Phase 0, but Phase 2's automated append always leaves it blank
+      // ("fill from rep's tracker" — which IS this same sheet, see that
+      // file's comments) and nothing has ever nagged about it, so in
+      // practice it's never been filled in. This just starts surfacing the
+      // gap in the one email every rep already reads weekly.
+      if (!String(row[col['Outcome Disposition'] - 1] || '').trim()) weekMissingOutcomeDisposition++;
     } else {
       priorScores.push(score);
     }
@@ -157,7 +167,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     rolling4WeekCount: rolling4WeekScores.length,
     worstCall: worstCall,
     weekFailureModes: weekFailureModes,
-    weekFlagMiss: weekFlagMiss
+    weekFlagMiss: weekFlagMiss,
+    weekMissingOutcomeDisposition: weekMissingOutcomeDisposition
   };
 }
 
@@ -231,6 +242,13 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
     : 'not enough data yet') + '\n\n';
 
+  // Data-hygiene ask, not a coaching point — kept separate from "One thing to
+  // work on" above so that stays a single behavior, per the report.
+  var outcomeSection = stats.weekMissingOutcomeDisposition
+    ? stats.weekMissingOutcomeDisposition + ' of this week\'s call(s) still need an Outcome Disposition ' +
+      '(Sold/Not Sold/Follow-up/No-show) logged on the Sales Call Log — when you get a chance.\n\n'
+    : '';
+
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
     'Weekly call scorecard for ' + weekLabel + ':\n\n' +
@@ -241,6 +259,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     thisWeekSection +
     rollingSection +
     historicSection +
+    outcomeSection +
     '— This is an automated weekly report. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
 
