@@ -39,17 +39,45 @@ push`** for the `.gs` changes, no dashboard deploy needed (no
   practice it's sat empty. Confirmed the "rep's tracker" comments on that
   column refer to this SAME Sales Call Log sheet, not a separate one.
 
-**One thing flagged, not acted on**: the report's §4 claim that "the old
-30-minute Workspace execution tier was retired, 6-minute cap now applies to
-everyone" directly contradicts the 30-minute mutex window
-`installLegacyBackfillTrigger()`'s overlap fix relies on (see the 22/08
-handoff below). Could not independently verify —
-`developers.google.com`/`groups.google.com` are both blocked by this
-session's egress proxy, and every source actually reachable traces back to
-the same claim the report itself already cited as its own source. **Left
-the mutex window unchanged.** Someone with real access to
-`developers.google.com/apps-script/guides/services/quotas` should settle
-this before it's acted on either way.
+**One thing flagged earlier, now resolved with real evidence**: the report's
+§4 claim that "the old 30-minute Workspace execution tier was retired,
+6-minute cap now applies to everyone" directly contradicted the 30-minute
+mutex window `runAllLegacyBackfills_`'s overlap fix relies on. Couldn't
+verify from web sources (egress-blocked from Google's own docs). **Settled
+later the same session by real evidence**: Kris pasted the actual Executions
+log — a real `runAllLegacyBackfills_` firing on 23/08 shows `Duration
+1800.478s`, `STATUS: Timed out`. That's exactly 30 minutes, not 6 —
+confirms this Workspace account really does get 30-minute executions. The
+report's claim was wrong for this account; the existing 30-minute mutex
+window is correct, left as-is.
+
+**Real bug found from that same Executions log**: the firing cadence around
+it was wildly irregular (~2-4 min gaps instead of a clean 10-minute
+spacing) — `installLegacyBackfillTrigger()` was the only `install*Trigger`
+function in this codebase that didn't delete its own existing trigger
+before creating a new one, so a second accidental run of it stacks a
+second independent 10-minute trigger at a different offset instead of
+replacing the first. Fixed to dedupe like every other install function
+here. **If this has been run more than once, check the Triggers page
+(clock icon, left sidebar) for multiple `runAllLegacyBackfills_` entries
+and delete the extras by hand** — the code fix only prevents this going
+forward, it doesn't clean up triggers already stacked live. The mutex
+itself prevented any actual double-scoring, so this was wasteful, not
+damaging.
+
+**Also from that Executions log**: no visible `scored X, already-present Y`
+tally for any of Bens/Joana/Sean in the summary table — that requires
+opening one of the fast "Completed" executions and reading its actual
+Logger output, not just the table. Still need that to know whether the
+backfill has actually finished. Joana's transcript folder ID is confirmed
+correctly wired end-to-end — `PHASE2_CONFIG.JOANA_FOLDERS` (Phase 2) and
+`transcribe_joana_calls.py`'s `JOANA_FOLDERS` both point at the same real
+Drive folder (`17YaE4fBjEBFissvR-l7_GOkoTnZjdQq5`), no config drift — so if
+Joana's calls still aren't showing up scored, the more likely culprits are
+(a) her raw videos genuinely not transcribed yet by the OVH pipeline (a
+separate step from anything in this Executions log), or (b) something
+inside `scoreJoanaTranscripts()`'s own run — worth opening a
+`runAllLegacyBackfills_` execution's log directly to see which.
 
 **Not done / follow-ups**:
 - Dashboard has synced `outcome_disposition` into SQLite since `sync.py`

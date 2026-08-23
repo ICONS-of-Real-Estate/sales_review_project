@@ -1474,17 +1474,32 @@ function runAllLegacyBackfills_() {
  * Run this once from the editor to start the temporary backfill. Fires every
  * 10 minutes — ScriptApp's clock trigger only accepts 1/5/10/15/30 for
  * everyMinutes(). This account gets 30-minute executions (not the 6-minute
- * consumer cap), so a single firing can easily still be running when the
- * next one is due; overlap protection is the 30-minute time-window mutex in
- * runAllLegacyBackfills_ itself, not the trigger interval — that matters
- * since scoreBensLegacyTranscripts() has no lock of its own the way
- * scoreJoanaTranscripts()/scoreSeanTranscripts() do — an overlapping run
- * there really could double-score a file.
+ * consumer cap — confirmed 23/08/2026 by a real "Timed out" execution at
+ * exactly 1800s in the Executions log), so a single firing can easily still
+ * be running when the next one is due; overlap protection is the 30-minute
+ * time-window mutex in runAllLegacyBackfills_ itself, not the trigger
+ * interval — that matters since scoreBensLegacyTranscripts() has no lock of
+ * its own the way scoreJoanaTranscripts()/scoreSeanTranscripts() do — an
+ * overlapping run there really could double-score a file.
+ *
+ * Real bug found live (23/08/2026): unlike every other install*Trigger
+ * function in this codebase (installWeeklyScorecardTrigger(),
+ * installRandomCalibrationSampleTrigger(), etc.), this one never deleted its
+ * own existing trigger before creating a new one — so a second accidental
+ * run of this function stacks a second independent 10-minute trigger
+ * instead of replacing the first. Three such triggers, each firing every 10
+ * minutes but at different offsets, produces a combined ~2-4 minute firing
+ * cadence that looks alarming in the Executions log even though the mutex
+ * above prevents any actual double-scoring damage — confirmed this was
+ * exactly what was happening (see HANDOFF.md). Now idempotent like the rest.
  */
 function installLegacyBackfillTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runAllLegacyBackfills_') ScriptApp.deleteTrigger(t);
+  });
   ScriptApp.newTrigger('runAllLegacyBackfills_').timeBased().everyMinutes(10).create();
-  log_('Installed temporary 10-minute backfill trigger on runAllLegacyBackfills_ — ' +
-    'watch the execution log, then run removeLegacyBackfillTrigger() once Bens/' +
+  log_('Installed temporary 10-minute backfill trigger on runAllLegacyBackfills_ (any prior copy ' +
+    'removed first) — watch the execution log, then run removeLegacyBackfillTrigger() once Bens/' +
     'Joana/Sean all report 0 newly scored on a run.');
 }
 
