@@ -55,18 +55,26 @@ everything else) and `previewLegacyBackfillDuplicates()` was run, reporting
 shifts a little between reads, not a concern). **`dedupeLegacyBackfillDuplicates()`
 itself has NOT been run yet** — that's the step that actually deletes them.
 
-Also this session: `tools/deploy/setup_daily_practice_transcription.sh`
-added — a new, separate systemd service/timer (hourly) for
-`transcribe_daily_practice.py` on the OVH box, since it needs a paid Gemini
-key `transcribe-all.timer` never required. Run once on the VPS:
-`git pull && bash tools/deploy/setup_daily_practice_transcription.sh "<gemini key>"`.
-For an immediate one-off run instead of waiting for the timer:
-`cd tools && GEMINI_API_KEY="<key>" .venv/bin/python transcribe_daily_practice.py`.
+**Correction, same session**: first pass at automating daily-practice
+transcription (`tools/deploy/setup_daily_practice_transcription.sh`) wired
+up the Gemini-based `transcribe_daily_practice.py` as a new paid, separate
+OVH timer — **wrong call**. Kris's standing policy: Whisper (free) is
+always what runs unattended on OVH, never a per-call API charge. That
+deploy script has been removed. Real fix: added
+`tools/transcribe_daily_practice_whisper.py` (same reuse pattern as
+`transcribe_joana_calls_whisper.py` — Drive plumbing from
+`transcribe_sean_calls.py`, the whisper.cpp wrapper from
+`transcribe_sean_calls_whisper.py`, folder config from
+`transcribe_daily_practice.py`) and added it as a fourth batch in
+`tools/transcribe_all.py`'s `BATCHES` list. **No new deploy step at all** —
+this now runs automatically as part of the existing, already-live
+`transcribe-all.timer` (every 6h), free, no API key. Nothing further needed
+on the VPS beyond the usual `git pull`.
 
 **Not done / needs Kris**:
 - Deploy: `git pull` + `clasp push` (Apps Script side — already done per the
-  Executions log above) and the OVH daily-practice-transcribe setup above
-  (not yet confirmed done).
+  Executions log above) and `git pull` on the OVH box (picks up the Daily
+  Practice batch automatically, no other setup step).
 - Run `dedupeLegacyBackfillDuplicates()` to actually delete the 306 duplicate
   Bens rows the preview identified — until this runs, every downstream
   number for Bens (dashboard averages, weekly scorecard, review queue) is
@@ -77,10 +85,10 @@ For an immediate one-off run instead of waiting for the timer:
   there.
 - **Separately, Sean's Daily Practice folder**
   (`1SJJ5Jek_4vEzmS907NQofDYq6bl-Mnr1`) has two practice uploads (260820,
-  260821) sitting ungraded — needs the manual one-off run above (or the new
-  OVH timer's first firing, once `setup_daily_practice_transcription.sh`
-  is actually run on the VPS) to produce their Transcript Docs before
-  Phase 7 can grade them.
+  260821) sitting ungraded — will clear on `transcribe-all.timer`'s next
+  6-hourly firing now that Daily Practice is in its batch list, or run
+  `cd tools && .venv/bin/python transcribe_daily_practice_whisper.py` on the
+  VPS for an immediate one-off run instead of waiting.
 
 ---
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Runs Sean's, Joana's, and Tomás's Whisper transcription backlogs in one
-process, one after another, using the free local Whisper engine (no API
-key, no per-call cost). Meant for unattended runs on a server — see
-deploy/setup_ovh.sh in this same tools/ folder for wiring this up as a
-low-priority scheduled job on the OVH VPS.
+Runs Sean's, Joana's, and Tomás's regular-call Whisper transcription
+backlogs, plus the Bens/Sean/Joana Daily Practice drill backlog (added
+23/08/2026 — see transcribe_daily_practice_whisper.py), all in one process,
+one after another, using the free local Whisper engine (no API key, no
+per-call cost — Kris's standing policy for anything unattended on this
+box). Meant for unattended runs on a server — see deploy/setup_ovh.sh in
+this same tools/ folder for wiring this up as a low-priority scheduled job
+on the OVH VPS.
 
 Not included: Bens. His calls go through Riverside, which already
 transcribes them for him — he downloads his own finished transcript
@@ -53,11 +56,18 @@ from transcribe_sean_calls import SOURCE_FOLDERS, run_whisper_batch
 from transcribe_sean_calls_whisper import transcribe_with_whisper
 from transcribe_joana_calls import JOANA_FOLDERS
 from transcribe_tomas_calls import TOMAS_FOLDERS, clean_title_, log_completed_
+from transcribe_daily_practice import DAILY_PRACTICE_FOLDERS
 
 BATCHES = [
     ("Sean", SOURCE_FOLDERS, None, None),
     ("Joana", JOANA_FOLDERS, None, None),
     ("Tomas", TOMAS_FOLDERS, lambda v: clean_title_(v["name"]), log_completed_),
+    # Bens/Sean/Joana's daily objection-practice drills — Phase7_DailySelfPractice.gs's
+    # grading trigger reads whatever "<name> — Transcript" Doc lands here, same
+    # convention as the batches above. Added 23/08/2026: this had never been
+    # automated anywhere (the Gemini-based transcribe_daily_practice.py existed
+    # but nothing ever ran it), so practice uploads sat ungraded indefinitely.
+    ("Daily Practice", DAILY_PRACTICE_FOLDERS, None, None),
 ]
 
 
