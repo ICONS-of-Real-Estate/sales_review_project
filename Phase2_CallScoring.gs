@@ -1437,14 +1437,28 @@ function dateAtMidnightInBusinessTimezone_(year, month, day) {
  * ceilingDate (the video's own upload date, at the latest), so this prefers
  * ceilingDate's year (read in CONFIG.BUSINESS_TIMEZONE, not the script's
  * own default timezone — same reasoning as dateAtMidnightInBusinessTimezone_
- * above, though this one only matters within a few hours of a real New
- * Year's boundary), falling back to the year before if the same-year
- * candidate would land in the future relative to ceilingDate.
+ * above), falling back to the year before if the same-year candidate would
+ * land clearly in the future relative to ceilingDate.
+ *
+ * "Clearly" means more than YEAR_ROLLBACK_SLACK_MS_ — a real year mismatch
+ * is always ~365 days off, so a couple of days of slack can never mask one.
+ * That slack is required because ceilingDate is frequently the sibling
+ * video's own creation instant for the SAME call, and Drive's createdTime is
+ * UTC: a video created a few minutes after UTC midnight (e.g. "4/2 ... ",
+ * createdTime 2026-04-02T00:13Z) lands the evening before once read back in
+ * CONFIG.BUSINESS_TIMEZONE (America/New_York, UTC-4/-5) — 2026-04-01 ~8pm
+ * Eastern. Without slack, midnight-of-the-titled-day compares as "later"
+ * than that instant and this function wrongly concludes the call must be
+ * from the PREVIOUS year. Confirmed live (23/08/2026): Sean's "4/2 Margaret
+ * Bruno prep call for DISCO" resolved to 2025-04-02 instead of 2026-04-02
+ * for exactly this reason, caught in a preview before repairCallDates() ran.
  */
+var YEAR_ROLLBACK_SLACK_MS_ = 2 * 24 * 60 * 60 * 1000; // 2 days
+
 function resolveYearForMonthDay_(monthDay, ceilingDate) {
   var year = Number(Utilities.formatDate(ceilingDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy'));
   var candidate = dateAtMidnightInBusinessTimezone_(year, monthDay.month, monthDay.day);
-  if (candidate.getTime() > ceilingDate.getTime()) {
+  if (candidate.getTime() - ceilingDate.getTime() > YEAR_ROLLBACK_SLACK_MS_) {
     candidate = dateAtMidnightInBusinessTimezone_(year - 1, monthDay.month, monthDay.day);
   }
   return candidate;

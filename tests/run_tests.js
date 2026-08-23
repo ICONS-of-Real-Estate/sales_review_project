@@ -255,6 +255,22 @@ test('resolveYearForMonthDay_ builds a date that actually round-trips to the rig
   assert.equal(dtf.format(result), '2026-01-21');
 });
 
+test('resolveYearForMonthDay_ does not roll back a year when the ceiling is the SAME call\'s own video, created just after UTC midnight (real bug: Sean\'s "4/2 Margaret Bruno prep call for DISCO")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Drive's createdTime is UTC. A video created 2026-04-02T00:13:39Z reads
+  // back as 2026-04-01 ~8pm in America/New_York (UTC-4 in April) -- the
+  // evening BEFORE the titled day, purely from the UTC/business-timezone
+  // offset, not because the call actually happened a year earlier. Without
+  // slack for this, midnight-of-4/2-Eastern compares as "later" than that
+  // instant and this function wrongly stepped back to 2025.
+  const ceiling = new gas.Date(Date.UTC(2026, 3, 2, 0, 13, 39));
+  const result = gas.resolveYearForMonthDay_({ month: 4, day: 2 }, ceiling);
+  assert.equal(realFormatDate(result, tz, 'yyyy'), '2026');
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  assert.equal(dtf.format(result), '2026-04-02');
+});
+
 test('resolveRealCallDate_ prefers a parsed title date over the sibling video\'s own date (Sean/Tomás convention)', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const tz = gas.CONFIG.BUSINESS_TIMEZONE;
