@@ -1146,6 +1146,15 @@ function installAllReadyTriggers_() {
       'previewDailyPracticeGrading() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
+  if (typeof RANDOM_CALIBRATION_CONFIG !== 'undefined' && RANDOM_CALIBRATION_CONFIG.ENABLED) {
+    installRandomCalibrationSampleTrigger();
+    installed.push('Phase 2: weekly random calibration holdout sample');
+  } else {
+    skipped.push('Phase 2 (random calibration holdout) — RANDOM_CALIBRATION_CONFIG.ENABLED is false. Run ' +
+      'previewRandomCalibrationSample() first, confirm it looks right, then flip ENABLED and re-run this. ' +
+      'See QA_COACHING_RESEARCH_REPORT.md §1.1.');
+  }
+
   if (typeof REPLY_TRACKER_CONFIG !== 'undefined' && REPLY_TRACKER_CONFIG.ENABLED) {
     installReplyTrackerTriggers();
     installed.push('Phase 8: reply tracker');

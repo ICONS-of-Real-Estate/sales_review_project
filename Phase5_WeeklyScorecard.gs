@@ -91,13 +91,25 @@ function getWeekBounds_(now, tz) {
   return { start: start, end: end };
 }
 
-/** Tallies one rep's rows into weekly + historic stats. rows/col are the full sheet read. */
+/**
+ * Tallies one rep's rows into weekly + historic stats. rows/col are the full sheet read.
+ *
+ * Also computes a rolling 4-week average (QA_COACHING_RESEARCH_REPORT.md §2,
+ * "Summary: if you only do five things" #3): a single week's average is too
+ * noisy a sample to react to on its own, especially early on when a rep might
+ * have 2-3 calls in a given week. The rolling window is [weekEnd - 28 days,
+ * weekEnd) — i.e. the just-completed week plus the three before it — reported
+ * alongside its own n so a rolling average built on 3 calls doesn't get
+ * mistaken for one built on 30.
+ */
 function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
   var allScores = [];
   var priorScores = []; // all-time excluding this week — basis for the trend line
   var weekCalls = [];
   var weekFailureModes = [];
   var weekFlagMiss = { askedForClose: 0, objectionsHandled: 0 };
+  var rolling4WeekScores = [];
+  var rolling4WeekStart = new Date(weekEnd.getTime() - 4 * 7 * 24 * 3600 * 1000);
 
   rows.forEach(function (row) {
     if (String(row[col['Rep'] - 1] || '').trim() !== repName) return;
@@ -107,6 +119,9 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     allScores.push(score);
     var callDate = row[col['Call Date'] - 1];
     var inWeek = callDate instanceof Date && callDate >= weekStart && callDate < weekEnd;
+    var inRolling4Weeks = callDate instanceof Date && callDate >= rolling4WeekStart && callDate < weekEnd;
+
+    if (inRolling4Weeks) rolling4WeekScores.push(score);
 
     if (inWeek) {
       weekCalls.push({ name: row[col['Prospect Name'] - 1] || '(unnamed)', score: score });
@@ -125,6 +140,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
     historicAvg: mean_(allScores),
     historicAvgBeforeThisWeek: mean_(priorScores),
     historicCount: allScores.length,
+    rolling4WeekAvg: mean_(rolling4WeekScores),
+    rolling4WeekCount: rolling4WeekScores.length,
     weekFailureModes: weekFailureModes,
     weekFlagMiss: weekFlagMiss
   };
@@ -168,6 +185,14 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
       stats.weekCalls.map(function (c) { return '• ' + c.name + ' — ' + c.score + '/5'; }).join('\n') + '\n\n'
     : 'No calls were scored this week.\n\n';
 
+  // A single week is a noisy sample — 2-3 calls either way can swing "This
+  // week" a full point. The rolling 4-week average is the more reliable read;
+  // its own n is shown alongside it so a 3-call rolling average doesn't get
+  // mistaken for a 30-call one (QA_COACHING_RESEARCH_REPORT.md §2).
+  var rollingSection = 'Rolling 4-week average: ' + (stats.rolling4WeekAvg !== null
+    ? stats.rolling4WeekAvg.toFixed(1) + '/5 across ' + stats.rolling4WeekCount + ' call(s) — treat "This week" above as noise until it shows up here too'
+    : 'not enough data yet') + '\n\n';
+
   var historicSection = 'All-time average: ' + (stats.historicAvg !== null
     ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
     : 'not enough data yet') + '\n\n';
@@ -180,6 +205,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     'Hi ' + repCfg.name + ',\n\n' +
     'Weekly call scorecard for ' + weekLabel + ':\n\n' +
     thisWeekSection +
+    rollingSection +
     historicSection +
     prioritySection +
     'Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.\n\n' +

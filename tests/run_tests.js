@@ -91,6 +91,37 @@ test('isTruthyOutcome_ recognizes the documented truthy spellings and rejects bl
   assert.equal(gas.isTruthyOutcome_(new gas.Date()), true);
 });
 
+// Array/object return values here were built inside the vm sandbox's own
+// realm (see gas_env.js's Date comment) — assert.deepEqual's
+// constructor-identity check fails against this file's plain array literals
+// for realm reasons, not a real mismatch, so compare contents via a plain
+// Array copy instead, same workaround the existing tests above already use.
+test('pickRandomSample_ picks exactly n items with a deterministic randomFn, no duplicates', () => {
+  const items = ['a', 'b', 'c', 'd'];
+  // randomFn always returning 0 always picks the current pool's first
+  // element, so results are deterministic and easy to reason about: a, then
+  // b (a already removed), etc.
+  const sample = gas.pickRandomSample_(items, 2, () => 0);
+  assert.deepEqual(Array.prototype.slice.call(sample), ['a', 'b']);
+});
+
+test('pickRandomSample_ caps at the pool size instead of throwing or padding when n exceeds it', () => {
+  const sample = gas.pickRandomSample_(['a', 'b'], 5, () => 0);
+  assert.equal(sample.length, 2);
+  assert.deepEqual(Array.prototype.slice.call(sample).sort(), ['a', 'b']);
+});
+
+test('pickRandomSample_ does not mutate the input array', () => {
+  const items = ['a', 'b', 'c'];
+  gas.pickRandomSample_(items, 2, () => 0.99);
+  assert.deepEqual(items, ['a', 'b', 'c']);
+});
+
+test('pickRandomSample_ returns empty for an empty pool or n=0', () => {
+  assert.equal(gas.pickRandomSample_([], 3, () => 0).length, 0);
+  assert.equal(gas.pickRandomSample_(['a'], 0, () => 0).length, 0);
+});
+
 test('computeAgreementStats_ returns kappa=1 for perfect agreement', () => {
   const stats = gas.computeAgreementStats_(10, 0, 0, 10);
   assert.equal(stats.n, 20);
@@ -166,6 +197,27 @@ test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, pe
   assert.equal(stats.weekFailureModes[1], 'no_close_ask');
   assert.equal(stats.weekFlagMiss.askedForClose, 2);
   assert.equal(stats.weekFlagMiss.objectionsHandled, 1);
+  // Rolling window is [weekEnd - 28 days, weekEnd) = [13/07, 17/08) here, so
+  // row C (03/08) falls inside it even though it's before this week — all
+  // three of Sean's scores count, none of Bens's.
+  assert.equal(stats.rolling4WeekCount, 3);
+  assert.ok(Math.abs(stats.rolling4WeekAvg - 11 / 3) < 1e-9);
+});
+
+test('computeRepWeeklyStats_ rolling 4-week average excludes calls older than the 28-day window', () => {
+  const weekStart = new gas.Date(2026, 7, 10);
+  const weekEnd = new gas.Date(2026, 7, 17);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, askedForClose: true, objectionsHandled: true }),
+    // 40 days before weekEnd — outside the 28-day rolling window entirely.
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 6, 8), score: 1, askedForClose: true, objectionsHandled: true })
+  ];
+
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  assert.equal(stats.rolling4WeekCount, 1);
+  assert.equal(stats.rolling4WeekAvg, 4);
+  // The old call is still counted in the all-time historic average, just not the rolling one.
+  assert.equal(stats.historicCount, 2);
 });
 
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {

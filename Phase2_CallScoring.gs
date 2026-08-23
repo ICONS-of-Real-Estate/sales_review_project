@@ -2225,3 +2225,161 @@ function runWeeklyCalibration() {
     confusionMatrix: { aiYes_krisYes: aiYes_krisYes, aiYes_krisNo: aiYes_krisNo,
       aiNo_krisYes: aiNo_krisYes, aiNo_krisNo: aiNo_krisNo } };
 }
+
+// ---------------------------------------------------------------------------
+// Random calibration holdout — QA_COACHING_RESEARCH_REPORT.md §1.1/§1 headline
+// finding: buildReviewQueueImpl_() above only ever surfaces calls the AI
+// already flagged (Manual Review Recommended = true). runWeeklyCalibration()
+// above can already compute kappa off ANY row carrying a "Kris Manual Review
+// Verdict" — it was never restricted to flagged rows — but nothing ever
+// pointed Kris at an UNflagged row to independently judge, so every
+// calibration number to date is implicitly conditioned on "calls the model
+// already thought were hard." A rep who's quietly mediocre on every call,
+// none of which trip the severity threshold, is invisible to that loop by
+// construction. This closes the gap: a small weekly random sample, blind of
+// the AI's own flag, feeding the exact same Kris Manual Review Verdict
+// column runWeeklyCalibration() already reads.
+//
+// ONE-TIME SETUP (same pattern as every other phase in this file):
+//   1. Run previewRandomCalibrationSample() from the editor — logs the
+//      sample it WOULD pick and email, sends nothing.
+//   2. Flip RANDOM_CALIBRATION_CONFIG.ENABLED to true, run
+//      installRandomCalibrationSampleTrigger() (or just re-run
+//      installAllReadyTriggers_() in Phase1_ComplianceCheck.gs).
+// ---------------------------------------------------------------------------
+
+var RANDOM_CALIBRATION_CONFIG = {
+  ENABLED: false, // flip after previewRandomCalibrationSample() looks right
+  SAMPLE_SIZE: 4, // report's recommended range is 3-5/week
+  TRIGGER_DAY: 'FRIDAY', // ScriptApp.WeekDay name — deliberately not Monday (Phase 5's scorecard day)
+  TRIGGER_HOUR: 16
+};
+
+/**
+ * Picks up to n items uniformly at random from items, without replacement.
+ * randomFn is injectable (defaults to Math.random) so this is unit-testable
+ * with a deterministic sequence — see tests/run_tests.js. Pure/no side
+ * effects; does not mutate items.
+ */
+function pickRandomSample_(items, n, randomFn) {
+  var pool = items.slice();
+  var picked = [];
+  var count = Math.min(n, pool.length);
+  for (var i = 0; i < count; i++) {
+    var idx = Math.floor(randomFn() * pool.length);
+    picked.push(pool[idx]);
+    pool.splice(idx, 1);
+  }
+  return picked;
+}
+
+/** Run this FIRST from the editor. Logs the sample it would email — sends nothing. */
+function previewRandomCalibrationSample() {
+  return buildRandomCalibrationSampleImpl_(/*forcePreview=*/true);
+}
+
+/** Trigger target. Gated by RANDOM_CALIBRATION_CONFIG.ENABLED as a second safety net, same pattern as runWeeklyScorecard. */
+function runRandomCalibrationSample() {
+  RUN_TAG = 'runRandomCalibrationSample';
+  if (!RANDOM_CALIBRATION_CONFIG.ENABLED) {
+    log_('runRandomCalibrationSample: RANDOM_CALIBRATION_CONFIG.ENABLED is false, skipping.');
+    return null;
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runRandomCalibrationSample: another scoring/queue run holds the lock, skipping this run.');
+    return null;
+  }
+  try {
+    return buildRandomCalibrationSampleImpl_(/*forcePreview=*/false);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function buildRandomCalibrationSampleImpl_(forcePreview) {
+  RUN_TAG = 'buildRandomCalibrationSample';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return null; }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows.'); return null; }
+
+  var col = getValidatedColumnMap_(sheet);
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  // Eligible = already scored, not already independently judged by Kris.
+  // Deliberately NOT filtered on Manual Review Recommended or Severity in
+  // either direction — that's the whole point, this sample has to be blind
+  // to what the AI already thinks about the call.
+  var eligible = [];
+  for (var r = 0; r < values.length; r++) {
+    var row = values[r];
+    if (typeof row[col['Call Quality Score'] - 1] !== 'number') continue; // not yet scored
+    var krisVerdict = String(row[col['Kris Manual Review Verdict'] - 1] || '').trim();
+    if (krisVerdict === 'Yes' || krisVerdict === 'No') continue; // already independently judged
+    eligible.push({
+      rowIndex: r + 2,
+      rep: row[col['Rep'] - 1],
+      prospectName: row[col['Prospect Name'] - 1],
+      aiFlag: !!row[col['Manual Review Recommended'] - 1],
+      score: Number(row[col['Call Quality Score'] - 1]) || 0
+    });
+  }
+
+  if (!eligible.length) {
+    log_('buildRandomCalibrationSample: nothing eligible — every scored row already has a Kris verdict.');
+    return null;
+  }
+
+  var sample = pickRandomSample_(eligible, RANDOM_CALIBRATION_CONFIG.SAMPLE_SIZE, Math.random);
+
+  log_('buildRandomCalibrationSample: picked ' + sample.length + ' random call(s) for blind calibration review.');
+  sample.forEach(function (c) {
+    log_('  Row ' + c.rowIndex + ': ' + c.prospectName + ' (' + c.rep + ') — AI flag ' + c.aiFlag + ', score ' + c.score);
+  });
+
+  sendRandomCalibrationDigest_(sample, forcePreview);
+
+  return sample.map(function (c) { return { rowIndex: c.rowIndex, prospectName: c.prospectName, rep: c.rep }; });
+}
+
+/**
+ * Deliberately does NOT include the AI's flag/score in Kris's copy of the
+ * email — she's meant to judge each call independently and record her own
+ * Yes/No in the "Kris Manual Review Verdict" column, same as any other row
+ * runWeeklyCalibration() reads. Including the AI's own verdict here would
+ * anchor her judgment and defeat the point of a blind sample.
+ */
+function sendRandomCalibrationDigest_(sample, forcePreview) {
+  var lines = ['This week\'s ' + sample.length + ' random calibration call(s) — reviewed BLIND of the AI\'s ' +
+    'own flag/score, per QA_COACHING_RESEARCH_REPORT.md §1.1. For each, fill in "Kris Manual Review ' +
+    'Verdict" (Yes/No) in the Sales Call Log — same column the flagged review queue uses — so ' +
+    'runWeeklyCalibration() picks it up automatically:', ''];
+  sample.forEach(function (c, i) {
+    lines.push((i + 1) + '. ' + c.prospectName + ' (' + c.rep + ') — row ' + c.rowIndex);
+  });
+
+  if (forcePreview || !RANDOM_CALIBRATION_CONFIG.ENABLED) {
+    log_('  (preview — random calibration digest logged only, not emailed)\n' + lines.join('\n'));
+    return;
+  }
+  guardedSend_(CONFIG.KRIS_EMAIL, '[Call Review] This week\'s random calibration sample (' + sample.length + ' call(s))',
+    lines.join('\n'), {}, 1);
+}
+
+function installRandomCalibrationSampleTrigger() {
+  RUN_TAG = 'installRandomCalibrationSampleTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRandomCalibrationSample') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runRandomCalibrationSample')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay[RANDOM_CALIBRATION_CONFIG.TRIGGER_DAY])
+    .atHour(RANDOM_CALIBRATION_CONFIG.TRIGGER_HOUR)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
+    .create();
+  log_('Random calibration sample trigger installed: ' + RANDOM_CALIBRATION_CONFIG.TRIGGER_DAY + ' ' +
+    RANDOM_CALIBRATION_CONFIG.TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
+}
