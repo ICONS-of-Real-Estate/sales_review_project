@@ -6,9 +6,10 @@
  *
  * Per the design brief:
  *  - Runs on a daily time-driven trigger at 18:00 BUSINESS time
- *    (America/Los_Angeles — the calls are US calls), evaluating that same
- *    business day at close of business. Reps get nudged while still at
- *    their desks, not the next morning about yesterday.
+ *    (America/New_York — most clients are Eastern; changed from
+ *    America/Los_Angeles 23/08/2026, see CONFIG.BUSINESS_TIMEZONE), evaluating
+ *    that same business day at close of business. Reps get nudged while
+ *    still at their desks, not the next morning about yesterday.
  *  - For each rep, collects sales/QC calendar events for the business day, then
  *    finds tracker rows for that rep/call-date with Outcome Logged = TRUE.
  *  - Any calendar event with no matching logged row is non-compliant and goes
@@ -21,8 +22,9 @@
  *  - Quota guard: MailApp.getRemainingDailyQuota() checked before every send,
  *    with a reserve kept for ops alerts; never loop-send unguarded.
  *  - Timezone: all business-day math runs in CONFIG.BUSINESS_TIMEZONE
- *    (America/Los_Angeles), never the script project's zone; dates displayed
- *    DD/MM/YYYY.
+ *    (America/New_York), never the script project's zone (confirmed live
+ *    23/08/2026 to be GMT+7 — see the Call Date bug that caught this); dates
+ *    displayed DD/MM/YYYY.
  *  - Every compliance decision is logged per row, and every log line is
  *    tagged with the entry point that produced it (RUN_TAG / log_ below).
  *
@@ -63,12 +65,25 @@ var CONFIG = {
   EXPECTED_PROJECT_ID: '',
 
   // The team's business timezone — where the CALLS happen, not where the
-  // script project happens to be set. "Prior day", event windows, and sheet
-  // date cells are all interpreted in this zone. The daily trigger fires at
-  // 18:00 in THIS zone (close of business), evaluating that same business
-  // day — so reps get nudged while they're still at their desks, not the
-  // next morning about yesterday.
-  BUSINESS_TIMEZONE: 'America/Los_Angeles',
+  // script project happens to be set (confirmed live 23/08/2026: this
+  // project's own default is GMT+7/Indochina Time — the plain multi-arg
+  // `new Date(y,m,d)` constructor silently uses THAT, not this, which is
+  // exactly the Call Date bug found live the same day). "Prior day", event
+  // windows, and sheet date cells are all interpreted in this zone. The
+  // daily trigger fires at 18:00 in THIS zone (close of business), evaluating
+  // that same business day — so reps get nudged while they're still at
+  // their desks, not the next morning about yesterday.
+  //
+  // Changed 23/08/2026 per Kris: most clients are Eastern — the original
+  // choice of Pacific was only ever "6pm PST = everyone's done for the day,"
+  // not a deliberate anchor to the Pacific zone itself. Every TRIGGER_HOUR/
+  // *_HOUR constant across every phase (18, 20, 8, 9, etc.) is unchanged and
+  // now means that hour in America/New_York instead — i.e. every trigger
+  // now fires 3 hours earlier in absolute time than it used to. If any of
+  // those hours were meant to track a specific real-world moment (e.g. "6pm
+  // Pacific, when the day actually wraps") rather than just "6pm local,"
+  // they'll need their own adjustment — nobody has asked for that yet.
+  BUSINESS_TIMEZONE: 'America/New_York',
   DAILY_TRIGGER_HOUR: 18, // 18:00 business time = end of the US workday
 
   // Calendar event classification: an event counts as a sales/QC call if its

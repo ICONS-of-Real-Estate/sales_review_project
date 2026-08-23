@@ -20,6 +20,29 @@ const assert = require('node:assert/strict');
 const path = require('path');
 const { loadGasProject } = require('./gas_env');
 
+/**
+ * A real (not stubbed) Utilities.formatDate, using Node's own Intl support
+ * for named IANA timezones, for the handful of tests that exercise
+ * dateAtMidnightInBusinessTimezone_/resolveYearForMonthDay_ — those
+ * functions exist specifically BECAUSE Utilities.formatDate's real timezone
+ * math matters here (see the real bug this closed: the plain multi-arg
+ * `new Date(y,m,d)` constructor silently uses the Apps Script project's own
+ * default timezone, not the one asked for). Only supports the two patterns
+ * those functions actually use ('Z' as a Java-SimpleDateFormat-style
+ * "+HHMM"/"-HHMM" offset, and 'yyyy').
+ */
+function realFormatDate(date, tz, pattern) {
+  if (pattern === 'Z') {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date);
+    const m = parts.find((p) => p.type === 'timeZoneName').value.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    return m[1] + m[2].padStart(2, '0') + (m[3] || '00');
+  }
+  if (pattern === 'yyyy') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(date);
+  }
+  throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
+}
+
 const gas = loadGasProject(path.join(__dirname, '..'));
 
 test('idsEqual_ treats a bare ID and its @google.com-suffixed form as equal', () => {
@@ -194,22 +217,47 @@ test('parseDateFromTitlePrefix_ rejects an out-of-range month/day rather than mi
   assert.equal(gas.parseDateFromTitlePrefix_('13/40 Not A Date'), null);
 });
 
+// All four tests below read gas.CONFIG.BUSINESS_TIMEZONE directly (whatever
+// the real Phase1_ComplianceCheck.gs config currently sets it to) rather than
+// hardcoding a zone name, so they keep testing the actual configured
+// behavior even if that zone changes again later.
 test('resolveYearForMonthDay_ uses the ceiling date\'s own year when the month/day already falls on or before it', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
   // Video uploaded 2026-08-21; call on 1/21 -> clearly earlier the same year.
   const result = gas.resolveYearForMonthDay_({ month: 1, day: 21 }, new gas.Date(2026, 7, 21));
-  assert.equal(result.getFullYear(), 2026);
-  assert.equal(result.getMonth(), 0);
-  assert.equal(result.getDate(), 21);
+  // Compare via the SAME real-timezone formatter, not getFullYear()/getMonth()/
+  // getDate() -- those read the *script's own default timezone*, exactly the
+  // thing this function exists to route around (see its own docstring).
+  assert.equal(realFormatDate(result, tz, 'yyyy'), '2026');
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  assert.equal(dtf.format(result), '2026-01-21');
 });
 
 test('resolveYearForMonthDay_ steps back a year when the same-year candidate would be in the future relative to the ceiling', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
   // Video uploaded 2026-02-01; a "12/15" call can't have happened in the same
   // year AFTER the upload -- must be 12/15 of the PRIOR year.
   const result = gas.resolveYearForMonthDay_({ month: 12, day: 15 }, new gas.Date(2026, 1, 1));
-  assert.equal(result.getFullYear(), 2025);
+  assert.equal(realFormatDate(result, tz, 'yyyy'), '2025');
+});
+
+test('resolveYearForMonthDay_ builds a date that actually round-trips to the right calendar day in BUSINESS_TIMEZONE (the real bug: off by one day)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // The real live bug: the script project's own default timezone (GMT+7,
+  // confirmed live) is many hours off from BUSINESS_TIMEZONE -- enough to
+  // roll midnight back to the previous calendar day if built with the plain
+  // `new Date(y, m, d)` constructor instead of this function.
+  const result = gas.resolveYearForMonthDay_({ month: 1, day: 21 }, new gas.Date(2026, 7, 21));
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  assert.equal(dtf.format(result), '2026-01-21');
 });
 
 test('resolveRealCallDate_ prefers a parsed title date over the sibling video\'s own date (Sean/Tomás convention)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
   const fakeFolder = {
     getFilesByName: () => ({
       hasNext: () => true,
@@ -218,9 +266,8 @@ test('resolveRealCallDate_ prefers a parsed title date over the sibling video\'s
   };
   const fakeTranscriptFile = { getDateCreated: () => new gas.Date(2026, 7, 21) }; // transcribed even later
   const result = gas.resolveRealCallDate_(fakeFolder, '1/21 Anthony Camperi', fakeTranscriptFile);
-  assert.equal(result.getFullYear(), 2026);
-  assert.equal(result.getMonth(), 0);
-  assert.equal(result.getDate(), 21);
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  assert.equal(dtf.format(result), '2026-01-21');
 });
 
 test('resolveRealCallDate_ falls back to the sibling video\'s own date when the title has no date (Joana\'s convention)', () => {

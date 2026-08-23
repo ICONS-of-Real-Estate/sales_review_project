@@ -176,7 +176,7 @@ var INBOX_SLA_CONFIG = {
   ],
 
   // Business time, reusing CONFIG.BUSINESS_TIMEZONE (Phase1_ComplianceCheck.gs)
-  // — same "the calls/work happen in America/Los_Angeles, not wherever the
+  // — same "the calls/work happen in America/New_York, not wherever the
   // script project's own timezone happens to be set" reasoning.
   DAILY_TRIGGER_HOUR: 18,
 

@@ -1407,16 +1407,45 @@ function parseDateFromTitlePrefix_(title) {
 }
 
 /**
+ * Timezone-safe: builds a real Date instant representing midnight on
+ * year/month/day IN CONFIG.BUSINESS_TIMEZONE. Real bug found live
+ * (23/08/2026), caught in preview before it ever wrote anything: the plain
+ * multi-arg `new Date(year, month, day)` constructor silently builds
+ * midnight in the Apps Script PROJECT's own default script timezone —
+ * confirmed live to be GMT+7 (Indochina Time) for this project, NOT
+ * CONFIG.BUSINESS_TIMEZONE (America/Los_Angeles). That ~15-hour gap shifted
+ * every one of resolveYearForMonthDay_'s dates a full day earlier once
+ * reformatted for storage/display in America/Los_Angeles — every single
+ * row in previewCallDateRepair_'s first run was off by exactly one day.
+ * Same two-step trick as startOfDay_ (Phase1_ComplianceCheck.gs): build a
+ * rough instant just to ask Utilities for the correct DST offset on
+ * (approximately) that day, then construct the real instant explicitly
+ * with that offset — noon, not midnight, for the rough instant, so even a
+ * wildly different default timezone still lands it on the intended
+ * calendar day before asking for the offset.
+ */
+function dateAtMidnightInBusinessTimezone_(year, month, day) {
+  var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+  var dateStr = year + '/' + pad(month) + '/' + pad(day);
+  var rough = new Date(dateStr + ' 12:00:00');
+  var offset = Utilities.formatDate(rough, CONFIG.BUSINESS_TIMEZONE, 'Z');
+  return new Date(dateStr + ' 00:00:00 GMT' + offset);
+}
+
+/**
  * Picks the year for a parsed month/day: the call can't have happened AFTER
  * ceilingDate (the video's own upload date, at the latest), so this prefers
- * ceilingDate's year, falling back to the year before if the same-year
+ * ceilingDate's year (read in CONFIG.BUSINESS_TIMEZONE, not the script's
+ * own default timezone — same reasoning as dateAtMidnightInBusinessTimezone_
+ * above, though this one only matters within a few hours of a real New
+ * Year's boundary), falling back to the year before if the same-year
  * candidate would land in the future relative to ceilingDate.
  */
 function resolveYearForMonthDay_(monthDay, ceilingDate) {
-  var year = ceilingDate.getFullYear();
-  var candidate = new Date(year, monthDay.month - 1, monthDay.day);
+  var year = Number(Utilities.formatDate(ceilingDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy'));
+  var candidate = dateAtMidnightInBusinessTimezone_(year, monthDay.month, monthDay.day);
   if (candidate.getTime() > ceilingDate.getTime()) {
-    candidate = new Date(year - 1, monthDay.month - 1, monthDay.day);
+    candidate = dateAtMidnightInBusinessTimezone_(year - 1, monthDay.month, monthDay.day);
   }
   return candidate;
 }
