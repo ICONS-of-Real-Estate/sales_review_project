@@ -372,6 +372,33 @@ def release_lock(drive, lock_file_id):
         pass  # best-effort -- a leftover lock is just treated as stale (and stolen) after LOCK_STALE_SECONDS
 
 
+def transcript_already_exists(drive, folder_id, title):
+    """Live re-check, called right after winning the lock -- closes a real
+    gap found live (23/08/2026): run_whisper_batch's `existing_names` is a
+    snapshot taken once at the START of a run, then held for however long
+    that run takes (hours, for a big folder). Two runs/workers started close
+    together both see the same stale "not yet transcribed" snapshot, both
+    win the lock for DIFFERENT videos in their own pass, and neither's
+    pre-scan ever gets refreshed to notice the other's completed work along
+    the way -- confirmed live: Sean's Qualification Calls folder had 2-4
+    duplicate "<title> — Transcript" Docs for ~25+ real calls, all from
+    concurrent worker runs. The per-video lock alone doesn't catch this
+    because by the time a video's own lock is being contested, the OTHER
+    worker may have already finished, uploaded, and released it. This is a
+    direct, live Drive query for the one thing that actually matters right
+    now: does a transcript with this exact name exist in this folder AT
+    THIS MOMENT, not "did it exist when this run started."
+    """
+    try:
+        existing = drive.files().list(
+            q=f"'{folder_id}' in parents and name = '{title} — Transcript' and trashed = false",
+            fields="files(id)",
+        ).execute().get("files", [])
+        return bool(existing)
+    except Exception:
+        return False  # best-effort, same spirit as try_acquire_lock above -- never block real work on this check failing
+
+
 def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=None):
     """Shared multi-machine-safe batch loop for the *_whisper.py variants
     (Sean/Tomás/Joana) -- same Drive plumbing as main() above, plus the
@@ -422,6 +449,15 @@ def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=No
             lock_id = try_acquire_lock(drive, video_folder_id, video["id"])
             if lock_id is None:
                 print(f"[skipping] {title} — already claimed by another machine")
+                skipped_locked += 1
+                continue
+
+            # Live re-check, not just the pre-scan snapshot from when this run
+            # started -- see transcript_already_exists's docstring for the real
+            # duplicate-transcript bug this closes.
+            if transcript_already_exists(drive, video_folder_id, title):
+                print(f"[skipping] {title} — a transcript already exists (finished by another run/worker since this batch started)")
+                release_lock(drive, lock_id)
                 skipped_locked += 1
                 continue
 
