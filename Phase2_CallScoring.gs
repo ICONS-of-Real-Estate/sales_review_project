@@ -72,6 +72,19 @@ var PHASE2_CONFIG = {
 
   MAX_PARSE_RETRIES: 1, // one retry with an explicit "raw JSON only" reminder, then manual review.
 
+  // Circuit breaker. A single manual-review placeholder is the intended SOP §5
+  // behaviour for one weird transcript; a *run* of them back-to-back means the
+  // judge itself is down (proxy 429 / suspended billing / bad key), not that
+  // the calls were bad. Without this, one outage silently writes a placeholder
+  // row for EVERY remaining file — on 24/08/2026 a suspended-balance 429 turned
+  // the whole Bens backfill into 57 fake "good_to_book, score 1, severity 5"
+  // rows, each of which the name|date dedupe then treats as already scored.
+  // After this many consecutive failures the run aborts instead, leaving the
+  // rest unscored so a later run picks them up normally.
+  // Placeholder rows this breaker fails to prevent are still recoverable after
+  // the fact via previewFailedParseRows() / deleteFailedParseRows() below.
+  MAX_CONSECUTIVE_SCORE_FAILURES: 3,
+
   // Shadow mode per SOP §7: score and log, but never email Kris. Flip to
   // false only after the ≥80%-agreement benchmark is hit by hand-checking
   // against Kris's own review decisions.
@@ -278,7 +291,30 @@ function buildJudgeUserPrompt_(ctx) {
  * second parse failure it returns a manual-review sentinel rather than
  * throwing, per SOP §5 ("never silently drop a row").
  */
+/**
+ * Consecutive scoreTranscript_ placeholder-fallbacks in the current run.
+ * Reset by resetScoreFailureBreaker_() at the top of every batch scorer; read
+ * by scoreTranscript_ to decide whether the judge is down rather than the
+ * transcript being odd. Script-global (not per-folder) so a run that sweeps
+ * several folders still trips once, not once per folder.
+ */
+var CONSECUTIVE_SCORE_FAILURES_ = 0;
+
+/** Call at the top of every batch scorer, before the first scoreTranscript_. */
+function resetScoreFailureBreaker_() {
+  CONSECUTIVE_SCORE_FAILURES_ = 0;
+}
+
 function scoreTranscript_(ctx) {
+  // Breaker already tripped earlier in this run: fail fast WITHOUT calling the
+  // judge. Throwing (rather than returning the placeholder) means the caller's
+  // catch counts it as `failed` and appends no row, so the transcript stays
+  // unscored and a later healthy run picks it up.
+  if (CONSECUTIVE_SCORE_FAILURES_ >= PHASE2_CONFIG.MAX_CONSECUTIVE_SCORE_FAILURES) {
+    throw new Error('Scoring circuit breaker open (' + CONSECUTIVE_SCORE_FAILURES_ +
+      ' consecutive failures) — skipping "' + ctx.prospectName + '" without calling the judge.');
+  }
+
   var systemPrompt = buildJudgeSystemPrompt_();
   var userPrompt = buildJudgeUserPrompt_(ctx);
   var lastRaw = null;
@@ -291,14 +327,23 @@ function scoreTranscript_(ctx) {
       lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required fields.');
+      CONSECUTIVE_SCORE_FAILURES_ = 0; // a real score clears the streak
       return parsed;
     } catch (e) {
       log_('    ↳ scoreTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
     }
   }
 
+  CONSECUTIVE_SCORE_FAILURES_++;
   log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
     '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  if (CONSECUTIVE_SCORE_FAILURES_ >= PHASE2_CONFIG.MAX_CONSECUTIVE_SCORE_FAILURES) {
+    log_('    ↳ *** CIRCUIT BREAKER TRIPPED *** ' + CONSECUTIVE_SCORE_FAILURES_ +
+      ' consecutive scoring failures — the judge looks down (check the LiteLLM proxy: ' +
+      'billing/quota, key, model name). Aborting the rest of this run so it does not ' +
+      'write placeholder rows for every remaining transcript. Nothing after this point ' +
+      'is scored; re-run once the proxy is healthy.');
+  }
   return {
     reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
     lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
@@ -389,6 +434,7 @@ function scoreNewlyLoggedCalls_() {
     var col = getValidatedColumnMap_(sheet);
 
     var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+    resetScoreFailureBreaker_();
     var scored = 0, skipped = 0;
 
     for (var r = 0; r < values.length; r++) {
@@ -623,6 +669,7 @@ function scoreLegacyTranscriptFolder(repName, folderId) {
   var folder = DriveApp.getFolderById(folderId);
   var files = folder.getFiles();
 
+  resetScoreFailureBreaker_();
   var scored = 0, skippedExisting = 0, skippedUnparsed = 0, failed = 0;
 
   while (files.hasNext()) {
@@ -898,6 +945,7 @@ function scoreSeanTranscripts() {
     if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
     var existing = loadExistingLegacyKeys_(sheet);
+    resetScoreFailureBreaker_();
     var scored = 0, skippedExisting = 0, failed = 0;
 
     Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
