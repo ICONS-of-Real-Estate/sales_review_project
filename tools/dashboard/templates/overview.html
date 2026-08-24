@@ -31,14 +31,47 @@
     <div class="value">{{ pipeline.fallback_matched }}</div>
     <div class="label">Matched via fallback heuristic</div>
   </a>
+  <a href="/calls?outcome_disposition={{ outcome_missing_key }}" class="stat {{ 'warn' if outcomes.pct_logged is none or outcomes.pct_logged < 50 else '' }}">
+    <div class="value">{{ outcomes.missing }}</div>
+    <div class="label">Scored calls with no outcome logged</div>
+  </a>
 </div>
+
+<h2>Outcome vs. score</h2>
+{% if outcomes.logged %}
+<p class="muted" style="margin-top:-0.5rem;">
+  Outcome logged on {{ outcomes.logged }} of {{ outcomes.total }} scored calls ({{ outcomes.pct_logged }}%).
+  {% if outcomes.pct_logged < 50 %}
+    Coverage is still low — read these averages as provisional, not as proof the score predicts the sale.
+  {% endif %}
+</p>
+<table>
+  <thead><tr><th>Outcome</th><th>Calls</th><th>Avg score</th></tr></thead>
+  <tbody>
+    {% for o in outcomes.distribution %}
+    <tr>
+      <td><a href="/calls?outcome_disposition={{ o.disposition | urlencode }}">{{ o.disposition }}</a></td>
+      <td>{{ o.count }}</td>
+      <td>{{ o.avg_score if o.avg_score is not none else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">
+  No outcomes logged yet on any scored call. Until reps fill in the Outcome Disposition
+  column (Sold / Not Sold / Follow-up / No-show), there is no way to check whether a high
+  call-quality score actually corresponds to a closed deal. Phase 5's weekly scorecard
+  nudges each rep about their own unlogged calls.
+</p>
+{% endif %}
 
 <h2>By rep</h2>
 <table>
   <thead>
     <tr>
       <th>Rep</th><th>Calls</th><th>Avg score</th>
-      <th>Asked for close</th><th>Objections handled</th><th>Flagged for review</th>
+      <th>Asked for close</th><th>Objections handled</th><th>Outcome logged</th><th>Flagged for review</th>
     </tr>
   </thead>
   <tbody>
@@ -49,10 +82,12 @@
       <td><a href="/calls?rep={{ r.rep }}">{{ r.avg_score if r.avg_score is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&asked_for_close=yes">{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&objections_handled=yes">{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</a></td>
+      <td><a href="/calls?rep={{ r.rep }}&outcome_disposition={{ outcome_missing_key }}"
+             title="Click to list {{ r.rep }}'s scored calls with no outcome logged">{{ (r.pct_outcome_logged ~ "%") if r.pct_outcome_logged is not none else "—" }}</a></td>
       <td><a href="/queue?rep={{ r.rep }}">{{ r.manual_review_count }}</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">No scored calls yet.</td></tr>
+    <tr><td colspan="7" class="muted">No scored calls yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

@@ -132,3 +132,60 @@ def test_require_login_gate_allows_public_paths(client, seeded_db, monkeypatch):
     monkeypatch.setenv("DASHBOARD_REQUIRE_LOGIN", "true")
     resp = client.get("/healthz")
     assert resp.status_code == 200
+
+
+def test_overview_shows_outcome_coverage_and_averages(client, db_path, conn):
+    insert_call(conn, rep="Alice", outcome_disposition="Sold", call_quality_score=5)
+    insert_call(conn, rep="Alice", outcome_disposition="", call_quality_score=2)
+    conn.commit()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "Outcome vs. score" in resp.text
+    assert "Sold" in resp.text
+    # The coverage gap must be linked, not just counted — it is the number
+    # anyone is meant to act on while the column is still mostly empty.
+    assert f"/calls?outcome_disposition={app_module.OUTCOME_MISSING}" in resp.text
+
+
+def test_overview_explains_itself_when_no_outcomes_logged(client, seeded_db):
+    # The live state this shipped into: nothing logged anywhere. Must render
+    # an explanation, not an empty table implying there is no data pipeline.
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "No outcomes logged yet" in resp.text
+
+
+def test_calls_page_filters_by_outcome(client, db_path, conn):
+    insert_call(conn, prospect_name="Sold One", outcome_disposition="Sold")
+    insert_call(conn, prospect_name="Lost One", outcome_disposition="Not Sold")
+    conn.commit()
+    resp = client.get("/calls?outcome_disposition=Sold")
+    assert resp.status_code == 200
+    assert "Sold One" in resp.text
+    assert "Lost One" not in resp.text
+
+
+def test_calls_page_filters_to_calls_missing_an_outcome(client, db_path, conn):
+    insert_call(conn, prospect_name="Logged", outcome_disposition="Sold")
+    insert_call(conn, prospect_name="Unlogged", outcome_disposition="")
+    conn.commit()
+    resp = client.get(f"/calls?outcome_disposition={app_module.OUTCOME_MISSING}")
+    assert resp.status_code == 200
+    assert "Unlogged" in resp.text
+    assert "Logged" not in resp.text
+
+
+def test_rep_detail_shows_that_reps_outcomes_only(client, db_path, conn):
+    insert_call(conn, rep="Alice", outcome_disposition="Sold", call_quality_score=5)
+    insert_call(conn, rep="Bob", outcome_disposition="No-show", call_quality_score=1)
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert resp.status_code == 200
+    assert "Sold" in resp.text
+    assert "No-show" not in resp.text
+
+
+def test_outcome_pages_render_on_empty_db(client, db_path):
+    # Day one, before sync.py has ever run.
+    for url in ("/", "/calls", f"/calls?outcome_disposition={app_module.OUTCOME_MISSING}", "/reps/Nobody"):
+        assert client.get(url).status_code == 200

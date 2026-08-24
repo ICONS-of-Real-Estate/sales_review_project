@@ -1,3 +1,94 @@
+# Handoff — 25/08/2026 (session 8 — outcome_disposition on the dashboard, Bens' missing trigger)
+
+## 0. What happened this session (read this first)
+
+Two things: the dashboard finally surfaces `outcome_disposition`, and a real
+scheduling gap around Bens was found while reading a live backfill log.
+
+**1. `outcome_disposition` is now visible on the dashboard.** `sync.py` has
+mirrored this column into SQLite since it was written, but nothing in
+`app.py` or the templates ever rendered it — so the one column that links
+"what the AI scored this call" to "what actually happened on it" was
+invisible. Added:
+- `outcome_breakdown(rep="")` — per-outcome counts and **average call-quality
+  score per outcome** (the score-vs-outcome loop `QA_COACHING_RESEARCH_REPORT.md`
+  calls the real missing piece), plus how many scored calls have no outcome
+  logged at all.
+- Overview: an "Outcome vs. score" section, a 4th stat tile counting calls
+  with no outcome logged, and an "Outcome logged %" column in the by-rep
+  table (each cell drills into that rep's unlogged calls — the Phase 5 nudge
+  target).
+- `/calls`: an Outcome filter (including a `__none__` sentinel for "not
+  logged") and an Outcome column. The filter is case-insensitive because
+  reps hand-type this column.
+- Rep pages: the same breakdown scoped to one rep, plus an Outcome column.
+- **Deliberate honesty guard**: while coverage is under 50% the Overview
+  says so in words and labels the averages provisional. With almost nothing
+  logged yet, an "avg score for Sold" computed from a handful of rows is
+  noise, and it would be easy to mistake it for proof the rubric predicts
+  revenue. When the column is entirely empty the page explains why instead
+  of rendering an empty table.
+- Tests: `tools/dashboard/tests/` is now **97 tests, up from 78**.
+
+**2. Bens had no scoring trigger of his own — found from the live log.**
+`runAllLegacyBackfills_` was still reporting freshly scored calls, including
+ones dated 2026-08-16/17. Those are not backlog. Root cause:
+`scoreBensLegacyTranscripts()` was reachable ONLY through
+`runAllLegacyBackfills_`, while Sean, Joana and Tomás each have their own
+dedicated 4-hour trigger. So the standing instruction to retire the backfill
+trigger once it drains was in direct conflict with keeping Bens scored at
+all — **removing that trigger would have silently stopped scoring him**, and
+because his Riverside folder keeps receiving new transcripts, the "scored 0
+everywhere" retirement signal was never going to arrive.
+
+Fixed: `installBensScoringAutomation()` (4h, same pattern as the other
+three), wired into `installAllReadyTriggers_()`. After this is deployed and
+installed, `runAllLegacyBackfills_` is genuinely temporary again and
+`removeLegacyBackfillTrigger()` is safe to run.
+
+**3. Closed the actual root cause of the 306 duplicate Bens rows.**
+`scoreLegacyTranscriptFolder()` — Bens' scoring path — was the only scoring
+function in the file with no `LockService` guard of its own; Sean's and
+Joana's have always had one. `runAllLegacyBackfills_`'s mutex only protects
+runs started through *it*, so it could never have stopped a dedicated
+trigger, a manual editor run, or a stacked leftover trigger from overlapping.
+That is why only Bens duplicated. The function now takes its own lock.
+**This matters before installing the new 4h Bens trigger** — without it,
+adding a second independent caller would have risked reintroducing exactly
+the duplication that was just being cleaned up.
+
+## 1. Needs Kris
+
+- **Deploy**: `git pull` + `clasp push`, then run `installAllReadyTriggers()`
+  once (picks up Bens' new trigger). Dashboard: `git pull` +
+  `sudo systemctl restart sales-dashboard` on the VPS — no new deps, no
+  `pip install` needed.
+- **`dedupeLegacyBackfillDuplicates()` did NOT finish.** The 25/08 06:06–06:08
+  run ended in `Execution cancelled` partway through (last logged deletion
+  was row 8171). Re-run it until a run reports 0 duplicates found. Do the
+  deploy above FIRST so the new lock is live, otherwise the still-firing
+  10-minute backfill trigger can keep appending duplicates while the dedupe
+  is deleting them.
+- **Then** `removeLegacyBackfillTrigger()`, once Bens' dedicated trigger is
+  confirmed installed. Also check the Triggers page for stacked leftover
+  copies of `runAllLegacyBackfills_`.
+- **Still open from before**: `DASHBOARD_SESSION_SECRET` on the VPS may be
+  the literal string `$(openssl rand -hex 32)` rather than a real secret
+  (quoted-heredoc bug, §0c). Check with
+  `sudo grep DASHBOARD_SESSION_SECRET /etc/sales-dashboard/env`.
+
+## 2. Known-stale, not fixed this session
+
+The rep-facing Google Doc "How Call Reviews Work"
+(https://docs.google.com/document/d/1vCyXc_Qe7jCvcoJuyUFPFC9HVBpBoVcaRRpWpu32DfE/edit)
+lists every automated email time as PT/ET based on
+`CONFIG.BUSINESS_TIMEZONE = 'America/Los_Angeles'`. That changed to
+`America/New_York` in session 7, so **every time in that doc is now 3 hours
+off** and reps are working from wrong expectations. No tool here can edit a
+Doc's body, so fixing it means the create-new/trash-old pattern.
+
+---
+
 # Handoff — 23/08/2026 (session 7 — Call Date bug fully closed out, deployed, and repaired live)
 
 ## Status: everything below this section is DONE. Read this first, it supersedes the "NOT yet run" note in the section right below it.

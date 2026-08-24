@@ -268,3 +268,127 @@ class TestLeaderboard:
         assert erin["recent_count"] == app_module.LEADERBOARD_RECENT_CALLS
         assert erin["recent_avg"] == 5
         assert erin["delta"] == 4
+
+
+class TestOutcomeBreakdown:
+    """The Outcome Disposition column is the only link between what the AI
+    scored a call and what actually happened on it. It sat empty for months,
+    so these pin down both the populated case and the (currently normal)
+    empty one."""
+
+    def test_empty_when_nothing_logged(self, seeded_db):
+        # The seed fixture leaves outcome_disposition blank everywhere, which
+        # is exactly the live state this shipped into.
+        out = app_module.outcome_breakdown()
+        assert out["distribution"] == []
+        assert out["logged"] == 0
+        assert out["missing"] == out["total"]
+        assert out["total"] > 0
+
+    def test_counts_and_average_score_per_outcome(self, db_path, conn):
+        insert_call(conn, rep="Alice", outcome_disposition="Sold", call_quality_score=5)
+        insert_call(conn, rep="Alice", outcome_disposition="Sold", call_quality_score=3)
+        insert_call(conn, rep="Alice", outcome_disposition="Not Sold", call_quality_score=2)
+        insert_call(conn, rep="Alice", outcome_disposition="", call_quality_score=4)
+        conn.commit()
+        out = app_module.outcome_breakdown()
+        assert out["total"] == 4
+        assert out["logged"] == 3
+        assert out["missing"] == 1
+        assert out["pct_logged"] == 75
+        by_name = {d["disposition"]: d for d in out["distribution"]}
+        assert by_name["Sold"]["count"] == 2
+        assert by_name["Sold"]["avg_score"] == 4.0
+        assert by_name["Not Sold"]["avg_score"] == 2.0
+
+    def test_whitespace_only_disposition_counts_as_missing(self, db_path, conn):
+        insert_call(conn, outcome_disposition="   ")
+        conn.commit()
+        out = app_module.outcome_breakdown()
+        assert out["logged"] == 0
+        assert out["missing"] == 1
+
+    def test_folds_case_variants_reps_typed_by_hand(self, db_path, conn):
+        # Reps hand-type this column, so "Follow-up" and "follow-up" both
+        # appear — they must not show up as two separate outcomes.
+        for score in (4, 2, 3):
+            insert_call(conn, outcome_disposition="Follow-up", call_quality_score=score)
+        insert_call(conn, outcome_disposition="follow-up", call_quality_score=1)
+        conn.commit()
+        out = app_module.outcome_breakdown()
+        assert len(out["distribution"]) == 1
+        assert out["distribution"][0]["count"] == 4
+        # Keeps the majority spelling rather than imposing its own casing.
+        assert out["distribution"][0]["disposition"] == "Follow-up"
+
+    def test_scoped_to_one_rep(self, db_path, conn):
+        insert_call(conn, rep="Alice", outcome_disposition="Sold")
+        insert_call(conn, rep="Bob", outcome_disposition="Sold")
+        insert_call(conn, rep="Bob", outcome_disposition="Not Sold")
+        conn.commit()
+        out = app_module.outcome_breakdown(rep="Bob")
+        assert out["total"] == 2
+        assert {d["disposition"] for d in out["distribution"]} == {"Sold", "Not Sold"}
+
+    def test_avg_score_is_none_when_outcome_logged_but_never_scored(self, db_path, conn):
+        insert_call(conn, outcome_disposition="No-show", call_quality_score=None)
+        conn.commit()
+        out = app_module.outcome_breakdown()
+        assert out["distribution"][0]["avg_score"] is None
+
+    def test_pct_logged_is_none_on_empty_db(self, db_path):
+        out = app_module.outcome_breakdown()
+        assert out["pct_logged"] is None
+        assert out["distribution"] == []
+
+
+class TestOutcomeDispositionFilter:
+    def test_filters_to_one_outcome(self, db_path, conn):
+        insert_call(conn, prospect_name="Sold One", outcome_disposition="Sold")
+        insert_call(conn, prospect_name="Lost One", outcome_disposition="Not Sold")
+        conn.commit()
+        calls = app_module.filtered_calls(outcome_disposition="Sold")
+        assert [c["prospect_name"] for c in calls] == ["Sold One"]
+
+    def test_outcome_match_is_case_and_whitespace_insensitive(self, db_path, conn):
+        insert_call(conn, prospect_name="Sold One", outcome_disposition=" SOLD ")
+        conn.commit()
+        calls = app_module.filtered_calls(outcome_disposition="sold")
+        assert [c["prospect_name"] for c in calls] == ["Sold One"]
+
+    def test_missing_sentinel_returns_only_unlogged_calls(self, db_path, conn):
+        insert_call(conn, prospect_name="Logged", outcome_disposition="Sold")
+        insert_call(conn, prospect_name="Blank", outcome_disposition="")
+        insert_call(conn, prospect_name="Spaces", outcome_disposition="  ")
+        conn.commit()
+        calls = app_module.filtered_calls(outcome_disposition=app_module.OUTCOME_MISSING)
+        assert {c["prospect_name"] for c in calls} == {"Blank", "Spaces"}
+
+    def test_missing_sentinel_combines_with_fts_search(self, db_path, conn):
+        # The nudge case: "which unlogged calls did the AI say were closed?"
+        insert_call(conn, prospect_name="Blank", outcome_disposition="",
+                    ai_feedback_summary="never asked for the close")
+        insert_call(conn, prospect_name="Logged", outcome_disposition="Sold",
+                    ai_feedback_summary="never asked for the close")
+        conn.commit()
+        import sync
+        sync.rebuild_call_search_index(conn)
+        conn.commit()
+        calls = app_module.filtered_calls(q="close", outcome_disposition=app_module.OUTCOME_MISSING)
+        assert [c["prospect_name"] for c in calls] == ["Blank"]
+
+    def test_outcome_disposition_is_returned_on_every_row(self, seeded_db):
+        calls = app_module.filtered_calls()
+        assert all("outcome_disposition" in c for c in calls)
+
+
+class TestRepSummaryOutcomeCoverage:
+    def test_pct_outcome_logged_per_rep(self, db_path, conn):
+        insert_call(conn, rep="Alice", outcome_disposition="Sold")
+        insert_call(conn, rep="Alice", outcome_disposition="")
+        insert_call(conn, rep="Bob", outcome_disposition="")
+        conn.commit()
+        by_rep = {r["rep"]: r for r in app_module.rep_summary()}
+        assert by_rep["Alice"]["pct_outcome_logged"] == 50
+        assert by_rep["Alice"]["outcome_logged_count"] == 1
+        assert by_rep["Bob"]["pct_outcome_logged"] == 0

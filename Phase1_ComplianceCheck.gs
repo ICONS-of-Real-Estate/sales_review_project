@@ -1112,7 +1112,8 @@ function installAllReadyTriggers_() {
   installSeanScoringAutomation();
   installTomasScoringAutomation();
   installJoanaScoringAutomation();
-  installed.push('Phase 2: ongoing call scoring (every 4h) + Sean/Tomás/Joana auto-scoring (every 4h each)');
+  installBensScoringAutomation();
+  installed.push('Phase 2: ongoing call scoring (every 4h) + Sean/Tomás/Joana/Bens auto-scoring (every 4h each)');
 
   if (typeof HANDOFF_CONFIG !== 'undefined' && HANDOFF_CONFIG.ENABLED) {
     installHandoffBriefTrigger();

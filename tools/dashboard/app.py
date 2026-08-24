@@ -122,7 +122,9 @@ def rep_summary():
             AVG(call_quality_score) AS avg_score,
             SUM(flag_asked_for_close) AS asked_for_close_count,
             SUM(flag_objections_handled) AS objections_handled_count,
-            SUM(manual_review_recommended) AS manual_review_count
+            SUM(manual_review_recommended) AS manual_review_count,
+            SUM(CASE WHEN outcome_disposition IS NOT NULL AND TRIM(outcome_disposition) != ''
+                     THEN 1 ELSE 0 END) AS outcome_logged_count
         FROM sales_call_log
         WHERE rep IS NOT NULL AND rep != ''
         GROUP BY rep
@@ -145,6 +147,10 @@ def rep_summary():
                     round(100 * (r["objections_handled_count"] or 0) / total) if total else None
                 ),
                 "manual_review_count": r["manual_review_count"] or 0,
+                "outcome_logged_count": r["outcome_logged_count"] or 0,
+                "pct_outcome_logged": (
+                    round(100 * (r["outcome_logged_count"] or 0) / total) if total else None
+                ),
             }
         )
     return summary
@@ -383,6 +389,86 @@ def pipeline_health():
     return {"unmatched": unmatched, "fallback_matched": fallback}
 
 
+# The Sales Call Log's "Outcome Disposition" column (Sold / Not Sold /
+# Follow-up / No-show) has existed since Phase 0 but sat almost entirely
+# empty until Phase 5's weekly scorecard started nudging reps to fill it in
+# (Phase5_WeeklyScorecard.gs, commit 6f81eed). sync.py has always mirrored
+# it into SQLite; nothing rendered it until now. It is the only column that
+# closes the loop between what the AI *scored* a call and what actually
+# happened on it, so the two things worth showing are (a) how much of it is
+# actually filled in, and (b) average score per outcome.
+OUTCOME_MISSING = "__none__"
+
+_OUTCOME_LOGGED_SQL = "outcome_disposition IS NOT NULL AND TRIM(outcome_disposition) != ''"
+
+
+def outcome_breakdown(rep=""):
+    """Distribution of logged outcomes, with the average call-quality score
+    for each — the score-vs-outcome feedback loop. Also reports how many
+    scored calls have no outcome logged at all, which for now is most of
+    them: until that coverage number climbs, treat every average here as
+    provisional rather than as evidence the rubric predicts revenue."""
+    conn = get_conn()
+    params = []
+    where_rep = ""
+    if rep:
+        where_rep = " AND rep = ?"
+        params.append(rep)
+    rows = conn.execute(
+        "SELECT TRIM(outcome_disposition) AS disposition, COUNT(*) AS n, "
+        "AVG(call_quality_score) AS avg_score FROM sales_call_log "
+        f"WHERE {_OUTCOME_LOGGED_SQL}{where_rep} "
+        "GROUP BY TRIM(outcome_disposition) ORDER BY n DESC",
+        params,
+    ).fetchall()
+    totals = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        f"SUM(CASE WHEN {_OUTCOME_LOGGED_SQL} THEN 1 ELSE 0 END) AS logged "
+        "FROM sales_call_log WHERE 1=1" + where_rep,
+        params,
+    ).fetchone()
+    conn.close()
+
+    # Reps type this by hand, so "Follow-up" and "follow-up" both show up.
+    # Fold case-insensitively but keep the first (most common, since the
+    # query is already count-ordered) spelling as the display label rather
+    # than imposing a casing of our own on the sheet's own vocabulary.
+    folded = {}
+    order = []
+    for r in rows:
+        key = (r["disposition"] or "").lower()
+        if key not in folded:
+            folded[key] = {"disposition": r["disposition"], "count": 0, "_score_sum": 0.0, "_scored": 0}
+            order.append(key)
+        entry = folded[key]
+        entry["count"] += r["n"]
+        if r["avg_score"] is not None:
+            entry["_score_sum"] += r["avg_score"] * r["n"]
+            entry["_scored"] += r["n"]
+
+    distribution = []
+    for key in order:
+        e = folded[key]
+        distribution.append(
+            {
+                "disposition": e["disposition"],
+                "count": e["count"],
+                "avg_score": round(e["_score_sum"] / e["_scored"], 2) if e["_scored"] else None,
+            }
+        )
+    distribution.sort(key=lambda d: d["count"], reverse=True)
+
+    total = totals["total"] or 0
+    logged = totals["logged"] or 0
+    return {
+        "distribution": distribution,
+        "total": total,
+        "logged": logged,
+        "missing": total - logged,
+        "pct_logged": round(100 * logged / total) if total else None,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def overview(request: Request):
     conn = get_conn()
@@ -399,6 +485,8 @@ def overview(request: Request):
             "failure_modes": failure_mode_breakdown(),
             "pipeline": pipeline_health(),
             "alerts": trend_alerts(),
+            "outcomes": outcome_breakdown(),
+            "outcome_missing_key": OUTCOME_MISSING,
         },
     )
 
@@ -505,7 +593,7 @@ def rep_detail(rep):
     rows = conn.execute(
         "SELECT prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
         "flag_asked_for_close, flag_objections_handled, primary_failure_mode, manual_review_recommended, "
-        "ai_feedback_summary, transcript_url FROM sales_call_log WHERE rep = ?",
+        "ai_feedback_summary, transcript_url, outcome_disposition FROM sales_call_log WHERE rep = ?",
         (rep,),
     ).fetchall()
     conn.close()
@@ -581,6 +669,8 @@ def rep_detail_page(request: Request, rep: str):
             "avg_score": avg_score,
             "calls": calls,
             "score_over_time": _rep_score_series(rep),
+            "outcomes": outcome_breakdown(rep),
+            "outcome_missing_key": OUTCOME_MISSING,
         },
     )
 
@@ -604,7 +694,8 @@ def all_reps_list():
 
 def filtered_calls(
     rep="", verdict="", failure_mode="", min_score=None, max_score=None,
-    asked_for_close="", objections_handled="", match_method="", q="", limit=200,
+    asked_for_close="", objections_handled="", match_method="", outcome_disposition="",
+    q="", limit=200,
 ):
     """Backs the /calls browser. With `q` set, searches call_search (FTS5
     over every call's AI Feedback Summary — sync.py rebuilds this index
@@ -619,6 +710,7 @@ def filtered_calls(
             sql = (
                 "SELECT s.id, s.prospect_name, s.rep, s.call_date, s.call_type, s.lead_quality_verdict, "
                 "s.call_quality_score, s.primary_failure_mode, s.transcript_url, "
+                "s.outcome_disposition, "
                 "snippet(call_search, 4, '<mark>', '</mark>', '…', 20) AS snippet "
                 "FROM call_search cs JOIN sales_call_log s ON s.id = cs.call_id "
                 "WHERE call_search MATCH ?"
@@ -627,7 +719,7 @@ def filtered_calls(
         else:
             sql = (
                 "SELECT id, prospect_name, rep, call_date, call_type, lead_quality_verdict, "
-                "call_quality_score, primary_failure_mode, transcript_url, "
+                "call_quality_score, primary_failure_mode, transcript_url, outcome_disposition, "
                 "ai_feedback_summary AS snippet "
                 "FROM sales_call_log s WHERE 1=1"
             )
@@ -658,6 +750,16 @@ def filtered_calls(
         if match_method:
             sql += f" AND {prefix}match_method = ?"
             params.append(match_method)
+        if outcome_disposition == OUTCOME_MISSING:
+            # The nudge target: scored calls nobody ever logged an outcome for.
+            sql += (
+                f" AND ({prefix}outcome_disposition IS NULL"
+                f" OR TRIM({prefix}outcome_disposition) = '')"
+            )
+        elif outcome_disposition:
+            # Case-insensitive: reps hand-type this column.
+            sql += f" AND LOWER(TRIM({prefix}outcome_disposition)) = ?"
+            params.append(outcome_disposition.strip().lower())
 
         if q:
             sql += " ORDER BY rank LIMIT ?"
@@ -689,6 +791,7 @@ def calls_page(
     asked_for_close: str = "",
     objections_handled: str = "",
     match_method: str = "",
+    outcome_disposition: str = "",
     q: str = "",
 ):
     return render(
@@ -700,14 +803,18 @@ def calls_page(
             "all_reps": all_reps_list(),
             "calls": filtered_calls(
                 rep, verdict, failure_mode, min_score, max_score,
-                asked_for_close, objections_handled, match_method, q,
+                asked_for_close, objections_handled, match_method,
+                outcome_disposition, q,
             ),
             "filters": {
                 "rep": rep, "verdict": verdict, "failure_mode": failure_mode,
                 "min_score": min_score, "max_score": max_score, "q": q,
                 "asked_for_close": asked_for_close, "objections_handled": objections_handled,
                 "match_method": match_method,
+                "outcome_disposition": outcome_disposition,
             },
+            "outcome_missing_key": OUTCOME_MISSING,
+            "all_outcomes": [d["disposition"] for d in outcome_breakdown()["distribution"]],
         },
     )
 

@@ -1110,92 +1110,115 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
   feedbackSummaryFn = feedbackSummaryFn || function (result) { return result.feedback_summary; };
   if (!folderId) { log_('No folder ID configured for ' + repName + ' — nothing to do.'); return; }
 
-  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
-  var sheet = resolveSheet_(ss, 'Sales Call Log');
-  if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
-
-  var existing = loadExistingLegacyKeys_(sheet);
-  var folder = DriveApp.getFolderById(folderId);
-  var files = folder.getFiles();
-
-  var scored = 0, skippedExisting = 0, skippedUnparsed = 0, failed = 0;
-
-  while (files.hasNext()) {
-    var file = files.next();
-    var parsed = parseLegacyFilename_(file.getName());
-    if (!parsed) {
-      log_('  SKIP (name did not match convention): "' + file.getName() + '"');
-      skippedUnparsed++;
-      continue;
-    }
-    var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr;
-    if (existing[key]) { skippedExisting++; continue; }
-
-    try {
-      var text = getTranscriptText_(file);
-      var ctx = {
-        rep: repName,
-        prospectName: parsed.prospectName,
-        callType: PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE,
-        source: '',
-        callDate: parsed.dateStr,
-        transcriptText: text
-      };
-      var result = judgeFn(ctx);
-      var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
-
-      sheet.appendRow([
-        parsed.prospectName,          // Prospect Name
-        '',                            // Prospect Email — fill from rep's tracker
-        '',                            // Source — fill from rep's tracker
-        parsed.date,                   // Call Date
-        repName,                       // Rep
-        PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, // Call Type (best-effort guess — confirm)
-        true,                           // Outcome Logged (the call happened; disposition unknown)
-        '',                             // Outcome Disposition — fill from rep's tracker
-        '',                             // Calendar Event ID — none (legacy, predates convention)
-        '',                             // Riverside Recording ID — unknown for these transcripts
-        file.getUrl(),                  // Transcript URL
-        'fallback_heuristic',           // Match Method — never exact_key for legacy backfill
-        result.lead_quality.verdict,    // Lead Quality Verdict
-        result.call_quality_score,      // Call Quality Score
-        result.flags.asked_for_close,   // Flag: Asked For Close
-        objectionsHandled,              // Flag: Objections Handled
-        true,                           // Manual Review Recommended — forced true for fallback_heuristic
-        result.severity,                // Severity
-        feedbackSummaryFn(result),      // AI Feedback Summary
-        false,                          // Reviewed By Kris
-        0,                               // Queue Age
-        '',                              // Kris Manual Review Verdict — not yet judged
-        result.primary_failure_mode || 'none' // Primary Failure Mode
-      ]);
-
-      // Real bug found live (23/08/2026): this in-memory update was missing
-      // here even though loadExistingLegacyKeys_'s whole purpose is
-      // per-file dedup — Joana's separate copy of this loop (scoreJoanaTranscripts)
-      // already did this correctly. Without it, two files in the same folder
-      // pass that parse to the same (name, date) key would both get scored
-      // and appended in a single run. The dominant cause of the ~300 duplicate
-      // Bens rows found the same day was actually concurrent executions (see
-      // the atomic-mutex fix on runAllLegacyBackfills_ below), but this was a
-      // real, separate gap worth closing regardless.
-      existing[key] = true;
-
-      log_('  Scored "' + parsed.prospectName + '" (' + parsed.dateStr + '): ' +
-        result.lead_quality.verdict + ', score ' + result.call_quality_score +
-        ', severity ' + result.severity + (result._parseFailed ? ' [PARSE FAILED]' : ''));
-      scored++;
-      Utilities.sleep(300); // be polite to the proxy — no documented rate limit here, but batch responsibly.
-    } catch (e) {
-      log_('  FAILED "' + file.getName() + '": ' + e);
-      failed++;
-    }
+  // This was the ONLY scoring path in the file without a lock of its own,
+  // and it is exactly the one that produced 306 duplicate Bens rows
+  // (23-25/08/2026): two overlapping runs each read their own
+  // loadExistingLegacyKeys_ snapshot, so each saw the same file as unscored
+  // and appended its own row. runAllLegacyBackfills_'s mutex only guards
+  // runs started through *it* — it can't stop a dedicated trigger, a manual
+  // editor run, or a leftover stacked trigger from overlapping with one.
+  // Guarding the function itself is what actually closes that hole.
+  // Not nested inside any other lock: both callers
+  // (scoreBensLegacyTranscripts / scoreJoanaLegacyTranscripts) are zero-arg
+  // wrappers holding nothing, and runAllLegacyBackfills_ releases its gate
+  // before any scoring starts.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('scoreLegacyTranscriptFolder(' + repName + '): another scoring run holds the lock, ' +
+      'skipping this firing.');
+    return;
   }
 
-  log_('scoreLegacyTranscriptFolder(' + repName + ') done — scored ' + scored +
-    ', already-present ' + skippedExisting + ', unparsed ' + skippedUnparsed + ', failed ' + failed + '.');
-  log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) ' +
-    'per brief.txt §6 — Kris/Tomás should confirm the fallback name/date match before trusting a score.');
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
+
+    var existing = loadExistingLegacyKeys_(sheet);
+    var folder = DriveApp.getFolderById(folderId);
+    var files = folder.getFiles();
+
+    var scored = 0, skippedExisting = 0, skippedUnparsed = 0, failed = 0;
+
+    while (files.hasNext()) {
+      var file = files.next();
+      var parsed = parseLegacyFilename_(file.getName());
+      if (!parsed) {
+        log_('  SKIP (name did not match convention): "' + file.getName() + '"');
+        skippedUnparsed++;
+        continue;
+      }
+      var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr;
+      if (existing[key]) { skippedExisting++; continue; }
+
+      try {
+        var text = getTranscriptText_(file);
+        var ctx = {
+          rep: repName,
+          prospectName: parsed.prospectName,
+          callType: PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE,
+          source: '',
+          callDate: parsed.dateStr,
+          transcriptText: text
+        };
+        var result = judgeFn(ctx);
+        var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+
+        sheet.appendRow([
+          parsed.prospectName,          // Prospect Name
+          '',                            // Prospect Email — fill from rep's tracker
+          '',                            // Source — fill from rep's tracker
+          parsed.date,                   // Call Date
+          repName,                       // Rep
+          PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, // Call Type (best-effort guess — confirm)
+          true,                           // Outcome Logged (the call happened; disposition unknown)
+          '',                             // Outcome Disposition — fill from rep's tracker
+          '',                             // Calendar Event ID — none (legacy, predates convention)
+          '',                             // Riverside Recording ID — unknown for these transcripts
+          file.getUrl(),                  // Transcript URL
+          'fallback_heuristic',           // Match Method — never exact_key for legacy backfill
+          result.lead_quality.verdict,    // Lead Quality Verdict
+          result.call_quality_score,      // Call Quality Score
+          result.flags.asked_for_close,   // Flag: Asked For Close
+          objectionsHandled,              // Flag: Objections Handled
+          true,                           // Manual Review Recommended — forced true for fallback_heuristic
+          result.severity,                // Severity
+          feedbackSummaryFn(result),      // AI Feedback Summary
+          false,                          // Reviewed By Kris
+          0,                               // Queue Age
+          '',                              // Kris Manual Review Verdict — not yet judged
+          result.primary_failure_mode || 'none' // Primary Failure Mode
+        ]);
+
+        // Real bug found live (23/08/2026): this in-memory update was missing
+        // here even though loadExistingLegacyKeys_'s whole purpose is
+        // per-file dedup — Joana's separate copy of this loop (scoreJoanaTranscripts)
+        // already did this correctly. Without it, two files in the same folder
+        // pass that parse to the same (name, date) key would both get scored
+        // and appended in a single run. The dominant cause of the ~300 duplicate
+        // Bens rows found the same day was actually concurrent executions (see
+        // the atomic-mutex fix on runAllLegacyBackfills_ below), but this was a
+        // real, separate gap worth closing regardless.
+        existing[key] = true;
+
+        log_('  Scored "' + parsed.prospectName + '" (' + parsed.dateStr + '): ' +
+          result.lead_quality.verdict + ', score ' + result.call_quality_score +
+          ', severity ' + result.severity + (result._parseFailed ? ' [PARSE FAILED]' : ''));
+        scored++;
+        Utilities.sleep(300); // be polite to the proxy — no documented rate limit here, but batch responsibly.
+      } catch (e) {
+        log_('  FAILED "' + file.getName() + '": ' + e);
+        failed++;
+      }
+    }
+
+    log_('scoreLegacyTranscriptFolder(' + repName + ') done — scored ' + scored +
+      ', already-present ' + skippedExisting + ', unparsed ' + skippedUnparsed + ', failed ' + failed + '.');
+    log_('Every row above was force-flagged Manual Review Recommended = TRUE (fallback_heuristic match) ' +
+      'per brief.txt §6 — Kris/Tomás should confirm the fallback name/date match before trusting a score.');
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2153,6 +2176,35 @@ function installJoanaScoringAutomation() {
   RUN_TAG = 'installJoanaScoringAutomation';
   reinstallHourlyTrigger_('scoreJoanaTranscripts', 4);
   log_('Joana auto-scoring installed: scoreJoanaTranscripts() now runs every 4 hours.');
+}
+
+/**
+ * Real gap found live (25/08/2026): Bens was the only rep with no scoring
+ * trigger of his own. scoreBensLegacyTranscripts() was reachable ONLY
+ * through runAllLegacyBackfills_ — the temporary 10-minute backfill trigger
+ * — so "retire the backfill once the backlog is drained" and "keep scoring
+ * Bens' new calls" were in direct conflict: removing that trigger silently
+ * stops scoring him altogether.
+ *
+ * It also explains why that trigger never reports a drained backlog. Its
+ * retirement signal was supposed to be a firing that scores 0 across all
+ * three reps, but Bens' Riverside folder keeps receiving NEW transcripts
+ * (calls dated 2026-08-16/17 were still being scored on 25/08), so the
+ * count never settles at 0 — it was quietly promoted from backfill to
+ * production scheduler by the fact that nothing else does this job.
+ *
+ * With this installed, runAllLegacyBackfills_ is genuinely temporary again
+ * and safe to remove: Joana, Sean, Tomás and Bens each have their own
+ * independent 4-hour trigger.
+ *
+ * ONE-TIME setup — select installBensScoringAutomation in the Apps Script
+ * editor's "Select function" dropdown and run it once (or just re-run
+ * installAllReadyTriggers(), which now includes it).
+ */
+function installBensScoringAutomation() {
+  RUN_TAG = 'installBensScoringAutomation';
+  reinstallHourlyTrigger_('scoreBensLegacyTranscripts', 4);
+  log_('Bens auto-scoring installed: scoreBensLegacyTranscripts() now runs every 4 hours.');
 }
 
 /**
