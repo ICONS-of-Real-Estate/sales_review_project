@@ -83,6 +83,9 @@
 </table>
 
 <h2>Playbooks</h2>
+<p class="muted">Each rep's full playbook now lives on their own page — <a href="/reps/Bens">Bens</a>,
+  <a href="/reps/Sean">Sean</a>, <a href="/reps/Tomás">Tomás</a> (Joana doesn't have one yet — no batch of her
+  transcripts has been reviewed to build one from). Search here to find something across all of them at once.</p>
 <form method="get" action="/training" style="margin-bottom: 1.5rem;">
   <input type="text" name="q" value="{{ query }}" placeholder="Search playbooks (e.g. &quot;price objection&quot;)"
     style="padding: 0.5rem 0.8rem; width: 320px; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
@@ -94,7 +97,8 @@
   <h2>Search results for "{{ query }}"</h2>
   {% for r in search_results %}
     <p>
-      <a href="/training#{{ r.doc_slug }}-{{ r.anchor }}"><strong>{{ r.doc_title }}</strong> — {{ r.heading }}</a><br>
+      <a href="/reps/{{ playbook_slug_to_rep.get(r.doc_slug, r.doc_slug) }}#{{ r.anchor }}">
+        <strong>{{ r.doc_title }}</strong> — {{ r.heading }}</a><br>
       <span class="muted">{{ r.snippet | safe }}</span>
     </p>
   {% else %}
@@ -102,26 +106,4 @@
   {% endfor %}
 </div>
 {% endif %}
-
-{% for doc in playbooks %}
-<div class="chart-card">
-  <h2>{{ doc.title }}</h2>
-  {% if doc.sections %}
-    <div class="toc">
-      <strong>Contents</strong>
-      <ul>
-        {% for s in doc.sections %}
-          <li><a href="#{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</a></li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% for s in doc.sections %}
-      <h3 id="{{ doc.slug }}-{{ s.anchor }}">{{ s.heading or "Overview" }}</h3>
-      <div class="playbook-body">{{ s.html | safe }}</div>
-    {% endfor %}
-  {% else %}
-    <p class="muted">Not found on this deploy ({{ doc.slug }}).</p>
-  {% endif %}
-</div>
-{% endfor %}
 {% endblock %}

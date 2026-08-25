@@ -28,6 +28,12 @@ from starlette.middleware.sessions import SessionMiddleware
 import auth
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
+# Which PLAYBOOKS slug belongs on which rep's own /reps/{rep} page. Joana
+# has no entry on purpose — no playbook has ever been built for her (would
+# need a human reviewing a real batch of her transcripts, same as Bens'/
+# Sean's were, not something this maps around).
+REP_TO_PLAYBOOK_SLUG = {"Bens": "bens", "Sean": "sean", "Tomás": "tomas"}
+
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent.parent
 DB_PATH = os.environ.get("DASHBOARD_DB_PATH", str(BASE_DIR / "dashboard.db"))
@@ -709,6 +715,40 @@ def calibration_agreement():
     return {"judged": len(rows), "agree": agree, "pct": round(100 * agree / len(rows))}
 
 
+def rep_scorecard_history(rep):
+    """Week-by-week Scorecard History for one rep, oldest first (so a chart
+    or table built from this reads left-to-right as time passing) — real
+    per-week rows only, since appendScorecardHistoryRow_ (Phase5_WeeklyScorecard.gs)
+    only ever writes on an actual send, never a preview."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT week_start, week_end, calls_this_week, weekly_avg_score, rolling_4_week_avg, "
+        "historic_avg_before_week, priority_to_improve, worst_call, worst_call_score, "
+        "missing_outcome_disposition, sent_at "
+        "FROM scorecard_history WHERE rep = ? ORDER BY week_start ASC",
+        (rep,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def rep_playbook(rep):
+    """The one PLAYBOOKS doc that belongs to this rep, or None if none exists
+    (Joana) — a single doc, not the full list /training used to dump on one
+    combined page."""
+    slug = REP_TO_PLAYBOOK_SLUG.get(rep)
+    if not slug:
+        return None
+    pb = next((p for p in PLAYBOOKS if p["slug"] == slug), None)
+    if not pb:
+        return None
+    try:
+        sections = render_playbook(REPO_ROOT, pb["filename"])
+    except FileNotFoundError:
+        sections = None
+    return {"slug": pb["slug"], "title": pb["title"], "sections": sections}
+
+
 @app.get("/reps/{rep}", response_class=HTMLResponse)
 def rep_detail_page(request: Request, rep: str):
     calls = rep_detail(rep)
@@ -729,6 +769,8 @@ def rep_detail_page(request: Request, rep: str):
             "outcomes": outcome_breakdown(rep),
             "outcome_missing_key": OUTCOME_MISSING,
             "framework_gaps": framework_gap_breakdown(rep),
+            "scorecard_history": rep_scorecard_history(rep),
+            "playbook": rep_playbook(rep),
         },
     )
 
@@ -898,16 +940,16 @@ def queue_page(request: Request, rep: str = ""):
     )
 
 
+# Reverse of REP_TO_PLAYBOOK_SLUG, for turning a search result's doc_slug
+# back into a link to that rep's own page instead of dumping every playbook's
+# full text onto this shared page (25/08/2026 — was one long combined
+# scroll of all three; moved the full text to each rep's own /reps/{rep}
+# page, this page keeps only cross-rep search).
+PLAYBOOK_SLUG_TO_REP = {v: k for k, v in REP_TO_PLAYBOOK_SLUG.items()}
+
+
 @app.get("/training", response_class=HTMLResponse)
 def training_page(request: Request, q: str = ""):
-    playbook_docs = []
-    for pb in PLAYBOOKS:
-        try:
-            sections = render_playbook(REPO_ROOT, pb["filename"])
-        except FileNotFoundError:
-            sections = None
-        playbook_docs.append({"slug": pb["slug"], "title": pb["title"], "sections": sections})
-
     return render(
         request,
         "training.html",
@@ -918,9 +960,9 @@ def training_page(request: Request, q: str = ""):
             "practice_status": daily_practice_status(),
             "leaderboard": leaderboard(),
             "leaderboard_recent_calls": LEADERBOARD_RECENT_CALLS,
-            "playbooks": playbook_docs,
             "query": q,
             "search_results": search_playbooks(DB_PATH, q) if q else [],
+            "playbook_slug_to_rep": PLAYBOOK_SLUG_TO_REP,
         },
     )
 

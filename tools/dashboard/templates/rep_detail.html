@@ -54,6 +54,30 @@
   <canvas id="repScoreChart" height="70"></canvas>
 </div>
 
+{% if scorecard_history %}
+<div class="chart-card">
+  <h2>Weekly history</h2>
+  <p class="muted">One row per week this rep's scorecard actually sent — from the "Scorecard History" sheet tab, so this only ever reflects real sends, never a preview.</p>
+  <table>
+    <thead>
+      <tr><th>Week</th><th>Calls</th><th>Weekly avg</th><th>Rolling 4-wk avg</th><th>Priority to improve</th><th>Worst call</th></tr>
+    </thead>
+    <tbody>
+      {% for w in scorecard_history %}
+      <tr>
+        <td>{{ w.week_start }} – {{ w.week_end }}</td>
+        <td>{{ w.calls_this_week }}</td>
+        <td>{{ w.weekly_avg_score if w.weekly_avg_score is not none else "—" }}</td>
+        <td>{{ w.rolling_4_week_avg if w.rolling_4_week_avg is not none else "—" }}</td>
+        <td style="max-width: 320px;"><span class="clamp-text" title="{{ w.priority_to_improve or '' }}">{{ w.priority_to_improve or "—" }}</span></td>
+        <td>{{ w.worst_call or "—" }}{% if w.worst_call_score is not none %} ({{ w.worst_call_score }}){% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <h2>All calls</h2>
 <table>
   <thead>
@@ -98,4 +122,31 @@
     },
   });
 </script>
+
+{% if playbook %}
+<div class="chart-card">
+  <h2>{{ playbook.title }}</h2>
+  {% if playbook.sections %}
+    <div class="toc">
+      <strong>Contents</strong>
+      <ul>
+        {% for s in playbook.sections %}
+          <li><a href="#{{ s.anchor }}">{{ s.heading or "Overview" }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% for s in playbook.sections %}
+      <h3 id="{{ s.anchor }}">{{ s.heading or "Overview" }}</h3>
+      <div class="playbook-body">{{ s.html | safe }}</div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">Not found on this deploy ({{ playbook.slug }}).</p>
+  {% endif %}
+</div>
+{% elif rep != "Joana" %}
+{# Joana intentionally has no playbook entry at all — see REP_TO_PLAYBOOK_SLUG — so no message here for her; any other rep with none is worth a visible note. #}
+<div class="chart-card">
+  <p class="muted">No objection-handling playbook exists for {{ rep }} yet.</p>
+</div>
+{% endif %}
 {% endblock %}

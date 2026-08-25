@@ -185,6 +185,53 @@ def test_rep_detail_shows_that_reps_outcomes_only(client, db_path, conn):
     assert "No-show" not in resp.text
 
 
+def test_rep_detail_shows_weekly_history_in_order(client, db_path, conn):
+    conn.execute(
+        "INSERT INTO scorecard_history (rep, week_start, week_end, calls_this_week, weekly_avg_score, "
+        "rolling_4_week_avg, historic_avg_before_week, priority_to_improve, worst_call, worst_call_score, "
+        "missing_outcome_disposition, sent_at) VALUES "
+        "('Alice', '2026-08-17', '2026-08-23', 5, 3.2, 3.0, 2.9, 'Ask for the close', 'Bad Call', 1, 2, 'x'), "
+        "('Alice', '2026-08-10', '2026-08-16', 4, 2.5, 2.8, 2.9, 'Handle objections', 'Worse Call', 1, 3, 'x')"
+    )
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert resp.status_code == 200
+    assert "Weekly history" in resp.text
+    # Oldest week first (chronological, left-to-right reading of progress).
+    assert resp.text.index("2026-08-10") < resp.text.index("2026-08-17")
+
+
+def test_rep_detail_shows_no_weekly_history_section_when_none_sent_yet(client, db_path, conn):
+    insert_call(conn, rep="Alice")
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert "Weekly history" not in resp.text
+
+
+def test_rep_detail_shows_that_reps_own_playbook_not_the_whole_list(client, db_path):
+    # REPO_ROOT is not mocked here — this is a real integration check that
+    # rep_playbook() actually finds Sean's real playbook file and only his.
+    resp = client.get("/reps/Sean")
+    assert resp.status_code == 200
+    assert "Objection Handling Playbook — Sean" in resp.text
+    assert "Objection Handling Playbook — Bens" not in resp.text
+
+
+def test_rep_detail_joana_has_no_playbook_and_no_missing_playbook_notice(client, db_path):
+    # Joana is the one rep deliberately excluded from REP_TO_PLAYBOOK_SLUG —
+    # no playbook exists for her (would need a real transcript review, same
+    # as Bens'/Sean's took), and the page shouldn't nag about it either.
+    resp = client.get("/reps/Joana")
+    assert resp.status_code == 200
+    assert "No objection-handling playbook exists" not in resp.text
+
+
+def test_rep_detail_shows_missing_playbook_notice_for_a_rep_with_none(client, db_path):
+    resp = client.get("/reps/SomeoneElse")
+    assert resp.status_code == 200
+    assert "No objection-handling playbook exists for SomeoneElse yet." in resp.text
+
+
 def test_outcome_pages_render_on_empty_db(client, db_path):
     # Day one, before sync.py has ever run.
     for url in ("/", "/calls", f"/calls?outcome_disposition={app_module.OUTCOME_MISSING}", "/reps/Nobody"):

@@ -44,6 +44,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 SALES_CALL_LOG_TAB = "Sales Call Log"
 TRAINING_ASSIGNMENTS_TAB = "Training Assignments"
 DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
+SCORECARD_HISTORY_TAB = "Scorecard History"
 
 # Sheet header name -> SQLite column name, looked up by name rather than
 # position — a reordered or newly-inserted column in the Sheet (which has
@@ -104,6 +105,25 @@ DAILY_PRACTICE_FOLLOWUP_COLUMNS = {
     "Nag Count": "nag_count",
 }
 
+# Must match SCORECARD_HISTORY_HEADERS in Phase5_WeeklyScorecard.gs. Purely
+# additive on the .gs side (appended only on a real, non-preview send) — see
+# that file's own comments for why this tab exists (the scorecard used to
+# only ever go out as an email, with no queryable history of past weeks).
+SCORECARD_HISTORY_COLUMNS = {
+    "Rep": "rep",
+    "Week Start": "week_start",
+    "Week End": "week_end",
+    "Calls This Week": "calls_this_week",
+    "Weekly Avg Score": "weekly_avg_score",
+    "Rolling 4-Week Avg": "rolling_4_week_avg",
+    "Historic Avg (before this week)": "historic_avg_before_week",
+    "Priority To Improve": "priority_to_improve",
+    "Worst Call": "worst_call",
+    "Worst Call Score": "worst_call_score",
+    "Missing Outcome Disposition": "missing_outcome_disposition",
+    "Sent At": "sent_at",
+}
+
 BOOLEAN_COLUMNS = {
     "outcome_logged",
     "flag_asked_for_close",
@@ -111,7 +131,8 @@ BOOLEAN_COLUMNS = {
     "manual_review_recommended",
     "flag_framework_explained",
 }
-INT_COLUMNS = {"call_quality_score", "severity", "queue_age", "nag_count"}
+INT_COLUMNS = {"call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week", "missing_outcome_disposition"}
+FLOAT_COLUMNS = {"weekly_avg_score", "rolling_4_week_avg", "historic_avg_before_week", "worst_call_score"}
 
 
 def sheets_client():
@@ -188,6 +209,13 @@ def to_int_or_none(v):
         return None
 
 
+def to_float_or_none(v):
+    try:
+        return float(str(v).strip())
+    except (ValueError, TypeError):
+        return None
+
+
 def _add_column_if_missing(conn, table, column, coltype):
     """ALTER TABLE ADD COLUMN, guarded — CREATE TABLE IF NOT EXISTS is a no-op
     against a table that already exists (e.g. the live VPS's dashboard.db),
@@ -226,6 +254,13 @@ def init_schema(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rep TEXT, assignment_date TEXT, thread_id TEXT, status TEXT,
             last_nag_at TEXT, nag_count INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS scorecard_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rep TEXT, week_start TEXT, week_end TEXT, calls_this_week INTEGER,
+            weekly_avg_score REAL, rolling_4_week_avg REAL, historic_avg_before_week REAL,
+            priority_to_improve TEXT, worst_call TEXT, worst_call_score REAL,
+            missing_outcome_disposition INTEGER, sent_at TEXT
         );
         CREATE TABLE IF NOT EXISTS sync_meta (
             key TEXT PRIMARY KEY,
@@ -284,6 +319,8 @@ def replace_table(conn, table, columns_map, rows):
                 v = int(to_bool(v))
             elif col in INT_COLUMNS:
                 v = to_int_or_none(v)
+            elif col in FLOAT_COLUMNS:
+                v = to_float_or_none(v)
             values.append(v)
         conn.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})", values)
     conn.commit()
@@ -297,10 +334,12 @@ def main():
     call_log_rows = fetch_tab(service, SALES_CALL_LOG_TAB)
     training_rows = fetch_tab(service, TRAINING_ASSIGNMENTS_TAB)
     practice_rows = fetch_tab(service, DAILY_PRACTICE_FOLLOWUP_TAB)
+    scorecard_history_rows = fetch_tab(service, SCORECARD_HISTORY_TAB)
 
     replace_table(conn, "sales_call_log", SALES_CALL_LOG_COLUMNS, call_log_rows)
     replace_table(conn, "training_assignments", TRAINING_ASSIGNMENTS_COLUMNS, training_rows)
     replace_table(conn, "daily_practice_followups", DAILY_PRACTICE_FOLLOWUP_COLUMNS, practice_rows)
+    replace_table(conn, "scorecard_history", SCORECARD_HISTORY_COLUMNS, scorecard_history_rows)
     rebuild_call_search_index(conn)
 
     conn.execute(
@@ -313,7 +352,8 @@ def main():
     print(
         f"Synced {len(call_log_rows)} call-log row(s), "
         f"{len(training_rows)} training-assignment row(s), "
-        f"{len(practice_rows)} daily-practice-followup row(s) into {DB_PATH}"
+        f"{len(practice_rows)} daily-practice-followup row(s), "
+        f"{len(scorecard_history_rows)} scorecard-history row(s) into {DB_PATH}"
     )
 
 
