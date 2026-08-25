@@ -1540,6 +1540,140 @@ function sendJoanaRawMaterialToTomas() {
   log_('sendJoanaRawMaterialToTomas: sent ' + candidates.length + ' flagged call(s) to ' + CONFIG.TOMAS_EMAIL + '.');
 }
 
+/**
+ * URGENT, on-demand (25/08/2026): a real Google Doc version of the Joana
+ * objection playbook (Objection_Handling_Playbook_Joana.md), emailed to
+ * Tomás and Kris — same create-a-real-Doc-and-email-it mechanism Phase 6's
+ * processTrainingTranscript_ already uses for Training Plan docs
+ * (Phase6_TrainingCallReview.gs), just with real headings/bold via
+ * DocumentApp instead of that function's plain setText(). Content is
+ * hand-transcribed from the .md file this same session wrote — every quote
+ * real, drawn from the scoring pipeline's own AI Feedback Summary per call,
+ * nothing invented. Re-running creates a new Doc each time (no dedupe —
+ * this is a deliberate one-off send, not a recurring automation).
+ */
+function sendJoanaPlaybookAsGoogleDoc() {
+  RUN_TAG = 'sendJoanaPlaybookAsGoogleDoc';
+  var doc = DocumentApp.create('Objection Handling Playbook — Joana (v1, 25aug2026)');
+  var body = doc.getBody();
+  body.setMarginTop(50).setMarginBottom(50).setMarginLeft(60).setMarginRight(60);
+
+  body.appendParagraph('Objection Handling Playbook — Joana').setHeading(DocumentApp.ParagraphHeading.TITLE);
+  body.appendParagraph('v1 — built 25/08/2026 from every one of Joana\'s scored calls, all-time, flagged for ' +
+    'an objection issue (16 real coaching cases). Tomás approves changes here before this is used in training.')
+    .setItalic(true);
+
+  var summary = body.appendTable([
+    ['#', 'Pattern', 'Seen', 'Worst case'],
+    ['1', 'Ends with an opinion question instead of a direct ask', '4 of 16',
+      'Heather Gorney — no ask at all, lowest score in the batch'],
+    ['2', 'Accepts a stall as final instead of converting it', '5 of 16',
+      'Manny Chamizo III — "let\'s move forward" became a link to use "whenever"'],
+    ['3', 'Objection surfaced, answered with nothing concrete', '4 of 16',
+      'Shannon Driessen — had two tools ready, used neither'],
+    ['4', 'No quantified proof point ready when challenged', '3 of 16',
+      'Tim Saeland — deferred a client example to "ask my co-founder"']
+  ]);
+  summary.getRow(0).editAsText().setBold(true);
+
+  body.appendParagraph('Biggest lever: replace every "what do you think?" with a specific, answerable ask. ' +
+    'Patterns #1 and #2 together account for 9 of the 16 cases in this batch.').setBold(true);
+
+  var patterns = [
+    {
+      title: '1. Ends the pitch with an opinion question instead of a direct ask',
+      freq: 'seen in 4 of 16 cases',
+      examples: [
+        ['Will Salinas (05/08)', '"for you and your team, what do you feel that you wanted to go with?"'],
+        ['Ryan Welch (05/08)', '"we only have a couple of minutes for you to tell me what do you think about it?"'],
+        ['Milton Webster (12/08)', '"But yeah, what do you think?" — minutes after Milton raised launch timelines himself.'],
+        ['Heather Gorney (12/08)', '"So tell me, what do you think?" — no direct ask anywhere else in the call.']
+      ],
+      why: 'An opinion question feels softer than a direct ask, but hands the prospect an easy, non-committal exit instead of a real decision point.',
+      technique: 'Every one of these calls had already done the hard work — full pricing walkthrough, real discovery, rapport. The miss is entirely in the last sentence. An either/or or conditional close gives the prospect something concrete to say yes or no to.',
+      say: 'Which package do you want to start with — the $897 weekly or the $597 biweekly?',
+      note: 'A trial-close question ("does that sound good?") is not a real ask, even when everything before it went well — Failure Mode 1 from the shared rubric.'
+    },
+    {
+      title: '2. Accepts a stall as final instead of converting it into a commitment',
+      freq: 'seen in 5 of 16 cases',
+      examples: [
+        ['Peg Walsh (06/08)', 'Answered "Perfect. Perfect. That\'s great" to "I\'m going to think about it... down the road, I think."'],
+        ['Kelli Eggen (11/08)', '"Of course. Of course." — to "not ready to commit yet," despite Kelli calling the $597 biweekly "not bad" minutes earlier.'],
+        ['Christina Tokar (13/08)', 'Accepted "if we start this, we\'ll start it in September" and simply booked a September follow-up.'],
+        ['Manny Chamizo III (11/08)', 'After "let\'s move forward," sent a booking link to use "whenever" instead of locking a time.'],
+        ['Jacqueline Coleman (14/08)', '"It\'s not a no," per Joana\'s own read — but no explicit ask was ever made.']
+      ],
+      why: 'These are engaged, warm prospects. The miss isn\'t losing the lead — it\'s leaving real momentum open-ended instead of turning it into a dated or conditional commitment while interest is highest.',
+      technique: 'In all five calls Joana had already earned a real signal — a timeline, a positive reaction to price, a verbal "let\'s move forward." The fix is one more question that turns the signal into a commitment.',
+      say: 'Since September works, shall we get the launch kit done now so your first episode is ready the week you\'re back?',
+      note: 'Booking a follow-up is not closing — a follow-up with nothing attached to it is exactly how a warm lead goes cold.'
+    },
+    {
+      title: '3. A real objection gets surfaced but answered with nothing concrete',
+      freq: 'seen in 4 of 16 cases',
+      examples: [
+        ['Shannon Driessen (06/08)', '"I really don\'t have the budget for it right now" met with "Perfect, I\'m going to send you these" — despite a sponsor cost-offset and a sub-$500 tier already being on the table earlier in the same call.'],
+        ['Mark Vincent Fansler (07/08)', 'Pressed three times for equipment specifics; told "I am not the person to tell you as well... but our team will be making sure that you have everything that you need."'],
+        ['Douglas Rill (13/08)', 'Raised "money\'s a little bit short" and floated pricing help — the call drifted back to small talk with no answer.'],
+        ['Joseph Bradley (20/08)', 'Named the DIY alternative; got "You can, but" — the thought was never finished.']
+      ],
+      why: 'The objection gets acknowledged, but the concrete tool to resolve it — a number, a mechanism — either isn\'t used even when it\'s already on the table, or genuinely isn\'t ready.',
+      technique: 'Never let an acknowledged objection go unanswered. If a resolution already exists, use it the moment the objection lands — not earlier in the call, not never.',
+      say: 'Totally hear you on budget — remember the sponsor can offset part of the monthly fee, and there\'s also a lower tier if that\'s a better fit to start. Which of those works better for you?',
+      note: 'Overlaps the shared rubric\'s Failure Mode 2 — surfacing the concern is only half the job.'
+    },
+    {
+      title: '4. No quantified proof point ready when capability or results get challenged',
+      freq: 'seen in 3 of 16 cases',
+      examples: [
+        ['Tim Saeland (20/08)', 'Asked for best/worst client examples right after saying it "sounds affordable"; got "I will ask that to my co-founder and I will send you in a bit."'],
+        ['Jess Provencher (20/08)', 'Asked what results were realistic while holding low review counts — got a reframe, no quantified result.'],
+        ['Jason Pietruszka (12/08)', 'Asked if cross-zip-code sourcing was feasible; got "that\'s totally something we can do, yeah, yeah, for sure" — no evidence, though he still correctly advanced to booking a four-person call with Tomás.']
+      ],
+      why: 'Legitimate diligence questions from engaged prospects — enthusiasm alone doesn\'t resolve a "prove it" moment, especially when the prospect is already leaning toward yes.',
+      technique: 'Walk into every call with one named, quantified client result ready to deliver live. Deferring a proof request loses the moment when the prospect is most receptive.',
+      say: 'Actually, [client name] was in a really similar spot — [specific quantified result]. That\'s the kind of outcome we\'re aiming for with you too.',
+      note: 'Jason\'s call is the closest to a model answer here — he advanced anyway despite the missed proof point. Pairing that instinct with a real proof point turns a 4 into a 5.'
+    }
+  ];
+
+  patterns.forEach(function (p) {
+    body.appendParagraph(p.title).setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    body.appendParagraph(p.freq).setItalic(true);
+    body.appendParagraph('Real examples').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    p.examples.forEach(function (ex) {
+      var para = body.appendParagraph(ex[0] + ' — ' + ex[1]);
+      para.editAsText().setBold(0, ex[0].length - 1, true);
+    });
+    body.appendParagraph('Why it happens').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    body.appendParagraph(p.why);
+    body.appendParagraph('Technique').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    body.appendParagraph(p.technique);
+    var sayPara = body.appendParagraph('Say this instead: "' + p.say + '"');
+    sayPara.editAsText().setBold(true).setItalic(true);
+    body.appendParagraph('Coaching note: ' + p.note).setItalic(true);
+  });
+
+  body.appendParagraph('Data quality flag — not a coaching case').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('"Joana\'s Transcriptions" (17/08, score 1) — the transcript is completely empty, no ' +
+    'real call to review. Confirm whether a real call happened and the recording was lost, or this was a ' +
+    'test/placeholder file. Routed to manual review, not counted above.');
+
+  doc.saveAndClose();
+  var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
+
+  var emailBody = 'Tomás,\n\nJoana\'s objection-handling playbook, v1 — built from every one of her real ' +
+    'flagged calls, all-time (16 cases). Same format as Bens\' and Sean\'s.\n\n' + docUrl +
+    '\n\nAhead of today\'s session.';
+  guardedSend_(CONFIG.TOMAS_EMAIL, 'Joana — Objection Handling Playbook (v1)', emailBody, {
+    cc: CONFIG.KRIS_EMAIL,
+    name: 'Training Prep Bot'
+  }, 2);
+  log_('sendJoanaPlaybookAsGoogleDoc: created ' + docUrl + ' and emailed ' + CONFIG.TOMAS_EMAIL + ' (cc ' +
+    CONFIG.KRIS_EMAIL + ').');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)
