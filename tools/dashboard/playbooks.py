@@ -19,6 +19,7 @@ _md = MarkdownIt("commonmark", {"html": False}).enable("table")
 PLAYBOOKS = [
     {"slug": "bens", "title": "Objection Handling Playbook — Bens", "filename": "Objection_Handling_Playbook.md"},
     {"slug": "sean", "title": "Objection Handling Playbook — Sean", "filename": "Objection_Handling_Playbook_Sean.md"},
+    {"slug": "joana", "title": "Objection Handling Playbook — Joana", "filename": "Objection_Handling_Playbook_Joana.md"},
     {"slug": "tomas", "title": "Tomás Playbook — What Other Reps Should Copy", "filename": "Tomas_Playbook.md"},
 ]
 

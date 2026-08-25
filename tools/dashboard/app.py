@@ -28,11 +28,8 @@ from starlette.middleware.sessions import SessionMiddleware
 import auth
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
-# Which PLAYBOOKS slug belongs on which rep's own /reps/{rep} page. Joana
-# has no entry on purpose — no playbook has ever been built for her (would
-# need a human reviewing a real batch of her transcripts, same as Bens'/
-# Sean's were, not something this maps around).
-REP_TO_PLAYBOOK_SLUG = {"Bens": "bens", "Sean": "sean", "Tomás": "tomas"}
+# Which PLAYBOOKS slug belongs on which rep's own /reps/{rep} page.
+REP_TO_PLAYBOOK_SLUG = {"Bens": "bens", "Sean": "sean", "Joana": "joana", "Tomás": "tomas"}
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent.parent

@@ -217,12 +217,12 @@ def test_rep_detail_shows_that_reps_own_playbook_not_the_whole_list(client, db_p
     assert "Objection Handling Playbook — Bens" not in resp.text
 
 
-def test_rep_detail_joana_has_no_playbook_and_no_missing_playbook_notice(client, db_path):
-    # Joana is the one rep deliberately excluded from REP_TO_PLAYBOOK_SLUG —
-    # no playbook exists for her (would need a real transcript review, same
-    # as Bens'/Sean's took), and the page shouldn't nag about it either.
+def test_rep_detail_shows_joanas_own_playbook(client, db_path):
+    # v1 built 25/08/2026 from her real flagged calls — real integration
+    # check, same as the Sean one above.
     resp = client.get("/reps/Joana")
     assert resp.status_code == 200
+    assert "Objection Handling Playbook — Joana" in resp.text
     assert "No objection-handling playbook exists" not in resp.text
 
 
