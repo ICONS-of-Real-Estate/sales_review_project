@@ -11,10 +11,9 @@ Kris pushed back on Tomás's feedback that reps should also be drilled on explai
 - **Real bug caught and fixed before it could bite**: `getOrCreateTrainingAssignmentsSheet_()` only wrote the sheet's header row on first creation — since that sheet already exists live, the new "Training Framework (JSON)" header would never have appeared on the real sheet, and `mirrorTrainingAssignment_()` (which writes by fixed column position, not header lookup) would have silently pushed framework JSON into what the header row still labeled "Last Updated," with the real timestamp landing in an unlabeled column. Fixed by making the header check self-healing on every call, same pattern `setupSalesCallLog()` already uses.
 - Tests: `tests/run_tests.js` **44 → 46** (all four rubric-variant schema checks, `deriveFrameworkFields_`, the Phase5 coaching-text key, and the Phase7 framework `drill_type` validator all covered). Dashboard suite untouched, still 97, all passing — confirms the deliberate scope boundary below held.
 
-## 1. Needs Kris
+## 1. Deploy — confirmed done
 
-- **Deploy**: `git pull` + `clasp push`, then re-run `migrateAddPrimaryFailureModeColumn()` — despite the name it's the general "catch the sheet up to `SALES_CALL_LOG_HEADERS`" migration (already generic, confirmed by reading it, no new function needed) — to add the two new trailing columns to the live "Sales Call Log" sheet. No dashboard deploy needed this session (see §2).
-- Nothing else outstanding — no live data was touched this session, only code + docs.
+`git pull` + `clasp push` run, then `migrateAddPrimaryFailureModeColumn()` re-run and confirmed live: `Added missing header(s): Flag: Framework Explained (column 24), Framework Gaps (column 25)`. Both new trailing columns are now on the live "Sales Call Log" sheet. **Nothing else outstanding for this session** — every real sales call scored from here on will populate them; rows scored before this deploy read both as blank ("no signal"), same backward-compatible pattern as every prior column addition. No dashboard deploy needed (see §2).
 
 ## 2. Deliberately out of scope this session — dashboard surfacing
 
