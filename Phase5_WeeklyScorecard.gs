@@ -297,8 +297,69 @@ function buildAndMaybeSendScorecards_(forcePreview) {
       cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
       name: 'Weekly Call Scorecard Bot'
     }, 3); // rep + Kris + Tomás
+    appendScorecardHistoryRow_(repCfg.name, week, stats);
     log_('Sent weekly scorecard to ' + repCfg.email + ' (' + stats.weekCalls.length + ' call(s) this week).');
   });
+}
+
+// ---------------------------------------------------------------------------
+// Scorecard History — real incident live (25/08/2026): the weekly scorecard
+// only ever went out as an email, with nothing persisted anywhere queryable.
+// When Monday's trigger silently didn't fire (installWeeklyScorecardTrigger()
+// hadn't been run — ENABLED alone doesn't install the trigger, same gap
+// RANDOM_CALIBRATION_CONFIG/REGRESSION_DRIFT_CONFIG hit before), there was no
+// way to see what past weeks looked like except digging through old emails.
+// This tab is purely additive — never read by any code, never changes what
+// gets emailed — so it's safe to backfill by hand for any week that's
+// missing (just re-run runWeeklyScorecard() for now; a real backfill-from-
+// history tool is future work if old weeks matter enough to reconstruct).
+// ---------------------------------------------------------------------------
+
+var SCORECARD_HISTORY_SHEET_NAME = 'Scorecard History';
+var SCORECARD_HISTORY_HEADERS = [
+  'Rep', 'Week Start', 'Week End', 'Calls This Week', 'Weekly Avg Score',
+  'Rolling 4-Week Avg', 'Historic Avg (before this week)', 'Priority To Improve',
+  'Worst Call', 'Worst Call Score', 'Missing Outcome Disposition', 'Sent At'
+];
+
+function getOrCreateScorecardHistorySheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(SCORECARD_HISTORY_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SCORECARD_HISTORY_SHEET_NAME);
+    sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).setValues([SCORECARD_HISTORY_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + SCORECARD_HISTORY_SHEET_NAME + '" tab.');
+    return sheet;
+  }
+  var existing = sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).getValues()[0];
+  var headersMatch = SCORECARD_HISTORY_HEADERS.every(function (h, i) { return existing[i] === h; });
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).setValues([SCORECARD_HISTORY_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    log_('Updated "' + SCORECARD_HISTORY_SHEET_NAME + '" header row to match SCORECARD_HISTORY_HEADERS.');
+  }
+  return sheet;
+}
+
+/** Appends one row per rep per real (non-preview) send — never called from the preview path, so this tab only ever reflects scorecards that actually went out. */
+function appendScorecardHistoryRow_(repName, week, stats) {
+  var sheet = getOrCreateScorecardHistorySheet_();
+  sheet.appendRow([
+    repName,
+    week.start,
+    new Date(week.end.getTime() - 1),
+    stats.weekCalls.length,
+    stats.weeklyAvg,
+    stats.rolling4WeekAvg,
+    stats.historicAvgBeforeThisWeek,
+    priorityToImprove_(stats),
+    stats.worstCall ? stats.worstCall.name : '',
+    stats.worstCall ? stats.worstCall.score : '',
+    stats.weekMissingOutcomeDisposition,
+    new Date()
+  ]);
 }
 
 /** Run this FIRST from the editor. Builds this week's three emails and only logs them — sends nothing. */
