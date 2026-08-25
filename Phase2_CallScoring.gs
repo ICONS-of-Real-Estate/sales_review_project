@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-08-25-framework';
+var RUBRIC_VERSION = '2026-08-25-bens-sales-call-over-qc';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -733,7 +733,9 @@ function buildBensJudgeSystemPrompt_() {
     '   concrete (a case study, a specific benefit, a direct answer) rather than brushing past them?',
     '2. Did Bens explicitly ask to book a QC or Sales Call, with a specific date/time — not just leave it open-ended?',
     '3. Did that next step actually get booked? If not, what specifically did Bens fail to do or say that would',
-    '   have gotten it booked?',
+    '   have gotten it booked? For an icons_100_interview specifically: a directly-booked Sales Call is a',
+    '   BETTER outcome than a QC — Bens\' explicit goal (per Kris, 25/08/2026) is to book sales calls, or from',
+    '   an interview book a QC, but booking the Sales Call directly is even better. Note which one it was.',
     '4. Did Bens do real discovery — do they demonstrably understand this person\'s business and situation, not a',
     '   generic read of the room?',
     '5. If this is an icons_100_interview: was the interview itself genuinely good content — did Bens draw out a',
@@ -745,8 +747,13 @@ function buildBensJudgeSystemPrompt_() {
     '',
     'Score anchors for call_quality_score (1-5):',
     '5 = next step booked with a specific date/time, objections handled well, and (for an interview) genuinely',
-    '    good content.',
-    '4 = next step booked, but one of discovery/objection-handling/interview-quality was weak.',
+    '    good content. For an icons_100_interview specifically, a directly-booked SALES CALL is the strongest',
+    '    version of this outcome — score it a clean 5 even where a QC booking at the same execution quality',
+    '    would only reach a 4 (see below). This distinction does not apply to a qc call, whose only meaningful',
+    '    next step is a Sales Call.',
+    '4 = next step booked, but one of discovery/objection-handling/interview-quality was weak — OR, for an',
+    '    icons_100_interview executed at genuine 5-level quality in every other respect, the next step booked',
+    '    was only a QC rather than a Sales Call directly.',
     '3 = next step booked mainly because the person pushed for it, not because Bens earned it; or a real ask was',
     '    made but discovery was clearly missing.',
     '2 = no next step booked, the person was a reasonable fit, and the miss is attributable to Bens\' execution.',

@@ -552,6 +552,18 @@ test('isValidDailyPracticeSchema_ accepts "framework" as a drill_type and requir
   assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, good, { drill_type: 'not_a_real_type' })), false);
 });
 
+// --- Bens rubric: directly-booked Sales Call outranks a QC-only booking (25/08/2026, Kris) ---
+test('buildBensJudgeSystemPrompt_ scores a directly-booked Sales Call higher than a QC-only booking for an interview', () => {
+  const prompt = gas.buildBensJudgeSystemPrompt_();
+  // Guards against a future edit silently dropping this nuance — the underlying
+  // next_step_type field was already scored, only the weighting was missing.
+  assert.match(prompt, /directly-booked SALES CALL is the strongest/);
+  assert.match(prompt, /was only a QC rather than a Sales Call directly/);
+  // Must be scoped to the interview role, not the qc role, whose only
+  // meaningful next step is already a Sales Call.
+  assert.match(prompt, /does not apply to a qc call/);
+});
+
 // --- Task: RUBRIC_VERSION column (25/08/2026) ---
 
 test('RUBRIC_VERSION is a non-empty date-prefixed string, per the versioning convention documented alongside it', () => {
