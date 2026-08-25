@@ -1470,6 +1470,76 @@ function setupManualReviewGuide() {
   log_('setupManualReviewGuide complete.');
 }
 
+/**
+ * URGENT, on-demand (25/08/2026): Tomás's training call reviews Joana
+ * first and there is no curated playbook for her — building one properly
+ * needs a human reviewing real transcripts, same as Bens'/Sean's took, and
+ * that can't happen in the next few minutes. This sends the real, honest
+ * substitute instead: every one of Joana's scored calls, all-time, where
+ * an objection issue is indicated (Primary Failure Mode is objection-
+ * related, OR blank/'none' — rows scored before that column existed —
+ * combined with Flag: Objections Handled = FALSE, so older rows aren't
+ * silently excluded), with the AI's own feedback summary for each. Raw
+ * material, explicitly labeled as such in the email — NOT a finished
+ * playbook with confirmed techniques. Sends once per run; re-running sends
+ * again (no dedupe/cooldown — this is a deliberate one-off for today, not
+ * a recurring automation).
+ */
+function sendJoanaRawMaterialToTomas() {
+  RUN_TAG = 'sendJoanaRawMaterialToTomas';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var logSheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!logSheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var col = getValidatedColumnMap_(logSheet);
+  var lastRow = logSheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
+  var rows = logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var OBJECTION_FAILURE_MODES = ['objections_missed', 'both', 'multiple'];
+  var candidates = [];
+  rows.forEach(function (row) {
+    if (row[col['Rep'] - 1] !== 'Joana') return;
+    var mode = String(row[col['Primary Failure Mode'] - 1] || '').trim();
+    var objectionsHandled = row[col['Flag: Objections Handled'] - 1];
+    var flagged = OBJECTION_FAILURE_MODES.indexOf(mode) !== -1 ||
+      ((mode === '' || mode === 'none') && objectionsHandled === false);
+    if (!flagged) return;
+    var callDate = row[col['Call Date'] - 1];
+    candidates.push({
+      prospectName: row[col['Prospect Name'] - 1],
+      callDate: callDate instanceof Date ? Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') : String(callDate || ''),
+      score: row[col['Call Quality Score'] - 1],
+      feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim()
+    });
+  });
+
+  if (!candidates.length) {
+    log_('sendJoanaRawMaterialToTomas: no flagged Joana calls found — nothing to send.');
+    return;
+  }
+
+  var body =
+    'Tomás,\n\n' +
+    'Ahead of today\'s session — Joana has no curated objection-handling playbook yet (Bens\' and Sean\'s ' +
+    'both took a real review of a batch of their transcripts to build; that hasn\'t happened for her). This ' +
+    'is the honest substitute for right now: every one of her scored calls, all-time, where an objection ' +
+    'issue is flagged, with the AI\'s own feedback for each. RAW DATA, not a finished playbook — you\'ll need ' +
+    'to read these live and pull the actual patterns/techniques yourself, the way the Bens/Sean playbooks were ' +
+    'originally built.\n\n' +
+    candidates.map(function (c, i) {
+      return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
+        (c.feedback || '(no AI feedback summary on file)');
+    }).join('\n\n') +
+    '\n\n— Sent automatically ahead of today\'s training call.';
+
+  guardedSend_(CONFIG.TOMAS_EMAIL, 'Joana — flagged objection calls for today\'s session (raw data)', body, {
+    cc: CONFIG.KRIS_EMAIL,
+    name: 'Training Prep Bot'
+  }, 2);
+  log_('sendJoanaRawMaterialToTomas: sent ' + candidates.length + ' flagged call(s) to ' + CONFIG.TOMAS_EMAIL + '.');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)
