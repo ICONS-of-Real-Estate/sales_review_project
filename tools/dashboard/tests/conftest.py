@@ -67,6 +67,8 @@ _CALL_DEFAULTS = {
     "queue_age": 0,
     "kris_manual_review_verdict": "",
     "primary_failure_mode": "none",
+    "flag_framework_explained": 1,
+    "framework_gaps": "",
 }
 
 

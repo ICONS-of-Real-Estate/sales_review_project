@@ -189,3 +189,50 @@ def test_outcome_pages_render_on_empty_db(client, db_path):
     # Day one, before sync.py has ever run.
     for url in ("/", "/calls", f"/calls?outcome_disposition={app_module.OUTCOME_MISSING}", "/reps/Nobody"):
         assert client.get(url).status_code == 200
+
+
+def test_overview_shows_framework_coverage_and_gaps(client, db_path, conn):
+    insert_call(conn, rep="Alice", flag_framework_explained=1, framework_gaps="")
+    insert_call(conn, rep="Alice", flag_framework_explained=0, framework_gaps="recruit agents")
+    conn.commit()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "Framework explanation gaps" in resp.text
+    assert "recruit agents" in resp.text
+    assert f"/calls?rep=Alice&framework_explained=yes" in resp.text
+
+
+def test_calls_page_filters_by_framework_explained(client, db_path, conn):
+    insert_call(conn, prospect_name="Covered", flag_framework_explained=1)
+    insert_call(conn, prospect_name="Gap", flag_framework_explained=0, framework_gaps="sell more houses")
+    conn.commit()
+    resp = client.get("/calls?framework_explained=no")
+    assert resp.status_code == 200
+    assert "Gap" in resp.text
+    assert "Covered" not in resp.text
+
+
+def test_rep_detail_shows_framework_gaps_card(client, db_path, conn):
+    insert_call(conn, rep="Alice", flag_framework_explained=0, framework_gaps="recruit agents")
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert resp.status_code == 200
+    assert "Framework explanation gaps" in resp.text
+    assert "recruit agents" in resp.text
+
+
+def test_training_page_shows_framework_drill(client, db_path, conn):
+    conn.execute(
+        "INSERT INTO training_assignments (rep, training_framework_json, last_updated) VALUES (?, ?, ?)",
+        ("Alice", '[{"topic": "number_one_podcast", "note": "lead with the city angle"}]', "2026-08-25"),
+    )
+    conn.commit()
+    resp = client.get("/training")
+    assert resp.status_code == 200
+    assert "#1 podcast in your city" in resp.text
+    assert "lead with the city angle" in resp.text
+
+
+def test_framework_pages_render_on_empty_db(client, db_path):
+    for url in ("/", "/calls", "/calls?framework_explained=no", "/reps/Nobody", "/training"):
+        assert client.get(url).status_code == 200

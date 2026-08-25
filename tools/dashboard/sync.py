@@ -74,6 +74,8 @@ SALES_CALL_LOG_COLUMNS = {
     "Queue Age": "queue_age",
     "Kris Manual Review Verdict": "kris_manual_review_verdict",
     "Primary Failure Mode": "primary_failure_mode",
+    "Flag: Framework Explained": "flag_framework_explained",
+    "Framework Gaps": "framework_gaps",
 }
 
 # Must match TRAINING_ASSIGNMENTS_HEADERS in Phase6_TrainingCallReview.gs.
@@ -81,17 +83,9 @@ TRAINING_ASSIGNMENTS_COLUMNS = {
     "Rep": "rep",
     "Training Objections (JSON)": "training_objections_json",
     "Close Ask Drill (JSON)": "close_ask_drill_json",
+    "Training Framework (JSON)": "training_framework_json",
     "Last Updated": "last_updated",
 }
-# NOT YET wired up: Phase6_TrainingCallReview.gs's TRAINING_ASSIGNMENTS_HEADERS
-# grew a 5th column, "Training Framework (JSON)", on 25/08/2026. Deliberately
-# left out of this map for now — adding it here without also migrating the
-# live `training_assignments` table (CREATE TABLE IF NOT EXISTS is a no-op
-# against an already-existing table; every column here must exist in the real
-# schema before replace_table's INSERT runs, or the whole sync — not just this
-# tab — breaks) is a real schema-migration task, out of scope for the Phase
-# 5/6/7 coaching-loop change that added the column. The extra sheet column is
-# simply not synced until this is done; nothing currently reads it from here.
 
 # Must match DAILY_PRACTICE_FOLLOWUP_HEADERS in Phase7_DailySelfPractice.gs.
 # One row per rep per assignment day — this is the only place "did today's
@@ -110,6 +104,7 @@ BOOLEAN_COLUMNS = {
     "flag_asked_for_close",
     "flag_objections_handled",
     "manual_review_recommended",
+    "flag_framework_explained",
 }
 INT_COLUMNS = {"call_quality_score", "severity", "queue_age", "nag_count"}
 
@@ -172,6 +167,19 @@ def to_int_or_none(v):
         return None
 
 
+def _add_column_if_missing(conn, table, column, coltype):
+    """ALTER TABLE ADD COLUMN, guarded — CREATE TABLE IF NOT EXISTS is a no-op
+    against a table that already exists (e.g. the live VPS's dashboard.db),
+    so a column added to the schema above only reaches an already-deployed
+    database through this. PRAGMA table_info is checked explicitly rather
+    than swallowing sqlite3's "duplicate column" error, so a genuinely
+    unexpected ALTER TABLE failure (a locked db, a real syntax error) still
+    surfaces instead of being silently absorbed."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_schema(conn):
     conn.executescript(
         """
@@ -184,12 +192,13 @@ def init_schema(conn):
             flag_asked_for_close INTEGER, flag_objections_handled INTEGER,
             manual_review_recommended INTEGER, severity INTEGER, ai_feedback_summary TEXT,
             reviewed_by_kris TEXT, queue_age INTEGER, kris_manual_review_verdict TEXT,
-            primary_failure_mode TEXT
+            primary_failure_mode TEXT, flag_framework_explained INTEGER, framework_gaps TEXT
         );
         CREATE TABLE IF NOT EXISTS training_assignments (
             rep TEXT PRIMARY KEY,
             training_objections_json TEXT,
             close_ask_drill_json TEXT,
+            training_framework_json TEXT,
             last_updated TEXT
         );
         CREATE TABLE IF NOT EXISTS daily_practice_followups (
@@ -203,6 +212,12 @@ def init_schema(conn):
         );
         """
     )
+    # Migrate an already-existing database (see _add_column_if_missing) —
+    # both columns added 25/08/2026 alongside the framework-explanation
+    # scoring dimension (Phase2_CallGradingSOP.md SS3D).
+    _add_column_if_missing(conn, "sales_call_log", "flag_framework_explained", "INTEGER")
+    _add_column_if_missing(conn, "sales_call_log", "framework_gaps", "TEXT")
+    _add_column_if_missing(conn, "training_assignments", "training_framework_json", "TEXT")
     conn.commit()
 
 

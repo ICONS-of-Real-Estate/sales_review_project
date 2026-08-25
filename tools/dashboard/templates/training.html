@@ -53,7 +53,7 @@
 <h2>Current practice-drill assignments</h2>
 <table>
   <thead>
-    <tr><th>Rep</th><th>Objections to drill</th><th>Close-ask drill</th><th>Last updated</th></tr>
+    <tr><th>Rep</th><th>Objections to drill</th><th>Close-ask drill</th><th>Framework to drill</th><th>Last updated</th></tr>
   </thead>
   <tbody>
     {% for a in assignments %}
@@ -67,10 +67,17 @@
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
       <td>{{ a.close_drill if a.close_drill else "—" }}</td>
+      <td>
+        {% if a.framework_drill %}
+          <ul style="margin: 0; padding-left: 1.1rem;">
+            {% for f in a.framework_drill %}<li><b>{{ f.label }}</b> — {{ f.note }}</li>{% endfor %}
+          </ul>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
       <td>{{ a.last_updated or "—" }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="4" class="muted">No training assignments synced yet — these land in the "Training Assignments" sheet tab the first time Phase 6 processes a training call.</td></tr>
+    <tr><td colspan="5" class="muted">No training assignments synced yet — these land in the "Training Assignments" sheet tab the first time Phase 6 processes a training call.</td></tr>
     {% endfor %}
   </tbody>
 </table>

@@ -392,3 +392,92 @@ class TestRepSummaryOutcomeCoverage:
         assert by_rep["Alice"]["pct_outcome_logged"] == 50
         assert by_rep["Alice"]["outcome_logged_count"] == 1
         assert by_rep["Bob"]["pct_outcome_logged"] == 0
+
+
+class TestFrameworkGapBreakdown:
+    """Phase2_CallGradingSOP.md SS3D: framework_gaps is a comma-joined,
+    system-generated string (deriveFrameworkFields_ in Phase2_CallScoring.gs)
+    — a fixed small vocabulary, never hand-typed, so exact string counting
+    (no case-folding) is correct here unlike outcome_disposition."""
+
+    def test_counts_each_gap_across_comma_joined_rows(self, db_path, conn):
+        insert_call(conn, framework_gaps="recruit agents, sell more houses")
+        insert_call(conn, framework_gaps="recruit agents")
+        insert_call(conn, framework_gaps="")
+        conn.commit()
+        breakdown = {g["gap"]: g["count"] for g in app_module.framework_gap_breakdown()}
+        assert breakdown == {"recruit agents": 2, "sell more houses": 1}
+
+    def test_empty_when_nothing_recorded(self, seeded_db):
+        assert app_module.framework_gap_breakdown() == []
+
+    def test_scoped_to_one_rep(self, db_path, conn):
+        insert_call(conn, rep="Alice", framework_gaps="recruit agents")
+        insert_call(conn, rep="Bob", framework_gaps="sell more houses")
+        conn.commit()
+        breakdown = {g["gap"]: g["count"] for g in app_module.framework_gap_breakdown(rep="Alice")}
+        assert breakdown == {"recruit agents": 1}
+
+    def test_sorted_most_common_first(self, db_path, conn):
+        insert_call(conn, framework_gaps="recruit agents")
+        insert_call(conn, framework_gaps="recruit agents")
+        insert_call(conn, framework_gaps="sell more houses")
+        conn.commit()
+        gaps = app_module.framework_gap_breakdown()
+        assert gaps[0]["gap"] == "recruit agents"
+        assert gaps[0]["count"] == 2
+
+
+class TestRepSummaryFrameworkCoverage:
+    def test_pct_framework_explained_per_rep(self, db_path, conn):
+        insert_call(conn, rep="Alice", flag_framework_explained=1)
+        insert_call(conn, rep="Alice", flag_framework_explained=0)
+        insert_call(conn, rep="Bob", flag_framework_explained=0)
+        conn.commit()
+        by_rep = {r["rep"]: r for r in app_module.rep_summary()}
+        assert by_rep["Alice"]["pct_framework_explained"] == 50
+        assert by_rep["Alice"]["framework_explained_count"] == 1
+        assert by_rep["Bob"]["pct_framework_explained"] == 0
+
+
+class TestFilteredCallsFrameworkFilter:
+    def test_filters_by_framework_explained_yes_and_no(self, db_path, conn):
+        insert_call(conn, prospect_name="Covered", flag_framework_explained=1)
+        insert_call(conn, prospect_name="Gap", flag_framework_explained=0)
+        conn.commit()
+        yes = app_module.filtered_calls(framework_explained="yes")
+        no = app_module.filtered_calls(framework_explained="no")
+        assert [c["prospect_name"] for c in yes] == ["Covered"]
+        assert [c["prospect_name"] for c in no] == ["Gap"]
+
+    def test_flag_and_gaps_columns_are_returned(self, seeded_db):
+        calls = app_module.filtered_calls()
+        assert all("flag_framework_explained" in c and "framework_gaps" in c for c in calls)
+
+
+class TestTrainingAssignmentsFrameworkDrill:
+    def test_extracts_and_labels_framework_drill(self, db_path, conn):
+        conn.execute(
+            "INSERT INTO training_assignments (rep, training_framework_json, last_updated) VALUES (?, ?, ?)",
+            ("Alice", '[{"topic": "recruit_agents", "note": "be specific"}]', "2026-08-25"),
+        )
+        conn.commit()
+        assignments = app_module.training_assignments()
+        alice = next(a for a in assignments if a["rep"] == "Alice")
+        assert alice["framework_drill"][0]["topic"] == "recruit_agents"
+        assert alice["framework_drill"][0]["label"] == "Recruit agents"
+        assert alice["framework_drill"][0]["note"] == "be specific"
+
+    def test_missing_or_malformed_json_fails_soft_to_empty_list(self, db_path, conn):
+        conn.execute(
+            "INSERT INTO training_assignments (rep, training_framework_json, last_updated) VALUES (?, ?, ?)",
+            ("Bob", "not json", "2026-08-25"),
+        )
+        conn.execute(
+            "INSERT INTO training_assignments (rep, last_updated) VALUES (?, ?)",
+            ("Carol", "2026-08-25"),
+        )
+        conn.commit()
+        assignments = {a["rep"]: a for a in app_module.training_assignments()}
+        assert assignments["Bob"]["framework_drill"] == []
+        assert assignments["Carol"]["framework_drill"] == []

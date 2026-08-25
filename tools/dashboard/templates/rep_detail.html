@@ -35,6 +35,20 @@
 </div>
 {% endif %}
 
+{% if framework_gaps %}
+<div class="chart-card">
+  <h2>Framework explanation gaps</h2>
+  <table>
+    <thead><tr><th>Missing piece</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for g in framework_gaps %}
+      <tr><td>{{ g.gap }}</td><td>{{ g.count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="chart-card">
   <h2>Score over time</h2>
   <canvas id="repScoreChart" height="70"></canvas>
@@ -43,7 +57,7 @@
 <h2>All calls</h2>
 <table>
   <thead>
-    <tr><th>Prospect</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Outcome</th><th>Close?</th><th>Objections?</th><th>Failure mode</th><th>Why</th></tr>
+    <tr><th>Prospect</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Outcome</th><th>Close?</th><th>Objections?</th><th>Framework</th><th>Failure mode</th><th>Why</th></tr>
   </thead>
   <tbody>
     {% for c in calls %}
@@ -56,11 +70,12 @@
       <td>{{ c.outcome_disposition or "—" }}</td>
       <td>{{ "Yes" if c.flag_asked_for_close else "No" }}</td>
       <td>{{ "Yes" if c.flag_objections_handled else "No" }}</td>
+      <td>{% if c.flag_framework_explained %}<span title="All three covered">✓</span>{% elif c.framework_gaps %}<span class="clamp-text" style="max-width:180px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>{% else %}—{% endif %}</td>
       <td>{{ c.primary_failure_mode or "—" }}</td>
       <td style="max-width: 320px;"><span class="clamp-text" title="{{ c.ai_feedback_summary or '' }}">{{ c.ai_feedback_summary or "—" }}</span></td>
     </tr>
     {% else %}
-    <tr><td colspan="10" class="muted">No scored calls for this rep yet.</td></tr>
+    <tr><td colspan="11" class="muted">No scored calls for this rep yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

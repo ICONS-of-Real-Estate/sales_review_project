@@ -71,7 +71,7 @@
   <thead>
     <tr>
       <th>Rep</th><th>Calls</th><th>Avg score</th>
-      <th>Asked for close</th><th>Objections handled</th><th>Outcome logged</th><th>Flagged for review</th>
+      <th>Asked for close</th><th>Objections handled</th><th>Framework explained</th><th>Outcome logged</th><th>Flagged for review</th>
     </tr>
   </thead>
   <tbody>
@@ -82,12 +82,13 @@
       <td><a href="/calls?rep={{ r.rep }}">{{ r.avg_score if r.avg_score is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&asked_for_close=yes">{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&objections_handled=yes">{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</a></td>
+      <td><a href="/calls?rep={{ r.rep }}&framework_explained=yes">{{ (r.pct_framework_explained ~ "%") if r.pct_framework_explained is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&outcome_disposition={{ outcome_missing_key }}"
              title="Click to list {{ r.rep }}'s scored calls with no outcome logged">{{ (r.pct_outcome_logged ~ "%") if r.pct_outcome_logged is not none else "—" }}</a></td>
       <td><a href="/queue?rep={{ r.rep }}">{{ r.manual_review_count }}</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="muted">No scored calls yet.</td></tr>
+    <tr><td colspan="8" class="muted">No scored calls yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
@@ -100,6 +101,22 @@
     <tr><td><a href="/calls?failure_mode={{ f.mode }}">{{ f.mode }}</a></td><td>{{ f.count }}</td></tr>
     {% else %}
     <tr><td colspan="2" class="muted">No scored calls yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Framework explanation gaps (all reps)</h2>
+<p class="muted" style="margin-top:-0.5rem;">
+  Which of the three framework pieces (Phase2_CallGradingSOP.md §3D) get missed most often, across
+  calls where at least one was — a call with all three covered contributes nothing here.
+</p>
+<table>
+  <thead><tr><th>Missing piece</th><th>Count</th></tr></thead>
+  <tbody>
+    {% for g in framework_gaps %}
+    <tr><td>{{ g.gap }}</td><td>{{ g.count }}</td></tr>
+    {% else %}
+    <tr><td colspan="2" class="muted">No framework gaps recorded yet — either no calls scored, or every scored call covered all three pieces.</td></tr>
     {% endfor %}
   </tbody>
 </table>

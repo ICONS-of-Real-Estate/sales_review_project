@@ -124,7 +124,8 @@ def rep_summary():
             SUM(flag_objections_handled) AS objections_handled_count,
             SUM(manual_review_recommended) AS manual_review_count,
             SUM(CASE WHEN outcome_disposition IS NOT NULL AND TRIM(outcome_disposition) != ''
-                     THEN 1 ELSE 0 END) AS outcome_logged_count
+                     THEN 1 ELSE 0 END) AS outcome_logged_count,
+            SUM(flag_framework_explained) AS framework_explained_count
         FROM sales_call_log
         WHERE rep IS NOT NULL AND rep != ''
         GROUP BY rep
@@ -151,6 +152,10 @@ def rep_summary():
                 "pct_outcome_logged": (
                     round(100 * (r["outcome_logged_count"] or 0) / total) if total else None
                 ),
+                "framework_explained_count": r["framework_explained_count"] or 0,
+                "pct_framework_explained": (
+                    round(100 * (r["framework_explained_count"] or 0) / total) if total else None
+                ),
             }
         )
     return summary
@@ -169,6 +174,39 @@ def failure_mode_breakdown():
     ).fetchall()
     conn.close()
     return [{"mode": r["primary_failure_mode"], "count": r["n"]} for r in rows]
+
+
+def framework_gap_breakdown(rep=""):
+    """Which of the three framework components (recruit agents / #1 podcast
+    in your city / sell more houses — Phase2_CallGradingSOP.md §3D) get
+    missed most often. `framework_gaps` is a comma-joined string written by
+    Apps Script's deriveFrameworkFields_ (Phase2_CallScoring.gs) from a fixed,
+    system-generated vocabulary — unlike outcome_disposition this is never
+    hand-typed, so no case-folding is needed, just a split and count. SQLite
+    has no generic comma-split, so this is done in Python over the (small,
+    ~hundreds of rows) result set rather than in SQL."""
+    conn = get_conn()
+    params = []
+    where_rep = " AND rep = ?" if rep else ""
+    if rep:
+        params.append(rep)
+    rows = conn.execute(
+        "SELECT framework_gaps FROM sales_call_log "
+        f"WHERE framework_gaps IS NOT NULL AND TRIM(framework_gaps) != ''{where_rep}",
+        params,
+    ).fetchall()
+    conn.close()
+    counts = {}
+    for r in rows:
+        for gap in r["framework_gaps"].split(","):
+            gap = gap.strip()
+            if gap:
+                counts[gap] = counts.get(gap, 0) + 1
+    return sorted(
+        [{"gap": g, "count": n} for g, n in counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
 
 
 _DATE_PATTERNS = (
@@ -401,6 +439,15 @@ OUTCOME_MISSING = "__none__"
 
 _OUTCOME_LOGGED_SQL = "outcome_disposition IS NOT NULL AND TRIM(outcome_disposition) != ''"
 
+# Keep in sync with Phase6_TrainingCallReview.gs's FRAMEWORK_TOPIC_LABELS_ —
+# used to render training_assignments()'s framework_gaps_to_drill topics
+# as human labels instead of raw snake_case.
+FRAMEWORK_TOPIC_LABELS = {
+    "recruit_agents": "Recruit agents",
+    "number_one_podcast": "#1 podcast in your city",
+    "sell_more_houses": "Sell more houses",
+}
+
 
 def outcome_breakdown(rep=""):
     """Distribution of logged outcomes, with the average call-quality score
@@ -487,6 +534,7 @@ def overview(request: Request):
             "alerts": trend_alerts(),
             "outcomes": outcome_breakdown(),
             "outcome_missing_key": OUTCOME_MISSING,
+            "framework_gaps": framework_gap_breakdown(),
         },
     )
 
@@ -497,7 +545,7 @@ def training_assignments():
     live values are Script Properties no external API can read."""
     conn = get_conn()
     rows = conn.execute(
-        "SELECT rep, training_objections_json, close_ask_drill_json, last_updated "
+        "SELECT rep, training_objections_json, close_ask_drill_json, training_framework_json, last_updated "
         "FROM training_assignments ORDER BY rep"
     ).fetchall()
     conn.close()
@@ -512,11 +560,19 @@ def training_assignments():
             close_drill = json.loads(r["close_ask_drill_json"]) if r["close_ask_drill_json"] else None
         except (ValueError, TypeError):
             close_drill = None
+        try:
+            framework_drill = json.loads(r["training_framework_json"]) if r["training_framework_json"] else []
+        except (ValueError, TypeError):
+            framework_drill = []
+        # Keep in sync with Phase6_TrainingCallReview.gs's FRAMEWORK_TOPIC_LABELS_.
+        for f in framework_drill:
+            f["label"] = FRAMEWORK_TOPIC_LABELS.get(f.get("topic"), f.get("topic"))
         out.append(
             {
                 "rep": r["rep"],
                 "objections": objections,
                 "close_drill": close_drill,
+                "framework_drill": framework_drill,
                 "last_updated": r["last_updated"],
             }
         )
@@ -593,7 +649,8 @@ def rep_detail(rep):
     rows = conn.execute(
         "SELECT prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
         "flag_asked_for_close, flag_objections_handled, primary_failure_mode, manual_review_recommended, "
-        "ai_feedback_summary, transcript_url, outcome_disposition FROM sales_call_log WHERE rep = ?",
+        "ai_feedback_summary, transcript_url, outcome_disposition, flag_framework_explained, framework_gaps "
+        "FROM sales_call_log WHERE rep = ?",
         (rep,),
     ).fetchall()
     conn.close()
@@ -671,6 +728,7 @@ def rep_detail_page(request: Request, rep: str):
             "score_over_time": _rep_score_series(rep),
             "outcomes": outcome_breakdown(rep),
             "outcome_missing_key": OUTCOME_MISSING,
+            "framework_gaps": framework_gap_breakdown(rep),
         },
     )
 
@@ -695,7 +753,7 @@ def all_reps_list():
 def filtered_calls(
     rep="", verdict="", failure_mode="", min_score=None, max_score=None,
     asked_for_close="", objections_handled="", match_method="", outcome_disposition="",
-    q="", limit=200,
+    framework_explained="", q="", limit=200,
 ):
     """Backs the /calls browser. With `q` set, searches call_search (FTS5
     over every call's AI Feedback Summary — sync.py rebuilds this index
@@ -710,7 +768,7 @@ def filtered_calls(
             sql = (
                 "SELECT s.id, s.prospect_name, s.rep, s.call_date, s.call_type, s.lead_quality_verdict, "
                 "s.call_quality_score, s.primary_failure_mode, s.transcript_url, "
-                "s.outcome_disposition, "
+                "s.outcome_disposition, s.flag_framework_explained, s.framework_gaps, "
                 "snippet(call_search, 4, '<mark>', '</mark>', '…', 20) AS snippet "
                 "FROM call_search cs JOIN sales_call_log s ON s.id = cs.call_id "
                 "WHERE call_search MATCH ?"
@@ -720,6 +778,7 @@ def filtered_calls(
             sql = (
                 "SELECT id, prospect_name, rep, call_date, call_type, lead_quality_verdict, "
                 "call_quality_score, primary_failure_mode, transcript_url, outcome_disposition, "
+                "flag_framework_explained, framework_gaps, "
                 "ai_feedback_summary AS snippet "
                 "FROM sales_call_log s WHERE 1=1"
             )
@@ -747,6 +806,9 @@ def filtered_calls(
         if objections_handled in ("yes", "no"):
             sql += f" AND {prefix}flag_objections_handled = ?"
             params.append(1 if objections_handled == "yes" else 0)
+        if framework_explained in ("yes", "no"):
+            sql += f" AND {prefix}flag_framework_explained = ?"
+            params.append(1 if framework_explained == "yes" else 0)
         if match_method:
             sql += f" AND {prefix}match_method = ?"
             params.append(match_method)
@@ -792,6 +854,7 @@ def calls_page(
     objections_handled: str = "",
     match_method: str = "",
     outcome_disposition: str = "",
+    framework_explained: str = "",
     q: str = "",
 ):
     return render(
@@ -804,7 +867,7 @@ def calls_page(
             "calls": filtered_calls(
                 rep, verdict, failure_mode, min_score, max_score,
                 asked_for_close, objections_handled, match_method,
-                outcome_disposition, q,
+                outcome_disposition, framework_explained, q,
             ),
             "filters": {
                 "rep": rep, "verdict": verdict, "failure_mode": failure_mode,
@@ -812,6 +875,7 @@ def calls_page(
                 "asked_for_close": asked_for_close, "objections_handled": objections_handled,
                 "match_method": match_method,
                 "outcome_disposition": outcome_disposition,
+                "framework_explained": framework_explained,
             },
             "outcome_missing_key": OUTCOME_MISSING,
             "all_outcomes": [d["disposition"] for d in outcome_breakdown()["distribution"]],
