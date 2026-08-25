@@ -1189,6 +1189,97 @@ function setupObjectionPlaybook() {
     'there for him to track his own changes, nothing reads them automatically.');
 }
 
+/**
+ * ONE-TIME PATCH (25/08/2026): applies Tomás's real edits to the Bens
+ * playbook — objections #1/#2/#4 — from his own working copy (shared as a
+ * PDF/Doc, not yet reconciled back into this codebase). #2's old quoted
+ * script is REPLACED (Tomás crossed it out in his own copy) rather than
+ * appended to; #1 and #4 keep the original quote alongside his new
+ * step-by-step technique. Also fixes a name typo ("Steve Hauck" ->
+ * "Steve Houck") in #4's real examples. Safe to re-run — always overwrites
+ * to the same target text, never appends duplicate content. Run once from
+ * the editor; does nothing to rows #3/#5-#9, which Tomás's copy left
+ * unchanged.
+ */
+function patchObjectionPlaybookBensEdits_25aug_() {
+  RUN_TAG = 'patchObjectionPlaybookBensEdits_25aug_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(OBJECTION_PLAYBOOK_SHEET_NAME);
+  if (!sheet) { log_('No "' + OBJECTION_PLAYBOOK_SHEET_NAME + '" tab — run setupObjectionPlaybook() first.'); return; }
+
+  var lastRow = sheet.getLastRow();
+  var values = sheet.getRange(2, 1, Math.max(lastRow - 1, 0), OBJECTION_PLAYBOOK_HEADERS.length).getValues();
+  var byNumber = {};
+  values.forEach(function (row, i) { byNumber[row[0]] = i + 2; });
+
+  var patches = {
+    1: {
+      suggestedResponse:
+        '1. Acknowledge and empathise — we only work with busy people.\n' +
+        '2. Deconstruct what "busy" actually means for them.\n' +
+        '3. Let them know the real commitment — average 1h/week (if still pushing back, use the Hormozi line).\n' +
+        '4. Pitch the Podcast Strategy Call — understand their plan and see how a podcast fits (if still pushing, agree a follow-up date).\n\n' +
+        '"Totally get it — everyone I talk to on this show is busy for a reason. That\'s actually why this is a ' +
+        '15-minute conversation, not a project. Rather than leave it open, let\'s just grab a placeholder for ' +
+        '[1-2 days out] — if it\'s still not the right moment when we get there, we\'ll push it again, no ' +
+        'pressure at all."'
+    },
+    2: {
+      // Tomás crossed out the old scripted quote in his own copy — replaced, not appended to.
+      suggestedResponse:
+        '- Accept and joke about the price question — "I\'m not taking your money today," or go straight into: ' +
+        '"As much as I would like to tell you pricing right now, and you would probably want to pay me and get ' +
+        'started…"\n' +
+        '- Clarify we like to show the value first before the $, so they can see the impact.\n' +
+        '- Our network manager will do that and show you the investment.\n' +
+        '- I promise it\'s not something that is going to scare you.\n' +
+        '- Book Strategy Call.'
+    },
+    4: {
+      realExamplesFix: { from: 'Steve Hauck', to: 'Steve Houck' },
+      suggestedResponse:
+        'If the podcast is no longer active:\n' +
+        '- Mention it before they do.\n' +
+        '- Ask how the experience was.\n' +
+        '- Why did it make you stop?\n' +
+        '- We revive podcasts — book Strategy Call.\n\n' +
+        'If the podcast is active:\n' +
+        '- Awesome! How is it going?\n' +
+        '- Have you gotten some results from it?\n' +
+        '- Are you producing this in-house or working with another agency?\n' +
+        '- Offer the Strategy Call as a free brainstorming session with the #1 Real Estate Podcast Network.\n\n' +
+        '"That\'s great that you\'re already doing [X] — a lot of the agents we work with are in the same spot. ' +
+        'The difference usually isn\'t replacing what you\'re doing, it\'s taking [the specific pain point they ' +
+        'mentioned — editing, consistency, distribution] off your plate so you can focus on [their actual ' +
+        'business]. Worth 15 minutes to see if that gap applies to you?"'
+    }
+  };
+
+  var suggestedResponseCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Suggested Response') + 1;
+  var realExamplesCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Real Examples') + 1;
+  var lastUpdatedByCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Last Updated By') + 1;
+
+  Object.keys(patches).forEach(function (num) {
+    var rowIndex = byNumber[Number(num)];
+    if (!rowIndex) { log_('  No row found for objection #' + num + ' — skipping.'); return; }
+    var patch = patches[num];
+    sheet.getRange(rowIndex, suggestedResponseCol).setValue(patch.suggestedResponse);
+    if (patch.realExamplesFix) {
+      var current = String(sheet.getRange(rowIndex, realExamplesCol).getValue());
+      sheet.getRange(rowIndex, realExamplesCol).setValue(
+        current.split(patch.realExamplesFix.from).join(patch.realExamplesFix.to));
+    }
+    sheet.getRange(rowIndex, lastUpdatedByCol).setValue('Tomás');
+    log_('  Patched objection #' + num + ' (row ' + rowIndex + ').');
+  });
+  log_('patchObjectionPlaybookBensEdits_25aug_ complete.');
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function patchObjectionPlaybookBensEdits() {
+  patchObjectionPlaybookBensEdits_25aug_();
+}
+
 // ---------------------------------------------------------------------------
 // "Manual Review Guide" tab — companion to the above: Kris's ask (25/08/2026)
 // for instructions Tomás can follow to review calls and grade them or log
