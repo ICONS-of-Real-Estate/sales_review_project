@@ -552,6 +552,150 @@ test('isValidDailyPracticeSchema_ accepts "framework" as a drill_type and requir
   assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, good, { drill_type: 'not_a_real_type' })), false);
 });
 
+// --- Task: RUBRIC_VERSION column (25/08/2026) ---
+
+test('RUBRIC_VERSION is a non-empty date-prefixed string, per the versioning convention documented alongside it', () => {
+  assert.equal(typeof gas.RUBRIC_VERSION, 'string');
+  assert.ok(gas.RUBRIC_VERSION.length > 0);
+  assert.match(gas.RUBRIC_VERSION, /^\d{4}-\d{2}-\d{2}-/);
+});
+
+test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version column', () => {
+  // Minimal fake sheet: getRange(row, col).setValue(v) records into a plain
+  // map keyed "row:col" — writeScoreToRow_ only ever calls getRange/setValue,
+  // nothing else, so this is enough to exercise it without a live sheet.
+  const cells = {};
+  const fakeSheet = {
+    getRange(row, col) {
+      return { setValue(v) { cells[row + ':' + col] = v; return this; } };
+    }
+  };
+  // Real column layout, so this test breaks (loudly) if SALES_CALL_LOG_HEADERS
+  // and writeScoreToRow_ ever drift apart on a key it relies on.
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const result = {
+    lead_quality: { verdict: 'good_to_book' },
+    call_quality_score: 4,
+    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    manual_review_recommended: false,
+    severity: 1,
+    feedback_summary: 'string',
+    primary_failure_mode: 'none'
+  };
+  gas.writeScoreToRow_(fakeSheet, 7, col, result, false);
+
+  assert.equal(cells['7:' + col['Rubric Version']], gas.RUBRIC_VERSION);
+});
+
+// --- Task: frozen regression set / drift detection (25/08/2026) ---
+
+test('resolveRubricVariantForRow_ maps exact_key rows to the shared rubric regardless of rep', () => {
+  assert.equal(gas.resolveRubricVariantForRow_('Sean', 'exact_key'), 'shared');
+  assert.equal(gas.resolveRubricVariantForRow_('Bens', 'exact_key'), 'shared');
+  assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'exact_key'), 'shared');
+});
+
+test('resolveRubricVariantForRow_ maps fallback_heuristic rows to each rep\'s own variant, and Joana to the shared rubric', () => {
+  assert.equal(gas.resolveRubricVariantForRow_('Sean', 'fallback_heuristic'), 'sean');
+  assert.equal(gas.resolveRubricVariantForRow_('Bens', 'fallback_heuristic'), 'bens');
+  assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'fallback_heuristic'), 'tomas');
+  assert.equal(gas.resolveRubricVariantForRow_('Joana', 'fallback_heuristic'), 'shared');
+});
+
+// diffRegressionResult_'s array return comes from the vm sandbox's own realm
+// (see gas_env.js's Date comment) — assert.deepEqual's constructor-identity
+// check fails against this file's plain `[]` literal for realm reasons, not
+// a real mismatch, so compare .length / a plain-array copy instead, same
+// workaround as the other cross-realm tests above.
+test('diffRegressionResult_ reports no drift when nothing changed', () => {
+  const baseline = { callQualityScore: 4, askedForClose: true, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'none' };
+  assert.equal(gas.diffRegressionResult_(baseline, Object.assign({}, baseline)).length, 0);
+});
+
+test('diffRegressionResult_ flags a call_quality_score move of more than 1 point, not a move of exactly 1', () => {
+  const baseline = { callQualityScore: 3, askedForClose: true, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'none' };
+  const oneOff = Object.assign({}, baseline, { callQualityScore: 4 });
+  assert.equal(gas.diffRegressionResult_(baseline, oneOff).length, 0);
+
+  const twoOff = Object.assign({}, baseline, { callQualityScore: 5 });
+  const diffs = gas.diffRegressionResult_(baseline, twoOff);
+  assert.equal(diffs.length, 1);
+  assert.match(diffs[0], /call_quality_score drifted 3 -> 5/);
+});
+
+test('diffRegressionResult_ flags a flipped boolean flag', () => {
+  const baseline = { callQualityScore: 4, askedForClose: true, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'none' };
+  const flipped = Object.assign({}, baseline, { objectionsHandled: false });
+  const diffs = gas.diffRegressionResult_(baseline, flipped);
+  assert.equal(diffs.length, 1);
+  assert.match(diffs[0], /Flag: Objections Handled flipped true -> false/);
+});
+
+test('diffRegressionResult_ flags a changed Primary Failure Mode', () => {
+  const baseline = { callQualityScore: 4, askedForClose: true, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'none' };
+  const changed = Object.assign({}, baseline, { primaryFailureMode: 'objections_missed' });
+  const diffs = gas.diffRegressionResult_(baseline, changed);
+  assert.equal(diffs.length, 1);
+  assert.match(diffs[0], /Primary Failure Mode changed none -> objections_missed/);
+});
+
+test('diffRegressionResult_ can report multiple simultaneous diffs', () => {
+  const baseline = { callQualityScore: 5, askedForClose: true, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'none' };
+  const drifted = { callQualityScore: 2, askedForClose: false, objectionsHandled: true, frameworkExplained: true, primaryFailureMode: 'no_close_ask' };
+  const diffs = gas.diffRegressionResult_(baseline, drifted);
+  assert.equal(diffs.length, 3); // score, asked_for_close, primary_failure_mode
+});
+
+test('pickStratifiedRegressionSample_ spreads picks across every distinct rep present', () => {
+  const items = [
+    { rowIndex: 1, rep: 'Sean' }, { rowIndex: 2, rep: 'Sean' }, { rowIndex: 3, rep: 'Sean' },
+    { rowIndex: 4, rep: 'Bens' }, { rowIndex: 5, rep: 'Bens' }, { rowIndex: 6, rep: 'Bens' },
+    { rowIndex: 7, rep: 'Joana' }, { rowIndex: 8, rep: 'Joana' }, { rowIndex: 9, rep: 'Joana' }
+  ];
+  const sample = gas.pickStratifiedRegressionSample_(items, 6, () => 0);
+  const reps = Array.prototype.slice.call(sample).map((r) => r.rep);
+  assert.equal(sample.length, 6);
+  assert.ok(reps.indexOf('Sean') !== -1, 'expected at least one Sean pick');
+  assert.ok(reps.indexOf('Bens') !== -1, 'expected at least one Bens pick');
+  assert.ok(reps.indexOf('Joana') !== -1, 'expected at least one Joana pick');
+});
+
+test('pickStratifiedRegressionSample_ tops up from other reps when one rep has too few eligible calls', () => {
+  const items = [
+    { rowIndex: 1, rep: 'Sean' }, // only one Sean call available
+    { rowIndex: 2, rep: 'Bens' }, { rowIndex: 3, rep: 'Bens' }, { rowIndex: 4, rep: 'Bens' }, { rowIndex: 5, rep: 'Bens' }
+  ];
+  const sample = gas.pickStratifiedRegressionSample_(items, 4, () => 0);
+  assert.equal(sample.length, 4); // capped by pool size, but tops up beyond the naive per-rep quota
+});
+
+test('pickStratifiedRegressionSample_ does not mutate its input', () => {
+  const items = [{ rowIndex: 1, rep: 'Sean' }, { rowIndex: 2, rep: 'Bens' }];
+  const before = items.slice();
+  gas.pickStratifiedRegressionSample_(items, 1, () => 0.99);
+  assert.deepEqual(items, before);
+});
+
+test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge function', () => {
+  // Stub out the four real judge functions (which would otherwise hit
+  // UrlFetchApp/the Moonshot API) with sentinels that just report which one
+  // was called, so this only tests the dispatch logic itself.
+  const calls = [];
+  gas.scoreTranscript_ = (ctx) => { calls.push('shared'); return 'shared-result'; };
+  gas.scoreSeanTranscript_ = (ctx) => { calls.push('sean'); return 'sean-result'; };
+  gas.scoreBensTranscript_ = (ctx) => { calls.push('bens'); return 'bens-result'; };
+  gas.scoreTomasTranscript_ = (ctx) => { calls.push('tomas'); return 'tomas-result'; };
+
+  assert.equal(gas.scoreTranscriptByVariant_('sean', {}), 'sean-result');
+  assert.equal(gas.scoreTranscriptByVariant_('bens', {}), 'bens-result');
+  assert.equal(gas.scoreTranscriptByVariant_('tomas', {}), 'tomas-result');
+  assert.equal(gas.scoreTranscriptByVariant_('shared', {}), 'shared-result');
+  assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'shared']);
+});
+
 test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, keeps the score out of the subject and body lead', () => {
   const result = {
     drill_type: 'objection',

@@ -833,11 +833,19 @@ var SALES_CALL_LOG_HEADERS = [
   // See Phase2_CallGradingSOP.md §3D. ---
   'Flag: Framework Explained', // X (bool — recruit-agents + #1-podcast-in-city
                             //    + sell-more-houses all covered proactively)
-  'Framework Gaps'          // Y  (comma-joined: which of the 3 pieces were
+  'Framework Gaps',         // Y  (comma-joined: which of the 3 pieces were
                             //    missing/weak, blank if all 3 covered — the
                             //    coaching detail behind column X, same "pack
                             //    real content into a real column, not just a
                             //    bool" pattern as the flags before it)
+  // --- 25/08/2026: records which rubric version scored this row, so a
+  // future rubric change never leaves historical rows silently
+  // non-comparable to new ones again — see Phase2_CallGradingSOP.md §3E and
+  // RUBRIC_VERSION in Phase2_CallScoring.gs. ---
+  'Rubric Version'          // Z  (e.g. "2026-08-25-framework" — blank on rows
+                            //    scored before this column existed, same
+                            //    backward-compatible "no signal" pattern as
+                            //    every prior column addition here)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

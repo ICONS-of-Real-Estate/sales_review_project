@@ -167,6 +167,29 @@ var PHASE2_CONFIG = {
   LEGACY_DEFAULT_CALL_TYPE: 'QC'
 };
 
+/**
+ * RUBRIC_VERSION — added 25/08/2026 per Kris: the rubric has changed twice in
+ * two days (Sean's stricter variant, then the framework-explanation third
+ * dimension), and until now nothing recorded which rubric version produced a
+ * given row's score — making old and new rows silently non-comparable with
+ * no way to tell them apart. Written by every code path that writes a score
+ * (writeScoreToRow_ and the four appendRow-based legacy/Sean/Joana/Tomás
+ * backfill functions) into the "Rubric Version" trailing column
+ * (SALES_CALL_LOG_HEADERS, Phase1_ComplianceCheck.gs).
+ *
+ * PROJECT CONVENTION — bump this string every time ANY rubric variant's
+ * scoring logic changes (a new/changed failure mode, a new scored dimension,
+ * a changed score anchor, a new or altered rubric variant for a specific
+ * rep) — shared rubric or any of the Sean/Bens/Tomás variants, since they
+ * all currently move together version-wise. Format: 'YYYY-MM-DD-shortlabel',
+ * the date the change landed plus a few words naming it (this makes the
+ * value self-explanatory in the sheet without needing to cross-reference a
+ * changelog). Existing rows keep whatever value was current when they were
+ * scored — this constant is never used to retroactively rewrite history, see
+ * Phase2_CallGradingSOP.md §3E.
+ */
+var RUBRIC_VERSION = '2026-08-25-framework';
+
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
 // the endpoint/model id and the temperature rule change").
@@ -610,15 +633,21 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
   var framework = deriveFrameworkFields_(result);
   sheet.getRange(rowIndex, col['Flag: Framework Explained']).setValue(framework.explained);
   sheet.getRange(rowIndex, col['Framework Gaps']).setValue(framework.gapsText);
+  // Records which rubric version produced this score — see RUBRIC_VERSION's
+  // own comment above for the versioning convention. Blank on rows scored
+  // before this column existed, same "no signal" pattern as every column
+  // added before it.
+  sheet.getRange(rowIndex, col['Rubric Version']).setValue(RUBRIC_VERSION);
 }
 
 /**
  * ONE-TIME migration: appends any header(s) from SALES_CALL_LOG_HEADERS that
  * are missing from the live "Sales Call Log" sheet's header row (e.g. "Kris
- * Manual Review Verdict", "Primary Failure Mode", and — as of 25/08/2026 —
- * "Flag: Framework Explained"/"Framework Gaps" — all added to the shared
- * array over the course of this project without ever being backfilled onto
- * the already-deployed sheet). Needed because getValidatedColumnMap_
+ * Manual Review Verdict", "Primary Failure Mode", "Flag: Framework
+ * Explained"/"Framework Gaps", and — as of this same 25/08/2026 session —
+ * "Rubric Version" — all added to the shared array over the course of this
+ * project without ever being backfilled onto the already-deployed sheet).
+ * Needed because getValidatedColumnMap_
  * requires the sheet's real header row to exactly match SALES_CALL_LOG_HEADERS.
  * Checks every column in order (not just the last one) and appends whichever
  * are actually missing — safe to re-run, no-ops once everything is present.
@@ -1267,7 +1296,8 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           '',                              // Kris Manual Review Verdict — not yet judged
           result.primary_failure_mode || 'none', // Primary Failure Mode
           frameworkFields.explained,      // Flag: Framework Explained
-          frameworkFields.gapsText        // Framework Gaps
+          frameworkFields.gapsText,       // Framework Gaps
+          RUBRIC_VERSION                  // Rubric Version
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -1679,7 +1709,8 @@ function scoreSeanTranscripts() {
             '',                              // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,       // Flag: Framework Explained
-            frameworkFields.gapsText         // Framework Gaps
+            frameworkFields.gapsText,        // Framework Gaps
+            RUBRIC_VERSION                   // Rubric Version
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -1828,7 +1859,8 @@ function scoreJoanaTranscripts() {
             '',                               // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,        // Flag: Framework Explained
-            frameworkFields.gapsText          // Framework Gaps
+            frameworkFields.gapsText,         // Framework Gaps
+            RUBRIC_VERSION                    // Rubric Version
           ]);
 
           existing[key] = true;
@@ -2233,7 +2265,8 @@ function scoreTomasTranscripts() {
             '',                                 // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,          // Flag: Framework Explained
-            frameworkFields.gapsText            // Framework Gaps
+            frameworkFields.gapsText,           // Framework Gaps
+            RUBRIC_VERSION                       // Rubric Version
           ]);
 
           existing[key] = true;
@@ -2946,4 +2979,396 @@ function installRandomCalibrationSampleTrigger() {
     .create();
   log_('Random calibration sample trigger installed: ' + RANDOM_CALIBRATION_CONFIG.TRIGGER_DAY + ' ' +
     RANDOM_CALIBRATION_CONFIG.TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
+}
+
+// ---------------------------------------------------------------------------
+// Frozen regression set — drift detection. QA_COACHING_RESEARCH_REPORT.md's
+// concern: the judge model (Kimi k3, forced temperature=1) could silently
+// drift in behavior over time (a Moonshot-side model update, a subtle
+// prompt-sensitivity issue) with nothing here to catch it — every existing
+// safeguard in this file (schema validation, parse retries, manual review
+// routing) catches a badly-FORMED response, none of them catch a
+// well-formed response that quietly started judging differently than it used
+// to. This closes that gap: freeze a small fixed set of already-scored real
+// calls as a "known-good" baseline, then periodically re-run the SAME
+// transcripts through the SAME rubric and diff.
+//
+// ONE-TIME SETUP (same pattern as every other phase in this file):
+//   1. Run freezeRegressionSet() from the editor — picks and stores the
+//      baseline. Safe to run more than once: it REPLACES the stored
+//      baseline outright, it doesn't grow it.
+//   2. Run previewRegressionDrift() — re-scores every frozen call and logs
+//      any drift found. Eyeball the output against real transcripts before
+//      trusting it.
+//   3. Flip REGRESSION_DRIFT_CONFIG.ENABLED to true once that looks right.
+//      Not wired to a trigger yet on purpose — that's a separate go-live
+//      decision for a human to make later, same as RANDOM_CALIBRATION_CONFIG
+//      before it shipped this session. When that trigger does get installed,
+//      point it at checkRegressionDrift() (not the impl function).
+// ---------------------------------------------------------------------------
+
+var REGRESSION_DRIFT_CONFIG = {
+  // Flip only after freezeRegressionSet() has been run at least once and
+  // previewRegressionDrift() has been eyeballed against real output — same
+  // "built but not yet installed" gate RANDOM_CALIBRATION_CONFIG had before
+  // 25/08/2026. While false, checkRegressionDrift() (the would-be trigger
+  // target) refuses to run at all; previewRegressionDrift() always works
+  // regardless, since it's read-only by construction.
+  ENABLED: false,
+  // QA_COACHING_RESEARCH_REPORT.md's suggested range is 10-15 frozen calls;
+  // picked the middle. freezeRegressionSet_() spreads this across every rep
+  // with at least one already-scored, still-fetchable-transcript call, so
+  // the baseline can't accidentally land entirely on one rep's calls.
+  SAMPLE_SIZE: 12
+};
+
+var REGRESSION_BASELINE_SHEET_NAME = 'Regression Baseline';
+var REGRESSION_BASELINE_HEADERS = [
+  'Prospect Name', 'Rep', 'Rubric Variant', 'Call Date', 'Transcript URL',
+  'Frozen Call Quality Score', 'Frozen Flag: Asked For Close', 'Frozen Flag: Objections Handled',
+  'Frozen Flag: Framework Explained', 'Frozen Primary Failure Mode', 'Frozen Rubric Version', 'Frozen At'
+];
+
+/**
+ * Which rubric variant actually scored a given "Sales Call Log" row — needed
+ * so checkRegressionDrift_ re-scores under the SAME prompt the baseline was
+ * frozen against, not just whatever the rep's name might suggest. The
+ * ongoing pipeline (scoreNewlyLoggedCalls_) always scores every exact_key
+ * row through the SHARED rubric regardless of rep; the per-rep variants
+ * (Sean/Bens/Tomás) only ever run through their own folder-scan backfill
+ * functions, which always write Match Method = 'fallback_heuristic' (see
+ * each function's own header comment above). So Match Method, not Rep
+ * alone, is what actually determines which prompt produced a given row's
+ * score — Joana has no dedicated variant and always scores under the shared
+ * rubric either way, exact_key or fallback_heuristic. Pure/no side effects.
+ */
+function resolveRubricVariantForRow_(rep, matchMethod) {
+  if (matchMethod !== 'fallback_heuristic') return 'shared';
+  if (rep === 'Sean') return 'sean';
+  if (rep === 'Bens') return 'bens';
+  if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
+  return 'shared';
+}
+
+/** Dispatches to the right judge function for a rubric variant string (resolveRubricVariantForRow_'s output). */
+function scoreTranscriptByVariant_(variant, ctx) {
+  switch (variant) {
+    case 'sean': return scoreSeanTranscript_(ctx);
+    case 'bens': return scoreBensTranscript_(ctx);
+    case 'tomas': return scoreTomasTranscript_(ctx);
+    default: return scoreTranscript_(ctx);
+  }
+}
+
+/**
+ * Stratified sample: spreads picks roughly evenly across each distinct `rep`
+ * present in eligibleRows (so freezeRegressionSet_ can't accidentally land
+ * its whole regression set on one rep's calls), then tops up from the
+ * remaining pool at random if still under target (e.g. a rep with very few
+ * eligible calls). Pure — reuses pickRandomSample_ for both stages, so it's
+ * deterministic under an injected randomFn and unit-testable without a live
+ * sheet. Does not mutate eligibleRows. Each row must carry a `rep` and a
+ * `rowIndex` (used only as a dedup key here, not assumed to mean anything
+ * else).
+ */
+function pickStratifiedRegressionSample_(eligibleRows, sampleSize, randomFn) {
+  var byRep = {};
+  eligibleRows.forEach(function (row) {
+    (byRep[row.rep] = byRep[row.rep] || []).push(row);
+  });
+  var reps = Object.keys(byRep).sort(); // alphabetical — deterministic grouping order
+  if (!reps.length || sampleSize <= 0) return [];
+
+  var quota = Math.max(1, Math.floor(sampleSize / reps.length));
+  var picked = [];
+  var pickedKeys = {};
+  reps.forEach(function (rep) {
+    pickRandomSample_(byRep[rep], quota, randomFn).forEach(function (row) {
+      picked.push(row);
+      pickedKeys[row.rowIndex] = true;
+    });
+  });
+
+  if (picked.length < sampleSize) {
+    var remaining = eligibleRows.filter(function (row) { return !pickedKeys[row.rowIndex]; });
+    picked = picked.concat(pickRandomSample_(remaining, sampleSize - picked.length, randomFn));
+  }
+  return picked.slice(0, sampleSize);
+}
+
+/**
+ * Pure diff between a frozen regression baseline and a freshly-recomputed
+ * result for the same call. Deliberately takes plain {callQualityScore,
+ * askedForClose, objectionsHandled, frameworkExplained, primaryFailureMode}
+ * shapes rather than raw judge-schema objects, so it's unit-testable with
+ * plain literals and reusable regardless of which rubric variant produced
+ * the fresh result (the caller is responsible for deriving objectionsHandled/
+ * frameworkExplained from a raw judge result the same way writeScoreToRow_
+ * does). Returns an array of human-readable diff descriptions — empty means
+ * no drift. Per QA_COACHING_RESEARCH_REPORT.md: flag a score move of MORE
+ * THAN 1 point (a move of exactly 1 is normal judge noise, not drift), any
+ * flipped boolean flag, or any change in primary_failure_mode.
+ */
+function diffRegressionResult_(frozen, fresh) {
+  var diffs = [];
+  var scoreDelta = Math.abs(Number(fresh.callQualityScore) - Number(frozen.callQualityScore));
+  if (scoreDelta > 1) {
+    diffs.push('call_quality_score drifted ' + frozen.callQualityScore + ' -> ' + fresh.callQualityScore +
+      ' (delta ' + scoreDelta + ')');
+  }
+  if (!!fresh.askedForClose !== !!frozen.askedForClose) {
+    diffs.push('Flag: Asked For Close flipped ' + frozen.askedForClose + ' -> ' + fresh.askedForClose);
+  }
+  if (!!fresh.objectionsHandled !== !!frozen.objectionsHandled) {
+    diffs.push('Flag: Objections Handled flipped ' + frozen.objectionsHandled + ' -> ' + fresh.objectionsHandled);
+  }
+  if (!!fresh.frameworkExplained !== !!frozen.frameworkExplained) {
+    diffs.push('Flag: Framework Explained flipped ' + frozen.frameworkExplained + ' -> ' + fresh.frameworkExplained);
+  }
+  var frozenPfm = String(frozen.primaryFailureMode || 'none');
+  var freshPfm = String(fresh.primaryFailureMode || 'none');
+  if (frozenPfm !== freshPfm) {
+    diffs.push('Primary Failure Mode changed ' + frozenPfm + ' -> ' + freshPfm);
+  }
+  return diffs;
+}
+
+/**
+ * Self-healing header setup for the "Regression Baseline" tab — same pattern
+ * as getOrCreateTrainingAssignmentsSheet_ (Phase6_TrainingCallReview.gs,
+ * added 25/08/2026). Chosen as a sheet tab rather than a Script Property
+ * (the TRAINING_OBJECTIONS_<rep> JSON-blob pattern also established in this
+ * codebase) because the baseline is ~10-15 rows of genuinely tabular,
+ * per-call data (a score, three flags, a failure mode, a transcript URL,
+ * which rubric variant scored it) that Kris/Tomás need to be able to eyeball
+ * directly without opening the Apps Script editor — a sheet tab is
+ * inspectable by anyone who can open the spreadsheet, a Script Property is
+ * not. Both options are equally "durable" (Script Properties and sheet tabs
+ * both persist independent of any trigger/execution), so inspectability is
+ * the deciding factor here, not durability.
+ */
+function getOrCreateRegressionBaselineSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(REGRESSION_BASELINE_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(REGRESSION_BASELINE_SHEET_NAME);
+    sheet.getRange(1, 1, 1, REGRESSION_BASELINE_HEADERS.length).setValues([REGRESSION_BASELINE_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + REGRESSION_BASELINE_SHEET_NAME + '" tab.');
+    return sheet;
+  }
+  // Self-heal on every call, same "validate every run" spirit as
+  // setupSalesCallLog()'s header check and getOrCreateTrainingAssignmentsSheet_'s
+  // 25/08/2026 self-healing fix — cheap and idempotent, and this sheet's
+  // layout is entirely code-owned so nothing else should ever hand-edit it.
+  var existing = sheet.getRange(1, 1, 1, REGRESSION_BASELINE_HEADERS.length).getValues()[0];
+  var headersMatch = REGRESSION_BASELINE_HEADERS.every(function (h, i) { return existing[i] === h; });
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, REGRESSION_BASELINE_HEADERS.length).setValues([REGRESSION_BASELINE_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    log_('Updated "' + REGRESSION_BASELINE_SHEET_NAME + '" header row to match REGRESSION_BASELINE_HEADERS.');
+  }
+  return sheet;
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function freezeRegressionSet() {
+  return freezeRegressionSet_();
+}
+
+/**
+ * Picks up to REGRESSION_DRIFT_CONFIG.SAMPLE_SIZE already-scored real calls
+ * (spread across reps/rubric variants via pickStratifiedRegressionSample_)
+ * and stores their current scored values as the "known-good" baseline in the
+ * "Regression Baseline" tab, REPLACING whatever baseline was there before —
+ * this is a snapshot, not an append-only log, so re-running this is always
+ * safe and just re-picks a fresh (possibly different) sample. Never touches
+ * the live "Sales Call Log" — read-only against it.
+ */
+function freezeRegressionSet_() {
+  RUN_TAG = 'freezeRegressionSet_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var logSheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!logSheet) { log_('No Sales Call Log tab found.'); return null; }
+
+  var lastRow = logSheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows.'); return null; }
+
+  var col = getValidatedColumnMap_(logSheet);
+  var values = logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var eligible = [];
+  for (var r = 0; r < values.length; r++) {
+    var row = values[r];
+    if (typeof row[col['Call Quality Score'] - 1] !== 'number') continue; // not yet scored
+    var transcriptUrl = row[col['Transcript URL'] - 1];
+    if (!transcriptUrl) continue; // nothing checkRegressionDrift_ could re-fetch and re-score later
+
+    var rep = row[col['Rep'] - 1];
+    var matchMethod = row[col['Match Method'] - 1];
+
+    eligible.push({
+      rowIndex: r + 2,
+      prospectName: row[col['Prospect Name'] - 1],
+      rep: rep,
+      rubricVariant: resolveRubricVariantForRow_(rep, matchMethod),
+      callDate: row[col['Call Date'] - 1],
+      transcriptUrl: transcriptUrl,
+      callQualityScore: Number(row[col['Call Quality Score'] - 1]),
+      askedForClose: !!row[col['Flag: Asked For Close'] - 1],
+      objectionsHandled: !!row[col['Flag: Objections Handled'] - 1],
+      frameworkExplained: !!row[col['Flag: Framework Explained'] - 1],
+      primaryFailureMode: String(row[col['Primary Failure Mode'] - 1] || 'none'),
+      rubricVersion: String(row[col['Rubric Version'] - 1] || '')
+    });
+  }
+
+  if (!eligible.length) {
+    log_('freezeRegressionSet_: no already-scored row with a Transcript URL found — nothing to freeze.');
+    return null;
+  }
+
+  var sample = pickStratifiedRegressionSample_(eligible, REGRESSION_DRIFT_CONFIG.SAMPLE_SIZE, Math.random);
+
+  var baselineSheet = getOrCreateRegressionBaselineSheet_();
+  var existingLastRow = baselineSheet.getLastRow();
+  if (existingLastRow > 1) {
+    baselineSheet.getRange(2, 1, existingLastRow - 1, REGRESSION_BASELINE_HEADERS.length).clearContent();
+  }
+
+  var now = new Date();
+  var rows = sample.map(function (c) {
+    return [
+      c.prospectName, c.rep, c.rubricVariant, c.callDate, c.transcriptUrl,
+      c.callQualityScore, c.askedForClose, c.objectionsHandled, c.frameworkExplained,
+      c.primaryFailureMode, c.rubricVersion, now
+    ];
+  });
+  baselineSheet.getRange(2, 1, rows.length, REGRESSION_BASELINE_HEADERS.length).setValues(rows);
+
+  var repCounts = {};
+  sample.forEach(function (c) { repCounts[c.rep] = (repCounts[c.rep] || 0) + 1; });
+  var repSpread = Object.keys(repCounts).sort().map(function (rep) { return rep + ':' + repCounts[rep]; }).join(', ');
+
+  log_('freezeRegressionSet_: froze ' + rows.length + ' call(s) as the known-good baseline in "' +
+    REGRESSION_BASELINE_SHEET_NAME + '" (' + repSpread + '). Run previewRegressionDrift() next.');
+  return { frozen: rows.length, repSpread: repCounts };
+}
+
+/** Run this FIRST from the editor — logs any drift found, never writes anywhere (not the frozen baseline, not the live Sales Call Log). */
+function previewRegressionDrift() {
+  return checkRegressionDriftImpl_(/*forcePreview=*/true);
+}
+
+/** Trigger target (not yet installed — see the section header above). Gated by REGRESSION_DRIFT_CONFIG.ENABLED, same pattern as runRandomCalibrationSample. */
+function checkRegressionDrift() {
+  RUN_TAG = 'checkRegressionDrift';
+  if (!REGRESSION_DRIFT_CONFIG.ENABLED) {
+    log_('checkRegressionDrift: REGRESSION_DRIFT_CONFIG.ENABLED is false, skipping. Run previewRegressionDrift() instead.');
+    return null;
+  }
+  return checkRegressionDriftImpl_(/*forcePreview=*/false);
+}
+
+/**
+ * Re-scores every frozen baseline call (the "Regression Baseline" tab)
+ * through the SAME rubric variant that produced its frozen score
+ * (scoreTranscriptByVariant_, using each row's own stored Rubric Variant —
+ * never re-derived from the row's current Rep, which could theoretically
+ * drift if the sheet were hand-edited), and diffs the fresh result against
+ * the frozen one via diffRegressionResult_. Purely a read/compare: never
+ * rewrites the frozen baseline (only freezeRegressionSet_ does that) and
+ * never touches the live "Sales Call Log" — no real scored row is ever
+ * overwritten by this, by design (per the task: drift-checking must never
+ * corrupt real scoring history). In preview mode (forcePreview=true, or
+ * whenever REGRESSION_DRIFT_CONFIG.ENABLED is false) this only logs; once
+ * enabled, a real (non-preview) run additionally sends a loud ops alert if
+ * any drift is found, same escalation pattern runWeeklyCalibration() already
+ * uses for the 80%-agreement gate.
+ */
+function checkRegressionDriftImpl_(forcePreview) {
+  RUN_TAG = 'checkRegressionDriftImpl_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var baselineSheet = ss.getSheetByName(REGRESSION_BASELINE_SHEET_NAME);
+  if (!baselineSheet) {
+    log_('checkRegressionDrift: no "' + REGRESSION_BASELINE_SHEET_NAME + '" tab found — run freezeRegressionSet() first.');
+    return null;
+  }
+  var lastRow = baselineSheet.getLastRow();
+  if (lastRow < 2) {
+    log_('checkRegressionDrift: "' + REGRESSION_BASELINE_SHEET_NAME + '" has no frozen rows — run freezeRegressionSet() first.');
+    return null;
+  }
+
+  var rows = baselineSheet.getRange(2, 1, lastRow - 1, REGRESSION_BASELINE_HEADERS.length).getValues();
+  var results = [];
+  var drifted = 0, failed = 0;
+
+  rows.forEach(function (row) {
+    var prospectName = row[0], rep = row[1], rubricVariant = row[2], callDate = row[3],
+      transcriptUrl = row[4], frozenScore = row[5], frozenAskedForClose = !!row[6],
+      frozenObjectionsHandled = !!row[7], frozenFrameworkExplained = !!row[8],
+      frozenPrimaryFailureMode = row[9];
+
+    try {
+      var fileId = extractDriveFileId_(transcriptUrl);
+      var text = getTranscriptText_(DriveApp.getFileById(fileId));
+      var ctx = {
+        rep: rep,
+        prospectName: prospectName,
+        callType: 'QC', // not stored on the baseline row; only affects Bens'/legacy call-role framing, not the comparison fields checked here
+        source: 'regression-drift-check',
+        callDate: callDate,
+        transcriptText: text
+      };
+      var result = scoreTranscriptByVariant_(rubricVariant, ctx);
+      var freshObjectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
+      var freshFrameworkFields = deriveFrameworkFields_(result);
+
+      var diffs = diffRegressionResult_(
+        {
+          callQualityScore: frozenScore, askedForClose: frozenAskedForClose,
+          objectionsHandled: frozenObjectionsHandled, frameworkExplained: frozenFrameworkExplained,
+          primaryFailureMode: frozenPrimaryFailureMode
+        },
+        {
+          callQualityScore: result.call_quality_score, askedForClose: result.flags.asked_for_close,
+          objectionsHandled: freshObjectionsHandled, frameworkExplained: freshFrameworkFields.explained,
+          primaryFailureMode: result.primary_failure_mode || 'none'
+        }
+      );
+
+      if (diffs.length) {
+        drifted++;
+        log_('  DRIFT DETECTED — "' + prospectName + '" (' + rep + ', ' + rubricVariant + ' rubric): ' + diffs.join('; '));
+      } else {
+        log_('  OK — "' + prospectName + '" (' + rep + ', ' + rubricVariant + ' rubric): no drift.');
+      }
+      results.push({ prospectName: prospectName, rep: rep, diffs: diffs });
+    } catch (e) {
+      failed++;
+      log_('  FAILED to re-score "' + prospectName + '" for the drift check: ' + e);
+    }
+    Utilities.sleep(300); // be polite to the proxy, same courtesy every other batch judge loop in this file uses.
+  });
+
+  log_('checkRegressionDrift done — ' + rows.length + ' frozen call(s) checked, ' + drifted +
+    ' drifted, ' + failed + ' failed to re-score. ' +
+    (drifted > 0
+      ? 'MODEL BEHAVIOR MAY HAVE CHANGED — review the drifted row(s) above before trusting new scores.'
+      : 'No drift detected — model output on these calls still matches the frozen baseline.'));
+
+  if (drifted > 0 && !forcePreview) {
+    sendOpsAlert_('Regression drift detected in Kimi judge output',
+      drifted + ' of ' + rows.length + ' frozen regression calls now score differently than their frozen ' +
+      'baseline (call_quality_score moved by more than 1, a boolean flag flipped, or Primary Failure Mode ' +
+      'changed). This can mean the Moonshot-side model changed, or a subtle prompt-sensitivity issue — see ' +
+      'the Apps Script execution log for exactly which calls and fields drifted, and Phase2_CallGradingSOP.md ' +
+      'for what to do next.');
+  } else if (drifted > 0) {
+    log_('  (preview run — an ops alert would be sent here once REGRESSION_DRIFT_CONFIG.ENABLED is true and this runs for real)');
+  }
+
+  return { checked: rows.length, drifted: drifted, failed: failed, results: results };
 }
