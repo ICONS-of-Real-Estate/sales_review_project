@@ -11,9 +11,9 @@ Ran in the background while the main conversation continued elsewhere. Kris appr
 
 **Neither feature is live yet — both need a human to finish the rollout, same "built but not yet installed" pattern `RANDOM_CALIBRATION_CONFIG` followed before it shipped last session:**
 
-1. **Deploy first** (this sandbox has no `.clasp.json`, so this session could not push): `git pull` + `clasp push` on whichever machine holds `.clasp.json` (see `CLAUDE.md`'s deploy section).
-2. **Rubric Version column**: after deploying, re-run `migrateAddPrimaryFailureModeColumn()` from the Apps Script editor (despite the name, it's the general "catch the sheet up to `SALES_CALL_LOG_HEADERS`" migration) to add the new trailing `Rubric Version` column to the live "Sales Call Log" sheet. Nothing else needed — every scoring code path already writes it once the column exists; rows scored before this reads as blank ("no signal"), same backward-compatible pattern as every prior column addition, and are **not** backfilled.
-3. **Frozen regression set**: after deploying, from the Apps Script editor:
+1. **Deploy — confirmed done.** `git pull` + `clasp push` run.
+2. **Rubric Version column — confirmed live.** `migrateAddPrimaryFailureModeColumn()` (`Phase2_CallScoring.gs`) re-run and confirmed: `Added missing header(s): Rubric Version (column 26)`. Every scoring code path now writes it going forward; rows scored before this read as blank ("no signal"), same backward-compatible pattern as every prior column addition, and are **not** backfilled. Nothing else needed for this piece.
+3. **Frozen regression set — still needs a human.** From the Apps Script editor:
    - Run `freezeRegressionSet()` — creates the "Regression Baseline" tab and picks the initial ~12-call baseline. Confirm the tab looks right (real transcript URLs, sensible spread across reps).
    - Run `previewRegressionDrift()` — logs any drift found against real transcripts, writes/emails nothing. Eyeball this against a couple of the actual transcripts before trusting it.
    - Only then flip `REGRESSION_DRIFT_CONFIG.ENABLED` to `true` in the code (commit → push → `clasp push`, never edit the flag live in the browser editor — see `CLAUDE.md`). This makes a real (non-preview) `checkRegressionDrift()` run send an ops alert if drift is found, on top of logging.
