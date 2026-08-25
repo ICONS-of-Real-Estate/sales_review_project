@@ -1280,6 +1280,99 @@ function patchObjectionPlaybookBensEdits() {
   patchObjectionPlaybookBensEdits_25aug_();
 }
 
+/**
+ * NOT a curated playbook like Bens' (that took a human reviewing 43 real
+ * calls to build) — this is real starting MATERIAL for one: every Joana/
+ * Sean call THIS WEEK (getWeekBounds_'s "most recently completed Mon-Sun
+ * week," same window the scorecard emails use) where the scoring pipeline's
+ * Primary Failure Mode shows an objection was actually raised and missed
+ * (objections_missed / both / multiple), with the AI's own feedback summary
+ * for that call. Someone still has to turn this into an actual technique —
+ * that step isn't automated, same as it wasn't for Bens either. Appends new
+ * rows to the Objection Playbook tab, never touches Bens' existing rows.
+ * Safe to re-run — dedupes on prospect+date so re-running this week doesn't
+ * stack duplicate rows for the same call.
+ */
+function seedJoanaSeanObjectionRawData() {
+  RUN_TAG = 'seedJoanaSeanObjectionRawData';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var logSheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!logSheet) { log_('No Sales Call Log tab found.'); return; }
+  var playbookSheet = ss.getSheetByName(OBJECTION_PLAYBOOK_SHEET_NAME);
+  if (!playbookSheet) { log_('No "' + OBJECTION_PLAYBOOK_SHEET_NAME + '" tab — run setupObjectionPlaybook() first.'); return; }
+
+  var col = getValidatedColumnMap_(logSheet);
+  var lastRow = logSheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
+  var rows = logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var week = getWeekBounds_(new Date(), tz);
+  var OBJECTION_FAILURE_MODES = ['objections_missed', 'both', 'multiple'];
+
+  var candidates = [];
+  rows.forEach(function (row) {
+    var rep = row[col['Rep'] - 1];
+    if (rep !== 'Joana' && rep !== 'Sean') return;
+    var callDate = row[col['Call Date'] - 1];
+    if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
+    var mode = String(row[col['Primary Failure Mode'] - 1] || '');
+    if (OBJECTION_FAILURE_MODES.indexOf(mode) === -1) return;
+    candidates.push({
+      rep: rep,
+      prospectName: row[col['Prospect Name'] - 1],
+      callDate: callDate,
+      feedback: row[col['AI Feedback Summary'] - 1]
+    });
+  });
+
+  if (!candidates.length) {
+    log_('No Joana/Sean calls this week flagged for a missed objection — nothing to seed.');
+    return;
+  }
+
+  var playbookLastRow = playbookSheet.getLastRow();
+  var existing = playbookLastRow > 1
+    ? playbookSheet.getRange(2, 1, playbookLastRow - 1, OBJECTION_PLAYBOOK_HEADERS.length).getValues()
+    : [];
+  var existingKeys = {};
+  var maxNum = 0;
+  existing.forEach(function (r) {
+    maxNum = Math.max(maxNum, Number(r[0]) || 0);
+    existingKeys[normalize_(String(r[1]))] = true; // dedupe on the Objection column's own text, built the same way below
+  });
+
+  var suggestedResponseCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Suggested Response') + 1;
+  var nextNum = maxNum + 1;
+  var newRows = [];
+  candidates.forEach(function (c) {
+    var label = '[' + c.rep + '] Objection missed — ' + c.prospectName + ' (' +
+      Utilities.formatDate(c.callDate, tz, 'dd/MM') + ')';
+    if (existingKeys[normalize_(label)]) return; // already seeded, don't duplicate
+    newRows.push([
+      nextNum++,
+      label,
+      '', // Times Seen — n/a, this is one real instance, not a tallied pattern yet
+      c.prospectName + ', ' + Utilities.formatDate(c.callDate, tz, 'dd/MM/yyyy'),
+      'Not yet analyzed — raw call flagged by the scoring pipeline this week.',
+      'Not yet written — review the AI feedback below and the real transcript before drafting a technique.',
+      'Not yet written.',
+      'AI Feedback Summary from this call: ' + (c.feedback || '(none)'),
+      'Draft',
+      '',
+      ''
+    ]);
+  });
+
+  if (!newRows.length) {
+    log_('All flagged Joana/Sean calls this week are already seeded — nothing new to add.');
+    return;
+  }
+  playbookSheet.getRange(playbookLastRow + 1, 1, newRows.length, OBJECTION_PLAYBOOK_HEADERS.length).setValues(newRows);
+  log_('Seeded ' + newRows.length + ' raw objection-miss row(s) for Joana/Sean this week (' +
+    week.start + ' to ' + week.end + '). Tomás still needs to turn these into real techniques.');
+}
+
 // ---------------------------------------------------------------------------
 // "Manual Review Guide" tab — companion to the above: Kris's ask (25/08/2026)
 // for instructions Tomás can follow to review calls and grade them or log
