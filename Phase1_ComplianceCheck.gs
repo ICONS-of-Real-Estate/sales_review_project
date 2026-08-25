@@ -1674,6 +1674,342 @@ function sendJoanaPlaybookAsGoogleDoc() {
     CONFIG.KRIS_EMAIL + ').');
 }
 
+/** Shared by the Bens/Sean send functions below (Joana's above predates this and isn't worth risking a refactor of already-sent code for). */
+function appendObjectionPattern_(body, p) {
+  body.appendParagraph(p.title).setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  if (p.freq) body.appendParagraph(p.freq).setItalic(true);
+  if (p.examples && p.examples.length) {
+    body.appendParagraph('Real examples').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    p.examples.forEach(function (ex) {
+      var para = body.appendParagraph(ex[0] + ' — ' + ex[1]);
+      para.editAsText().setBold(0, ex[0].length - 1, true);
+    });
+  }
+  if (p.why) {
+    body.appendParagraph('Why it happens').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    body.appendParagraph(p.why);
+  }
+  if (p.technique) {
+    body.appendParagraph('Technique').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    body.appendParagraph(p.technique);
+  }
+  if (p.say) {
+    body.appendParagraph('Suggested response').setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    var sayPara = body.appendParagraph(p.say);
+    sayPara.editAsText().setBold(true).setItalic(true);
+  }
+  if (p.note) body.appendParagraph((p.noteLabel || 'Coaching note') + ': ' + p.note).setItalic(true);
+}
+
+/** Shared by the Bens/Sean send functions below. */
+function sendPlaybookDocEmail_(repLabel, docUrl, caseSummary) {
+  var emailBody = 'Tomás,\n\n' + repLabel + '\'s objection-handling playbook, v1 — built from ' + caseSummary +
+    '.\n\n' + docUrl + '\n\nAhead of today\'s session.';
+  guardedSend_(CONFIG.TOMAS_EMAIL, repLabel + ' — Objection Handling Playbook (v1)', emailBody, {
+    cc: CONFIG.KRIS_EMAIL,
+    name: 'Training Prep Bot'
+  }, 2);
+}
+
+/**
+ * URGENT, on-demand (25/08/2026): real Google Doc version of Bens' playbook,
+ * emailed to Tomás and Kris, same mechanism as sendJoanaPlaybookAsGoogleDoc.
+ * Objections #1/#2/#4 use Tomás's OWN edited versions (from his shared
+ * PDF/Doc, already patched into the "Objection Playbook" sheet tab via
+ * patchObjectionPlaybookBensEdits) rather than the stale original .md text
+ * — #2's old scripted response is fully replaced, not appended to, matching
+ * that he crossed it out in his own copy. Objections #3/#5-#9 and the "what
+ * good already looks like" example are unchanged from Objection_Handling_Playbook.md.
+ */
+function sendBensPlaybookAsGoogleDoc() {
+  RUN_TAG = 'sendBensPlaybookAsGoogleDoc';
+  var doc = DocumentApp.create('Objection Handling Playbook — Bens (v1, 25aug2026)');
+  var body = doc.getBody();
+  body.setMarginTop(50).setMarginBottom(50).setMarginLeft(60).setMarginRight(60);
+
+  body.appendParagraph('Objection Handling Playbook — Bens').setHeading(DocumentApp.ParagraphHeading.TITLE);
+  body.appendParagraph('v1 — built from the first batch of 43 Bens recordings (May–July 2026), scored ' +
+    '17/08/2026. Objections #1/#2/#4 reflect Tomás\'s own live edits. Tomás approves changes here before ' +
+    'they\'re used in training.').setItalic(true);
+
+  var summary = body.appendTable([
+    ['#', 'Objection', 'Seen', 'Worst case'],
+    ['1', '"I\'m too busy / not right now"', '6 of 43', 'David Leventhal, Kade Phillips — lead went cold, no placeholder date secured'],
+    ['2', '"What does this cost / how does it work?"', '4 of 43', 'Barinder Maan — asked directly, got no answer at all'],
+    ['3', '"That\'s too expensive"', '2 of 43', 'Tennitia Wilson — real cost concern, answered with a vague deflection'],
+    ['4', '"I already have my own podcast/platform"', '4 of 43', 'Jeff Goodman, Thom Tillier — direct competing-solution objection, unaddressed'],
+    ['5', '"I wouldn\'t know where to start"', '1 of 43', 'Katie Uei — reassured, not answered'],
+    ['6', '"I don\'t know this platform — is it legit?"', '1 of 43', 'Phuong Phan — joked past, not addressed'],
+    ['7', '"This doesn\'t fit how I run my business"', '2 of 43', 'Rob Bonecutter, Thom Tillier — generic pitch, not tailored'],
+    ['8', '"I can tell this is a sales pitch"', '1 of 43', 'Dana Hindman-Allen — highest severity call in the batch'],
+    ['9', 'Flat "not interested," no reason given', '1 of 43', 'Carolyn Triebold — no real ask was even made']
+  ]);
+  summary.getRow(0).editAsText().setBold(true);
+
+  body.appendParagraph('Objection #1 is by far the most common — more than a third of calls had some form ' +
+    'of "not now." The single biggest coaching lever: turning "not now" into a scheduled placeholder instead ' +
+    'of an open-ended "I\'ll reach out."').setBold(true);
+
+  var patterns = [
+    {
+      title: '1. "I\'m too busy / not right now"',
+      examples: [
+        ['Whitney Lohr', '"I don\'t have the capacity for it right now... towards the end of summer"'],
+        ['Jim Atkinson', '"I don\'t know if I got time for that"'],
+        ['Kade Phillips', '"right now it\'s not really on my radar... working on this Zillow contract"'],
+        ['David Leventhal', '"once I get everything off my plate... just not now"'],
+        ['Heather Gill', '"I don\'t mind having the conversation... but it\'s not anything I can do right now"'],
+        ['Cory Boldroff', '"I have no bandwidth"']
+      ],
+      why: 'Usually genuine — high-volume producers with real calendar pressure. Sometimes a polite deflection because the value of a 15-minute call hasn\'t been made concrete yet.',
+      technique: '1. Acknowledge and empathise — we only work with busy people. 2. Deconstruct what "busy" actually means for them. 3. Let them know the real commitment — average 1h/week (if still pushing back, use the Hormozi line). 4. Pitch the Podcast Strategy Call — understand their plan and see how a podcast fits (if still pushing, agree a follow-up date).',
+      say: '"Totally get it — everyone I talk to on this show is busy for a reason. That\'s actually why this is a 15-minute conversation, not a project. Rather than leave it open, let\'s just grab a placeholder for [1-2 days out] — if it\'s still not the right moment when we get there, we\'ll push it again, no pressure at all."',
+      note: 'If the prospect still declines a specific placeholder after this, that\'s a real "not now" — accept it, but never accept the first "not now" as final without one attempt to convert it into a date.'
+    },
+    {
+      title: '2. "What does this cost / how does monetization actually work?"',
+      examples: [
+        ['Barinder Maan', '"How do you guys monetize it on a money basis?... who controls it, what is the monetary fees attached to it?" — got no answer'],
+        ['Michelle Reifel', '"would you be sending a marketing budget?"'],
+        ['Gary Lanham', '"Is there a way to monetize that?"'],
+        ['Dana Hindman-Allen', '"send me a price breakdown... before I take people\'s time"']
+      ],
+      why: 'Legitimate diligence — experienced business owners want to know roughly what they\'re being asked to invest before booking a second call.',
+      technique: 'Directional answer, not a full punt. Fully deferring every pricing question to Tomás reads as evasive to a sharp prospect.',
+      say: '- Accept and joke about the price question — "I\'m not taking your money today," or go straight into: "As much as I would like to tell you pricing right now, and you would probably want to pay me and get started…" - Clarify we like to show the value first before the $, so they can see the impact. - Our network manager will do that and show you the investment. - I promise it\'s not something that is going to scare you. - Book Strategy Call.',
+      noteLabel: 'Note', note: 'Tomás replaced the old scripted quote here entirely — this is the current, live version.'
+    },
+    {
+      title: '3. "That\'s too expensive"',
+      examples: [
+        ['Tennitia Wilson', '"the costs were prohibitive... more than my car note and insurance put together... in sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen"'],
+        ['Dana Hindman-Allen', 'wanted pricing before committing more time — same underlying concern']
+      ],
+      why: 'Real budget sensitivity, especially for 1099 commission-only agents without steady income or benefits.',
+      technique: 'Acknowledge, then quantify. Never acknowledge-then-deflect. Tennitia\'s call is the textbook example of what NOT to do: "maybe we can offer you something that fits" with no actual number.',
+      say: '"That\'s fair, and I\'d rather you know the real number now than find out later. For context, [X] is roughly the cost of [one small piece of marketing spend / a fraction of a single commission check], and agents in your market have seen [concrete result]. If that math doesn\'t work for you, no hard feelings — but let\'s at least get you real numbers from Tomás before deciding either way."'
+    },
+    {
+      title: '4. "I already have my own podcast / marketing company / platform"',
+      examples: [
+        ['Jeff Goodman', 'hosted his own 130-episode podcast'],
+        ['Bill Gross', '"I\'m pretty satisfied with what I\'m doing now, the system kind of works for me"'],
+        ['Thom Tillier', '"I\'m looking to create an unedited podcast because I don\'t have time for editing, nor do I want to pay for editing"'],
+        ['Steve Houck', 'already pays a marketing company for video/editing — never raised but a near-certain future objection']
+      ],
+      why: 'Successful producers often already run some content operation and don\'t immediately see the incremental value of a second one.',
+      technique: 'Don\'t compete with what they have; position as removing a cost from it.',
+      say: 'If the podcast is no longer active: mention it before they do, ask how the experience was, ask why it stopped, offer to revive it and book a Strategy Call. If the podcast is active: "Awesome! How is it going? Have you gotten some results from it? Are you producing this in-house or working with another agency?" — offer the Strategy Call as a free brainstorming session with the #1 Real Estate Podcast Network. Then: "That\'s great that you\'re already doing [X] — a lot of the agents we work with are in the same spot. The difference usually isn\'t replacing what you\'re doing, it\'s taking [the specific pain point they mentioned] off your plate so you can focus on [their actual business]. Worth 15 minutes to see if that gap applies to you?"'
+    },
+    {
+      title: '5. "I wouldn\'t know where to start / what if I\'m not good at this"',
+      examples: [['Katie Uei', '"I would not have any idea where to start... what if I run out of topics? Maybe I\'m boring or something"']],
+      why: 'Podcasting is unfamiliar territory; the prospect doubts they have enough "content" in them.',
+      technique: 'Concrete process proof, not cheerleading. Bens\'s actual response here was pure reassurance, which doesn\'t resolve a capability doubt.',
+      say: '"That\'s the number one thing people worry about, which is exactly why we don\'t leave it to you — we supply the questions, the structure, even topic ideas based on what\'s working in your market. You just talk about your business the way you already do with clients every day."'
+    },
+    {
+      title: '6. "I don\'t know this platform — is this legit?"',
+      examples: [['Phuong Phan', '"all the services I have heard of, but Riverside is something I have not heard... I was skeptical, I\'m like who are you... I don\'t want to trap in something I don\'t know"']],
+      why: 'An unfamiliar brand or tool name triggers real skepticism, especially on a cold-approached call.',
+      technique: 'Never joke past a trust objection. Bens\'s actual response was humor, which reads as more evasive, not less.',
+      say: '"Totally fair to be cautious — here\'s [company website/LinkedIn], and here are a couple of agents in a similar market you\'re welcome to look up, or even reach out to directly, before you commit any more time."'
+    },
+    {
+      title: '7. "This doesn\'t fit how I actually run my business"',
+      examples: [
+        ['Rob Bonecutter', 'stated near-term goal was "bringing more agents into the company... through social media," i.e. recruiting, not personal brand growth'],
+        ['Thom Tillier', 'specifically wants unedited content with no paid editing — a direct mismatch with what ICONS sells']
+      ],
+      why: 'The generic "content and authority" pitch doesn\'t map to what the prospect actually said their #1 priority is.',
+      technique: 'Ask their current #1 growth lever before pitching, then tailor to it. Rob\'s call is the best partial example of this being done right.',
+      say: '"You mentioned your focus right now is more on [recruiting / their stated priority] than personal brand — that makes sense. A lot of our partners actually use the podcast that way too: [a concrete example tied to their stated goal]. Want me to have Tomás speak specifically to that angle instead of the general pitch?"'
+    },
+    {
+      title: '8. "I can tell this is a sales pitch"',
+      examples: [['Dana Hindman-Allen', 'highest-severity call in the whole batch — "I knew you were selling me on a podcast. I knew you were the whole time... pretty sharp hooking right here."']],
+      why: 'A savvy, high-profile prospect recognizes the interview-into-upsell structure and names it directly, testing whether Bens will be straight with her.',
+      technique: 'Own it plainly, don\'t get defensive or laugh it off. Bens\'s actual response ("well, good for you") did neither.',
+      say: '"You got me — yeah, this interview is genuinely great content for you either way, and if it\'s a fit, there\'s a paid option on top of it. I\'d rather be upfront about that than pretend otherwise. Want the two-minute version of what that actually is? No pressure either way."'
+    },
+    {
+      title: '9. Flat "not interested," no reason given',
+      examples: [['Carolyn Triebold', 'Bens never actually made the real ask here (only a soft "haven\'t you thought about social media" trial-close question), and when she said "not something I\'m interested in," he accepted it and moved to wrap up.']],
+      why: 'Sometimes a genuine no; sometimes a reflexive deflection to a soft, opinion-style question rather than a real, direct ask.',
+      technique: 'Probe once, and always make the actual ask. A trial-close question isn\'t a real ask.',
+      say: '"No worries at all — can I ask, is it more that podcasting itself isn\'t your thing, or just not a priority right now? [listen for the real reason] Either way, would you be open to a quick, no-pressure look at what it actually involves, just so you have the full picture for later?"'
+    }
+  ];
+  patterns.forEach(function (p) { appendObjectionPattern_(body, p); });
+
+  body.appendParagraph('What good already looks like').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Ben Sweet, 2026-07-02 — the model answer in this entire batch. When Ben asked ' +
+    'directly, "Do you have anyone on there that are your current customers that are just really blown up as ' +
+    'a result of your podcasting?", Bens gave a specific, quantified case study: a client who was stuck at ' +
+    '$10M in production for years, used her podcast episode to help land a 330-house land development deal. ' +
+    'That\'s the standard every other objection response above should be trained toward.');
+
+  doc.saveAndClose();
+  var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
+  sendPlaybookDocEmail_('Bens', docUrl, 'the first batch of 43 real recordings, with Tomás\'s own latest edits on #1/#2/#4');
+  log_('sendBensPlaybookAsGoogleDoc: created ' + docUrl + ' and emailed ' + CONFIG.TOMAS_EMAIL + ' (cc ' +
+    CONFIG.KRIS_EMAIL + ').');
+}
+
+/**
+ * URGENT, on-demand (25/08/2026): real Google Doc version of Sean's
+ * playbook, emailed to Tomás and Kris, same mechanism as the Bens/Joana
+ * versions above. Content unchanged from Objection_Handling_Playbook_Sean.md
+ * (v1 + v2 batches, 27 real calls) — includes the cross-cutting patterns
+ * and "what good looks like" sections, not just the 10 numbered objections.
+ */
+function sendSeanPlaybookAsGoogleDoc() {
+  RUN_TAG = 'sendSeanPlaybookAsGoogleDoc';
+  var doc = DocumentApp.create('Objection Handling Playbook — Sean (v1+v2, 25aug2026)');
+  var body = doc.getBody();
+  body.setMarginTop(50).setMarginBottom(50).setMarginLeft(60).setMarginRight(60);
+
+  body.appendParagraph('Objection Handling Playbook — Sean').setHeading(DocumentApp.ParagraphHeading.TITLE);
+  body.appendParagraph('v1 (12 calls) + v2 (15 more calls, 18/08/2026) — 27 real calls total. Tomás approves ' +
+    'changes here before they\'re used in training.').setItalic(true);
+
+  var summary = body.appendTable([
+    ['#', 'Objection', 'Seen', 'Worst case'],
+    ['1', 'Budget / needs money freed up first', '7 of 12', 'Roxy Miles — raised twice, never resolved, the one call where even the fallback (2nd call w/ Tomás) failed'],
+    ['2', 'Needs a third party\'s approval', '5 of 12', 'Elijah Castelli Pt.1 — surfaced only at the very close, no plan'],
+    ['3', 'Timing / wants to think it over', '5 of 12', 'Nicole Beauchamp Pt.2 — accepted the stall, pivoted to booking Tomás without finding out what she needed to think about'],
+    ['4', 'ROI / proof / metrics skepticism', '2 of 12', 'Kodie Smiley — rep didn\'t know his own product\'s metrics, punted to the next call'],
+    ['5', 'Content or personal-brand fit concern', '3 of 12', 'Marcus Jackson — "it\'ll be very smooth" with no example'],
+    ['6', 'Compliance / regulatory concern', '1 of 12', 'Lei McDonald Pt.2 — mortgage-broker sponsorship question dropped entirely'],
+    ['7', 'Minor pricing friction (a fee, not the core price)', '1 of 12', 'Elijah Castelli Pt.2 — deflected rather than answered plainly'],
+    ['8', 'Scheduling / logistics request', '1 of 12', 'Steve Robe — the one objection in this batch Sean handled well'],
+    ['9', 'Comparing against a competitor', 'v2', 'Deme Mekras — actively comparing to a competing service'],
+    ['10', 'Trust / a prior bad experience with a similar vendor', 'v2', 'Bently Perry — a $25k horror story went unanswered']
+  ]);
+  summary.getRow(0).editAsText().setBold(true);
+
+  body.appendParagraph('The single biggest coaching lever in this batch: objections_overcome and ' +
+    'discovery_adequate were BOTH false in all 12 of 12 v1 calls, with no exceptions — including the one ' +
+    'call that closed. Every objection got surfaced; none got answered with something concrete and ' +
+    'lead-specific.').setBold(true);
+
+  var patterns = [
+    {
+      title: '1. Budget / needs money freed up first',
+      examples: [
+        ['William Schlunaker', '"$300 a month for nothing" on one failed vendor'],
+        ['Roxy Miles', '"it really depends on like the investment, like long-term" — raised twice'],
+        ['Teresa Anderson (v2)', 'most severe case: "my husband\'s stage four... cancer... each treatment costs me $25,000"']
+      ],
+      why: 'Real estate agents are largely 1099 commission-only — cash flow is genuinely lumpy.',
+      technique: 'Get the real number before discounting. In every one of these calls Sean\'s response was a discount or a generic anecdote — never the lead\'s own numbers.',
+      say: '"What\'s the number one thing you\'re doing for marketing right now, and roughly what does that cost you a month? [...] So you\'re already spending $X on that — this replaces or stacks on top of it, and here\'s what it\'s produced for someone in a similar spot: [matching case study]. One closing pays for a year or more of this."'
+    },
+    {
+      title: '2. Needs a third party\'s approval (partner, spouse, coach, investor)',
+      examples: [
+        ['Elijah Castelli Pt.1', '"I want to make sure that I got Lindsay\'s approval on it... there\'ll be a little bit of a fight on it"'],
+        ['Teresa Anderson (v2)', '"I cannot make the decision on my own until I talk to him" — correctly routed to a locked-in Tomás call']
+      ],
+      why: 'Many of these leads run their business jointly — the purchase decision genuinely isn\'t theirs alone.',
+      technique: 'Ask who else is involved before pitching, not after the close attempt. Steve Robe\'s call is the model: Sean proactively invited the coach onto the next call.',
+      say: '"Who else needs to be comfortable with this before you move forward?" — asked during discovery. Once known: loop them into this call or a quick follow-up, and lock a specific date/time before ending the call.'
+    },
+    {
+      title: '3. Timing / wants to think it over',
+      examples: [
+        ['Parisa Daily', '"I just want to take some time to mull it over" — Sean asked the right diagnostic question here: the model to copy'],
+        ['Julio Lopez (v2, repeat offender)', 'same unresolved stall on a follow-up call weeks later, "I need to check on the... programs" — never asked what programs']
+      ],
+      why: 'Sometimes a genuine need for more information; sometimes a polite way of not naming the real objection.',
+      technique: 'Isolate before accepting — don\'t take "let me think about it" at face value.',
+      say: '"What specifically do you need to think through — is it the investment, the timing, or something about how this works?" Answer that thing concretely, then lock a specific day/time before hanging up.',
+      note: 'When the same isolation question fails twice with the same lead, change the approach entirely on attempt three, not repeat it a third time.'
+    },
+    {
+      title: '4. ROI / proof / metrics skepticism',
+      examples: [['Kodie Smiley', '"any... averages of subscribers... metrics?" — answered "Tomas will be able to show you on our next Zoom"']],
+      why: 'A reasonable, sophisticated question from a lead deciding whether the mechanism actually works.',
+      technique: 'Know the real numbers cold; don\'t punt to Tomás. Deferring reads as not knowing your own product.',
+      say: '"89% of clients see results in the very first month, and our renewal rate is 92% — here\'s a specific example close to your situation: [case study]."'
+    },
+    {
+      title: '5. Content or personal-brand fit concern',
+      examples: [
+        ['Marcus Jackson', 'mixing existing home-tour content with new educational content — "it\'ll be very smooth," no example'],
+        ['Lei McDonald Pt.2', 'this one Sean handled well, with a real number: ~$50 for a mic, lighting, and a camera']
+      ],
+      why: 'Established agents already have a content style and audience expectation.',
+      technique: 'Get specific, not reassuring — use the Lei McDonald answer as the template.',
+      say: 'For brand fit: "[Name] kept full script review and creative control the whole way through — here\'s exactly how that worked." For content mixing: describe the actual production workflow step.'
+    },
+    {
+      title: '6. Compliance / regulatory concern',
+      examples: [['Lei McDonald Pt.2', '"I think that mortgage brokers are not allowed to do that... They cannot pay" — Sean: "I\'m not particularly sure of the rules" and dropped it']],
+      why: 'A legitimate regulatory concern, not a stall.',
+      technique: 'Never leave a compliance question unanswered on the call. If you don\'t know, commit to a real deadline.',
+      say: '"That\'s a fair question I want to get exactly right for you rather than guess — let me get our compliance answer and have it back to you by [specific day], and let\'s put 15 minutes on the calendar then to close the loop."'
+    },
+    {
+      title: '7. Minor pricing friction (a fee, not the core price)',
+      examples: [['Elijah Castelli Pt.2', 'Lindsay: "Friday, man. That hurts, that $76" — Sean: "we can\'t get around it... it\'s not that much"']],
+      why: 'A small line-item that stands out because it appears right at the moment of payment.',
+      technique: 'State it as a fact with a number, not an apology.',
+      say: '"That\'s the standard card processing rate, not a markup we\'re adding — and once your first sponsor comes on, it\'s a rounding error against what they\'re covering."'
+    },
+    {
+      title: '8. Scheduling / logistics request',
+      examples: [['Steve Robe', 'wanted to batch-record several episodes around his travel schedule']],
+      why: 'A practical planning need, not resistance.',
+      technique: 'This is the one objection in the batch that needs no fix — it\'s the standard the rest of this playbook is aiming for: specific mechanism, not vague reassurance.',
+      say: '"Tell our team \'I want to do four podcasts on Wednesday,\' and you do them back to back" — plus the Riverside remote-recording app.'
+    },
+    {
+      title: '9. Comparing against a competitor / wants to shop around (v2)',
+      examples: [['Deme Mekras (4/27)', '"I actually just heard the ad, frankly, on Friday" (a competing service) — still needs to compare before deciding']],
+      why: 'A sophisticated, already-warm lead doing real due diligence, not a brush-off.',
+      technique: 'Get the specific competitor and answer with real numbers, not superiority claims. Never claim to already know you\'re better than something you haven\'t looked at.',
+      say: '"Which one — I want to actually look at what they offer so I\'m comparing apples to apples, not just telling you we\'re better." Then use real numbers already in hand against the specific thing they heard, and re-ask for the close.'
+    },
+    {
+      title: '10. Trust / a prior bad experience with a similar vendor (v2)',
+      examples: [['Bently Perry', '(lead\'s mother, who was paying) "My mom got billed $25,000. They did nothing." — Sean said nothing in response']],
+      why: 'A rational fear from someone who\'s been burned before, not a stall.',
+      technique: 'Never let a "we got burned before" story pass without a direct response. A contract\'s existence isn\'t the answer to a fear about accountability.',
+      say: '"I hear why that\'s scary — here\'s exactly what makes this different: [specific guarantee/check-in mechanism], and here\'s someone who had that same worry before working with us: [case study]."'
+    }
+  ];
+  patterns.forEach(function (p) { appendObjectionPattern_(body, p); });
+
+  body.appendParagraph('Cross-cutting patterns (v2 — bigger than any single objection type)').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('A. Almost never asks the lead to state their own numeric goal.').setBold(true);
+  body.appendParagraph('Seven v2 calls show the same gap: Sean pitches generic value without ever asking the ' +
+    'lead to name a number. Add as a required discovery question, before the pitch: "What\'s your production ' +
+    'goal for this year — a number, not a feeling?"');
+  body.appendParagraph('B. Gets partial progress, then stops pushing instead of locking down the rest.').setBold(true);
+  body.appendParagraph('Ward Frederick and Bently Perry both show this: Sean secures something, then folds — ' +
+    'no smaller ask, no second call with Tomás for the remaining decision. Drill: once there\'s a partial ' +
+    'yes, the next sentence should ask for a smaller concrete commitment or a specific Tomás booking — never ' +
+    '"no worries, talk soon."');
+  body.appendParagraph('C. A good score can hide zero live skill.').setBold(true);
+  body.appendParagraph('Dertrez Pressley closed cleanly with no objection raised at all — the lead arrived ' +
+    'already decided. Don\'t hold an easy, pre-sold win up as an example of good process — it teaches nothing ' +
+    'about how Sean handles a harder lead.');
+
+  body.appendParagraph('What good already looks like').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Deme Mekras, 5/1 (v2) — a clean, model close, top score of the whole project so far. ' +
+    'The one real objection (a pricing discrepancy) got a concrete, honest resolution, the close ask was ' +
+    'direct and led to an actual $1,899 charge, and the pitch was tied to specifics of his own business ' +
+    'rather than anything generic. Every "what good looks like" moment in this batch used a real number, a ' +
+    'named example, or a specific mechanism — exactly what was missing everywhere else.');
+
+  doc.saveAndClose();
+  var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
+  sendPlaybookDocEmail_('Sean', docUrl, '27 real calls across two batches (v1 + v2)');
+  log_('sendSeanPlaybookAsGoogleDoc: created ' + docUrl + ' and emailed ' + CONFIG.TOMAS_EMAIL + ' (cc ' +
+    CONFIG.KRIS_EMAIL + ').');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)
