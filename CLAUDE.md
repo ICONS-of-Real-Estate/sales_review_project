@@ -40,10 +40,20 @@ changes under `tools/dashboard/` to `main`:
 ```
 git pull
 tools/dashboard/.venv/bin/pip install -r tools/dashboard/requirements.txt   # only if deps changed
+sudo systemctl start sales-dashboard-sync.service    # ALWAYS first — see note below
 sudo systemctl restart sales-dashboard
 ```
 
-on the VPS. First-time setup is `bash tools/deploy/setup_dashboard.sh` —
+**Sync before restart, always, not just when a column was added.** The web
+app (`sales-dashboard.service`) and the SQLite migration (`sales-dashboard-
+sync.service`/`.timer`, its own 10-minute cadence) are separate processes.
+If the app restarts running new code before the next sync has run, and that
+code touches a column the live `dashboard.db` doesn't have yet, every page
+500s until a sync happens — hit for real 25/08/2026 when the framework-
+explanation dashboard work shipped. Forcing a sync first (`start
+sales-dashboard-sync.service`) is instant and always safe, whether or not
+this particular change touched the schema — cheaper than checking case by
+case. First-time setup is `bash tools/deploy/setup_dashboard.sh` —
 see `tools/dashboard/README.md` and `DASHBOARD_RESEARCH_REPORT.md` for the
 full setup and the reasoning behind it (this box also runs FASTPANEL for
 client sites, so the dashboard deliberately does not touch ports 80/443,

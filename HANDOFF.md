@@ -1,5 +1,29 @@
 # Handoff — 25/08/2026 (session 9 — third scored dimension: framework explanation)
 
+## -1. Real outage this session, found and fixed live — deploy-ordering hazard
+
+After the dashboard fast-follow (§2 below) deployed, the live dashboard 500'd on
+every page (`Internal Server Error`). Root cause: `sales-dashboard.service`
+(the web app) and `sales-dashboard-sync.service`/`.timer` (the SQLite
+migration, on its own 10-minute cadence) are separate processes. Deploy
+instructions said "restart the app" without also forcing a sync first — the
+app restarted running new code that unconditionally queries
+`flag_framework_explained` (`rep_summary()`, called on every page via the
+Overview route) before the next scheduled sync had migrated `dashboard.db`
+to actually have that column. Fixed live by running
+`sudo systemctl start sales-dashboard-sync.service` once by hand — no app
+restart needed after, since `app.py` opens a fresh SQLite connection per
+request.
+
+**Standing rule for any future dashboard change that touches `sync.py`'s
+schema** (adds/renames a column `app.py` then queries unconditionally):
+deploy order must be sync first, app restart second —
+`sudo systemctl start sales-dashboard-sync.service` before
+`sudo systemctl restart sales-dashboard`, not the reverse. This mirrors
+`setup_dashboard.sh`'s own first-time-setup ordering ("populate
+dashboard.db before the app starts") — the same hazard exists on every
+redeploy, not just initial setup, whenever a schema change ships.
+
 ## 0. What happened this session (read this first)
 
 Kris pushed back on Tomás's feedback that reps should also be drilled on explaining the podcast "framework" (how it recruits agents, builds #1-podcast-in-your-city authority, sells more houses) — not just objection handling and asking for the close. Investigation confirmed the pipeline genuinely didn't track this at all: not scored on real calls, not fed into the weekly scorecard's priority-to-improve, not extractable from Tomás's 1:1 training calls, not drillable in daily practice. Kris's own framing — "explaining the framework properly handles objections before they arise" — became the rubric grounding: the exact same SPIN "prevention beats handling" logic already used for objection handling, applied one step earlier in the call. Built end to end, all `.gs`-side (deliberately did **not** touch the dashboard — see §2 below):
