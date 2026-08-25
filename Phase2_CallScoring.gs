@@ -590,7 +590,7 @@ function scoreNewlyLoggedCalls_() {
           transcriptText: text
         };
         var result = scoreTranscript_(ctx);
-        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false);
+        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName);
         scored++;
         Utilities.sleep(300);
       } catch (e) {
@@ -614,10 +614,24 @@ function extractDriveFileId_(url) {
   return m[0];
 }
 
-/** Write scored fields onto an existing "Sales Call Log" row. */
-function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview) {
+/**
+ * Write scored fields onto an existing "Sales Call Log" row. prospectName is
+ * optional (only used to label the analytic-score shadow-check log line
+ * below) — omit it and the log line falls back to the row index.
+ */
+function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prospectName) {
   var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
   var manualReview = forceManualReview || result.manual_review_recommended;
+
+  // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) — logs
+  // a comparison only, never changes what's written below. This is the
+  // ongoing pipeline's only write path (scoreNewlyLoggedCalls_), which always
+  // scores exact_key rows under the shared rubric regardless of rep (see
+  // resolveRubricVariantForRow_), so the variant is always 'shared' here.
+  logAnalyticScoreShadowCheck_(prospectName || ('row ' + rowIndex), 'shared', result);
+  // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
+  // is ever flipped true, this is where the Call Quality Score write below
+  // would use the analytic score instead of result.call_quality_score.
 
   sheet.getRange(rowIndex, col['Lead Quality Verdict']).setValue(result.lead_quality.verdict);
   sheet.getRange(rowIndex, col['Call Quality Score']).setValue(result.call_quality_score);
@@ -1252,6 +1266,11 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
     var files = folder.getFiles();
 
     var scored = 0, skippedExisting = 0, skippedUnparsed = 0, failed = 0;
+    // Match Method is always 'fallback_heuristic' for this function (see the
+    // appendRow below) — resolveRubricVariantForRow_ on that basis correctly
+    // resolves 'bens' for the Bens caller and 'shared' for the Joana-legacy
+    // caller (scoreJoanaLegacyTranscripts passes no judgeFn override).
+    var analyticScoreVariant = resolveRubricVariantForRow_(repName, 'fallback_heuristic');
 
     while (files.hasNext()) {
       var file = files.next();
@@ -1277,6 +1296,13 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         var result = judgeFn(ctx);
         var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
         var frameworkFields = deriveFrameworkFields_(result);
+
+        // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
+        // logs a comparison only, never changes what's appended below.
+        logAnalyticScoreShadowCheck_(parsed.prospectName, analyticScoreVariant, result);
+        // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
+        // is ever flipped true, the "Call Quality Score" entry in the appendRow
+        // below would use the analytic score instead of result.call_quality_score.
 
         sheet.appendRow([
           parsed.prospectName,          // Prospect Name
@@ -1691,6 +1717,15 @@ function scoreSeanTranscripts() {
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
 
+          // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
+          // logs a comparison only, never changes what's appended below. This
+          // function only ever scores Sean's own transcripts through Sean's
+          // own variant.
+          logAnalyticScoreShadowCheck_(prospectName, 'sean', result);
+          // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
+          // is ever flipped true, the "Call Quality Score" entry in the appendRow
+          // below would use the analytic score instead of result.call_quality_score.
+
           sheet.appendRow([
             prospectName,                   // Prospect Name
             '',                              // Prospect Email — fill from Sean's tracker
@@ -1840,6 +1875,14 @@ function scoreJoanaTranscripts() {
           var result = scoreTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
+
+          // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
+          // logs a comparison only, never changes what's appended below. Joana
+          // has no dedicated variant — always scored under the shared rubric.
+          logAnalyticScoreShadowCheck_(prospectName, 'shared', result);
+          // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
+          // is ever flipped true, the "Call Quality Score" entry in the appendRow
+          // below would use the analytic score instead of result.call_quality_score.
 
           sheet.appendRow([
             prospectName,                    // Prospect Name
@@ -2246,6 +2289,15 @@ function scoreTomasTranscripts() {
           var result = scoreTomasTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
+
+          // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
+          // logs a comparison only, never changes what's appended below. This
+          // function only ever scores Tomás's own transcripts through Tomás's
+          // own variant.
+          logAnalyticScoreShadowCheck_(prospectName, 'tomas', result);
+          // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
+          // is ever flipped true, the "Call Quality Score" entry in the appendRow
+          // below would use the analytic score instead of result.call_quality_score.
 
           sheet.appendRow([
             prospectName,                     // Prospect Name
@@ -3086,6 +3138,150 @@ function scoreTranscriptByVariant_(variant, ctx) {
     case 'tomas': return scoreTomasTranscript_(ctx);
     default: return scoreTranscript_(ctx);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Analytic (deterministic) score rollup — QA_COACHING_RESEARCH_REPORT.md §1.4.
+// SHADOW MODE ONLY. Full writeup: Phase2_CallGradingSOP.md §7C.
+//
+// Today the model picks call_quality_score itself, in the same breath as the
+// booleans (flags/framework) it also outputs — nothing enforces the two
+// agree, so it's effectively an unvalidated, uncorrelated second judgment
+// happening in the same pass. This computes a SECOND, deterministic score
+// from those same booleans (a fixed weighted rollup, not another model call)
+// purely so it can be logged alongside the model's own number for comparison
+// — see ANALYTIC_SCORE_CONFIG below and logAnalyticScoreShadowCheck_. It
+// never changes what gets written to the "Sales Call Log" sheet's Call
+// Quality Score column while ANALYTIC_SCORE_CONFIG.ENABLED is false (the
+// shipped default) — see each write site (writeScoreToRow_ and the four
+// appendRow-based backfill functions) for the marked-but-not-built future
+// branch.
+//
+// Kris's explicit instruction: a missed close-ask is the #1 mistake and
+// must be weighted higher than any other single miss, in EVERY variant —
+// hence -2 for a close-ask miss (or, for Sean, the OR'd close-or-second-call
+// condition) vs. -1 for every other single deduction below.
+// ---------------------------------------------------------------------------
+
+var ANALYTIC_SCORE_CONFIG = {
+  // Shadow-mode only — see the file-header comment above this block and
+  // Phase2_CallGradingSOP.md §7C. Do NOT flip this true without a human
+  // first reviewing a real batch of shadow-check log deltas (see the SOP
+  // section for exactly what that review looks like) — and even once
+  // flipped, note it doesn't itself change any write site; see the marked
+  // "FUTURE" comment at each of the 5 write sites for the still-unbuilt step
+  // that would actually need to ship alongside flipping this.
+  ENABLED: false
+};
+
+/** Base-5-minus-deductions, clamped to the 1-5 scale every variant's call_quality_score already uses. */
+function clampAnalyticScore_(rawScore) {
+  return Math.max(1, Math.min(5, rawScore));
+}
+
+/**
+ * Shared rubric (buildJudgeSystemPrompt_/scoreTranscript_) — also the
+ * fallback for any variant string this dispatcher doesn't otherwise
+ * recognize, same default resolveRubricVariantForRow_/scoreTranscriptByVariant_
+ * already use for "shared or unrecognized."
+ */
+function computeSharedAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!flags.asked_for_close) deduction += 2;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  return clampAnalyticScore_(5 - deduction);
+}
+
+/**
+ * Sean (buildSeanJudgeSystemPrompt_/scoreSeanTranscript_) — Sean's funnel
+ * ends acceptably either by closing the money directly OR booking a second
+ * call with Tomás, so the #1-miss weight applies to neither having happened
+ * (an OR condition), not to asked_for_close alone. Also folds Sean's four
+ * discovery/goal-alignment extras into a single combined bucket, per spec,
+ * rather than four separate -1 deductions.
+ */
+function computeSeanAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!(flags.asked_for_close || flags.booked_second_call_with_tomas)) deduction += 2;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!(flags.discovery_adequate && flags.understood_leads_business &&
+        flags.captured_leads_goals && flags.tied_framework_to_goals)) deduction += 1;
+  return clampAnalyticScore_(5 - deduction);
+}
+
+/**
+ * Bens (buildBensJudgeSystemPrompt_/scoreBensTranscript_) — "asked_for_close"
+ * here means asked to book the next concrete step (SOP §3C), not asked for
+ * money. The booking-didn't-happen deduction only fires when he actually
+ * asked (flags.asked_for_close && !booked_next_step) — when he never asked
+ * at all, that's already the -2 above, and double-penalizing the same
+ * underlying failure would over-weight it relative to every other variant.
+ * The last deduction is the deterministic form of the "a directly-booked
+ * Sales Call outranks a QC-only booking" rule added to the score-ANCHOR
+ * prose in commit 675b632 (SOP §3C's 25/08/2026 clarification) — only
+ * applies to icons_100_interview, never to a qc-role call, per that
+ * clarification's own scoping.
+ */
+function computeBensAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!flags.asked_for_close) deduction += 2;
+  if (flags.asked_for_close && !flags.booked_next_step) deduction += 1;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  var interviewContentOk = result.call_role !== 'icons_100_interview' || flags.interview_content_quality_good;
+  if (!(flags.discovery_adequate && flags.understood_leads_business && interviewContentOk)) deduction += 1;
+  if (result.call_role === 'icons_100_interview' && flags.booked_next_step && result.next_step_type === 'QC') {
+    deduction += 1;
+  }
+  return clampAnalyticScore_(5 - deduction);
+}
+
+/** Tomás (buildTomasJudgeSystemPrompt_/scoreTomasTranscript_) — same three-deduction shape as the shared rubric. */
+function computeTomasAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!flags.asked_for_close) deduction += 2;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  return clampAnalyticScore_(5 - deduction);
+}
+
+/** Dispatches to the right analytic-score function for a rubric variant string (same vocabulary as scoreTranscriptByVariant_). */
+function computeAnalyticScore_(variant, result) {
+  switch (variant) {
+    case 'sean': return computeSeanAnalyticScore_(result);
+    case 'bens': return computeBensAnalyticScore_(result);
+    case 'tomas': return computeTomasAnalyticScore_(result);
+    default: return computeSharedAnalyticScore_(result);
+  }
+}
+
+/**
+ * Shadow-mode comparison only — computes the analytic rollup alongside the
+ * model's own call_quality_score and logs a comparison line whenever they
+ * differ by more than 1 point (exactly-1 tolerance mirrors
+ * diffRegressionResult_'s existing "normal judge noise" threshold), so
+ * Kris/Tomás can review real before/after deltas in the Apps Script
+ * execution log. Never writes anything — purely a log side effect. Called
+ * from all 5 real scoring write sites; see each site's own "FUTURE" comment
+ * for the not-yet-built branch this would feed if ANALYTIC_SCORE_CONFIG.ENABLED
+ * is ever flipped true. Returns the analytic score so a caller that wants it
+ * for other purposes doesn't have to recompute.
+ */
+function logAnalyticScoreShadowCheck_(prospectName, variant, result) {
+  var analyticScore = computeAnalyticScore_(variant, result);
+  var modelScore = result.call_quality_score;
+  var delta = Math.abs(Number(modelScore) - Number(analyticScore));
+  if (delta > 1) {
+    log_('Analytic score shadow-check: "' + prospectName + '" model=' + modelScore +
+      ' analytic=' + analyticScore + ' (diff ' + delta + ')');
+  }
+  return analyticScore;
 }
 
 /**

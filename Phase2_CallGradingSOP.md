@@ -197,6 +197,41 @@ Section 7's calibration loop checks whether the model agrees with Kris — it ha
 
 **Rollout gate, same pattern as every other phase in this file**: ships **disabled** (`REGRESSION_DRIFT_CONFIG.ENABLED = false`). `previewRegressionDrift()` always works regardless (read-only by construction) and only logs; `checkRegressionDrift()` refuses to run at all while `ENABLED` is false. **Not wired to a trigger yet** — that's a separate go-live decision for a human to make later, same as `RANDOM_CALIBRATION_CONFIG` before it shipped this session (Section "Random calibration holdout" in `Phase2_CallScoring.gs`). Setup: run `freezeRegressionSet()` once, then `previewRegressionDrift()` and eyeball the output against real transcripts, then flip `ENABLED` (a live, non-preview run additionally sends an ops alert via `sendOpsAlert_()` if drift is found, same escalation Section 7's 80%-agreement gate uses) before ever wiring a trigger to `checkRegressionDrift()`.
 
+## 7C. Analytic (deterministic) score — shadow mode only (25/08/2026)
+
+`QA_COACHING_RESEARCH_REPORT.md` §1.4 recommends moving off a single holistic `call_quality_score` (1–5), which the model currently picks directly, toward a deterministic weighted rollup computed from the boolean flags the model already outputs (`asked_for_close`, `objections_uncovered`/`objections_overcome`, the `framework` object, plus each variant's own extras). The report's own concern: today the model picks the holistic number in the same breath as the booleans, with nothing enforcing the two agree — an unvalidated, uncorrelated second judgment happening in the same pass as the flags that should determine it.
+
+**This is a Kris-approved decision, already made — this section documents the implementation, it does not re-argue the recommendation.** Kris's explicit instruction, applied to every variant below: a missed close-ask is the #1 mistake and must be weighted higher than any other single miss.
+
+**The mechanism**: `computeAnalyticScore_(variant, result)` (`Phase2_CallScoring.gs`, near `deriveFrameworkFields_`/`resolveRubricVariantForRow_`) dispatches to one pure per-variant function (`computeSharedAnalyticScore_`/`computeSeanAnalyticScore_`/`computeBensAnalyticScore_`/`computeTomasAnalyticScore_`), same variant vocabulary `scoreTranscriptByVariant_` already uses. Each starts from a base score of 5 and applies deductions, then clamps to `[1, 5]`:
+
+| Variant | Deduction | Condition |
+|---|---|---|
+| **Shared** (`buildJudgeSystemPrompt_`/`scoreTranscript_` — also Joana, and the default fallback) | `-2` | `!flags.asked_for_close` |
+| | `-1` | `!(flags.objections_uncovered && flags.objections_overcome)` |
+| | `-1` | `!deriveFrameworkFields_(result).explained` |
+| **Sean** (`buildSeanJudgeSystemPrompt_`/`scoreSeanTranscript_`) | `-2` | `!(flags.asked_for_close \|\| flags.booked_second_call_with_tomas)` |
+| | `-1` | `!(flags.objections_uncovered && flags.objections_overcome)` |
+| | `-1` | `!deriveFrameworkFields_(result).explained` |
+| | `-1` | `!(flags.discovery_adequate && flags.understood_leads_business && flags.captured_leads_goals && flags.tied_framework_to_goals)` — one combined discovery+goal-alignment bucket, not four separate deductions |
+| **Bens** (`buildBensJudgeSystemPrompt_`/`scoreBensTranscript_`) | `-2` | `!flags.asked_for_close` |
+| | `-1` | `flags.asked_for_close && !flags.booked_next_step` — only penalizes the booking-didn't-happen case when he actually asked, so never-asking isn't double-penalized on top of its own `-2` |
+| | `-1` | `!(flags.objections_uncovered && flags.objections_overcome)` |
+| | `-1` | `!deriveFrameworkFields_(result).explained` |
+| | `-1` | `!(flags.discovery_adequate && flags.understood_leads_business && (result.call_role !== 'icons_100_interview' \|\| flags.interview_content_quality_good))` |
+| | `-1` | `result.call_role === 'icons_100_interview' && flags.booked_next_step && result.next_step_type === 'QC'` — the deterministic form of §3C's "a directly-booked Sales Call outranks a QC-only booking" rule (commit `675b632`); only applies to `icons_100_interview`, never `qc` |
+| **Tomás** (`buildTomasJudgeSystemPrompt_`/`scoreTomasTranscript_`) | `-2` | `!flags.asked_for_close` |
+| | `-1` | `!(flags.objections_uncovered && flags.objections_overcome)` |
+| | `-1` | `!deriveFrameworkFields_(result).explained` |
+
+`finalScore = Math.max(1, Math.min(5, 5 - totalDeduction))` (`clampAnalyticScore_`).
+
+**Why shadow-mode only, not live**: exactly the same rollout discipline every other phase in this file gets — a rubric-affecting change does not go live off a single session's implementation, it needs a real batch of shadow-log output reviewed by a human first. Concretely, that means: nothing about what's sent to or parsed from the model changes (no schema, `isValid*JudgeSchema_`, or prompt/score-anchor edits — the model still produces `call_quality_score` exactly as today), and nothing about what's *written* to the "Sales Call Log" sheet's `Call Quality Score` column changes either. The model's own score stays the one written, in every write path, while `ANALYTIC_SCORE_CONFIG.ENABLED` stays `false` (the shipped default).
+
+**What actually runs today**: at all 5 real scoring write sites (`writeScoreToRow_`, plus the four `appendRow`-based backfill functions for Bens/legacy, Sean, Joana, and Tomás), `logAnalyticScoreShadowCheck_(prospectName, variant, result)` computes the analytic score alongside the model's own and logs a comparison line — `Analytic score shadow-check: "<prospect>" model=<N> analytic=<N> (diff <N>)` — whenever they differ by **more than 1 point** (a move of exactly 1 is normal judge noise, same tolerance `diffRegressionResult_`'s drift check already uses). Nothing is written anywhere; this is a log side effect only.
+
+**What a human needs to do before this ever goes live**: run the pipeline for a real batch of calls across all four variants, then read the Apps Script execution log for `Analytic score shadow-check` lines — how often the two scores diverge, how far, and whether the divergence looks like the model being sloppy about its own holistic number or the deterministic weights being wrong for some case the boolean flags don't capture cleanly. Discuss the pattern with Tomás before touching anything. Only after that review should `ANALYTIC_SCORE_CONFIG.ENABLED` even be considered for flipping to `true` — and note that flipping it doesn't itself change anything live yet either: each write site has a marked but deliberately unbuilt `FUTURE` comment showing where the branch to actually write the analytic score instead of the model's would go. That branch is a small, separate follow-up left for a human to build once the flag is flipped, not something this session wired.
+
 ## 8. Known failure modes to design around (carried over from `brief.txt`)
 
 - kimi-k2.6 **must** run at temperature=1 — any other value fails every call silently while the run reports "complete."

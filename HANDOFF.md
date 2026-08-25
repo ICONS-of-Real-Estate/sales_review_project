@@ -1,3 +1,37 @@
+# Handoff — 25/08/2026 (session 11 — analytic score shadow mode, QA report §1.4)
+
+## 0. What happened this session (read this first) — SHADOW MODE ONLY, NOTHING LIVE CHANGED
+
+Ran in the background. Kris approved `QA_COACHING_RESEARCH_REPORT.md` §1.4 — moving off a single holistic `call_quality_score` (1-5), which the model currently picks directly in the same breath as the booleans/framework it also outputs, toward a deterministic weighted rollup computed from those same booleans. The report's own concern this addresses: nothing today enforces the model's holistic pick agrees with its own flags — it's an unvalidated, uncorrelated second judgment happening in the same pass. Kris's explicit instruction, applied to every rubric variant: a missed close-ask must be weighted higher than any other single miss.
+
+**Built, all `.gs`-side, `Phase2_CallScoring.gs`**:
+- `computeAnalyticScore_(variant, result)` dispatches to one pure per-variant function (`computeSharedAnalyticScore_`/`computeSeanAnalyticScore_`/`computeBensAnalyticScore_`/`computeTomasAnalyticScore_`) — base score 5, deductions applied, clamped to `[1,5]` via `clampAnalyticScore_`. Exact weight table (and the reasoning behind each variant's shape — the Bens asked-vs-booked non-double-penalty, the Bens icons_100_interview-only QC-vs-Sales-Call deduction, Sean's OR-close condition and combined discovery/goal-alignment bucket) is now documented in `Phase2_CallGradingSOP.md` §7C — read that section rather than this summary for the full per-variant detail.
+- **Shadow mode only — nothing live changed.** Every one of the 5 real scoring write sites (`writeScoreToRow_`, plus the four `appendRow`-based backfill functions for Bens/legacy, Sean, Joana, Tomás) now also calls `logAnalyticScoreShadowCheck_(prospectName, variant, result)`, which computes the analytic score and logs `Analytic score shadow-check: "<prospect>" model=<N> analytic=<N> (diff <N>)` whenever the two differ by more than 1 point (same >1 tolerance `diffRegressionResult_`'s drift check already uses) — and does nothing else. The model's own `call_quality_score` is still exactly what gets written to the "Sales Call Log" sheet at all 5 sites, unchanged. New `ANALYTIC_SCORE_CONFIG = { ENABLED: false }` gates future real use; each write site carries a marked but deliberately **unbuilt** `FUTURE` comment showing where the branch to actually write the analytic score instead of the model's would go once a human decides to build it — flipping `ENABLED` does not, by itself, do anything live yet (see §2 below).
+- No schema, `isValid*JudgeSchema_`, or prompt/score-anchor changes in any variant — the model still gets asked for and produces `call_quality_score` exactly as today. This computes a second, parallel number for comparison only.
+- Tests: `tests/run_tests.js` **61 → 77** (16 new: a perfect call scores 5 in every variant; the core close-ask-vs-other-miss asymmetry, proven both as "-2 off perfect" vs "-1 off perfect" and as a direct score comparison; the floor at 1 under a worst-case shared-rubric input; `clampAnalyticScore_`'s floor/ceiling directly; Sean's OR-close condition (asked-only, booked-only, neither) and its combined discovery/goal-alignment bucket (one gap vs all four gaps costing the same single point); Bens' asked-but-not-booked vs never-asked non-double-penalty; Bens' icons_100_interview-only QC-vs-Sales-Call scoping (interview+QC, interview+SalesCall, qc-role+QC); Tomás's three single-deduction branches; the variant dispatcher including an unknown-variant fallback; `logAnalyticScoreShadowCheck_`'s >1-only logging and always-returns-the-analytic-score behavior; `ANALYTIC_SCORE_CONFIG.ENABLED` shipping `false`; and — the one that matters most for safety — `writeScoreToRow_` still writing the model's own score to the sheet even when the analytic score diverges sharply).
+- `Phase2_CallScoring.gs` re-parses clean: `node -e "new Function(require('fs').readFileSync('Phase2_CallScoring.gs','utf8'))"`.
+
+## 1. Deploy — NOT done, needs a human
+
+This sandbox/session has no `.clasp.json` (see `CLAUDE.md`), so `clasp push` could not be run from here. On whichever machine has `.clasp.json`:
+
+```
+git pull
+clasp push
+```
+
+No sheet migration is needed for this session's change — it adds no new columns, only a new logging call at existing write sites.
+
+## 2. What a human needs to do next — this is a multi-step rollout, not a one-flag decision
+
+1. **Deploy** (above).
+2. **Let the pipeline run for a while across a real batch of calls, covering all four rubric variants** (the ongoing shared-rubric pipeline plus the Sean/Bens/Tomás backfill triggers all naturally do this over the following days without anyone doing anything extra).
+3. **Read the Apps Script execution log for `Analytic score shadow-check` lines.** Look at how often the model's own score and the analytic rollup diverge by more than 1 point, and how far — this is the real, not-yet-collected evidence for whether the deterministic weights above actually track Kris's own judgment, or whether some variant's weighting needs adjusting before it could ever be trusted to replace the model's number.
+4. **Discuss the pattern with Tomás** before touching anything further — same rigor every other rubric-affecting change in this project has gotten (see the Bens variant, Sean's stricter variant, the framework-explanation dimension, all §3B-3D).
+5. **Only then consider flipping `ANALYTIC_SCORE_CONFIG.ENABLED` to `true`** (commit → push → `clasp push`, never edit it live in the browser editor — see `CLAUDE.md`). **Flipping this flag does not itself change anything live** — per point 2 above, no write site currently branches on it; the shadow-check keeps logging exactly as before either way. The actual final step, still unbuilt and intentionally left as a small separate follow-up, is wiring each write site's marked `FUTURE` comment into a real `if (ANALYTIC_SCORE_CONFIG.ENABLED) { write analytic score } else { write model score }` branch — that code change is what would make the analytic score the one that actually lands in the "Call Quality Score" column, and it should happen only after step 3's real-data review, not before.
+
+---
+
 # Handoff — 25/08/2026 (session 10 — rubric_version column + frozen regression set for drift detection)
 
 ## 0. What happened this session (read this first)

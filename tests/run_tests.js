@@ -723,6 +723,244 @@ test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge
   assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'shared']);
 });
 
+// --- Task: analytic (deterministic) score shadow-mode rollup (25/08/2026) ---
+// QA_COACHING_RESEARCH_REPORT.md §1.4 — computes a second, deterministic
+// call_quality_score from the boolean flags/framework the model already
+// outputs, purely to log alongside the model's own pick for comparison.
+// SHADOW MODE ONLY: see ANALYTIC_SCORE_CONFIG and the "still changes nothing
+// live" test at the very end of this section.
+
+/** Minimal all-true flags/framework object, per variant, so each test only has to flip what it cares about. */
+function perfectSharedResult_() {
+  return {
+    call_quality_score: 5,
+    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  };
+}
+function perfectSeanResult_() {
+  return {
+    call_quality_score: 5,
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      discovery_adequate: true, understood_leads_business: true,
+      captured_leads_goals: true, tied_framework_to_goals: true,
+      booked_second_call_with_tomas: true
+    },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  };
+}
+function perfectBensResult_() {
+  return {
+    call_quality_score: 5,
+    call_role: 'icons_100_interview',
+    next_step_type: 'Sales Call',
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      booked_next_step: true, discovery_adequate: true, understood_leads_business: true,
+      interview_content_quality_good: true
+    },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  };
+}
+function perfectTomasResult_() {
+  return {
+    call_quality_score: 5,
+    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  };
+}
+
+test('clampAnalyticScore_ enforces the 1-5 floor/ceiling under extreme raw values', () => {
+  assert.equal(gas.clampAnalyticScore_(10), 5);
+  assert.equal(gas.clampAnalyticScore_(-3), 1);
+  assert.equal(gas.clampAnalyticScore_(0), 1);
+  assert.equal(gas.clampAnalyticScore_(3), 3);
+});
+
+test('computeSharedAnalyticScore_ scores a perfect call 5', () => {
+  assert.equal(gas.computeSharedAnalyticScore_(perfectSharedResult_()), 5);
+});
+
+test('computeSharedAnalyticScore_ core requirement: a close-ask miss alone is weighted double a same-count non-close miss', () => {
+  const perfect = perfectSharedResult_();
+  const closeMissOnly = perfectSharedResult_();
+  closeMissOnly.flags.asked_for_close = false;
+  const objectionsMissOnly = perfectSharedResult_();
+  objectionsMissOnly.flags.objections_uncovered = false; // partial miss (uncovered false) already counts as a miss
+
+  const perfectScore = gas.computeSharedAnalyticScore_(perfect);
+  const closeMissScore = gas.computeSharedAnalyticScore_(closeMissOnly);
+  const objectionsMissScore = gas.computeSharedAnalyticScore_(objectionsMissOnly);
+
+  assert.equal(perfectScore, 5);
+  assert.equal(perfectScore - closeMissScore, 2, 'a close-ask miss alone must cost 2 full points off a perfect call');
+  assert.equal(perfectScore - objectionsMissScore, 1, 'a same-count non-close miss must cost only 1 point off a perfect call');
+  assert.ok(closeMissScore < objectionsMissScore, 'a close-ask miss must score strictly lower than an equal-count non-close miss');
+});
+
+test('computeSharedAnalyticScore_ framework-not-explained miss alone deducts 1', () => {
+  const frameworkMissOnly = perfectSharedResult_();
+  frameworkMissOnly.framework.sell_more_houses_explained = false; // any single gap is enough to fail deriveFrameworkFields_'s "explained"
+  assert.equal(gas.computeSharedAnalyticScore_(frameworkMissOnly), 4);
+});
+
+test('computeSharedAnalyticScore_ floors at 1 when every deduction fires', () => {
+  const worst = perfectSharedResult_();
+  worst.flags.asked_for_close = false;
+  worst.flags.objections_uncovered = false;
+  worst.framework.recruit_agents_explained = false;
+  assert.equal(gas.computeSharedAnalyticScore_(worst), 1);
+});
+
+test('computeSeanAnalyticScore_ scores a perfect call 5', () => {
+  assert.equal(gas.computeSeanAnalyticScore_(perfectSeanResult_()), 5);
+});
+
+test('computeSeanAnalyticScore_ OR-close condition: either asked_for_close or booked_second_call_with_tomas satisfies the close requirement', () => {
+  const askedOnly = perfectSeanResult_();
+  askedOnly.flags.booked_second_call_with_tomas = false; // asked_for_close still true
+  const bookedOnly = perfectSeanResult_();
+  bookedOnly.flags.asked_for_close = false; // booked_second_call_with_tomas still true
+  const neitherAskedNorBooked = perfectSeanResult_();
+  neitherAskedNorBooked.flags.asked_for_close = false;
+  neitherAskedNorBooked.flags.booked_second_call_with_tomas = false;
+
+  assert.equal(gas.computeSeanAnalyticScore_(askedOnly), 5, 'asked_for_close alone should satisfy the OR');
+  assert.equal(gas.computeSeanAnalyticScore_(bookedOnly), 5, 'booked_second_call_with_tomas alone should satisfy the OR');
+  assert.equal(gas.computeSeanAnalyticScore_(neitherAskedNorBooked), 3, 'neither path satisfied should cost the full -2');
+});
+
+test('computeSeanAnalyticScore_ discovery/goal-alignment is one combined bucket, not four separate deductions', () => {
+  const oneGap = perfectSeanResult_();
+  oneGap.flags.captured_leads_goals = false;
+  const allFourGaps = perfectSeanResult_();
+  allFourGaps.flags.discovery_adequate = false;
+  allFourGaps.flags.understood_leads_business = false;
+  allFourGaps.flags.captured_leads_goals = false;
+  allFourGaps.flags.tied_framework_to_goals = false;
+
+  assert.equal(gas.computeSeanAnalyticScore_(oneGap), 4, 'a single gap in the bucket should cost exactly 1 point');
+  assert.equal(gas.computeSeanAnalyticScore_(allFourGaps), 4, 'all four gaps together should still cost only 1 point (one bucket, not four)');
+});
+
+test('computeBensAnalyticScore_ scores a perfect call 5', () => {
+  assert.equal(gas.computeBensAnalyticScore_(perfectBensResult_()), 5);
+});
+
+test('computeBensAnalyticScore_ asked-but-not-booked vs never-asked does not double-penalize the same underlying failure', () => {
+  const neverAsked = perfectBensResult_();
+  neverAsked.flags.asked_for_close = false;
+  neverAsked.flags.booked_next_step = false;
+
+  const askedButNotBooked = perfectBensResult_();
+  askedButNotBooked.flags.booked_next_step = false; // asked_for_close stays true
+
+  const neverAskedScore = gas.computeBensAnalyticScore_(neverAsked);
+  const askedButNotBookedScore = gas.computeBensAnalyticScore_(askedButNotBooked);
+
+  assert.equal(neverAskedScore, 3, 'never asking costs only the -2 close-ask deduction, not also the booking deduction');
+  assert.equal(askedButNotBookedScore, 4, 'asking but not booking costs only the -1 booking deduction');
+  assert.ok(askedButNotBookedScore > neverAskedScore, 'never asking must still be worse than asking-but-not-booking');
+});
+
+test('computeBensAnalyticScore_ QC-vs-Sales-Call deduction only applies to icons_100_interview, never to a qc-role call', () => {
+  const interviewBookedQC = perfectBensResult_();
+  interviewBookedQC.call_role = 'icons_100_interview';
+  interviewBookedQC.next_step_type = 'QC';
+
+  const interviewBookedSalesCall = perfectBensResult_();
+  interviewBookedSalesCall.call_role = 'icons_100_interview';
+  interviewBookedSalesCall.next_step_type = 'Sales Call';
+
+  const qcRoleBookedQC = perfectBensResult_();
+  qcRoleBookedQC.call_role = 'qc';
+  qcRoleBookedQC.next_step_type = 'QC';
+
+  assert.equal(gas.computeBensAnalyticScore_(interviewBookedQC), 4, 'an interview call that only books a QC should lose 1 point');
+  assert.equal(gas.computeBensAnalyticScore_(interviewBookedSalesCall), 5, 'an interview call that books the Sales Call directly should not lose this point');
+  assert.equal(gas.computeBensAnalyticScore_(qcRoleBookedQC), 5, 'a qc-role call booking a QC is its normal next step — this deduction must not fire for qc role');
+});
+
+test('computeTomasAnalyticScore_ scores a perfect call 5, and each single deduction matches the shared weights', () => {
+  assert.equal(gas.computeTomasAnalyticScore_(perfectTomasResult_()), 5);
+
+  const closeMiss = perfectTomasResult_();
+  closeMiss.flags.asked_for_close = false;
+  assert.equal(gas.computeTomasAnalyticScore_(closeMiss), 3);
+
+  const objectionsMiss = perfectTomasResult_();
+  objectionsMiss.flags.objections_overcome = false;
+  assert.equal(gas.computeTomasAnalyticScore_(objectionsMiss), 4);
+
+  const frameworkMiss = perfectTomasResult_();
+  frameworkMiss.framework.number_one_podcast_explained = false;
+  assert.equal(gas.computeTomasAnalyticScore_(frameworkMiss), 4);
+});
+
+test('computeAnalyticScore_ dispatches to the matching per-variant function, defaulting unknown variants to shared', () => {
+  assert.equal(gas.computeAnalyticScore_('sean', perfectSeanResult_()), 5);
+  assert.equal(gas.computeAnalyticScore_('bens', perfectBensResult_()), 5);
+  assert.equal(gas.computeAnalyticScore_('tomas', perfectTomasResult_()), 5);
+  assert.equal(gas.computeAnalyticScore_('shared', perfectSharedResult_()), 5);
+  assert.equal(gas.computeAnalyticScore_('nonsense-unknown-variant', perfectSharedResult_()), 5);
+});
+
+test('logAnalyticScoreShadowCheck_ logs only when the model and analytic scores differ by more than 1 point, and always returns the analytic score', () => {
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  gas.Logger.log = (msg) => { lines.push(msg); };
+  try {
+    const bigDivergence = perfectSharedResult_(); // analytic = 5
+    bigDivergence.call_quality_score = 1; // model said 1, diff = 4
+    const returned = gas.logAnalyticScoreShadowCheck_('Test Prospect', 'shared', bigDivergence);
+    assert.equal(returned, 5);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /Analytic score shadow-check/);
+    assert.match(lines[0], /Test Prospect/);
+    assert.match(lines[0], /model=1/);
+    assert.match(lines[0], /analytic=5/);
+    assert.match(lines[0], /diff 4/);
+
+    lines.length = 0;
+    const closeAgreement = perfectSharedResult_(); // analytic = 5
+    closeAgreement.call_quality_score = 4; // diff = 1, within tolerance
+    gas.logAnalyticScoreShadowCheck_('Another Prospect', 'shared', closeAgreement);
+    assert.equal(lines.length, 0, 'a diff of exactly 1 should not log — matches diffRegressionResult_\'s existing "normal judge noise" tolerance');
+  } finally {
+    gas.Logger.log = originalLog;
+  }
+});
+
+test('ANALYTIC_SCORE_CONFIG ships disabled — shadow mode only, no live behavior change yet', () => {
+  assert.equal(gas.ANALYTIC_SCORE_CONFIG.ENABLED, false);
+});
+
+test('writeScoreToRow_ still writes the MODEL\'s own call_quality_score, never the analytic score, even when they diverge (the shadow-mode safety guarantee)', () => {
+  const cells = {};
+  const fakeSheet = {
+    getRange(row, col) {
+      return { setValue(v) { cells[row + ':' + col] = v; return this; } };
+    }
+  };
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const result = {
+    lead_quality: { verdict: 'good_to_book' },
+    call_quality_score: 5, // model says 5
+    flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false }, // analytic would say 1
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    manual_review_recommended: false,
+    severity: 1,
+    feedback_summary: 'string',
+    primary_failure_mode: 'multiple'
+  };
+  gas.writeScoreToRow_(fakeSheet, 9, col, result, false, 'Divergent Prospect');
+
+  assert.equal(cells['9:' + col['Call Quality Score']], 5, 'the sheet must still receive the model\'s own score, not the analytic one');
+});
+
 test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, keeps the score out of the subject and body lead', () => {
   const result = {
     drill_type: 'objection',
