@@ -3057,6 +3057,27 @@ function resolveRubricVariantForRow_(rep, matchMethod) {
   return 'shared';
 }
 
+/**
+ * True if the baseline row was frozen under a DIFFERENT RUBRIC_VERSION than
+ * the one currently live. Real bug found live (25/08/2026, from an actual
+ * checkRegressionDrift() run): the rubric changed twice the same day this
+ * feature shipped (the framework-explanation dimension, then the
+ * primary_failure_mode enum gaining "multiple"/"framework_not_explained"),
+ * and diffRegressionResult_ had no idea — it just diffed the frozen score
+ * against a fresh one computed under a materially different rubric and
+ * called the (entirely expected) difference "drift." 8 of 9 rows in that
+ * run "drifted"; none of it was the model behaving inconsistently, all of
+ * it was comparing across rubric generations. The SOP's own description of
+ * this mechanism ("re-run... through the exact same rubric") was the
+ * intent all along — this just closes the gap between that intent and what
+ * the code actually checked. A blank frozenVersion (a baseline frozen
+ * before RUBRIC_VERSION existed) is treated as "different" — conservative,
+ * since there's no way to know it actually matches.
+ */
+function rubricChangedSinceFreeze_(frozenVersion, currentVersion) {
+  return String(frozenVersion || '') !== String(currentVersion || '');
+}
+
 /** Dispatches to the right judge function for a rubric variant string (resolveRubricVariantForRow_'s output). */
 function scoreTranscriptByVariant_(variant, ctx) {
   switch (variant) {
@@ -3310,13 +3331,22 @@ function checkRegressionDriftImpl_(forcePreview) {
 
   var rows = baselineSheet.getRange(2, 1, lastRow - 1, REGRESSION_BASELINE_HEADERS.length).getValues();
   var results = [];
-  var drifted = 0, failed = 0;
+  var drifted = 0, failed = 0, rubricChanged = 0;
 
   rows.forEach(function (row) {
     var prospectName = row[0], rep = row[1], rubricVariant = row[2], callDate = row[3],
       transcriptUrl = row[4], frozenScore = row[5], frozenAskedForClose = !!row[6],
       frozenObjectionsHandled = !!row[7], frozenFrameworkExplained = !!row[8],
-      frozenPrimaryFailureMode = row[9];
+      frozenPrimaryFailureMode = row[9], frozenRubricVersion = row[10];
+
+    if (rubricChangedSinceFreeze_(frozenRubricVersion, RUBRIC_VERSION)) {
+      rubricChanged++;
+      log_('  RUBRIC CHANGED SINCE BASELINE (not drift) — "' + prospectName + '" (' + rep + ', ' + rubricVariant +
+        ' rubric): frozen under "' + (frozenRubricVersion || '(none — frozen before RUBRIC_VERSION existed)') +
+        '", now "' + RUBRIC_VERSION + '". Re-run freezeRegressionSet() to refresh the baseline against the ' +
+        'current rubric — a real comparison isn\'t possible until then.');
+      return; // skip: comparing across rubric generations isn't a drift signal
+    }
 
     try {
       var fileId = extractDriveFileId_(transcriptUrl);
@@ -3361,10 +3391,13 @@ function checkRegressionDriftImpl_(forcePreview) {
   });
 
   log_('checkRegressionDrift done — ' + rows.length + ' frozen call(s) checked, ' + drifted +
-    ' drifted, ' + failed + ' failed to re-score. ' +
+    ' drifted, ' + failed + ' failed to re-score, ' + rubricChanged + ' skipped (rubric changed since freeze). ' +
     (drifted > 0
       ? 'MODEL BEHAVIOR MAY HAVE CHANGED — review the drifted row(s) above before trusting new scores.'
-      : 'No drift detected — model output on these calls still matches the frozen baseline.'));
+      : rubricChanged > 0
+        ? 'No real drift signal this run — every comparable row matched; re-run freezeRegressionSet() to get a ' +
+          'usable baseline for the ' + rubricChanged + ' row(s) skipped for a rubric mismatch.'
+        : 'No drift detected — model output on these calls still matches the frozen baseline.'));
 
   if (drifted > 0 && !forcePreview) {
     sendOpsAlert_('Regression drift detected in Kimi judge output',
@@ -3377,5 +3410,5 @@ function checkRegressionDriftImpl_(forcePreview) {
     log_('  (preview run — an ops alert would be sent here once REGRESSION_DRIFT_CONFIG.ENABLED is true and this runs for real)');
   }
 
-  return { checked: rows.length, drifted: drifted, failed: failed, results: results };
+  return { checked: rows.length, drifted: drifted, failed: failed, rubricChanged: rubricChanged, results: results };
 }

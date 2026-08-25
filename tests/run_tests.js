@@ -564,6 +564,21 @@ test('buildBensJudgeSystemPrompt_ scores a directly-booked Sales Call higher tha
   assert.match(prompt, /does not apply to a qc call/);
 });
 
+// --- Regression drift check: gate on rubric version, don't confuse a rubric
+// change for real model drift (bug found live 25/08/2026 — see the comment
+// on rubricChangedSinceFreeze_ in Phase2_CallScoring.gs for the real
+// incident: 8 of 9 rows in an actual run "drifted" purely because the
+// rubric had changed since the baseline was frozen, not because the model
+// behaved inconsistently) ---
+test('rubricChangedSinceFreeze_ flags a mismatch and treats a blank frozen version as a mismatch', () => {
+  assert.equal(gas.rubricChangedSinceFreeze_('2026-08-25-framework', '2026-08-25-framework'), false);
+  assert.equal(gas.rubricChangedSinceFreeze_('2026-08-25-framework', '2026-08-25-bens-sales-call-over-qc'), true);
+  // A baseline frozen before RUBRIC_VERSION existed has no frozen version at
+  // all — conservative default is "can't confirm it matches," not "assume it does."
+  assert.equal(gas.rubricChangedSinceFreeze_('', '2026-08-25-framework'), true);
+  assert.equal(gas.rubricChangedSinceFreeze_(undefined, '2026-08-25-framework'), true);
+});
+
 // --- Task: RUBRIC_VERSION column (25/08/2026) ---
 
 test('RUBRIC_VERSION is a non-empty date-prefixed string, per the versioning convention documented alongside it', () => {
