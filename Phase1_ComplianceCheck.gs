@@ -1661,6 +1661,7 @@ function sendJoanaPlaybookAsGoogleDoc() {
     'test/placeholder file. Routed to manual review, not counted above.');
 
   doc.saveAndClose();
+  shareDocWithTrainingTeam_(doc);
   var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
 
   var emailBody = 'Tomás,\n\nJoana\'s objection-handling playbook, v1 — built from every one of her real ' +
@@ -1699,6 +1700,20 @@ function appendObjectionPattern_(body, p) {
     sayPara.editAsText().setBold(true).setItalic(true);
   }
   if (p.note) body.appendParagraph((p.noteLabel || 'Coaching note') + ': ' + p.note).setItalic(true);
+}
+
+/**
+ * Real bug found live (25/08/2026, Tomás's own screenshot): DocumentApp.create()
+ * makes a Doc owned by, and private to, whatever account ran the script —
+ * emailing the link without this meant Tomás hit "Request access" instead
+ * of opening it, exactly the "training can't go through" risk he flagged.
+ * Grants edit access to Tomás and Kris explicitly before the doc ever gets
+ * emailed. Shared by all three playbook-Doc send functions.
+ */
+function shareDocWithTrainingTeam_(doc) {
+  var file = DriveApp.getFileById(doc.getId());
+  file.addEditor(CONFIG.TOMAS_EMAIL);
+  file.addEditor(CONFIG.KRIS_EMAIL);
 }
 
 /** Shared by the Bens/Sean send functions below. */
@@ -1850,6 +1865,7 @@ function sendBensPlaybookAsGoogleDoc() {
     'That\'s the standard every other objection response above should be trained toward.');
 
   doc.saveAndClose();
+  shareDocWithTrainingTeam_(doc);
   var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
   sendPlaybookDocEmail_('Bens', docUrl, 'the first batch of 43 real recordings, with Tomás\'s own latest edits on #1/#2/#4');
   log_('sendBensPlaybookAsGoogleDoc: created ' + docUrl + ' and emailed ' + CONFIG.TOMAS_EMAIL + ' (cc ' +
@@ -2004,6 +2020,7 @@ function sendSeanPlaybookAsGoogleDoc() {
     'named example, or a specific mechanism — exactly what was missing everywhere else.');
 
   doc.saveAndClose();
+  shareDocWithTrainingTeam_(doc);
   var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
   sendPlaybookDocEmail_('Sean', docUrl, '27 real calls across two batches (v1 + v2)');
   log_('sendSeanPlaybookAsGoogleDoc: created ' + docUrl + ' and emailed ' + CONFIG.TOMAS_EMAIL + ' (cc ' +
