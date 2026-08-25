@@ -57,25 +57,29 @@ That is why only Bens duplicated. The function now takes its own lock.
 adding a second independent caller would have risked reintroducing exactly
 the duplication that was just being cleaned up.
 
-## 1. Needs Kris
+## 1. Update, same day — deploy confirmed, all three items closed
 
-- **Deploy**: `git pull` + `clasp push`, then run `installAllReadyTriggers()`
-  once (picks up Bens' new trigger). Dashboard: `git pull` +
-  `sudo systemctl restart sales-dashboard` on the VPS — no new deps, no
-  `pip install` needed.
-- **`dedupeLegacyBackfillDuplicates()` did NOT finish.** The 25/08 06:06–06:08
-  run ended in `Execution cancelled` partway through (last logged deletion
-  was row 8171). Re-run it until a run reports 0 duplicates found. Do the
-  deploy above FIRST so the new lock is live, otherwise the still-firing
-  10-minute backfill trigger can keep appending duplicates while the dedupe
-  is deleting them.
-- **Then** `removeLegacyBackfillTrigger()`, once Bens' dedicated trigger is
-  confirmed installed. Also check the Triggers page for stacked leftover
-  copies of `runAllLegacyBackfills_`.
-- **Still open from before**: `DASHBOARD_SESSION_SECRET` on the VPS may be
-  the literal string `$(openssl rand -hex 32)` rather than a real secret
-  (quoted-heredoc bug, §0c). Check with
-  `sudo grep DASHBOARD_SESSION_SECRET /etc/sales-dashboard/env`.
+- **Deployed and installed, confirmed live**: `installAllReadyTriggers()` ran
+  clean at 06:20 — all 8 phases plus Bens' new `installBensScoringAutomation()`
+  trigger installed. Dashboard also deployed (`git pull` +
+  `systemctl restart`), outcome_disposition changes confirmed rendering.
+- **`dedupeLegacyBackfillDuplicates()` re-run to completion**: 06:47 run
+  reported "deleted 6798 duplicate row(s)" (well past the ~306 first
+  estimated — expected, since the still-firing backfill trigger kept adding
+  more between the first partial run and this one; not a new problem).
+- **`removeLegacyBackfillTrigger()` run** at 06:52, confirmed "Removed 1
+  runAllLegacyBackfills_ trigger(s)" — exactly one, so no stacked leftover
+  copies were found. Bens is now scored solely by his own dedicated 4-hour
+  trigger, same as Sean/Joana/Tomás.
+- **`DASHBOARD_SESSION_SECRET` confirmed real**, resolving the long-open
+  question from session 4c: Kris pasted the live `/etc/sales-dashboard/env`
+  and it's 64 real hex characters (a genuine `openssl rand -hex 32` output),
+  not the literal `$(openssl rand -hex 32)` placeholder string the
+  quoted-heredoc bug risked. Also visible in that same file:
+  `DASHBOARD_ALLOWED_EMAILS` currently covers kris/tomas/bens/sean
+  @iconsofrealestate.com — Tomás can already log in, nothing more to add.
+
+**Nothing outstanding from this session.**
 
 ## 2. Known-stale, not fixed this session
 
