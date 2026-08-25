@@ -2,7 +2,7 @@
 
 > Companion to `Phase2_CallGradingSOP.md`. That SOP scores whether an objection was surfaced and overcome; this document is the answer key — what the objections actually are, why they come up, and what Bens should say.
 
-> **25/08/2026: the live, editable copy of this content is the "Objection Playbook" tab in the Sales Call Log spreadsheet** (`setupObjectionPlaybook()` in `Phase1_ComplianceCheck.gs`) — that's where Tomás actually edits it now, since it doesn't require GitHub access. This file is the v1 snapshot that seeded that tab; it is not kept in automatic sync, so treat the sheet tab as the source of truth for anything Tomás has touched since, and pull real changes back into this file (and into `FEW_SHOT_ANCHORS`/the live prompt in `Phase2_CallScoring.gs`, which still needs its own deliberate update) by hand when they're ready to affect training/scoring.
+> **25/08/2026: the live, editable copy of this content is the "Objection Playbook" tab in the Sales Call Log spreadsheet** (`setupObjectionPlaybook()` in `Phase1_ComplianceCheck.gs`) — that's where Tomás actually edits it now, since it doesn't require GitHub access. This file (and the dashboard page rendered from it, `/reps/Bens`) is reconciled with his real edits as of 25/08/2026 (objections #1/#2/#4), but it is not kept in automatic sync going forward — treat the sheet tab as the source of truth for anything he's touched since, and pull real changes back into this file (and into `FEW_SHOT_ANCHORS`/the live prompt in `Phase2_CallScoring.gs`, which still needs its own deliberate update) by hand when they're ready to affect training/scoring.
 
 ## How this is maintained
 
@@ -36,8 +36,13 @@ Objection #1 is by far the most common — more than a third of calls had some f
 
 **Technique — Isolate and minimize, never leave it open-ended.** The mistake in most of these calls wasn't hearing "not now" — it's accepting it as a full stop ("that's totally fine... I'll reach out in a few months"). A "not now" should always convert into a specific placeholder date, not a vague future promise.
 
-**Suggested response:**
-> "Totally get it — everyone I talk to on this show is busy for a reason. That's actually why this is a 15-minute conversation, not a project. Rather than leave it open, let's just grab a placeholder for [specific date 2–3 weeks out] — if it's still not the right moment when we get there, we'll push it again, no pressure at all."
+**Suggested response (Tomás's edit, 25/08/2026):**
+1. Acknowledge and empathise — we only work with busy people.
+2. Deconstruct what "busy" actually means for them.
+3. Let them know the real commitment — average 1h/week (if still pushing back, use the Hormozi line).
+4. Pitch the Podcast Strategy Call — understand their plan and see how a podcast fits (if still pushing, agree a follow-up date).
+
+> "Totally get it — everyone I talk to on this show is busy for a reason. That's actually why this is a 15-minute conversation, not a project. Rather than leave it open, let's just grab a placeholder for [1-2 days out] — if it's still not the right moment when we get there, we'll push it again, no pressure at all."
 
 **Coaching note:** if the prospect still declines a specific placeholder after this, that's a real "not now" — accept it, but never accept the first "not now" as final without one attempt to convert it into a date.
 
@@ -51,8 +56,12 @@ Objection #1 is by far the most common — more than a third of calls had some f
 
 **Technique — Directional answer, not a full punt.** Fully deferring every pricing question to Tomás (as happened in all four of these calls) reads as evasive to a sharp prospect. Give a ballpark and one concrete outcome, then bridge to the deeper conversation — this still leaves the real numbers to Tomás, it just doesn't stonewall.
 
-**Suggested response:**
-> "Good question — I can't get into exact numbers since that's really Tomás's conversation, but directionally it's [ballpark], and most agents see [one concrete outcome, e.g. their first inbound lead from an episode within a few weeks]. Tomás will walk you through the real structure on the call — does that work as a starting point?"
+**Suggested response (Tomás's edit, 25/08/2026 — the old scripted quote below is replaced, not appended to; he crossed it out in his own copy):**
+- Accept and joke about the price question — "I'm not taking your money today," or go straight into: "As much as I would like to tell you pricing right now, and you would probably want to pay me and get started…"
+- Clarify we like to show the value first before the $, so they can see the impact.
+- Our network manager will do that and show you the investment.
+- I promise it's not something that is going to scare you.
+- Book Strategy Call.
 
 ---
 
@@ -71,13 +80,16 @@ Objection #1 is by far the most common — more than a third of calls had some f
 
 ## 4. "I already have my own podcast / marketing company / platform"
 
-**Real examples:** Jeff Goodman (hosted his own 130-episode podcast, more likely to podcast through his own company's network), Bill Gross ("I'm pretty satisfied with what I'm doing now, the system kind of works for me"), Thom Tillier ("I'm looking to create an unedited podcast because I don't have time for editing, nor do I want to pay for editing" — a direct product-fit version of this objection), Steve Hauck (already pays a marketing company for video/editing — never raised but a near-certain future objection).
+**Real examples:** Jeff Goodman (hosted his own 130-episode podcast, more likely to podcast through his own company's network), Bill Gross ("I'm pretty satisfied with what I'm doing now, the system kind of works for me"), Thom Tillier ("I'm looking to create an unedited podcast because I don't have time for editing, nor do I want to pay for editing" — a direct product-fit version of this objection), Steve Houck (already pays a marketing company for video/editing — never raised but a near-certain future objection).
 
 **Why it happens:** Successful producers often already run some content operation and don't immediately see the incremental value of a second one.
 
 **Technique — Don't compete with what they have; position as removing a cost from it.** Ask one question about what their current approach actually costs them in hours/month before pitching, then tie the offer to that specific gap (production, distribution, consistency) rather than a generic "content and authority" pitch.
 
-**Suggested response:**
+**Suggested response (Tomás's edit, 25/08/2026 — branches added ahead of the original close):**
+- If the podcast is no longer active: mention it before they do, ask how the experience was, ask why it stopped, offer to revive it and book a Strategy Call.
+- If the podcast is active: "Awesome! How is it going? Have you gotten some results from it? Are you producing this in-house or working with another agency?" — offer the Strategy Call as a free brainstorming session with the #1 Real Estate Podcast Network.
+
 > "That's great that you're already doing [X] — a lot of the agents we work with are in the same spot. The difference usually isn't replacing what you're doing, it's taking [the specific pain point they mentioned — editing, consistency, distribution] off your plate so you can focus on [their actual business]. Worth 15 minutes to see if that gap applies to you?"
 
 ---
