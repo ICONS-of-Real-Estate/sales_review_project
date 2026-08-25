@@ -499,6 +499,19 @@ function getTranscriptText_(file) {
  * with the hardcoded array, and every col['...'] lookup then points at the
  * wrong cell with no error — e.g. writing a Call Quality Score into what's
  * now the Severity column. Throws loudly instead.
+ *
+ * Real incident live (25/08/2026): a stray keystroke meant for the
+ * spreadsheet's Name Box landed directly in cell A1 instead and silently
+ * renamed "Prospect Name" — every scoring/compliance trigger then started
+ * hitting this throw, and nobody found out until it was noticed by hand.
+ * Deliberately does NOT auto-repair the header here — this throw is also
+ * the safety net that stops the pipeline from running against a sheet
+ * that's genuinely missing a column a migration hasn't been applied to yet
+ * (see Phase5_WeeklyScorecard.gs's migration note); silently rewriting row 1
+ * on every mismatch would paper over that far worse case along with the
+ * harmless one. Instead this now also fires an ops alert (throttled, see
+ * alertHeaderDriftOnce_ in Phase1_ComplianceCheck.gs) so a human finds out
+ * same-day instead of by accident — a human still decides the actual fix.
  */
 function getValidatedColumnMap_(sheet) {
   var header = sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length).getValues()[0];
@@ -509,6 +522,7 @@ function getValidatedColumnMap_(sheet) {
     }
   });
   if (mismatches.length) {
+    alertHeaderDriftOnce_(mismatches);
     throw new Error('Sales Call Log header drift detected — run setupSalesCallLog() or fix the ' +
       'sheet manually before trusting any column lookup:\n  ' + mismatches.join('\n  '));
   }

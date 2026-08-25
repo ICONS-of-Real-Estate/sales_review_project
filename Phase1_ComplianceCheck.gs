@@ -614,6 +614,40 @@ function sendOpsAlert_(subject, body) {
   }
 }
 
+var HEADER_DRIFT_ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Fires an ops alert the first time getValidatedColumnMap_ (Phase2_CallScoring.gs)
+ * hits header drift on the "Sales Call Log" tab, then stays quiet for
+ * HEADER_DRIFT_ALERT_COOLDOWN_MS — real incident live (25/08/2026): a stray
+ * keystroke overwrote the "Prospect Name" header, and every scoring/
+ * compliance trigger just failed silently in the Executions log with nobody
+ * watching, until it was caught by accident while debugging something else.
+ * Throttled (not one email per trigger firing) because the underlying
+ * problem can easily stay broken for hours across a dozen different
+ * triggers before a human fixes it — this only needs to say so once per
+ * window, not spam. Uses Script Properties rather than an in-memory flag so
+ * the cooldown survives across separate trigger executions.
+ */
+function alertHeaderDriftOnce_(mismatches) {
+  var props = PropertiesService.getScriptProperties();
+  var key = 'LAST_HEADER_DRIFT_ALERT_AT';
+  var last = props.getProperty(key);
+  var now = Date.now();
+  if (last && (now - Number(last)) < HEADER_DRIFT_ALERT_COOLDOWN_MS) return;
+  props.setProperty(key, String(now));
+  sendOpsAlert_('Sales Call Log header drift — every scoring/compliance function is failing',
+    'getValidatedColumnMap_ found the "Sales Call Log" header row (row 1) does not match what the code ' +
+    'expects:\n\n  ' + mismatches.join('\n  ') +
+    '\n\nEvery function that reads this sheet by column name is failing right now until this is fixed.\n\n' +
+    'If this is just a stray edit to a header cell\'s text (e.g. someone typed into the wrong box), fix it ' +
+    'by hand to match exactly, or run setupSalesCallLog() to rewrite row 1 back to the expected headers.\n\n' +
+    'If a column was actually supposed to be added and the migration for it just hasn\'t been run yet, run ' +
+    'that migration instead — do NOT blindly retype headers in that case, the underlying data columns won\'t ' +
+    'actually be there yet.\n\n' +
+    '(Throttled to at most one alert per hour while this stays broken.)');
+}
+
 /**
  * Quota guard per the brief: check MailApp.getRemainingDailyQuota() before
  * every send, keep QUOTA_RESERVE in reserve, and alert ops (never throw
@@ -917,6 +951,41 @@ function setupSalesCallLog() {
 
   sheet.autoResizeColumns(1, SALES_CALL_LOG_HEADERS.length);
   log_('Setup complete. Point all rep configs at sheetName "Sales Call Log" and run dryRunComplianceCheck with a -2 day offset to validate against 14/08.');
+}
+
+/**
+ * Defense against exactly what happened live (25/08/2026): a stray keystroke
+ * meant for the spreadsheet's Name Box landed directly in cell A1 instead
+ * and silently renamed "Prospect Name", which made every scoring/compliance
+ * function fail (see getValidatedColumnMap_, Phase2_CallScoring.gs) until it
+ * was caught by hand. Warning-only, not a hard lock: Range.protect()'s edit
+ * restriction only ever applies to human editors in the Sheets UI — it can
+ * never block this script's own SpreadsheetApp calls, so it's safe to leave
+ * on permanently without any risk of breaking the live pipeline. Idempotent:
+ * removes any protection this function previously added on this exact range
+ * before re-adding it, so re-running never stacks duplicates.
+ *
+ * ONE-TIME SETUP: run this once from the Apps Script editor after
+ * setupSalesCallLog(). Not wired to any trigger — it only ever needs
+ * running again if the protection itself gets manually removed.
+ */
+function protectSalesCallLogHeaderRow() {
+  RUN_TAG = 'protectSalesCallLogHeaderRow';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('protectSalesCallLogHeaderRow: no "Sales Call Log" tab found.'); return; }
+
+  var description = 'Sales Call Log header row — do not edit directly, see CLAUDE.md';
+  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) {
+    if (p.getDescription() === description) p.remove();
+  });
+
+  sheet.getRange(1, 1, 1, SALES_CALL_LOG_HEADERS.length)
+    .protect()
+    .setDescription(description)
+    .setWarningOnly(true);
+  log_('protectSalesCallLogHeaderRow: warning-only protection applied to row 1, columns 1-' +
+    SALES_CALL_LOG_HEADERS.length + '.');
 }
 
 function setDropdown_(sheet, colIndex, values) {
