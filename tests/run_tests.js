@@ -87,12 +87,42 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
     lead_quality: { verdict: 'good_to_book' },
     call_quality_score: 4,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
     manual_review_recommended: false,
     severity: 2
   };
   assert.equal(gas.isValidJudgeSchema_(good), true);
   assert.equal(gas.isValidJudgeSchema_(Object.assign({}, good, { severity: undefined })), false);
+  assert.equal(gas.isValidJudgeSchema_(Object.assign({}, good, { framework: undefined })), false);
   assert.equal(gas.isValidJudgeSchema_(null), false);
+});
+
+test('deriveFrameworkFields_ — all three explained means no gaps; a missing framework object means every gap listed, not a throw', () => {
+  // Return values come from the vm sandbox's own realm, so assert.deepEqual's
+  // prototype-identity check would fail against this file's plain object
+  // literals for realm reasons, not a real mismatch — compare fields directly,
+  // same convention as stripFencesAndParseJson_'s test above.
+  const allExplained = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  });
+  assert.equal(allExplained.explained, true);
+  assert.equal(allExplained.gapsText, '');
+
+  const oneGap = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: false, sell_more_houses_explained: true }
+  });
+  assert.equal(oneGap.explained, false);
+  assert.equal(oneGap.gapsText, '#1 podcast in your city');
+
+  // Parse-failure fallbacks and any result shape predating this field must not throw —
+  // conservative default is "nothing explained", same policy as manual_review_recommended.
+  const missingObject = gas.deriveFrameworkFields_({});
+  assert.equal(missingObject.explained, false);
+  assert.equal(missingObject.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
+
+  const nullResult = gas.deriveFrameworkFields_(null);
+  assert.equal(nullResult.explained, false);
+  assert.equal(nullResult.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
 });
 
 test('findColumn_ matches header names case-insensitively and tries candidates in priority order', () => {
@@ -495,6 +525,31 @@ test('priorityToImprove_ falls back to the Objections Handled flag when no Prima
 
 test('priorityToImprove_ returns null when the rep had no calls scored this week', () => {
   assert.equal(gas.priorityToImprove_({ weekCalls: [], weekFailureModes: [], weekFlagMiss: {} }), null);
+});
+
+test('priorityToImprove_ reports the framework-explanation coaching line when that\'s the week\'s most common failure mode', () => {
+  const stats = {
+    weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 3 }],
+    weekFailureModes: ['framework_not_explained', 'framework_not_explained'],
+    weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }
+  };
+  assert.equal(gas.priorityToImprove_(stats), gas.FAILURE_MODE_COACHING_TEXT_.framework_not_explained);
+});
+
+test('isValidDailyPracticeSchema_ accepts "framework" as a drill_type and requires framework_topic', () => {
+  const good = {
+    drill_type: 'framework',
+    objection_type: 'n/a',
+    framework_topic: 'recruit_agents',
+    technique_used: true,
+    delivery_quality: 'confident',
+    overall_score: 4,
+    sharpen_next: 'string',
+    feedback_summary: 'string'
+  };
+  assert.equal(gas.isValidDailyPracticeSchema_(good), true);
+  assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, good, { framework_topic: undefined })), false);
+  assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, good, { drill_type: 'not_a_real_type' })), false);
 });
 
 test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, keeps the score out of the subject and body lead', () => {

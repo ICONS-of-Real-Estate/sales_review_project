@@ -83,6 +83,15 @@ TRAINING_ASSIGNMENTS_COLUMNS = {
     "Close Ask Drill (JSON)": "close_ask_drill_json",
     "Last Updated": "last_updated",
 }
+# NOT YET wired up: Phase6_TrainingCallReview.gs's TRAINING_ASSIGNMENTS_HEADERS
+# grew a 5th column, "Training Framework (JSON)", on 25/08/2026. Deliberately
+# left out of this map for now — adding it here without also migrating the
+# live `training_assignments` table (CREATE TABLE IF NOT EXISTS is a no-op
+# against an already-existing table; every column here must exist in the real
+# schema before replace_table's INSERT runs, or the whole sync — not just this
+# tab — breaks) is a real schema-migration task, out of scope for the Phase
+# 5/6/7 coaching-loop change that added the column. The extra sheet column is
+# simply not synced until this is done; nothing currently reads it from here.
 
 # Must match DAILY_PRACTICE_FOLLOWUP_HEADERS in Phase7_DailySelfPractice.gs.
 # One row per rep per assignment day — this is the only place "did today's

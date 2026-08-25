@@ -2,11 +2,13 @@
  * Phase7_DailySelfPractice.gs
  *
  * Thao's ask (19/08/2026): every day, each rep (Bens/Sean/Joana) uploads a
- * video of themselves practicing objection handling alone. This phase grades
- * that day's practice reps and emails feedback, plus sends each rep that
- * day's assignment (the specific objections from their last training call,
- * per Phase 6's TRAINING_OBJECTIONS_<rep> property) each training-cycle
- * weekday.
+ * video of themselves practicing alone. This phase grades that day's
+ * practice reps and emails feedback, plus sends each rep that day's
+ * assignment each training-cycle weekday — rotating across whichever of the
+ * three skills (objection handling, asking for the money, and — 25/08/2026 —
+ * framework explanation) actually have content on file from their last
+ * training call, per Phase 6's TRAINING_OBJECTIONS_<rep>/TRAINING_CLOSE_DRILL_<rep>/
+ * TRAINING_FRAMEWORK_<rep> properties.
  *
  * Source folders — one per rep, under "Daily Objection Practice":
  *   Bens:  https://drive.google.com/drive/folders/1NG3YUXlCWOjcJT8d8ECU0uw6hEVL-fHC
@@ -50,8 +52,9 @@
  * thread (predates this system) still falls back to a standalone email.
  *
  * Reuses CONFIG, log_, guardedSend_, callKimiJudge_, stripFencesAndParseJson_,
- * getTranscriptText_, computeTrainingCycleLabel_ from Phase1/Phase2 (same-project
- * global scope).
+ * getTranscriptText_, computeTrainingCycleLabel_ from Phase1/Phase2, and (as of
+ * the 25/08/2026 framework-explanation drill lane) FRAMEWORK_TOPIC_LABELS_
+ * from Phase6 (same-project global scope).
  *
  * ONE-TIME SETUP:
  *   1. Run previewDailyPracticeGrading() from the Apps Script editor (not
@@ -89,13 +92,17 @@ var DAILY_PRACTICE_CONFIG = {
 function buildDailyPracticeSystemPrompt_() {
   return [
     'You are grading a rep\'s SOLO PRACTICE DRILL — not a real sales call. There is no lead on this',
-    'recording; the rep is practicing alone or role-playing both sides to rehearse one of our two named',
+    'recording; the rep is practicing alone or role-playing both sides to rehearse one of our three named',
     'skills. First decide which one this drill is:',
     '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise, isolate it as the',
     '    one thing standing in the way, then repeat/confirm that back before answering it.',
     '  ASKING FOR THE MONEY = a direct line, e.g. "Ready to get started?" — not a soft/open question. Ideally',
     '    asked MORE THAN ONCE: ask it, then whatever comes back is either another objection (loop back into',
     '    Agree/Isolate/Repeat, then ask again) or a yes (go straight to payment).',
+    '  FRAMEWORK EXPLANATION = proactively and specifically walking through all three pieces of our value',
+    '    proposition: how the podcast helps RECRUIT AGENTS, how it builds #1-PODCAST-IN-YOUR-CITY authority,',
+    '    and how it helps SELL MORE HOUSES — heads off objections before a lead who never understood the',
+    '    offer raises them (25/08/2026, per Kris).',
     '',
     'If drill_type is "close_ask", answer, in order:',
     '1. Did they use the direct line (or a clear equivalent) rather than a soft/open question? Quote it.',
@@ -124,6 +131,20 @@ function buildDailyPracticeSystemPrompt_() {
     '2 = no real technique — just repeated reassurance or changed the subject.',
     '1 = did not engage with the objection at all, or the drill doesn\'t show real practice.',
     '',
+    'If drill_type is "framework", answer, in order:',
+    '1. Which of the three pieces were they practicing (framework_topic: recruit_agents |',
+    '   number_one_podcast | sell_more_houses — or "multiple" if the recording covers more than one)?',
+    '2. Was the explanation clear, specific, and proactive-sounding — something that would actually land with',
+    '   a real lead — rather than vague or generic ("it helps your business" with no mechanism)?',
+    '3. Delivery: confident and natural, or hesitant/reading off a script woodenly?',
+    '4. What is the single most specific thing to sharpen before their next live call?',
+    'Score anchors for overall_score (1-5) on a framework drill:',
+    '5 = clear, specific, proactive-sounding explanation of the practiced piece(s), confident delivery.',
+    '4 = the substance is there but delivery was a little off, or the explanation ran a bit generic.',
+    '3 = attempted an explanation but it stayed vague or generic rather than concrete.',
+    '2 = only a fragment of the explanation — named the topic but didn\'t actually explain the mechanism.',
+    '1 = did not attempt the explanation at all, or the drill doesn\'t show real practice.',
+    '',
     'Be skeptical by default — a rep going through the motions without a real attempt should score low',
     'even if their delivery is smooth.',
     '',
@@ -131,8 +152,9 @@ function buildDailyPracticeSystemPrompt_() {
     '',
     '{',
     '  "reasoning": "string",',
-    '  "drill_type": "objection | close_ask",',
-    '  "objection_type": "string — the objection practiced, or \\"n/a\\" if drill_type is close_ask",',
+    '  "drill_type": "objection | close_ask | framework",',
+    '  "objection_type": "string — the objection practiced, or \\"n/a\\" if drill_type is not objection",',
+    '  "framework_topic": "recruit_agents | number_one_podcast | sell_more_houses | multiple | n/a — n/a unless drill_type is framework",',
     '  "technique_used": true,',
     '  "technique_description": "string",',
     '  "delivery_quality": "confident | hesitant | mixed",',
@@ -159,8 +181,9 @@ function buildDailyPracticeUserPrompt_(rep, transcriptText, fileName) {
 
 function isValidDailyPracticeSchema_(obj) {
   return !!(obj &&
-    (obj.drill_type === 'objection' || obj.drill_type === 'close_ask') &&
+    (obj.drill_type === 'objection' || obj.drill_type === 'close_ask' || obj.drill_type === 'framework') &&
     typeof obj.objection_type === 'string' &&
+    typeof obj.framework_topic === 'string' &&
     typeof obj.technique_used === 'boolean' &&
     typeof obj.delivery_quality === 'string' &&
     typeof obj.overall_score === 'number' &&
@@ -190,6 +213,7 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
     reasoning: 'Unscored — parse failure after retries.',
     drill_type: 'objection',
     objection_type: 'unknown',
+    framework_topic: 'n/a',
     technique_used: false,
     technique_description: '',
     delivery_quality: 'mixed',
@@ -213,7 +237,9 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
   var subject = 'Practice Drill Feedback — ' + fileName;
   var focusLine = result.drill_type === 'close_ask'
     ? 'Drill: Asking for the money'
-    : 'Objection practiced: ' + result.objection_type;
+    : result.drill_type === 'framework'
+      ? 'Drill: Framework explanation (' + result.framework_topic + ')'
+      : 'Objection practiced: ' + result.objection_type;
   var body =
     'Hi ' + rep + ',\n\n' +
     'On today\'s practice drill ("' + fileName + '"):\n\n' +
@@ -374,17 +400,49 @@ function sendDailyPracticeReminders_() {
     var objections = stored ? JSON.parse(stored) : null;
     var storedCloseAsk = PropertiesService.getScriptProperties().getProperty('TRAINING_CLOSE_DRILL_' + rep);
     var closeAsk = storedCloseAsk ? JSON.parse(storedCloseAsk) : null;
+    var storedFramework = PropertiesService.getScriptProperties().getProperty('TRAINING_FRAMEWORK_' + rep);
+    var frameworkGaps = storedFramework ? JSON.parse(storedFramework) : null;
 
-    // Alternate which skill gets today's assignment when both are on file, so reps
-    // get dedicated close-ask reps rather than it always riding along after
-    // objections (or being crowded out of a single day's recording). Objection days
-    // fall on the "day" index computeTrainingCycleLabel_ assigns; close-ask takes
-    // the other days once a close-ask drill actually exists on file.
-    var assignCloseAskToday = closeAsk && (!objections || !objections.length || (label.day % 2 === 1));
+    // Rotate today's assignment across whichever of the three skills actually
+    // have content on file, so reps get dedicated reps on each rather than
+    // objections always crowding out the others (25/08/2026: generalized from
+    // the original 2-way objections/close-ask alternation to 3 lanes, same
+    // "don't always ride along after objections" reasoning, extended).
+    // Objections stays the fallback lane when nothing is on file at all
+    // (unchanged behavior — see the final else branch below).
+    var availableLanes = [];
+    if (closeAsk) availableLanes.push('close_ask');
+    if (frameworkGaps && frameworkGaps.length) availableLanes.push('framework');
+    if (objections && objections.length) availableLanes.push('objection');
+    var todaysLane = availableLanes.length ? availableLanes[label.day % availableLanes.length] : 'objection';
+    var assignCloseAskToday = todaysLane === 'close_ask';
+    var assignFrameworkToday = todaysLane === 'framework';
 
     var subjectPrefix = rep + ' — ' + label.label + ' — Training Plan';
     var subject, body, htmlBody;
-    if (assignCloseAskToday) {
+    if (assignFrameworkToday) {
+      subject = subjectPrefix;
+      var frameworkLabelFor = function (f) { return (FRAMEWORK_TOPIC_LABELS_[f.topic] || f.topic); };
+      var frameworkPlainList = frameworkGaps.map(function (f, i) {
+        return (i + 1) + '. ' + frameworkLabelFor(f) + ' — ' + f.note;
+      }).join('\n');
+      var frameworkHtmlList = '<ol>' + frameworkGaps.map(function (f) {
+        return '<li><b>' + frameworkLabelFor(f) + '</b> — ' + f.note + '</li>';
+      }).join('') + '</ol>';
+
+      body =
+        'Record a video practicing FRAMEWORK EXPLANATION — walk through this like you\'re actually pitching a lead:\n\n' +
+        frameworkPlainList + '\n\n' +
+        namingLine + '\n\n' +
+        'Delivery folder: ' + folderLink + '\n\n' +
+        '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
+      htmlBody =
+        '<p>Record a video practicing <b>FRAMEWORK EXPLANATION</b> — walk through this like you\'re actually pitching a lead:</p>' +
+        frameworkHtmlList +
+        '<p>' + namingLineHtml + '</p>' +
+        '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
+        '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
+    } else if (assignCloseAskToday) {
       subject = subjectPrefix;
       body =
         'Record a video practicing ASKING FOR THE MONEY:\n\n' +
@@ -441,7 +499,9 @@ function sendDailyPracticeReminders_() {
       return;
     }
     var sent = guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
-    log_('[' + rep + '] Sent ' + label.label + ' assignment' + (objections && objections.length ? '.' : ' (generic fallback — no objections on file).') + ' (cc\'d Tomás)');
+    var isGenericFallback = todaysLane === 'objection' && !(objections && objections.length);
+    log_('[' + rep + '] Sent ' + label.label + ' assignment (lane: ' + todaysLane + ')' +
+      (isGenericFallback ? ' (generic fallback — nothing on file for any lane).' : '.') + ' (cc\'d Tomás)');
     if (!sent) return;
 
     // Register the assignment as tracked regardless of whether Gmail's search

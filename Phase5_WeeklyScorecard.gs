@@ -45,6 +45,11 @@ var WEEKLY_SCORECARD_CONFIG = {
 var FAILURE_MODE_COACHING_TEXT_ = {
   no_close_ask: 'Ask directly for the money/commitment this week — don\'t stop at a soft trial-close question.',
   objections_missed: 'Uncover objections explicitly and answer them with a concrete number, case study, or mechanism — not a generic pitch line.',
+  // Added 25/08/2026, per Kris: proactively explaining the framework is what
+  // heads off objections before they're raised — same "prevention beats
+  // handling" idea behind objections_missed above, applied one step earlier
+  // in the call. See Phase2_CallGradingSOP.md §3D.
+  framework_not_explained: 'Walk through the full framework proactively this week — how the podcast helps recruit agents, builds #1-podcast-in-your-city authority, and helps sell more houses. Covering it up front heads off objections before the lead even raises them.',
   both: 'Both the close ask and objection handling need work this week — start with directly asking for the money.',
   weak_discovery: 'Slow down before pitching — ask real discovery questions about production volume, marketing spend, and team structure.',
   no_goal_alignment: 'Get the lead to state their own numeric goal, then explicitly tie the offer back to that number.',

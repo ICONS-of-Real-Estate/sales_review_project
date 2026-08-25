@@ -817,15 +817,27 @@ var SALES_CALL_LOG_HEADERS = [
   'Kris Manual Review Verdict', // V (dropdown: Yes/No, blank = not yet judged —
                             //    Phase 2 weekly calibration input; see SOP §7)
   // --- Phase 5: written by the scoring pipeline, read by the weekly scorecard ---
-  'Primary Failure Mode'    // W  (no_close_ask/objections_missed/weak_discovery/
+  'Primary Failure Mode',   // W  (no_close_ask/objections_missed/weak_discovery/
                             //    no_goal_alignment/no_second_call_booked/both/
-                            //    multiple/none — appended at the end, same
+                            //    multiple/framework_not_explained/none —
+                            //    appended at the end, same
                             //    backward-compatible pattern as column V. Existing
                             //    live sheets need migrateAddPrimaryFailureModeColumn()
                             //    (Phase2_CallScoring.gs) run once before this column
                             //    exists there; rows scored before that will read as
                             //    blank, which the weekly scorecard treats as "no
                             //    signal" rather than an error.
+  // --- 25/08/2026: third scored dimension, per Kris — explaining the
+  // podcast framework properly heads off objections before they're raised,
+  // same "prevention beats handling" logic already grounding failure mode 2.
+  // See Phase2_CallGradingSOP.md §3D. ---
+  'Flag: Framework Explained', // X (bool — recruit-agents + #1-podcast-in-city
+                            //    + sell-more-houses all covered proactively)
+  'Framework Gaps'          // Y  (comma-joined: which of the 3 pieces were
+                            //    missing/weak, blank if all 3 covered — the
+                            //    coaching detail behind column X, same "pack
+                            //    real content into a real column, not just a
+                            //    bool" pattern as the flags before it)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

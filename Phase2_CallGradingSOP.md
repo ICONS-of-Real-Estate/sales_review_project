@@ -22,9 +22,9 @@ Grading is **not** one blended score. It's two sequential, distinct judgment cal
 
 **Pass 2 — Call Quality Score (1–5) + two failure-mode flags.** Only runs if Pass 1 passed.
 
-## 3. The rubric — exactly two failure modes, nothing more
+## 3. The rubric — two failure modes plus one universal explanation-quality flag
 
-Kris's own framing of what goes wrong on a call reduces to two failure modes. Everything else (SPIN, Challenger, MEDDIC) is reasoning scaffolding for *why* a failure happened — not additional scored fields. Resist the urge to add more scored dimensions; the brief is explicit that this keeps the model stable under forced temperature=1.
+Kris's own framing of what goes wrong on a call reduces to two failure modes. Everything else (SPIN, Challenger, MEDDIC) is reasoning scaffolding for *why* a failure happened — not additional scored fields. Resist the urge to add more scored dimensions; the brief is explicit that this keeps the model stable under forced temperature=1. **§3D below (25/08/2026) is the one deliberate exception** — a third, independently-tracked dimension Kris explicitly asked for, not an accretion. It does not touch `call_quality_score`'s anchors.
 
 ### Failure mode 1 — Never asked for the close
 - **Decision rule (not an adjective):** did the rep make an explicit request for commitment — an Order or Advance in SPIN's taxonomy ("Shall we move forward with this?"), not merely a trial close (asking for an opinion, "How does that sound?")?
@@ -78,6 +78,25 @@ Extra scored fields beyond the shared schema: `call_role` (`icons_100_interview 
 
 **Rows already scored under the old shared rubric before this change are not automatically re-scored** — `scoreLegacyTranscriptFolder()`'s existing-row skip (keyed on prospect name + date) means a call already in the sheet stays exactly as it was scored, under whichever rubric was live at the time. If those older rows need re-scoring under the correct rubric, delete them from the sheet first, then re-run `scoreBensLegacyTranscripts()`.
 
+### 3D. Framework explanation — a third, universal dimension (25/08/2026)
+
+Kris's pushback (25/08/2026) on the two-failure-mode design above: on every real sales call, the rep is also explaining our actual value proposition — the "framework" — and until now nothing scored that, and nothing fed a gap in it into a rep's weekly scorecard priority or the following week's training/practice assignment. Tomás's own ask, verbatim: reps should be able to explain (1) how the podcast helps recruit agents, (2) how it can make them the #1 real estate podcast in their city, and (3) how it helps sell more houses.
+
+**The grounding, and why this isn't scope creep on top of §3's "resist adding dimensions" rule**: Kris's own framing is that explaining the framework properly *handles objections before they arise* — which is the exact same "objection prevention beats objection handling" principle already cited for Failure mode 2 above (SPIN Selling), just applied one step earlier in the call. A lead who never understood the offer is the lead who raises "so what does this actually do for me"-shaped objections. This is not a new, unrelated dimension bolted onto the rubric — it's upstream of Failure mode 2, made explicit and trackable because a missed explanation was invisible until now.
+
+**Decision rule:** did the rep proactively and accurately explain all three components — recruit agents, #1-podcast-in-your-city authority, sell more houses — across the whole call? Graded generously for substance (did they convey the idea, in their own words) over reciting exact marketing language. Each of the three is scored independently; a strong explanation of one does not paper over silence on another.
+
+**Universal, not variant-specific**: applies to the shared rubric, and to Sean's, Bens', and Tomás's variants alike — every rep, real sales calls only (this is not part of Phase 6's training-call rubric or Phase 7's daily-practice rubric, though both of those were extended separately to drill it — see their own headers). Deliberately does **not** change `call_quality_score`'s existing anchors (still close-ask/objection-handling only) — this stays an independent tracked flag, same relationship the two original failure modes already have to each other, extended to three.
+
+**Scored fields**, added to every variant's schema: a `framework` object with three booleans (`recruit_agents_explained`, `number_one_podcast_explained`, `sell_more_houses_explained`). Derived in Apps Script (`deriveFrameworkFields_()` in `Phase2_CallScoring.gs`, shared across all variants) into two real sheet columns — `Flag: Framework Explained` (true only if all three) and `Framework Gaps` (comma-joined labels of whichever were missing, blank if none) — not packed into free text like the Sean/Bens/Tomás extra fields, since this is meant to be a first-class, permanently tracked skill like the original two, not a one-off enrichment. `primary_failure_mode` gained a new possible value, `framework_not_explained`, used when this is the sole failure among the tracked flags (`multiple` covers it combining with a close-ask or objection-handling miss, same as it already does for two).
+
+**Closing the loop Kris asked about** ("will we pick it up for the next training plan and their week of practicing?"): yes, end to end —
+- Phase 5's weekly scorecard picks up `framework_not_explained` in its existing `Primary Failure Mode` priority-to-improve logic, no separate wiring needed (`FAILURE_MODE_COACHING_TEXT_` in `Phase5_WeeklyScorecard.gs` just gained a new key).
+- Phase 6 (Tomás's weekly 1:1 training-call review) now also extracts whether framework explanation was practiced live and which of the three components need drilling (`practiced_framework`, `framework_gaps_to_drill`), persisted the same way `TRAINING_OBJECTIONS_<rep>`/`TRAINING_CLOSE_DRILL_<rep>` already are.
+- Phase 7's daily self-practice `drill_type` gained a third value, `framework`, in rotation alongside `objection`/`close_ask`, graded against the same three-part rubric.
+
+**Migration**: two new trailing columns on the live "Sales Call Log" sheet — re-run `migrateAddPrimaryFailureModeColumn()` (despite the name, it's the general "catch the sheet up to `SALES_CALL_LOG_HEADERS`" migration, safe to re-run) after deploying this. Rows scored before this change read both new columns as blank ("no signal"), same backward-compatible pattern as every prior column addition in this file.
+
 ## 4. Scoring scale — anchored, not impressionistic
 
 `call_quality_score` is 1–5. Each level must be anchored to observable transcript evidence, not adjectives like "good/adequate":
@@ -109,14 +128,19 @@ This is the exact schema the Kimi k2.6 call must return — reasoning first, str
     "objections_uncovered": true,
     "objections_overcome": true
   },
-  "primary_failure_mode": "none | no_close_ask | objections_missed | both",
+  "framework": {
+    "recruit_agents_explained": true,
+    "number_one_podcast_explained": true,
+    "sell_more_houses_explained": true
+  },
+  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | multiple",
   "manual_review_recommended": true,
   "severity": 1,
   "feedback_summary": "string — 2-3 sentences, coaching-ready"
 }
 ```
 
-No fields beyond these. Booleans + 1–5 severity resist drift under kimi-k2.6's forced temperature=1 in a way 0–100 scores would not.
+No fields beyond these (`framework`, added §3D 25/08/2026, is the one deliberate exception — see that section for why it doesn't count as scope creep). Booleans + 1–5 severity resist drift under kimi-k2.6's forced temperature=1 in a way 0–100 scores would not.
 
 **Parsing rule:** strip leading/trailing ` ```json ` fences via regex before `JSON.parse()`. On parse failure, retry once with an explicit "return ONLY raw JSON" reminder. On a second failure, log the raw response and route to manual review — never silently drop a row.
 

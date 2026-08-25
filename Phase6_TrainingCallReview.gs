@@ -3,10 +3,12 @@
  *
  * Thao's ask (19/08/2026): Tomás runs a 1:1 training call with each rep,
  * built around that rep's own review from the week before, to drill
- * objection handling and asking for the money. This phase reads the
- * TRANSCRIPT OF THAT TRAINING CALL — not a sales call — and turns it into
- * a coaching plan for the coming week. Complements Phase 5 (grades the
- * reps' real sales calls); this phase grades the coaching session itself.
+ * objection handling and asking for the money — joined 25/08/2026 by a third
+ * skill, explaining the framework (see Phase2_CallGradingSOP.md §3D). This
+ * phase reads the TRANSCRIPT OF THAT TRAINING CALL — not a sales call — and
+ * turns it into a coaching plan for the coming week. Complements Phase 5
+ * (grades the reps' real sales calls); this phase grades the coaching
+ * session itself.
  *
  * Real folder structure (confirmed 19/08/2026 against Bens' actual first
  * session — Zoom's cloud recording drops its own auto-generated .vtt
@@ -67,10 +69,11 @@ function buildTrainingReviewSystemPrompt_(rep) {
     'You are reviewing the TRANSCRIPT OF A LIVE 1:1 TRAINING CALL between Tomás (sales trainer) and ' +
       rep + ' (rep) — not a sales call.',
     'Tomás runs this call weekly, built around ' + rep + '\'s own performance review from the week',
-    'before, to drill two separate skills: objection handling, and asking for the money. A third person',
-    '(e.g. "Admin"/Kris) may sit in on the call — treat their turns as context, not as something to coach.',
+    'before, to drill three separate skills: objection handling, asking for the money, and explaining the',
+    'framework. A third person (e.g. "Admin"/Kris) may sit in on the call — treat their turns as context,',
+    'not as something to coach.',
     '',
-    'These are our two named frameworks — grade against these, not a generic sales methodology:',
+    'These are our named frameworks — grade against these, not a generic sales methodology:',
     '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise (don\'t argue it',
     '    away), isolate it as the one thing standing in the way ("so if it weren\'t for X, you\'d be ready',
     '    to move forward?"), then repeat/confirm that back before answering it.',
@@ -79,6 +82,11 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    and whatever comes back is either another objection (loop back into Agree/Isolate/Repeat, then ask',
     '    again) or a yes (go straight to payment). A single ask with no repeat attempt, or a soft-question',
     '    substitute for the direct line, does not count as the drill having landed.',
+    '  FRAMEWORK EXPLANATION = proactively and specifically walking through all three pieces of our value',
+    '    proposition: how the podcast helps RECRUIT AGENTS, how it builds #1-PODCAST-IN-YOUR-CITY authority,',
+    '    and how it helps SELL MORE HOUSES. Explaining this clearly up front heads off the objections that',
+    '    come from a lead never understanding the offer in the first place — added 25/08/2026 per Kris, same',
+    '    "prevention beats handling" logic as objection handling above, applied one step earlier in the call.',
     '',
     'Extract:',
     '  - Did Tomás reference a specific real call/objection pattern of ' + rep + '\'s, and what did he say about it?',
@@ -88,6 +96,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    started?" line or a clear equivalent, ideally more than once) in this call? Quote the moment. Be',
     '    strict: Tomás merely telling ' + rep + ' to ask for the money is not the same as ' + rep + ' practicing',
     '    saying it.',
+    '  - Did ' + rep + ' actively practice FRAMEWORK EXPLANATION (role-play walking through recruit-agents /',
+    '    #1-podcast-in-your-city / sell-more-houses, not just listen to Tomás describe it) in this call?',
+    '    Quote the moment. Same strictness as above — Tomás telling ' + rep + ' to explain it better is not',
+    '    the same as ' + rep + ' practicing saying it.',
     '  - What did Tomás explicitly tell ' + rep + ' to do differently before next week?',
     '  - The 2-3 SPECIFIC objections Tomás drilled ' + rep + ' on in this call (not a general theme —',
     '    the actual named objection, e.g. "I\'m too busy right now", "What does this cost?"), each with a',
@@ -98,10 +110,14 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    "Ready to get started?") and a one-clause note on the branch logic he taught (e.g. "ask again after',
     '    handling the objection, then go straight to payment on a yes"). Omit (null) if the money-ask wasn\'t',
     '    drilled this call.',
+    '  - If Tomás drilled framework explanation: which of the three specific pieces (recruit_agents |',
+    '    number_one_podcast | sell_more_houses) he worked on with ' + rep + ', each with a short, concrete',
+    '    one-clause note on what to say differently. Empty array if it wasn\'t drilled this call — these feed',
+    '    ' + rep + '\'s daily practice assignment same as the objections above.',
     '',
     'Be skeptical: if ' + rep + ' was only listening, not practicing, mark the relevant practiced_* field',
-    'false — don\'t invent practice that didn\'t happen. The two skills are independent: a call can drill',
-    'one, both, or neither.',
+    'false — don\'t invent practice that didn\'t happen. The three skills are independent: a call can drill',
+    'any combination of them, including none.',
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
@@ -110,6 +126,7 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  "attended": true,',
     '  "practiced_objections": true,',
     '  "practiced_close_ask": true,',
+    '  "practiced_framework": true,',
     '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote",',
     '  "next_focus": "string — one concrete, specific self-practice focus for this coming week",',
     '  "objections_to_drill": [',
@@ -118,6 +135,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  ],',
     '  "close_ask_drill": { "label": "string — the exact line practiced, e.g. \\"Ready to get started?\\"",',
     '    "note": "string — one short clause on the branch logic, e.g. \\"ask again after the objection, then payment on a yes\\"" } | null,',
+    '  "framework_gaps_to_drill": [',
+    '    { "topic": "recruit_agents | number_one_podcast | sell_more_houses",',
+    '      "note": "string — one short clause on what to say differently" }',
+    '  ],',
     '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\""',
     '}'
   ].join('\n');
@@ -138,6 +159,7 @@ function isValidTrainingReviewSchema_(obj) {
     typeof obj.attended === 'boolean' &&
     typeof obj.practiced_objections === 'boolean' &&
     typeof obj.practiced_close_ask === 'boolean' &&
+    typeof obj.practiced_framework === 'boolean' &&
     typeof obj.coaching_notes === 'string' &&
     typeof obj.next_focus === 'string' &&
     typeof obj.team_notes === 'string' &&
@@ -147,7 +169,11 @@ function isValidTrainingReviewSchema_(obj) {
       return o && typeof o.label === 'string' && typeof o.note === 'string';
     }) &&
     (obj.close_ask_drill === null ||
-      (obj.close_ask_drill && typeof obj.close_ask_drill.label === 'string' && typeof obj.close_ask_drill.note === 'string')));
+      (obj.close_ask_drill && typeof obj.close_ask_drill.label === 'string' && typeof obj.close_ask_drill.note === 'string')) &&
+    Array.isArray(obj.framework_gaps_to_drill) &&
+    obj.framework_gaps_to_drill.every(function (f) {
+      return f && typeof f.topic === 'string' && typeof f.note === 'string';
+    }));
 }
 
 /** Strips WebVTT cue numbers + timestamp lines, leaving just "Speaker: text" lines for the judge. */
@@ -188,10 +214,12 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     attended: true,
     practiced_objections: false,
     practiced_close_ask: false,
+    practiced_framework: false,
     coaching_notes: 'Automated review failed to parse twice — read the transcript manually.',
     next_focus: 'n/a — read transcript manually: ' + rep + '/' + dateLabel,
     objections_to_drill: [],
     close_ask_drill: null,
+    framework_gaps_to_drill: [],
     team_notes: 'none'
   };
 }
@@ -212,10 +240,17 @@ function trainingReviewCallout_(accentColor, bgColor, label, text) {
     '<b style="color:' + accentColor + ';">' + label + '</b><br>' + text + '</div>';
 }
 
+var FRAMEWORK_TOPIC_LABELS_ = {
+  recruit_agents: 'Recruit agents',
+  number_one_podcast: '#1 podcast in your city',
+  sell_more_houses: 'Sell more houses'
+};
+
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
   var objections = result.objections_to_drill || [];
   var closeAsk = result.close_ask_drill || null;
+  var frameworkGaps = result.framework_gaps_to_drill || [];
 
   var objectionsPlain = objections.map(function (o) {
     return '- ' + o.label + ' — ' + o.note;
@@ -232,15 +267,30 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
         '"' + closeAsk.label + '" — ' + closeAsk.note)
     : '';
 
+  var frameworkLabelFor = function (f) { return FRAMEWORK_TOPIC_LABELS_[f.topic] || f.topic; };
+  var frameworkPlain = frameworkGaps.length
+    ? '\nFramework explanation to drill:\n' + frameworkGaps.map(function (f) {
+        return '- ' + frameworkLabelFor(f) + ' — ' + f.note;
+      }).join('\n') + '\n'
+    : '';
+  var frameworkHtml = frameworkGaps.length
+    ? trainingReviewCallout_('#0b8043', '#e6f4ea', 'Framework explanation to drill',
+        '<ul style="margin:6px 0 0;padding-left:20px;">' + frameworkGaps.map(function (f) {
+          return '<li style="margin-bottom:4px;"><b>' + frameworkLabelFor(f) + '</b> — ' + f.note + '</li>';
+        }).join('') + '</ul>')
+    : '';
+
   var hasTeamNote = result.team_notes && result.team_notes.toLowerCase() !== 'none';
 
   var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
     'Attended: ' + (result.attended ? 'Yes' : 'No') +
     ' | Practiced objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
-    ' | Practiced asking for the money: ' + (result.practiced_close_ask ? 'Yes' : 'No') + '\n\n' +
+    ' | Practiced asking for the money: ' + (result.practiced_close_ask ? 'Yes' : 'No') +
+    ' | Practiced framework explanation: ' + (result.practiced_framework ? 'Yes' : 'No') + '\n\n' +
     'Notes: ' + result.coaching_notes + '\n\n' +
     'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
-    closeAskPlain + '\n' +
+    closeAskPlain +
+    frameworkPlain + '\n' +
     (hasTeamNote ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
     '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
 
@@ -251,11 +301,13 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     trainingReviewStatBadge_('Attended', result.attended) +
     trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
     trainingReviewStatBadge_('Asking for the money practiced', result.practiced_close_ask) +
+    trainingReviewStatBadge_('Framework explanation practiced', result.practiced_framework) +
     '</div>' +
     trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', result.coaching_notes) +
     '<h3 style="color:#0b8043;font-size:14px;margin:0 0 6px;">This week\'s objections to drill (Agree → Isolate → Repeat)</h3>' +
     objectionsHtml +
     closeAskHtml +
+    frameworkHtml +
     (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', result.team_notes) : '') +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
     '</div>';
@@ -302,7 +354,7 @@ function findFlatTrainingTranscripts_(repFolder) {
 }
 
 var TRAINING_ASSIGNMENTS_SHEET_NAME = 'Training Assignments';
-var TRAINING_ASSIGNMENTS_HEADERS = ['Rep', 'Training Objections (JSON)', 'Close Ask Drill (JSON)', 'Last Updated'];
+var TRAINING_ASSIGNMENTS_HEADERS = ['Rep', 'Training Objections (JSON)', 'Close Ask Drill (JSON)', 'Training Framework (JSON)', 'Last Updated'];
 
 function getOrCreateTrainingAssignmentsSheet_() {
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
@@ -313,6 +365,25 @@ function getOrCreateTrainingAssignmentsSheet_() {
       .setFontWeight('bold').setBackground('#e8eef7');
     sheet.setFrozenRows(1);
     log_('Created "' + TRAINING_ASSIGNMENTS_SHEET_NAME + '" tab.');
+    return sheet;
+  }
+  // mirrorTrainingAssignment_ writes by fixed column POSITION, not header
+  // lookup — unlike the Sales Call Log there's no getValidatedColumnMap_
+  // guard here, so a header array that grows (as it just did, 25/08/2026:
+  // "Training Framework (JSON)" inserted before "Last Updated") would
+  // otherwise silently mislabel the live sheet's header row against the new
+  // column layout — new writes go to the right position, but "Last Updated"
+  // would keep displaying under whatever header used to sit at position 4.
+  // Self-heal on every call, cheap and idempotent, same "validate every run"
+  // spirit as setupSalesCallLog()'s header check.
+  var existing = sheet.getRange(1, 1, 1, TRAINING_ASSIGNMENTS_HEADERS.length).getValues()[0];
+  var headersMatch = TRAINING_ASSIGNMENTS_HEADERS.every(function (h, i) { return existing[i] === h; });
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, TRAINING_ASSIGNMENTS_HEADERS.length).setValues([TRAINING_ASSIGNMENTS_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    log_('Updated "' + TRAINING_ASSIGNMENTS_SHEET_NAME + '" header row to match TRAINING_ASSIGNMENTS_HEADERS ' +
+      '(' + TRAINING_ASSIGNMENTS_HEADERS.length + ' columns) — rows for reps not yet re-mirrored since this ' +
+      'change will show stale data under the new labels until their next Phase 6 run rewrites them.');
   }
   return sheet;
 }
@@ -329,6 +400,7 @@ function mirrorTrainingAssignment_(rep) {
   var props = PropertiesService.getScriptProperties();
   var objections = props.getProperty('TRAINING_OBJECTIONS_' + rep) || '';
   var closeDrill = props.getProperty('TRAINING_CLOSE_DRILL_' + rep) || '';
+  var framework = props.getProperty('TRAINING_FRAMEWORK_' + rep) || '';
 
   var sheet = getOrCreateTrainingAssignmentsSheet_();
   var lastRow = sheet.getLastRow();
@@ -342,7 +414,7 @@ function mirrorTrainingAssignment_(rep) {
     }
   }
 
-  var rowValues = [rep, objections, closeDrill, new Date()];
+  var rowValues = [rep, objections, closeDrill, framework, new Date()];
   if (rowIndex === -1) {
     sheet.appendRow(rowValues);
   } else {
@@ -390,6 +462,11 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
   if (result.close_ask_drill) {
     PropertiesService.getScriptProperties().setProperty(
       'TRAINING_CLOSE_DRILL_' + rep, JSON.stringify(result.close_ask_drill));
+  }
+  // Same non-destructive rule again, for framework explanation.
+  if (result.framework_gaps_to_drill && result.framework_gaps_to_drill.length) {
+    PropertiesService.getScriptProperties().setProperty(
+      'TRAINING_FRAMEWORK_' + rep, JSON.stringify(result.framework_gaps_to_drill));
   }
   // Script Properties (above) are invisible to anything outside Apps Script —
   // no Sheets/Drive API can read them. Mirror the current values into a sheet
