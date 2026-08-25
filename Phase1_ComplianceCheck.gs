@@ -846,7 +846,10 @@ var SALES_CALL_LOG_HEADERS = [
   'Manual Review Recommended', // Q (bool)
   'Severity',               // R  (1-5)
   'AI Feedback Summary',    // S
-  'Reviewed By Kris',       // T
+  'Reviewed By',            // T  (dropdown: Kris/Tomás — who reviewed this call, blank = not yet.
+                            //    Renamed from "Reviewed By Kris" 25/08/2026 — Tomás reviews too now;
+                            //    run migrateRenameReviewedByColumn() (Phase2_CallScoring.gs) once on
+                            //    an existing live sheet, see that function's own comment.)
   'Queue Age',              // U  (days)
   'Kris Manual Review Verdict', // V (dropdown: Yes/No, blank = not yet judged —
                             //    Phase 2 weekly calibration input; see SOP §7)
@@ -919,6 +922,7 @@ function setupSalesCallLog() {
   setDropdown_(sheet, 6, ['QC', 'Sales Call', 'Discovery']);
   setDropdown_(sheet, 8, ['Sold', 'Not Sold', 'Follow-up', 'No-show']);
   setDropdown_(sheet, 12, ['exact_key', 'fallback_heuristic', 'no_match']);
+  setDropdown_(sheet, SALES_CALL_LOG_HEADERS.indexOf('Reviewed By') + 1, ['Kris', 'Tomás']);
   // Yes/No dropdown rather than a checkbox: a checkbox range forces every
   // empty cell to render as unchecked (false), which would make "not yet
   // judged" indistinguishable from "Kris disagreed" — calibration needs to
@@ -1223,11 +1227,16 @@ function manualReviewGuideRows_() {
       'pick the closest match: no_close_ask / objections_missed / weak_discovery / no_goal_alignment / ' +
       'no_second_call_booked / both / multiple / framework_not_explained / none), "AI Feedback Summary" (S) — ' +
       'add your own note rather than erasing the AI\'s, so there\'s a record of what changed and why.'],
-    ['Columns that are Kris\'s specifically — leave these alone unless he asks you to use them',
-      '"Reviewed By Kris" (T) and "Kris Manual Review Verdict" (V, Yes/No) are Kris\'s own calibration ' +
-      'fields — do they agree with the AI\'s score — and feed the weekly ~80%-agreement benchmark. If you\'d ' +
-      'like your own review marked separately from Kris\'s, ask him — that\'s a real workflow decision, not ' +
-      'something to just start writing into those two columns.'],
+    ['Marking that you reviewed a call — "Reviewed By" (column T)',
+      'Set this to "Kris" or "Tomás" (dropdown) once you\'ve actually looked at a call — either of you can ' +
+      'review, and this records who. Blank means nobody has reviewed it yet; buildReviewQueue() and the ' +
+      'dashboard\'s queue view both treat any non-blank value here as "already reviewed," regardless of ' +
+      'which name is in it.'],
+    ['"Kris Manual Review Verdict" (column V) — Kris-specific, leave alone',
+      'This one Yes/No column is different from "Reviewed By": it\'s Kris\'s own calibration signal — does he ' +
+      'agree with the AI\'s score on this call — and feeds the weekly ~80%-agreement benchmark that gates ' +
+      'whether the AI judge is trusted to run with less oversight. Don\'t write into this one unless Kris ' +
+      'specifically asks you to.'],
     ['Updating the objection playbook',
       'The "Objection Playbook" tab (same spreadsheet) is your living reference — every known objection, why ' +
       'it happens, and Bens\'s scripted response. Edit any row directly when you want to refine a response or ' +

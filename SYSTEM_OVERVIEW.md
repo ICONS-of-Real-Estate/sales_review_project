@@ -78,7 +78,7 @@ truth every phase reads and writes. Key columns (see `brief.txt` §2 for the
 full schema): Prospect Name/Email, Rep, Call Type, Call Date, Outcome
 Disposition, Calendar Event ID, Transcript URL, Match Method, Lead Quality
 Verdict, Call Quality Score, the two failure-mode flags, Manual Review
-Recommended, Severity, AI Feedback Summary, Reviewed By Kris, Queue Age,
+Recommended, Severity, AI Feedback Summary, Reviewed By, Queue Age,
 Kris Manual Review Verdict, Primary Failure Mode.
 
 A call only becomes eligible for AI scoring once it has a logged Outcome

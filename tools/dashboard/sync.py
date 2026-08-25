@@ -50,6 +50,11 @@ DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
 # happened before per SALES_CALL_LOG_HEADERS's own comments about additive
 # columns) doesn't silently corrupt the mirror. Must match
 # Phase1_ComplianceCheck.gs's SALES_CALL_LOG_HEADERS exactly.
+# Left side must match SALES_CALL_LOG_HEADERS in Phase1_ComplianceCheck.gs exactly (sheet header
+# text); right side is this table's own SQLite column name and doesn't need to match the sheet
+# header — e.g. "Reviewed By" (renamed 25/08/2026, both Kris and Tomás review calls now) still maps
+# to the DB column reviewed_by_kris to avoid touching every query/route/template that already
+# references it by that name.
 SALES_CALL_LOG_COLUMNS = {
     "Prospect Name": "prospect_name",
     "Prospect Email": "prospect_email",
@@ -70,7 +75,7 @@ SALES_CALL_LOG_COLUMNS = {
     "Manual Review Recommended": "manual_review_recommended",
     "Severity": "severity",
     "AI Feedback Summary": "ai_feedback_summary",
-    "Reviewed By Kris": "reviewed_by_kris",
+    "Reviewed By": "reviewed_by_kris",
     "Queue Age": "queue_age",
     "Kris Manual Review Verdict": "kris_manual_review_verdict",
     "Primary Failure Mode": "primary_failure_mode",

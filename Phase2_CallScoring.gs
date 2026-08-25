@@ -721,6 +721,48 @@ function migrateAddPrimaryFailureModeColumn_() {
     '("no signal") for these until re-scored; new scoring passes will populate them going forward.');
 }
 
+/**
+ * One-time rename: column T's header changes from "Reviewed By Kris" to
+ * "Reviewed By" (25/08/2026, per Kris — Tomás reviews calls too now, and
+ * the column needs to record who, not just whether Kris did).
+ * migrateAddPrimaryFailureModeColumn_() above can't do this — it only ever
+ * fills in a genuinely blank header and deliberately throws rather than
+ * overwrite one that already has different non-blank text, so a rename
+ * needs its own explicit migration. Only touches the header cell's text —
+ * every row's existing data in column T is untouched, including legacy
+ * TRUE/FALSE values written before this rename (still read correctly as
+ * "reviewed by someone, attribution predates this change" by every truthy
+ * check already in this codebase — buildReviewQueueImpl_, the dashboard
+ * sync). Idempotent: no-ops if the header already reads "Reviewed By".
+ *
+ * ONE-TIME SETUP: run once from the Apps Script editor right after
+ * deploying this change — getValidatedColumnMap_ throws (with an ops
+ * alert, see alertHeaderDriftOnce_) for every scoring/compliance function
+ * until this runs, since the live header still reads "Reviewed By Kris"
+ * until then.
+ */
+function migrateRenameReviewedByColumn() {
+  RUN_TAG = 'migrateRenameReviewedByColumn';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var colIndex = SALES_CALL_LOG_HEADERS.indexOf('Reviewed By') + 1;
+  var cell = sheet.getRange(1, colIndex);
+  var current = cell.getValue();
+  if (current === 'Reviewed By') {
+    log_('migrateRenameReviewedByColumn: already renamed — nothing to do.');
+    return;
+  }
+  if (current !== 'Reviewed By Kris') {
+    throw new Error('migrateRenameReviewedByColumn: column ' + colIndex + ' expected "Reviewed By Kris" or ' +
+      '"Reviewed By", found "' + current + '" — resolve manually before migrating.');
+  }
+  cell.setValue('Reviewed By').setFontWeight('bold').setBackground('#e8eef7');
+  setDropdown_(sheet, colIndex, ['Kris', 'Tomás']);
+  log_('migrateRenameReviewedByColumn: column ' + colIndex + ' header renamed to "Reviewed By", dropdown applied.');
+}
+
 // ---------------------------------------------------------------------------
 // Bens-specific rubric — added 22/08/2026 per Kris: Bens is not a closer.
 // He runs the ICONS 100 lead-gen podcast (interviews a guest, then books a
@@ -1030,7 +1072,7 @@ function findLegacyBackfillDuplicates_(sheet) {
       prospectName: row[col['Prospect Name'] - 1],
       dateKey: dateKey,
       matchMethod: row[col['Match Method'] - 1],
-      reviewedByKris: !!row[col['Reviewed By Kris'] - 1],
+      reviewedByKris: !!row[col['Reviewed By'] - 1],
       krisVerdict: String(row[col['Kris Manual Review Verdict'] - 1] || '').trim()
     };
   });
@@ -1338,7 +1380,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           true,                           // Manual Review Recommended — forced true for fallback_heuristic
           result.severity,                // Severity
           feedbackSummaryFn(result),      // AI Feedback Summary
-          false,                          // Reviewed By Kris
+          '',                          // Reviewed By
           0,                               // Queue Age
           '',                              // Kris Manual Review Verdict — not yet judged
           result.primary_failure_mode || 'none', // Primary Failure Mode
@@ -1760,7 +1802,7 @@ function scoreSeanTranscripts() {
             true,                            // Manual Review Recommended — forced true
             result.severity,                 // Severity
             buildSeanFeedbackSummary_(result), // AI Feedback Summary — includes the extra Sean dimensions
-            false,                           // Reviewed By Kris
+            '',                           // Reviewed By
             0,                               // Queue Age
             '',                              // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
@@ -1918,7 +1960,7 @@ function scoreJoanaTranscripts() {
             true,                             // Manual Review Recommended — forced true
             result.severity,                  // Severity
             result.feedback_summary,          // AI Feedback Summary
-            false,                            // Reviewed By Kris
+            '',                            // Reviewed By
             0,                                // Queue Age
             '',                               // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
@@ -2333,7 +2375,7 @@ function scoreTomasTranscripts() {
             true,                              // Manual Review Recommended — forced true
             result.severity,                   // Severity
             buildTomasFeedbackSummary_(result), // AI Feedback Summary — includes call_role + coaching extraction
-            false,                             // Reviewed By Kris
+            '',                             // Reviewed By
             0,                                  // Queue Age
             '',                                 // Kris Manual Review Verdict — not yet judged
             result.primary_failure_mode || 'none', // Primary Failure Mode
@@ -2560,7 +2602,7 @@ function installSeanScoringAutomation() {
  * prevention age threshold but still wasn't picked today.
  *
  * Read-only on everything except Queue Age (rollover aging) — never
- * touches Reviewed By Kris or any scored field. Run manually for now; wire
+ * touches Reviewed By or any scored field. Run manually for now; wire
  * to a daily trigger once Kris/Tomás confirm this matches how the 3-call
  * sitting should actually be picked.
  */
@@ -2615,7 +2657,7 @@ function buildReviewQueueImpl_() {
   for (var r = 0; r < values.length; r++) {
     var row = values[r];
     if (!row[col['Manual Review Recommended'] - 1]) continue;
-    if (row[col['Reviewed By Kris'] - 1]) continue;
+    if (row[col['Reviewed By'] - 1]) continue;
     // SOP §2: "a bad lead doesn't get penalized for a rep's close technique
     // on a call that shouldn't have happened" — this queue is specifically
     // about coaching rep EXECUTION, so a should_screen_out lead's severity
