@@ -2077,6 +2077,198 @@ function sendDashboardAccessEmail() {
     ' (cc ' + CONFIG.KRIS_EMAIL + ' on each).');
 }
 
+// ---------------------------------------------------------------------------
+// Weekly Playbook Review — Kris's ask (25/08/2026): sendBensPlaybookAsGoogleDoc/
+// sendSeanPlaybookAsGoogleDoc/sendJoanaPlaybookAsGoogleDoc above each did a
+// one-off, all-time sweep of every flagged call in history — that's now done.
+// Going forward each week should only look at calls SINCE the last review,
+// not re-sweep the whole history again. And a rep genuinely having no new
+// flagged calls in that window has to be an explicit flag to Tomás, not a
+// silent empty email — falling back to a link to the existing (all-time)
+// playbook so that week's session still has real material to work from.
+//
+// ONE-TIME SETUP:
+//   1. Run initPlaybookReviewWatermarks() once — it records "now" as the
+//      last-reviewed point for every rep in CONFIG.REPS (Bens/Joana/Sean),
+//      since their playbooks built earlier this session already cover every
+//      flagged call up to now.
+//   2. Run previewWeeklyPlaybookReview() from the Apps Script editor (NOT the
+//      trailing-underscore version — the "Select function" dropdown hides
+//      those). It logs, per rep, how many new flagged calls it found since
+//      their watermark — nothing is sent. Check the numbers look sane.
+//   3. Flip PLAYBOOK_REVIEW_CONFIG.ENABLED to true and run
+//      installPlaybookReviewTrigger().
+// ---------------------------------------------------------------------------
+
+var PLAYBOOK_REVIEW_CONFIG = {
+  ENABLED: false, // preview-first — see ONE-TIME SETUP above
+  TRIGGER_HOUR: 8 // Tuesday morning, CONFIG.BUSINESS_TIMEZONE — ahead of that day's training session
+};
+
+var PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ = 'LAST_PLAYBOOK_REVIEW_AT_';
+
+// Same "flagged for an objection issue" test sendJoanaRawMaterialToTomas
+// (above) used, pulled out so the weekly review can reuse it for any rep.
+var PLAYBOOK_REVIEW_OBJECTION_FAILURE_MODES_ = ['objections_missed', 'both', 'multiple'];
+
+function isObjectionFlaggedRow_(row, col) {
+  var mode = String(row[col['Primary Failure Mode'] - 1] || '').trim();
+  var objectionsHandled = row[col['Flag: Objections Handled'] - 1];
+  return PLAYBOOK_REVIEW_OBJECTION_FAILURE_MODES_.indexOf(mode) !== -1 ||
+    ((mode === '' || mode === 'none') && objectionsHandled === false);
+}
+
+/**
+ * One-time. Baselines "last reviewed" to now for every rep in CONFIG.REPS —
+ * run once, before the first real (non-preview) run, since today's playbooks
+ * already cover all history up to now. Re-running resets the clock for
+ * everyone, so don't re-run casually once real weekly reviews are live.
+ */
+function initPlaybookReviewWatermarks() {
+  RUN_TAG = 'initPlaybookReviewWatermarks';
+  var props = PropertiesService.getScriptProperties();
+  var now = new Date();
+  CONFIG.REPS.forEach(function (repCfg) {
+    props.setProperty(PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ + repCfg.name, now.toISOString());
+    log_('initPlaybookReviewWatermarks: ' + repCfg.name + ' watermark set to ' + now.toISOString() + '.');
+  });
+}
+
+/** Run this FIRST from the editor. Builds this week's review and only logs it — sends nothing. */
+function previewWeeklyPlaybookReview() {
+  return previewWeeklyPlaybookReview_();
+}
+
+function previewWeeklyPlaybookReview_() {
+  RUN_TAG = 'previewWeeklyPlaybookReview_';
+  log_('PREVIEW MODE — building this week\'s playbook review, nothing will be sent.');
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true);
+}
+
+/** Trigger target. Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
+function runWeeklyPlaybookReview() {
+  RUN_TAG = 'runWeeklyPlaybookReview';
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runWeeklyPlaybookReview: another run holds the lock, skipping this firing.');
+    return;
+  }
+  try {
+    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function buildAndMaybeSendPlaybookReview_(forcePreview) {
+  if (!forcePreview && !PLAYBOOK_REVIEW_CONFIG.ENABLED) {
+    log_('buildAndMaybeSendPlaybookReview_: PLAYBOOK_REVIEW_CONFIG.ENABLED is false, skipping.');
+    return;
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var logSheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!logSheet) { log_('buildAndMaybeSendPlaybookReview_: no Sales Call Log tab found.'); return; }
+
+  var col = getValidatedColumnMap_(logSheet);
+  var lastRow = logSheet.getLastRow();
+  var rows = lastRow < 2 ? [] : logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var now = new Date();
+
+  CONFIG.REPS.forEach(function (repCfg) {
+    var watermarkProp = PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ + repCfg.name;
+    var watermarkRaw = props.getProperty(watermarkProp);
+    if (!watermarkRaw) {
+      log_('buildAndMaybeSendPlaybookReview_: no watermark for ' + repCfg.name +
+        ' — run initPlaybookReviewWatermarks() once before this. Skipping ' + repCfg.name + '.');
+      return;
+    }
+    var watermark = new Date(watermarkRaw);
+
+    var newFlagged = [];
+    rows.forEach(function (row) {
+      if (row[col['Rep'] - 1] !== repCfg.name) return;
+      var callDate = row[col['Call Date'] - 1];
+      if (!(callDate instanceof Date) || callDate <= watermark) return;
+      if (!isObjectionFlaggedRow_(row, col)) return;
+      newFlagged.push({
+        prospectName: row[col['Prospect Name'] - 1],
+        callDate: Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy'),
+        score: row[col['Call Quality Score'] - 1],
+        feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim()
+      });
+    });
+
+    var windowLabel = Utilities.formatDate(watermark, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + ' - ' +
+      Utilities.formatDate(now, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
+
+    if (forcePreview) {
+      log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + newFlagged.length +
+        ' new flagged call(s) since ' + windowLabel + '.');
+      return;
+    }
+
+    if (newFlagged.length) {
+      sendPlaybookReviewNewMaterialEmail_(repCfg, newFlagged, windowLabel);
+    } else {
+      sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel);
+    }
+    props.setProperty(watermarkProp, now.toISOString());
+    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - ' + newFlagged.length +
+      ' new flagged call(s), watermark advanced to ' + now.toISOString() + '.');
+  });
+}
+
+function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
+  var body =
+    'Tomás,\n\n' +
+    'New objection-handling material for ' + repCfg.name + ' since the last review (' + windowLabel + ') — ' +
+    flagged.length + ' flagged call(s). Same as before: raw data, not a finished playbook — fold whatever\'s ' +
+    'real here into ' + repCfg.name + '\'s existing playbook rather than replacing it.\n\n' +
+    flagged.map(function (c, i) {
+      return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
+        (c.feedback || '(no AI feedback summary on file)');
+    }).join('\n\n') +
+    '\n\n' + repCfg.name + '\'s current playbook: ' + DASHBOARD_URL_ + 'reps/' + repCfg.name +
+    '\n\n— Sent automatically ahead of this week\'s session.';
+
+  guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — new calls to review this week (' + windowLabel + ')', body, {
+    cc: CONFIG.KRIS_EMAIL,
+    name: 'Training Prep Bot'
+  }, 2);
+}
+
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel) {
+  var body =
+    'Tomás,\n\n' +
+    'No new flagged calls for ' + repCfg.name + ' since the last review (' + windowLabel + ') — nothing to ' +
+    'add to the playbook this week. Flagging this explicitly rather than sending nothing: use ' +
+    repCfg.name + '\'s existing playbook for this session, built from the full call history.\n\n' +
+    repCfg.name + '\'s playbook: ' + DASHBOARD_URL_ + 'reps/' + repCfg.name +
+    '\n\n— Sent automatically ahead of this week\'s session.';
+
+  guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no new calls this week, use historic playbook', body, {
+    cc: CONFIG.KRIS_EMAIL,
+    name: 'Training Prep Bot'
+  }, 2);
+}
+
+function installPlaybookReviewTrigger() {
+  RUN_TAG = 'installPlaybookReviewTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runWeeklyPlaybookReview') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runWeeklyPlaybookReview')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .atHour(PLAYBOOK_REVIEW_CONFIG.TRIGGER_HOUR)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
+    .create();
+  log_('Playbook review trigger installed: Tuesdays ' + PLAYBOOK_REVIEW_CONFIG.TRIGGER_HOUR + ':00 ' +
+    CONFIG.BUSINESS_TIMEZONE + '.');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)
