@@ -2010,6 +2010,56 @@ function sendSeanPlaybookAsGoogleDoc() {
     CONFIG.KRIS_EMAIL + ').');
 }
 
+/**
+ * URGENT, on-demand (25/08/2026): dashboard access instructions + a plain
+ * brief on what the dashboard is, emailed to every rep (CONFIG.REPS) plus
+ * Tomás, Kris cc'd on each. Kris has just invited all four to the
+ * Tailscale network; this is the follow-up telling them what to do once
+ * they're connected. DASHBOARD_URL is hardcoded to the real Tailscale
+ * MagicDNS hostname Kris confirmed live — update here if that ever
+ * changes (e.g. Tailscale Funnel/Serve reconfigured, VPS rebuilt).
+ */
+var DASHBOARD_URL_ = 'https://vps-b3e68291.tail9f0adb.ts.net/';
+
+function sendDashboardAccessEmail() {
+  RUN_TAG = 'sendDashboardAccessEmail';
+  var recipients = CONFIG.REPS.map(function (r) { return { name: r.name, email: r.email }; });
+  recipients.push({ name: 'Tomás', email: CONFIG.TOMAS_EMAIL });
+
+  var brief =
+    'What the dashboard is: a read-only window into the Sales Call Log -- the same data Phase 2\'s AI ' +
+    'scoring already writes to the spreadsheet, just easier to see trends in than scrolling a sheet. ' +
+    'Nobody edits anything here; it\'s for looking, not logging.\n\n' +
+    'What\'s on it:\n' +
+    '- Overview -- team-wide call volume, average scores, and where outcomes/framework explanations are ' +
+    'or aren\'t being logged.\n' +
+    '- Each rep\'s own page (yours is ' + DASHBOARD_URL_ + 'reps/<your name>) -- your scored calls, score ' +
+    'trend over time, week-by-week scorecard history, and your own objection-handling playbook.\n' +
+    '- Training -- daily practice status, and search across every rep\'s playbook.\n' +
+    '- Review queue -- calls flagged for a second look.\n' +
+    '- Calls -- every scored call, filterable and searchable.';
+
+  recipients.forEach(function (r) {
+    var body =
+      'Hi ' + r.name + ',\n\n' +
+      'You\'re on the team\'s Tailscale network now. Two steps left to see the dashboard:\n\n' +
+      '1. If you haven\'t already, install Tailscale and sign in (check your email for the invite) -- ' +
+      'https://tailscale.com/download\n' +
+      '2. Once connected, go to ' + DASHBOARD_URL_ + ' and sign in with your @iconsofrealestate.com ' +
+      'Google account.\n\n' +
+      'If the page won\'t load, make sure Tailscale shows "Connected" (not just installed) -- that\'s the ' +
+      'most common snag. If you get an "access denied" page after signing in, let Kris know.\n\n' +
+      brief +
+      '\n\n-- Sent automatically.';
+    guardedSend_(r.email, 'Dashboard access — what to do next', body, {
+      cc: CONFIG.KRIS_EMAIL,
+      name: 'Training Prep Bot'
+    }, 2);
+  });
+  log_('sendDashboardAccessEmail: sent to ' + recipients.map(function (r) { return r.email; }).join(', ') +
+    ' (cc ' + CONFIG.KRIS_EMAIL + ' on each).');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)
