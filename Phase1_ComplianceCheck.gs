@@ -988,6 +988,295 @@ function protectSalesCallLogHeaderRow() {
     SALES_CALL_LOG_HEADERS.length + '.');
 }
 
+// ---------------------------------------------------------------------------
+// "Objection Playbook" tab — Kris's ask (25/08/2026): Tomás needs one place
+// to see every known objection and its scripted response, and be able to
+// update it himself, without touching GitHub or Apps Script. Objection_Handling_Playbook.md
+// (repo root) is the original source — same content, but only editable by
+// whoever has git access. This is a live, human-editable copy in the same
+// spreadsheet Tomás already has open daily. The .md file's own header
+// already says "Tomás approves changes here before they're used in
+// training" — this just makes that literally true instead of aspirational.
+// Not kept in automatic sync with the .md file or with FEW_SHOT_ANCHORS in
+// Phase2_CallScoring.gs (which still needs a real code change + redeploy to
+// actually reach the live prompt) — this tab is where the content lives and
+// gets curated now; periodically pull real edits back into the .md/prompt
+// by hand, same as any other rubric-affecting change in this project.
+// ---------------------------------------------------------------------------
+
+var OBJECTION_PLAYBOOK_SHEET_NAME = 'Objection Playbook';
+var OBJECTION_PLAYBOOK_HEADERS = [
+  '#', 'Objection', 'Times Seen (of 43, as of 17/08/2026)', 'Real Examples',
+  'Why It Happens', 'Technique', 'Suggested Response', 'Coaching Note',
+  'Status', 'Last Updated By', 'Last Updated'
+];
+
+/**
+ * Seed content transcribed from Objection_Handling_Playbook.md v1 (built
+ * from the first batch of 43 Bens recordings, May-July 2026, scored
+ * 17/08/2026). Real prospect quotes and names — see that file for full
+ * citations if a quote needs tracing back to its actual call.
+ */
+function objectionPlaybookSeedRows_() {
+  return [
+    [1, 'I\'m too busy / not right now', 6,
+      'Whitney Lohr ("I don\'t have the capacity for it right now... towards the end of summer"), Jim Atkinson ' +
+      '("I don\'t know if I got time for that"), Kade Phillips ("right now it\'s not really on my radar... ' +
+      'working on this Zillow contract"), David Leventhal ("once I get everything off my plate... just not ' +
+      'now"), Heather Gill ("I don\'t mind having the conversation... but it\'s not anything I can do right ' +
+      'now"), Cory Boldroff ("I have no bandwidth").',
+      'Usually genuine — these are high-volume producers with real calendar pressure. Sometimes it\'s a polite ' +
+      'deflection because the value of a 15-minute call hasn\'t been made concrete yet.',
+      'Isolate and minimize, never leave it open-ended. The mistake in most of these calls wasn\'t hearing "not ' +
+      'now" — it\'s accepting it as a full stop. A "not now" should always convert into a specific placeholder ' +
+      'date, not a vague future promise.',
+      '"Totally get it — everyone I talk to on this show is busy for a reason. That\'s actually why this is a ' +
+      '15-minute conversation, not a project. Rather than leave it open, let\'s just grab a placeholder for ' +
+      '[specific date 2-3 weeks out] — if it\'s still not the right moment when we get there, we\'ll push it ' +
+      'again, no pressure at all."',
+      'If the prospect still declines a specific placeholder after this, that\'s a real "not now" — accept it, ' +
+      'but never accept the first "not now" as final without one attempt to convert it into a date.',
+      'Approved (v1)', '', ''],
+    [2, 'What does this cost / how does monetization actually work?', 4,
+      'Barinder Maan ("How do you guys monetize it on a money basis?... who controls it, what is the monetary ' +
+      'fees attached to it?" — got no answer), Michelle Reifel ("would you be sending a marketing budget?"), ' +
+      'Gary Lanham ("Is there a way to monetize that?"), Dana Hindman-Allen ("send me a price breakdown... ' +
+      'before I take people\'s time").',
+      'Legitimate diligence — experienced business owners want to know roughly what they\'re being asked to ' +
+      'invest before booking a second call.',
+      'Directional answer, not a full punt. Fully deferring every pricing question to Tomás reads as evasive ' +
+      'to a sharp prospect. Give a ballpark and one concrete outcome, then bridge to the deeper conversation — ' +
+      'this still leaves the real numbers to Tomás, it just doesn\'t stonewall.',
+      '"Good question — I can\'t get into exact numbers since that\'s really Tomás\'s conversation, but ' +
+      'directionally it\'s [ballpark], and most agents see [one concrete outcome, e.g. their first inbound ' +
+      'lead from an episode within a few weeks]. Tomás will walk you through the real structure on the call — ' +
+      'does that work as a starting point?"',
+      '', 'Approved (v1)', '', ''],
+    [3, 'That\'s too expensive', 2,
+      'Tennitia Wilson ("the costs were prohibitive... more than my car note and insurance put together... in ' +
+      'sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen"), Dana ' +
+      'Hindman-Allen (wanted pricing before committing more time — same underlying concern).',
+      'Real budget sensitivity, especially for 1099 commission-only agents without steady income or benefits.',
+      'Acknowledge, then quantify. Never acknowledge-then-deflect. Tennitia\'s call is the textbook example of ' +
+      'what NOT to do: "maybe we can offer you something that fits" with no actual number. This is exactly the ' +
+      'rubric\'s "objections uncovered but not overcome" case.',
+      '"That\'s fair, and I\'d rather you know the real number now than find out later. For context, [X] is ' +
+      'roughly the cost of [one small piece of marketing spend / a fraction of a single commission check], and ' +
+      'agents in your market have seen [concrete result]. If that math doesn\'t work for you, no hard feelings ' +
+      '— but let\'s at least get you real numbers from Tomás before deciding either way."',
+      '', 'Approved (v1)', '', ''],
+    [4, 'I already have my own podcast / marketing company / platform', 4,
+      'Jeff Goodman (hosted his own 130-episode podcast), Bill Gross ("I\'m pretty satisfied with what I\'m ' +
+      'doing now, the system kind of works for me"), Thom Tillier ("I\'m looking to create an unedited podcast ' +
+      'because I don\'t have time for editing, nor do I want to pay for editing"), Steve Hauck (already pays a ' +
+      'marketing company for video/editing — never raised but a near-certain future objection).',
+      'Successful producers often already run some content operation and don\'t immediately see the ' +
+      'incremental value of a second one.',
+      'Don\'t compete with what they have; position as removing a cost from it. Ask one question about what ' +
+      'their current approach actually costs them in hours/month before pitching, then tie the offer to that ' +
+      'specific gap rather than a generic "content and authority" pitch.',
+      '"That\'s great that you\'re already doing [X] — a lot of the agents we work with are in the same spot. ' +
+      'The difference usually isn\'t replacing what you\'re doing, it\'s taking [the specific pain point they ' +
+      'mentioned — editing, consistency, distribution] off your plate so you can focus on [their actual ' +
+      'business]. Worth 15 minutes to see if that gap applies to you?"',
+      '', 'Approved (v1)', '', ''],
+    [5, 'I wouldn\'t know where to start / what if I\'m not good at this', 1,
+      'Katie Uei ("I would not have any idea where to start... what if I run out of topics? Maybe I\'m boring ' +
+      'or something").',
+      'Podcasting is unfamiliar territory; the prospect doubts they have enough "content" in them.',
+      'Concrete process proof, not cheerleading. Bens\'s actual response here was pure reassurance, which ' +
+      'doesn\'t resolve a capability doubt. The fix is explaining the actual mechanism: ICONS supplies the ' +
+      'structure, so the guest never has to generate content cold.',
+      '"That\'s the number one thing people worry about, which is exactly why we don\'t leave it to you — we ' +
+      'supply the questions, the structure, even topic ideas based on what\'s working in your market. You just ' +
+      'talk about your business the way you already do with clients every day."',
+      '', 'Approved (v1)', '', ''],
+    [6, 'I don\'t know this platform — is this legit?', 1,
+      'Phuong Phan ("all the services I have heard of, but Riverside is something I have not heard... I was ' +
+      'skeptical, I\'m like who are you... I don\'t want to trap in something I don\'t know").',
+      'An unfamiliar brand or tool name (Riverside, ICONS) triggers real skepticism, especially on a ' +
+      'cold-approached call.',
+      'Never joke past a trust objection. Bens\'s actual response was humor, which reads as more evasive, not ' +
+      'less, for a real legitimacy concern. The fix is concrete, checkable proof: a company site, a real guest ' +
+      'list, or a reference willing to be contacted.',
+      '"Totally fair to be cautious — here\'s [company website/LinkedIn], and here are a couple of agents in a ' +
+      'similar market you\'re welcome to look up, or even reach out to directly, before you commit any more ' +
+      'time."',
+      '', 'Approved (v1)', '', ''],
+    [7, 'This doesn\'t fit how I actually run my business', 2,
+      'Rob Bonecutter (his stated near-term goal was "bringing more agents into the company... through social ' +
+      'media," i.e. recruiting, not personal brand growth), Thom Tillier (specifically wants unedited content ' +
+      'with no paid editing — a direct mismatch with what ICONS sells).',
+      'The generic "content and authority" pitch doesn\'t map to what the prospect actually said their #1 ' +
+      'priority is.',
+      'Ask their current #1 growth lever before pitching, then tailor to it. Rob\'s call is the best partial ' +
+      'example of this being done right — Bens tied the podcast back to Rob\'s stated recruiting goal on the ' +
+      'fly. Use that as the model, not the exception.',
+      '"You mentioned your focus right now is more on [recruiting / their stated priority] than personal brand ' +
+      '— that makes sense. A lot of our partners actually use the podcast that way too: [a concrete example ' +
+      'tied to their stated goal]. Want me to have Tomás speak specifically to that angle instead of the ' +
+      'general pitch?"',
+      '', 'Approved (v1)', '', ''],
+    [8, 'I can tell this is a sales pitch', 1,
+      'Dana Hindman-Allen — highest-severity call in the whole batch. "I knew you were selling me on a ' +
+      'podcast. I knew you were the whole time... pretty sharp hooking right here."',
+      'A savvy, high-profile prospect recognizes the interview-into-upsell structure and names it directly, ' +
+      'testing whether Bens will be straight with her.',
+      'Own it plainly, don\'t get defensive or laugh it off. Bens\'s actual response ("well, good for you") ' +
+      'did neither — it just ended the exchange with nothing resolved and no meeting booked. Validate the ' +
+      'observation directly and reframe with confidence instead of deflecting.',
+      '"You got me — yeah, this interview is genuinely great content for you either way, and if it\'s a fit, ' +
+      'there\'s a paid option on top of it. I\'d rather be upfront about that than pretend otherwise. Want the ' +
+      'two-minute version of what that actually is? No pressure either way."',
+      '', 'Approved (v1)', '', ''],
+    [9, 'Flat "not interested," no reason given', 1,
+      'Carolyn Triebold — Bens never actually made the real ask here (only a soft "haven\'t you thought about ' +
+      'social media" trial-close question), and when she said "not something I\'m interested in," he accepted ' +
+      'it and moved to wrap up.',
+      'Sometimes a genuine no; sometimes a reflexive deflection to a soft, opinion-style question rather than ' +
+      'a real, direct ask.',
+      'Probe once, and always make the actual ask. A trial-close question isn\'t a real ask, so a "no" to it ' +
+      'isn\'t a real answer. Always make the direct ask; if declined, probe once before accepting it.',
+      '"No worries at all — can I ask, is it more that podcasting itself isn\'t your thing, or just not a ' +
+      'priority right now? [listen for the real reason] Either way, would you be open to a quick, no-pressure ' +
+      'look at what it actually involves, just so you have the full picture for later?"',
+      '', 'Approved (v1)', '', '']
+  ];
+}
+
+/**
+ * ONE-TIME SETUP: run once from the Apps Script editor. Safe to re-run —
+ * only writes the header row and seed rows if the tab doesn't already have
+ * real content, so re-running after Tomás has started editing never
+ * clobbers his changes (checked the same way setupSalesCallLog() checks for
+ * existing sample data: real content in column A past the header).
+ */
+function setupObjectionPlaybook() {
+  RUN_TAG = 'setupObjectionPlaybook';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(OBJECTION_PLAYBOOK_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(OBJECTION_PLAYBOOK_SHEET_NAME);
+    log_('Created "' + OBJECTION_PLAYBOOK_SHEET_NAME + '" tab.');
+  }
+
+  var headerRange = sheet.getRange(1, 1, 1, OBJECTION_PLAYBOOK_HEADERS.length);
+  if (headerRange.getValues()[0][0] !== OBJECTION_PLAYBOOK_HEADERS[0]) {
+    headerRange.setValues([OBJECTION_PLAYBOOK_HEADERS]);
+  }
+  headerRange.setFontWeight('bold').setBackground('#e8eef7');
+  sheet.setFrozenRows(1);
+
+  var hasData = sheet.getRange(2, 1, Math.max(sheet.getLastRow() - 1, 1), 1).getValues()
+    .some(function (r) { return String(r[0]).trim() !== ''; });
+  if (!hasData) {
+    var seed = objectionPlaybookSeedRows_();
+    sheet.getRange(2, 1, seed.length, OBJECTION_PLAYBOOK_HEADERS.length).setValues(seed);
+    log_('Seeded ' + seed.length + ' objection(s) from Objection_Handling_Playbook.md v1.');
+  } else {
+    log_('Objection Playbook already has content — not overwriting.');
+  }
+
+  sheet.setColumnWidths(4, 3, 420); // Real Examples / Why It Happens / Technique — long prose, needs room
+  sheet.getRange(2, 4, Math.max(sheet.getLastRow() - 1, 1), 4).setWrap(true);
+  setDropdown_(sheet, 9, ['Draft', 'Approved (v1)', 'Needs Update']);
+  sheet.autoResizeColumns(1, 3);
+  log_('setupObjectionPlaybook complete. Tomás can edit any row directly — Status/Last Updated columns are ' +
+    'there for him to track his own changes, nothing reads them automatically.');
+}
+
+// ---------------------------------------------------------------------------
+// "Manual Review Guide" tab — companion to the above: Kris's ask (25/08/2026)
+// for instructions Tomás can follow to review calls and grade them or log
+// outcomes by hand. Pure reference content, not a script this project reads
+// — this is entirely for a human to read in the same spreadsheet they
+// already work in.
+// ---------------------------------------------------------------------------
+
+var MANUAL_REVIEW_GUIDE_SHEET_NAME = 'Manual Review Guide';
+
+function manualReviewGuideRows_() {
+  return [
+    ['What "Lead Quality Verdict" (good_to_book) actually means',
+      'This is NOT "the call resulted in a booking." It answers one question only: "should this call have ' +
+      'been booked at all?" — i.e. was the prospect a worthwhile lead. good_to_book = yes, worth pursuing. ' +
+      'should_screen_out = a bad lead, and the rep\'s call-quality score doesn\'t get judged at all for that ' +
+      'row (a bad lead shouldn\'t penalize a rep\'s technique on a call that shouldn\'t have happened).'],
+    ['What actually tracks whether a booking happened: "Outcome Disposition" (column H)',
+      'This is the single most important column for you to fill in, and it is 100% manual — nothing in the ' +
+      'automated pipeline ever writes it. Set it to Sold / Not Sold / Follow-up / No-show once you know how a ' +
+      'call actually turned out (did the QC turn into a booked Sales Call, did the Sales Call turn into a ' +
+      'booked close). As of 25/08/2026 the vast majority of scored calls have this blank — filling it in as ' +
+      'you go is what makes the dashboard\'s funnel numbers mean anything at all.'],
+    ['How to find calls worth reviewing',
+      'Filter/sort the "Sales Call Log" tab: column Q ("Manual Review Recommended") = TRUE surfaces calls the ' +
+      'AI itself flagged as uncertain — the model failed to parse cleanly, or the score genuinely warrants a ' +
+      'second look. Column R ("Severity", 1-5) ranks how bad the AI thinks a call went. Kris also gets a ' +
+      'prioritized 3-call daily review queue via buildReviewQueue() — ask him if you want to be added to ' +
+      'that same digest instead of browsing the sheet directly.'],
+    ['How to grade a call manually',
+      'Open the "Transcript URL" (column K) for the call, read/listen to it, then edit these columns directly ' +
+      '— they\'re just sheet cells, nothing stops a human edit: "Lead Quality Verdict" (M, good_to_book / ' +
+      'should_screen_out), "Call Quality Score" (N, 1-5), "Flag: Asked For Close" (O, TRUE/FALSE — did the rep ' +
+      'make an explicit ask, not just a trial-close question), "Flag: Objections Handled" (P, TRUE/FALSE — ' +
+      'both surfaced AND resolved with something concrete, not just acknowledged), "Primary Failure Mode" (W, ' +
+      'pick the closest match: no_close_ask / objections_missed / weak_discovery / no_goal_alignment / ' +
+      'no_second_call_booked / both / multiple / framework_not_explained / none), "AI Feedback Summary" (S) — ' +
+      'add your own note rather than erasing the AI\'s, so there\'s a record of what changed and why.'],
+    ['Columns that are Kris\'s specifically — leave these alone unless he asks you to use them',
+      '"Reviewed By Kris" (T) and "Kris Manual Review Verdict" (V, Yes/No) are Kris\'s own calibration ' +
+      'fields — do they agree with the AI\'s score — and feed the weekly ~80%-agreement benchmark. If you\'d ' +
+      'like your own review marked separately from Kris\'s, ask him — that\'s a real workflow decision, not ' +
+      'something to just start writing into those two columns.'],
+    ['Updating the objection playbook',
+      'The "Objection Playbook" tab (same spreadsheet) is your living reference — every known objection, why ' +
+      'it happens, and Bens\'s scripted response. Edit any row directly when you want to refine a response or ' +
+      'add a new objection type you\'ve seen in real calls; update "Last Updated By" / "Last Updated" so ' +
+      'there\'s a record. Nothing here auto-updates the live scoring prompt — flag real changes to Kris so ' +
+      'they can be carried into the actual rubric/training material.']
+  ];
+}
+
+/**
+ * ONE-TIME SETUP: run once from the Apps Script editor. Safe to re-run —
+ * only seeds rows if the tab has no real content yet, same guard as
+ * setupObjectionPlaybook(), so it never clobbers edits Tomás has made to
+ * the guide itself.
+ */
+function setupManualReviewGuide() {
+  RUN_TAG = 'setupManualReviewGuide';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(MANUAL_REVIEW_GUIDE_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(MANUAL_REVIEW_GUIDE_SHEET_NAME);
+    log_('Created "' + MANUAL_REVIEW_GUIDE_SHEET_NAME + '" tab.');
+  }
+
+  var headers = ['Topic', 'Instructions'];
+  var headerRange = sheet.getRange(1, 1, 1, headers.length);
+  if (headerRange.getValues()[0][0] !== headers[0]) {
+    headerRange.setValues([headers]);
+  }
+  headerRange.setFontWeight('bold').setBackground('#e8eef7');
+  sheet.setFrozenRows(1);
+
+  var hasData = sheet.getRange(2, 1, Math.max(sheet.getLastRow() - 1, 1), 1).getValues()
+    .some(function (r) { return String(r[0]).trim() !== ''; });
+  if (!hasData) {
+    var seed = manualReviewGuideRows_();
+    sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
+    log_('Seeded ' + seed.length + ' guide row(s).');
+  } else {
+    log_('Manual Review Guide already has content — not overwriting.');
+  }
+
+  sheet.setColumnWidth(1, 260);
+  sheet.setColumnWidth(2, 700);
+  sheet.getRange(2, 2, Math.max(sheet.getLastRow() - 1, 1), 1).setWrap(true);
+  sheet.getRange(2, 1, Math.max(sheet.getLastRow() - 1, 1), 1).setFontWeight('bold');
+  log_('setupManualReviewGuide complete.');
+}
+
 function setDropdown_(sheet, colIndex, values) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(values, true)

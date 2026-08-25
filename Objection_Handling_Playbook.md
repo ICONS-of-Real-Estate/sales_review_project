@@ -1,6 +1,8 @@
 # Objection Handling Playbook — Bens
 
-> Companion to `Phase2_CallGradingSOP.md`. That SOP scores whether an objection was surfaced and overcome; this document is the answer key — what the objections actually are, why they come up, and what Bens should say. Tomás approves changes here before they're used in training.
+> Companion to `Phase2_CallGradingSOP.md`. That SOP scores whether an objection was surfaced and overcome; this document is the answer key — what the objections actually are, why they come up, and what Bens should say.
+
+> **25/08/2026: the live, editable copy of this content is the "Objection Playbook" tab in the Sales Call Log spreadsheet** (`setupObjectionPlaybook()` in `Phase1_ComplianceCheck.gs`) — that's where Tomás actually edits it now, since it doesn't require GitHub access. This file is the v1 snapshot that seeded that tab; it is not kept in automatic sync, so treat the sheet tab as the source of truth for anything Tomás has touched since, and pull real changes back into this file (and into `FEW_SHOT_ANCHORS`/the live prompt in `Phase2_CallScoring.gs`, which still needs its own deliberate update) by hand when they're ready to affect training/scoring.
 
 ## How this is maintained
 
