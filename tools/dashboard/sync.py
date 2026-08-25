@@ -134,7 +134,21 @@ def sheets_client():
 def fetch_tab(service, tab_name):
     """Returns list[dict] keyed by header name. Empty list if the tab is missing
     or has no data rows — logged as a warning, never a hard failure, so a
-    renamed/missing tab degrades the dashboard instead of killing the sync."""
+    renamed/missing tab degrades the dashboard instead of killing the sync.
+
+    Skips any row whose first column is blank. Real incident live (25/08/2026):
+    the live "Sales Call Log" sheet turned out to have a ~995-row gap of
+    genuinely empty rows above the real data (rows 2 through ~996, real calls
+    starting around row 997) — A1:Z20000 pulls those in just like real rows,
+    and since checkbox/dropdown columns like "Outcome Logged" write an actual
+    FALSE into every row in their validated range regardless of whether the
+    row has any real data, those rows aren't blank across every column, just
+    the identifying one. The dashboard was showing ~995 "(unnamed)" ghost
+    calls because of this. Column A is "Prospect Name" for the call log and
+    "Rep" for the other two synced tabs — always the one column a real row
+    can't be blank on — same convention Phase1_ComplianceCheck.gs's
+    setupSalesCallLog() already uses to detect a real vs. placeholder row.
+    """
     try:
         resp = (
             service.spreadsheets()
@@ -152,6 +166,8 @@ def fetch_tab(service, tab_name):
     out = []
     for raw in rows[1:]:
         padded = raw + [""] * (len(header) - len(raw))
+        if not str(padded[0]).strip():
+            continue
         out.append(dict(zip(header, padded)))
     return out
 
