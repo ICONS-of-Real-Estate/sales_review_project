@@ -83,3 +83,9 @@ Claude cannot run these steps itself — say so and tell the user to run them.
 - `htmlBody` passed to `guardedSend_`/`MailApp.sendEmail` must contain raw
   HTML tags, not HTML-escaped text (`<p>`, not `&lt;p&gt;`) — escaped tags
   render as literal text in Gmail. This has bitten a prior session already.
+- All 8 phases share one flat global scope (no imports — see
+  `SYSTEM_OVERVIEW.md` §4), so a function name alone never tells you which
+  `.gs` file it actually lives in. **Kris's standing instruction: always
+  name the file whenever mentioning a specific function** (e.g.
+  "`migrateAddPrimaryFailureModeColumn()` in `Phase2_CallScoring.gs`"), not
+  just the bare function name.
