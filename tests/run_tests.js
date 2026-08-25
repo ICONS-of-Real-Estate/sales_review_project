@@ -51,6 +51,7 @@ test('idsEqual_ treats a bare ID and its @google.com-suffixed form as equal', ()
 });
 
 test('parseLegacyFilename_ parses the YYYY-MM-DD_ProspectName_Transcript.txt convention and splits CamelCase names', () => {
+  gas.Utilities = { formatDate: realFormatDate };
   const parsed = gas.parseLegacyFilename_('2026-08-14_LeiMcDonald_Transcript.txt');
   assert.equal(parsed.dateStr, '2026-08-14');
   assert.equal(parsed.prospectName, 'Lei Mc Donald'); // documented best-effort split; rawSlug keeps the original
@@ -59,6 +60,25 @@ test('parseLegacyFilename_ parses the YYYY-MM-DD_ProspectName_Transcript.txt con
 
 test('parseLegacyFilename_ returns null for a filename that does not match the convention', () => {
   assert.equal(gas.parseLegacyFilename_('random_video.mp4'), null);
+});
+
+test('parseLegacyFilename_\'s .date round-trips to the SAME dateStr through loadExistingLegacyKeys_\'s own reformat (real bug: every legacy call got rescored forever)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // The real live bug: parseLegacyFilename_ used to build .date with the plain
+  // `new Date(y, m-1, d)` constructor, which silently uses the Apps Script
+  // project's own default timezone (Asia/Bangkok, confirmed live in
+  // appsscript.json) instead of BUSINESS_TIMEZONE. loadExistingLegacyKeys_
+  // reformats that same Date via CONFIG.BUSINESS_TIMEZONE ('America/New_York')
+  // to build its dedup key — an ~11-12 hour gap wide enough to roll the date
+  // back a full calendar day on every re-read, so the key never matched and
+  // scoreLegacyTranscriptFolder rescored + re-appended every legacy transcript
+  // on every single firing. This is the same anti-pattern
+  // resolveYearForMonthDay_/dateAtMidnightInBusinessTimezone_ already exist to
+  // avoid — this test pins the one call site that had been missed.
+  const parsed = gas.parseLegacyFilename_('2026-08-18_RebeccaStewart_Transcript.txt');
+  const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  assert.equal(dtf.format(parsed.date), parsed.dateStr);
 });
 
 test('guessProspectFromTitle_ extracts the prospect name from the real calendar title patterns it documents', () => {

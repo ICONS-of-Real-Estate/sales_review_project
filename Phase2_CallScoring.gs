@@ -1252,7 +1252,22 @@ function parseLegacyFilename_(name) {
   // CamelCase slug → "Camel Case" — best-effort; log the raw slug alongside it
   // so a human can fix any mis-split name (e.g. "McDonald" → "Mc Donald").
   var prospectName = m[4].replace(/([a-z])([A-Z])/g, '$1 $2').trim();
-  return { dateStr: dateStr, date: new Date(m[1], m[2] - 1, m[3]), prospectName: prospectName, rawSlug: m[4] };
+  // Real bug found live (25/08/2026): this used the plain `new Date(y, m-1, d)`
+  // constructor, which silently uses the Apps Script PROJECT's own default
+  // timezone (appsscript.json — Asia/Bangkok, confirmed live), not
+  // CONFIG.BUSINESS_TIMEZONE. loadExistingLegacyKeys_ later re-reads that same
+  // Date and reformats it via CONFIG.BUSINESS_TIMEZONE ('America/New_York') —
+  // an ~11-12 hour gap wide enough to roll every single legacy-backfilled
+  // date back one calendar day on every re-read, so its dedup key never
+  // matched this function's own key (built straight from dateStr, no
+  // timezone involved) — every legacy transcript got rescored and
+  // re-appended as a new row on every firing, forever, not just occasionally.
+  // dateAtMidnightInBusinessTimezone_ (below) is this codebase's own
+  // established fix for exactly this anti-pattern — resolveYearForMonthDay_
+  // already uses it for the same reason; this just closes the one call site
+  // that was missed.
+  var date = dateAtMidnightInBusinessTimezone_(Number(m[1]), Number(m[2]), Number(m[3]));
+  return { dateStr: dateStr, date: date, prospectName: prospectName, rawSlug: m[4] };
 }
 
 /** Map of "normalized name|YYYY-MM-DD" → true for every existing Sales Call Log row. */
