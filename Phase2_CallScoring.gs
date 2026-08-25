@@ -2813,7 +2813,7 @@ function runWeeklyCalibration() {
 // ---------------------------------------------------------------------------
 
 var RANDOM_CALIBRATION_CONFIG = {
-  ENABLED: false, // flip after previewRandomCalibrationSample() looks right
+  ENABLED: true, // flipped 25/08/2026 — previewRandomCalibrationSample() ran clean live (4 sensible calls, correct blind-review format)
   SAMPLE_SIZE: 4, // report's recommended range is 3-5/week
   TRIGGER_DAY: 'FRIDAY', // ScriptApp.WeekDay name — deliberately not Monday (Phase 5's scorecard day)
   TRIGGER_HOUR: 16
