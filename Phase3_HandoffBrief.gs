@@ -51,11 +51,17 @@ var HANDOFF_CONFIG = {
   ENABLED: true,
 
   // How far ahead to look for an upcoming call. Checked on an hourly
-  // trigger (installHandoffBriefTrigger) with a 2-hour-wide window so a
-  // single missed/delayed firing still catches every event exactly once,
-  // combined with the dedup tab below.
-  LOOKAHEAD_MIN_HOURS: 23,
-  LOOKAHEAD_MAX_HOURS: 25,
+  // trigger (installHandoffBriefTrigger) with a wide window so more than one
+  // missed/delayed firing still catches every event exactly once, combined
+  // with the dedup tab below (safe to widen — sendUpcomingHandoffBriefs_ is
+  // idempotent per event ID). Real bug found live (26/08/2026 silent-failure
+  // audit): a 2-hour window only survives ONE skipped firing. LockService's
+  // script lock is project-wide, and Phase2_CallScoring.gs's scoring runs
+  // can hold it for several minutes to several firings in a row on a long
+  // batch — two consecutive skipped firings could drop an event's window
+  // below LOOKAHEAD_MIN_HOURS before it was ever checked, permanently.
+  LOOKAHEAD_MIN_HOURS: 22,
+  LOOKAHEAD_MAX_HOURS: 26,
 
   TRACKING_SHEET_NAME: 'Handoff Briefs Sent'
 };
@@ -175,7 +181,15 @@ function findMostRecentPriorScoredCall_(col, values, prospectKey, beforeDate) {
     var dateStr = formatDateCell_(callDateCell, tz);
     var m = dateStr.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
     if (!m) return; // unparseable free text — already logged by formatDateCell_
-    var comparable = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    // Real bug found live (26/08/2026 silent-failure audit): this used to be
+    // the plain `new Date(y, m-1, d)` constructor — the exact anti-pattern
+    // the comment just above warns about, and the same class already fixed
+    // in parseLegacyFilename_ (Phase2_CallScoring.gs). It builds midnight in
+    // the SCRIPT's own timezone (Asia/Bangkok), not CONFIG.BUSINESS_TIMEZONE,
+    // landing ~11h early — enough that a row dated the day AFTER an upcoming
+    // event could still pass this "before the event" test and get selected
+    // as the prior call.
+    var comparable = dateAtMidnightInBusinessTimezone_(Number(m[3]), Number(m[2]), Number(m[1]));
     if (comparable >= beforeDate) return;
 
     if (!best || comparable > best.comparable) {
@@ -284,7 +298,13 @@ function previewUpcomingHandoffBriefs_() {
   var windowEnd = new Date(now.getTime() + HANDOFF_CONFIG.LOOKAHEAD_MAX_HOURS * 3600000);
 
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
-  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  // Real bug found live (26/08/2026 silent-failure audit): resolveSheet_
+  // NEVER actually returns null -- it falls back to ss.getSheets()[0] when
+  // the preferred name isn't found, so the 'if (!sheet)' guard below was
+  // dead code. If the shared tab is ever renamed, this used to silently
+  // read/write whatever tab happened to be leftmost instead. Look up this
+  // specific, critical tab by name directly so a rename is caught for real.
+  var sheet = ss.getSheetByName('Sales Call Log');
   if (!sheet) { log_('No Sales Call Log tab found.'); return; }
   var col = getValidatedColumnMap_(sheet);
   var lastRow = sheet.getLastRow();
@@ -334,7 +354,13 @@ function sendUpcomingHandoffBriefs_() {
     var windowEnd = new Date(now.getTime() + HANDOFF_CONFIG.LOOKAHEAD_MAX_HOURS * 3600000);
 
     var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
-    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    // Real bug found live (26/08/2026 silent-failure audit): resolveSheet_
+  // NEVER actually returns null -- it falls back to ss.getSheets()[0] when
+  // the preferred name isn't found, so the 'if (!sheet)' guard below was
+  // dead code. If the shared tab is ever renamed, this used to silently
+  // read/write whatever tab happened to be leftmost instead. Look up this
+  // specific, critical tab by name directly so a rename is caught for real.
+  var sheet = ss.getSheetByName('Sales Call Log');
     if (!sheet) { log_('No Sales Call Log tab found.'); return; }
     var col = getValidatedColumnMap_(sheet);
     var lastRow = sheet.getLastRow();
@@ -362,6 +388,20 @@ function sendUpcomingHandoffBriefs_() {
             transcriptText: transcriptText
           };
           var brief = generateHandoffBrief_(briefCtx);
+          // Real bug found live (26/08/2026 silent-failure audit): a parse
+          // failure sentinel from generateHandoffBrief_ used to be emailed
+          // to the rep as if it were the real brief ("Not available —
+          // generation failed" in every section), CC'd to Kris and Tomás,
+          // and still marked sent — so the hourly retries never regenerated
+          // it. Alert and skip instead of sending garbage.
+          if (brief._parseFailed) {
+            sendOpsAlert_('Handoff brief generation failed for ' + ev.prospectGuess,
+              'generateHandoffBrief_ failed to parse twice for "' + ev.title + '" (row ' + prior.rowIndex +
+              ') — nothing was sent to ' + repCfg.email + '. This event is NOT marked sent, so it will be ' +
+              'retried on the next hourly firing.');
+            failed++;
+            return;
+          }
 
           var emailCtx = {
             nextRepFirstName: String(repCfg.name).split(' ')[0],
@@ -376,14 +416,32 @@ function sendUpcomingHandoffBriefs_() {
           var body = buildHandoffBriefEmailBody_(brief, emailCtx);
           var subject = repCfg.name + ' — [Handoff Brief] ' + ev.prospectGuess + ' — your ' + emailCtx.nextCallType + ' call in ~24 hrs';
 
+          // Real bug found live (26/08/2026 silent-failure audit):
+          // markHandoffBriefSent_ used to sit OUTSIDE this if/else and run
+          // unconditionally — so with ENABLED false (a deliberate review
+          // period) every event in the lookahead window got permanently
+          // marked sent while nothing was ever emailed, directly
+          // contradicting installHandoffBriefTrigger_'s own promise that
+          // disabling it "will only log, not send". And guardedSend_'s
+          // return was discarded, so a quota/config refusal also marked the
+          // event sent despite no email going out. Only mark sent when a
+          // real send actually happened.
           if (!HANDOFF_CONFIG.ENABLED) {
-            log_('  (HANDOFF_CONFIG.ENABLED is false — logging instead of sending)');
+            log_('  (HANDOFF_CONFIG.ENABLED is false — logging instead of sending, NOT marking sent)');
             log_('  Would send to ' + repCfg.email + ': ' + subject);
             log_(body);
-          } else {
-            var priorRepEmail = repEmailByName_(prior.rep);
-            var cc = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL].filter(Boolean).join(',');
-            guardedSend_(repCfg.email, subject, body, { cc: cc, name: 'Call Handoff Brief Bot' }, 4);
+            return;
+          }
+          var priorRepEmail = repEmailByName_(prior.rep);
+          if (!priorRepEmail) {
+            log_('  No CONFIG.REPS email found for prior rep "' + prior.rep + '" — not CC\'d on this brief.');
+          }
+          var cc = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL].filter(Boolean).join(',');
+          var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, name: 'Call Handoff Brief Bot' }, 4);
+          if (!didSend) {
+            log_('  Send blocked/skipped for "' + ev.title + '" — NOT marking sent, will retry next hourly firing.');
+            failed++;
+            return;
           }
 
           markHandoffBriefSent_(ev.id);

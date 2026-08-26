@@ -51,6 +51,9 @@ function realFormatDate(date, tz, pattern) {
   if (pattern === 'EEEE') {
     return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' }).format(date);
   }
+  if (pattern === 'dd/MM/yyyy') {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz, day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+  }
   throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
 }
 
@@ -1364,4 +1367,32 @@ test('loadExistingLegacyKeys_ keys on rep too (real bug: two different reps clos
   const keys = gas.loadExistingLegacyKeys_(fakeSheet);
   const keyList = Object.keys(keys);
   assert.equal(keyList.length, 2, 'Bens\' and Tomás\' calls for the same prospect/day must be two distinct keys, not one');
+});
+
+// ---------------------------------------------------------------------------
+// Phase3_HandoffBrief.gs fixes (26/08/2026 silent-failure audit)
+// ---------------------------------------------------------------------------
+
+test('findMostRecentPriorScoredCall_ compares dates in business time, not the script default timezone (real bug: a row dated the day AFTER the event could still pass as "prior")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const col = { 'Prospect Name': 1, 'Transcript URL': 2, 'AI Feedback Summary': 3, 'Call Date': 4, Rep: 5, 'Call Type': 6 };
+  // Row is dated 27/08/2026 -- the upcoming event is 26/08/2026 19:00 EDT.
+  // With the naive constructor (script tz, ~11h early) this row's "comparable"
+  // date used to land at 26/08 13:00 EDT, which is BEFORE the 19:00 event --
+  // wrongly passing as a valid prior call for an event on an earlier day.
+  const row = ['Jess Provencher', 'https://drive.google.com/file/d/abc123/view', 'Some feedback', '27/08/2026', 'Bens', 'QC'];
+  const beforeDate = new Date('2026-08-26T23:00:00.000Z'); // 26/08 19:00 EDT
+  const result = gas.findMostRecentPriorScoredCall_(col, [row], 'jess provencher', beforeDate);
+  assert.equal(result, null, 'a row dated the day AFTER the event must never be selected as its prior call');
+});
+
+test('findMostRecentPriorScoredCall_ still finds a genuinely earlier row', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = { 'Prospect Name': 1, 'Transcript URL': 2, 'AI Feedback Summary': 3, 'Call Date': 4, Rep: 5, 'Call Type': 6 };
+  const row = ['Jess Provencher', 'https://drive.google.com/file/d/abc123/view', 'Some feedback', '24/08/2026', 'Bens', 'QC'];
+  const beforeDate = new Date('2026-08-26T23:00:00.000Z');
+  const result = gas.findMostRecentPriorScoredCall_(col, [row], 'jess provencher', beforeDate);
+  assert.ok(result, 'a genuinely earlier row must still be found');
+  assert.equal(result.rep, 'Bens');
 });
