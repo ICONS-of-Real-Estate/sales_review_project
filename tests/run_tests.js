@@ -51,8 +51,17 @@ function realFormatDate(date, tz, pattern) {
   if (pattern === 'EEEE') {
     return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' }).format(date);
   }
+  if (pattern === 'EEE') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(date);
+  }
   if (pattern === 'dd/MM/yyyy') {
     return new Intl.DateTimeFormat('en-GB', { timeZone: tz, day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+  }
+  if (pattern === 'MM') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, month: '2-digit' }).format(date);
+  }
+  if (pattern === 'dd') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, day: '2-digit' }).format(date);
   }
   throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
 }
@@ -419,17 +428,28 @@ function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objecti
   return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || ''];
 }
 
+// computeRepWeeklyStats_ now derives its rolling-4-week window via
+// shiftBusinessDate_ (Utilities.formatDate-based, business-tz-correct) —
+// weekStart/weekEnd and every row date below must be REAL business-tz
+// midnights (as production's mondayAtMidnight_/dateAtMidnightInBusinessTimezone_
+// produce), not a naive `new Date(y,m,d)` in the test runner's own local
+// timezone, or the two can disagree about which calendar day an instant falls on.
+function bizDate(gas, y, m, d) {
+  return gas.dateAtMidnightInBusinessTimezone_(y, m, d);
+}
+
 test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, per rep, and tallies flags/failure modes', () => {
-  const weekStart = new gas.Date(2026, 7, 10);
-  const weekEnd = new gas.Date(2026, 7, 17);
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
   const rows = [
-    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: true }),
-    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: false }),
-    scorecardRow(gas, { rep: 'Sean', name: 'C', date: new gas.Date(2026, 7, 3), score: 5, pfm: 'none', askedForClose: true, objectionsHandled: true }), // before the week
-    scorecardRow(gas, { rep: 'Bens', name: 'D', date: new gas.Date(2026, 7, 11), score: 1, pfm: 'objections_missed', askedForClose: true, objectionsHandled: false }) // different rep
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: true }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 8, 12), score: 2, pfm: 'no_close_ask', askedForClose: false, objectionsHandled: false }),
+    scorecardRow(gas, { rep: 'Sean', name: 'C', date: bizDate(gas, 2026, 8, 3), score: 5, pfm: 'none', askedForClose: true, objectionsHandled: true }), // before the week
+    scorecardRow(gas, { rep: 'Bens', name: 'D', date: bizDate(gas, 2026, 8, 11), score: 1, pfm: 'objections_missed', askedForClose: true, objectionsHandled: false }) // different rep
   ];
 
-  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.weekCalls.length, 2);
   assert.equal(stats.weeklyAvg, 3);
   assert.ok(Math.abs(stats.historicAvg - 11 / 3) < 1e-9);
@@ -452,15 +472,16 @@ test('computeRepWeeklyStats_ separates this week\'s calls from historic ones, pe
 });
 
 test('computeRepWeeklyStats_ rolling 4-week average excludes calls older than the 28-day window', () => {
-  const weekStart = new gas.Date(2026, 7, 10);
-  const weekEnd = new gas.Date(2026, 7, 17);
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
   const rows = [
-    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, askedForClose: true, objectionsHandled: true }),
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, askedForClose: true, objectionsHandled: true }),
     // 40 days before weekEnd — outside the 28-day rolling window entirely.
-    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 6, 8), score: 1, askedForClose: true, objectionsHandled: true })
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 7, 8), score: 1, askedForClose: true, objectionsHandled: true })
   ];
 
-  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.rolling4WeekCount, 1);
   assert.equal(stats.rolling4WeekAvg, 4);
   // The old call is still counted in the all-time historic average, just not the rolling one.
@@ -468,35 +489,38 @@ test('computeRepWeeklyStats_ rolling 4-week average excludes calls older than th
 });
 
 test('computeRepWeeklyStats_ identifies the week\'s lowest-scoring call as worstCall, carrying its feedback summary', () => {
-  const weekStart = new gas.Date(2026, 7, 10);
-  const weekEnd = new gas.Date(2026, 7, 17);
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
   const rows = [
-    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, feedbackSummary: 'Good call.' }),
-    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' })
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, feedbackSummary: 'Good call.' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 8, 12), score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' })
   ];
-  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.worstCall.name, 'B');
   assert.equal(stats.worstCall.score, 2);
   assert.ok(stats.worstCall.feedbackSummary.indexOf('isolating') !== -1);
 });
 
 test('computeRepWeeklyStats_ counts this week\'s calls missing an Outcome Disposition', () => {
-  const weekStart = new gas.Date(2026, 7, 10);
-  const weekEnd = new gas.Date(2026, 7, 17);
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
   const rows = [
-    scorecardRow(gas, { rep: 'Sean', name: 'A', date: new gas.Date(2026, 7, 11), score: 4, outcomeDisposition: 'Sold' }),
-    scorecardRow(gas, { rep: 'Sean', name: 'B', date: new gas.Date(2026, 7, 12), score: 2, outcomeDisposition: '' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, outcomeDisposition: 'Sold' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 8, 12), score: 2, outcomeDisposition: '' }),
     // Before this week — should not count toward the weekly figure.
-    scorecardRow(gas, { rep: 'Sean', name: 'C', date: new gas.Date(2026, 7, 3), score: 3, outcomeDisposition: '' })
+    scorecardRow(gas, { rep: 'Sean', name: 'C', date: bizDate(gas, 2026, 8, 3), score: 3, outcomeDisposition: '' })
   ];
-  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.weekMissingOutcomeDisposition, 1);
 });
 
 test('computeRepWeeklyStats_ worstCall is null when the rep had no calls this week', () => {
-  const weekStart = new gas.Date(2026, 7, 10);
-  const weekEnd = new gas.Date(2026, 7, 17);
-  const stats = gas.computeRepWeeklyStats_([], SCORECARD_COL, 'Sean', weekStart, weekEnd);
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const stats = gas.computeRepWeeklyStats_([], SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.worstCall, null);
 });
 
@@ -1417,4 +1441,66 @@ test('escapeHtml_ neutralizes a raw "Name <addr>" From header and stray angle br
   assert.equal(gas.escapeHtml_('Margaret Chen <margaret@bhhsrealty.com>'), 'Margaret Chen &lt;margaret@bhhsrealty.com&gt;');
   assert.equal(gas.escapeHtml_('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
   assert.equal(gas.escapeHtml_('Tom & Jerry'), 'Tom &amp; Jerry');
+});
+
+// ---------------------------------------------------------------------------
+// Phase5_WeeklyScorecard.gs fixes (26/08/2026 silent-failure audit)
+// ---------------------------------------------------------------------------
+
+test('shiftBusinessDate_ steps by whole calendar days across a DST transition (real bug: raw 24h-ms arithmetic on the week boundary was off by an hour and dropped a whole Monday)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Mon 2 Nov 2026 -- the Monday right after the US fall-back DST transition (1 Nov).
+  const weekEnd = gas.dateAtMidnightInBusinessTimezone_(2026, 11, 2);
+  const start = gas.shiftBusinessDate_(weekEnd, tz, -7);
+  const expected = gas.dateAtMidnightInBusinessTimezone_(2026, 10, 26); // Mon 26 Oct 2026, exact business-tz midnight
+  assert.equal(start.getTime(), expected.getTime(), 'must land on the exact business-tz midnight of the prior Monday, not an hour off');
+});
+
+test('getWeekBounds_ produces a 7-day-exactly window across the spring-forward DST transition too', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Mon 9 Mar 2026 -- the Monday right after the US spring-forward transition (8 Mar).
+  const now = new Date('2026-03-09T16:00:00Z');
+  const week = gas.getWeekBounds_(now, tz);
+  const expectedStart = gas.dateAtMidnightInBusinessTimezone_(2026, 3, 2);
+  assert.equal(week.start.getTime(), expectedStart.getTime());
+});
+
+test('isExplicitlyFalse_ recognizes real false plus common text equivalents, but not blank/unrelated values', () => {
+  assert.equal(gas.isExplicitlyFalse_(false), true);
+  assert.equal(gas.isExplicitlyFalse_('No'), true);
+  assert.equal(gas.isExplicitlyFalse_('FALSE'), true);
+  assert.equal(gas.isExplicitlyFalse_(true), false);
+  assert.equal(gas.isExplicitlyFalse_(''), false);
+  assert.equal(gas.isExplicitlyFalse_('Yes'), false);
+});
+
+test('computeRepWeeklyStats_ treats "None" (any case) as no failure mode, and does not miscount a non-Date Call Date into the historic baseline', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, pfm: 'None', askedForClose: true, objectionsHandled: true }),
+    // A pasted/typed Call Date that never became a real Date object.
+    ['Sean', 'B', '15/08/2026', 3, '', true, true, '', '']
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(stats.weekFailureModes.length, 0, '"None" must not be pushed as a real failure mode');
+  assert.equal(stats.weekCalls.length, 1, 'the non-Date row must be excluded from this week entirely');
+  // Still a genuinely scored call, so it counts in the all-time figure --
+  // what it must NOT do is get miscounted into the date-dependent
+  // "before this week" baseline, since we can't tell which side of the
+  // week boundary it falls on.
+  assert.equal(stats.historicCount, 2);
+  assert.equal(stats.historicAvgBeforeThisWeek, null, 'with no OTHER prior call, the baseline must be null, not corrupted by the unusable-date row');
+});
+
+test('computeRepWeeklyStats_ matches Rep case-insensitively (real bug: a hand-typed "sean" vanished from every rep\'s scorecard)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const rows = [scorecardRow(gas, { rep: 'sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4, askedForClose: true, objectionsHandled: true })];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(stats.weekCalls.length, 1);
 });

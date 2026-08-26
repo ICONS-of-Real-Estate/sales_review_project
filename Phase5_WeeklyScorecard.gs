@@ -57,6 +57,20 @@ var FAILURE_MODE_COACHING_TEXT_ = {
   multiple: 'Several gaps showed up this week — see individual call feedback in the tracker for specifics.'
 };
 
+/**
+ * True only when a cell is explicitly a "miss" — a real `false` boolean, or
+ * one of the common hand-typed/pasted textual equivalents. Real bug found
+ * live (26/08/2026 silent-failure audit): the old `=== false` check silently
+ * dropped a hand-corrected cell holding "No"/"FALSE" text or a cleared
+ * checkbox from the week's flag-miss tally, so a manually-fixed row could
+ * read as "no major gaps flagged" instead of the miss it actually records.
+ */
+function isExplicitlyFalse_(v) {
+  if (v === false) return true;
+  var s = String(v || '').trim().toLowerCase();
+  return s === 'false' || s === 'no';
+}
+
 /** Safe mean; null (not NaN/0) when the array is empty so callers can tell "no data" from "zero". */
 function mean_(arr) {
   if (!arr.length) return null;
@@ -90,9 +104,28 @@ function mondayAtMidnight_(d, tz) {
  * preview mid-week), still returns the most recent full Mon-through-today
  * window rather than assuming "today is Monday".
  */
+/**
+ * Steps a business-tz midnight instant by a whole number of CALENDAR days —
+ * real bug found live (26/08/2026 silent-failure audit): getWeekBounds_ and
+ * computeRepWeeklyStats_'s rolling4WeekStart used to subtract a fixed
+ * `N * 24 * 3600 * 1000` from a midnight instant, which is wrong by exactly
+ * one hour whenever the span crosses a DST transition — and since Call Date
+ * cells land EXACTLY on business-tz midnight (dateAtMidnightInBusinessTimezone_),
+ * an hour of error excludes or includes an entire day's calls rather than a
+ * sliver. This does the subtraction in UTC calendar-day space (no DST there
+ * at all) and only converts back to a real business-tz instant at the end.
+ */
+function shiftBusinessDate_(d, tz, days) {
+  var y = Number(Utilities.formatDate(d, tz, 'yyyy'));
+  var m = Number(Utilities.formatDate(d, tz, 'MM'));
+  var day = Number(Utilities.formatDate(d, tz, 'dd'));
+  var shifted = new Date(Date.UTC(y, m - 1, day, 12) + days * 86400000);
+  return dateAtMidnightInBusinessTimezone_(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+}
+
 function getWeekBounds_(now, tz) {
   var end = mondayAtMidnight_(now, tz);
-  var start = new Date(end.getTime() - 7 * 24 * 3600 * 1000);
+  var start = shiftBusinessDate_(end, tz, -7);
   return { start: start, end: end };
 }
 
@@ -107,7 +140,7 @@ function getWeekBounds_(now, tz) {
  * alongside its own n so a rolling average built on 3 calls doesn't get
  * mistaken for one built on 30.
  */
-function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
+function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
   var allScores = [];
   var priorScores = []; // all-time excluding this week — basis for the trend line
   var weekCalls = [];
@@ -115,17 +148,34 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
   var weekFlagMiss = { askedForClose: 0, objectionsHandled: 0 };
   var weekMissingOutcomeDisposition = 0;
   var rolling4WeekScores = [];
-  var rolling4WeekStart = new Date(weekEnd.getTime() - 4 * 7 * 24 * 3600 * 1000);
+  var rolling4WeekStart = shiftBusinessDate_(weekEnd, tz || CONFIG.BUSINESS_TIMEZONE, -28);
+  var skippedUnusableCallDate = 0, skippedNonNumericScore = 0;
 
   rows.forEach(function (row) {
-    if (String(row[col['Rep'] - 1] || '').trim() !== repName) return;
+    // Real bug found live (26/08/2026 silent-failure audit): this was a
+    // strict, case-sensitive `!== repName` — a hand-entered/pasted Rep cell
+    // like "sean" (bypassing the dropdown) silently vanished from EVERY
+    // rep's weekly scorecard, not just misfiled. Match the way Phase1's
+    // checkRep_ already does.
+    if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repName.toLowerCase()) return;
     var score = row[col['Call Quality Score'] - 1];
-    if (typeof score !== 'number') return; // only rows Phase 2 has actually scored
+    if (typeof score !== 'number') { skippedNonNumericScore++; return; } // only rows Phase 2 has actually scored
 
     allScores.push(score);
     var callDate = row[col['Call Date'] - 1];
-    var inWeek = callDate instanceof Date && callDate >= weekStart && callDate < weekEnd;
-    var inRolling4Weeks = callDate instanceof Date && callDate >= rolling4WeekStart && callDate < weekEnd;
+    // Real bug found live (26/08/2026 silent-failure audit): a Call Date
+    // that isn't a real Date object (pasted/typed text — this codebase's
+    // own formatDateCell_/instanceof-Date branches elsewhere prove this
+    // happens) used to silently fall into the ELSE branch below and be
+    // counted in priorScores — removing it from this week's average AND
+    // corrupting the "vs. your average before this week" baseline with a
+    // call that should have been excluded from both, not miscounted into one.
+    if (!(callDate instanceof Date)) {
+      skippedUnusableCallDate++;
+      return;
+    }
+    var inWeek = callDate >= weekStart && callDate < weekEnd;
+    var inRolling4Weeks = callDate >= rolling4WeekStart && callDate < weekEnd;
 
     if (inRolling4Weeks) rolling4WeekScores.push(score);
 
@@ -135,10 +185,19 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
         score: score,
         feedbackSummary: String(row[col['AI Feedback Summary'] - 1] || '').trim()
       });
-      var pfm = String(row[col['Primary Failure Mode'] - 1] || '').trim();
+      // Real bug found live (26/08/2026 silent-failure audit): 'none' was
+      // compared case-sensitively — a model-returned "None" (no enum
+      // validation upstream on this free-text column) used to be pushed as
+      // a real failure mode, and if it won mostFrequent_, the rep's headline
+      // coaching line read "Focus area: None".
+      var pfm = String(row[col['Primary Failure Mode'] - 1] || '').trim().toLowerCase();
       if (pfm && pfm !== 'none') weekFailureModes.push(pfm);
-      if (row[col['Flag: Asked For Close'] - 1] === false) weekFlagMiss.askedForClose++;
-      if (row[col['Flag: Objections Handled'] - 1] === false) weekFlagMiss.objectionsHandled++;
+      // Real bug found live: `=== false` only matches a real boolean --
+      // a hand-corrected cell holding "No"/"FALSE" (text) or a cleared
+      // checkbox reads as neither true nor false and silently isn't counted
+      // as a miss either way.
+      if (isExplicitlyFalse_(row[col['Flag: Asked For Close'] - 1])) weekFlagMiss.askedForClose++;
+      if (isExplicitlyFalse_(row[col['Flag: Objections Handled'] - 1])) weekFlagMiss.objectionsHandled++;
       // QA_COACHING_RESEARCH_REPORT.md: "start logging call outcome today,
       // even before you can analyze it — the clock only starts once you
       // begin." Outcome Disposition has had a column and a dropdown since
@@ -152,6 +211,12 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd) {
       priorScores.push(score);
     }
   });
+
+  if (skippedUnusableCallDate || skippedNonNumericScore) {
+    log_('  computeRepWeeklyStats_(' + repName + '): skipped ' + skippedUnusableCallDate +
+      ' row(s) with an unusable Call Date and ' + skippedNonNumericScore + ' row(s) with a non-numeric score ' +
+      '(excluded from all stats, not miscounted into any of them).');
+  }
 
   // Lowest-scoring call of the week, if any — the task-level example the
   // email leads with (QA_COACHING_RESEARCH_REPORT.md §2.1). First-encountered
@@ -286,17 +351,28 @@ function buildAndMaybeSendScorecards_(forcePreview) {
   var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
   CONFIG.REPS.forEach(function (repCfg) {
-    var stats = computeRepWeeklyStats_(rows, col, repCfg.name, week.start, week.end);
+    var stats = computeRepWeeklyStats_(rows, col, repCfg.name, week.start, week.end, tz);
     var email = buildWeeklyScorecardEmail_(repCfg, stats, week.start, week.end, tz);
 
     if (forcePreview || !WEEKLY_SCORECARD_CONFIG.ENABLED) {
       log_('(preview) ' + repCfg.email + ' <- ' + email.subject + '\n' + email.body + '\n');
       return;
     }
-    guardedSend_(repCfg.email, email.subject, email.body, {
+    // Real bug found live (26/08/2026 silent-failure audit): guardedSend_'s
+    // return used to be discarded, and appendScorecardHistoryRow_ ran
+    // unconditionally — so a config/quota refusal logged "Sent weekly
+    // scorecard" and appended a real-looking history row for an email that
+    // never went out. Scorecard History exists specifically so a silent
+    // non-delivery would be visible (see its own header comment) — this was
+    // the exact opposite: it CERTIFIED deliveries that didn't happen.
+    var sent = guardedSend_(repCfg.email, email.subject, email.body, {
       cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
       name: 'Weekly Call Scorecard Bot'
     }, 3); // rep + Kris + Tomás
+    if (!sent) {
+      log_('Weekly scorecard NOT sent to ' + repCfg.email + ' (guardedSend_ refused) -- no history row appended.');
+      return;
+    }
     appendScorecardHistoryRow_(repCfg.name, week, stats);
     log_('Sent weekly scorecard to ' + repCfg.email + ' (' + stats.weekCalls.length + ' call(s) this week).');
   });
@@ -336,9 +412,27 @@ function getOrCreateScorecardHistorySheet_() {
   var existing = sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).getValues()[0];
   var headersMatch = SCORECARD_HISTORY_HEADERS.every(function (h, i) { return existing[i] === h; });
   if (!headersMatch) {
-    sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).setValues([SCORECARD_HISTORY_HEADERS])
-      .setFontWeight('bold').setBackground('#e8eef7');
-    log_('Updated "' + SCORECARD_HISTORY_SHEET_NAME + '" header row to match SCORECARD_HISTORY_HEADERS.');
+    // Real bug found live (26/08/2026 silent-failure audit): this used to
+    // rewrite the header row unconditionally on any mismatch, WITHOUT
+    // touching the data rows beneath it. If a column was ever inserted by
+    // hand in the middle of this tab, the next real send would silently
+    // relabel row 1 so the headers no longer describe the columns below
+    // them — every prior row permanently mislabeled, with one Logger line
+    // as the only trace. Only auto-repair when the tab genuinely has no
+    // data yet (nothing to mislabel); otherwise alert and leave it for a
+    // human, matching the Sales Call Log's own no-auto-repair policy
+    // (getValidatedColumnMap_, Phase2_CallScoring.gs).
+    if (sheet.getLastRow() <= 1) {
+      sheet.getRange(1, 1, 1, SCORECARD_HISTORY_HEADERS.length).setValues([SCORECARD_HISTORY_HEADERS])
+        .setFontWeight('bold').setBackground('#e8eef7');
+      log_('Updated "' + SCORECARD_HISTORY_SHEET_NAME + '" header row to match SCORECARD_HISTORY_HEADERS (no data rows yet).');
+    } else {
+      sendOpsAlert_('"' + SCORECARD_HISTORY_SHEET_NAME + '" header drift, NOT auto-repaired',
+        'The header row no longer matches SCORECARD_HISTORY_HEADERS, but the tab has real data below it, so ' +
+        'it was left alone rather than silently relabeled. Fix the header by hand to match the code\'s ' +
+        'expected columns:\n\n  ' + SCORECARD_HISTORY_HEADERS.join(', '));
+      log_('"' + SCORECARD_HISTORY_SHEET_NAME + '" header mismatch with existing data — NOT auto-repaired, ops alerted.');
+    }
   }
   return sheet;
 }
