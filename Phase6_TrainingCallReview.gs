@@ -357,7 +357,16 @@ function trainingReviewAlreadyDone_(dateFolder) {
 var TRAINING_RECORDING_EXTENSIONS_ = /\.(mp4|m4a|mov|avi|wav|mp3|webm)$/i;
 
 function findFlatTrainingTranscripts_(repFolder) {
-  var dateLabelPrefix = /^(\d{6})\b/;
+  // NOT \b: regex word-boundary treats "_" as a word character, so
+  // `\b` after the date fails on Zoom's own default naming
+  // ("260825_Recording...") while happening to pass on "-" or a space —
+  // exactly why this matched Bens' and Joana's flat files but silently
+  // skipped Sean's real vtt outright (confirmed live 26/08/2026: it never
+  // even appeared in the run's log, let alone got processed). A negative
+  // lookahead for another digit gets the same "don't misread a longer
+  // number as a 6-digit date" protection without depending on what
+  // character happens to follow.
+  var dateLabelPrefix = /^(\d{6})(?!\d)/;
   var files = repFolder.getFiles();
   var out = [];
   while (files.hasNext()) {

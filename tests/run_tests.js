@@ -1108,3 +1108,35 @@ test('TRAINING_RECORDING_EXTENSIONS_ excludes Zoom video/audio siblings from the
   assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(transcriptName), false, 'the real transcript must never be excluded');
   assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(bareDocName), false, 'a bare-dated Google Doc transcript must never be excluded');
 });
+
+/** Minimal DriveApp Folder fake — just enough of the getFiles()/getName() surface findFlatTrainingTranscripts_ actually calls. */
+function fakeFolder(fileNames) {
+  const files = fileNames.map((name) => ({ getName: () => name })); // each file's name is fixed, not a shared cursor — findFlatTrainingTranscripts_ stashes the file object and reads its name again later via .file.getName()
+  return {
+    getFiles: () => {
+      let i = 0;
+      return {
+        hasNext: () => i < files.length,
+        next: () => files[i++]
+      };
+    }
+  };
+}
+
+test('findFlatTrainingTranscripts_ finds a real transcript named the way Zoom actually names it (real bug: "_" broke the old \\b boundary check)', () => {
+  // Sean's actual filenames from the live incident: the .vtt uses Zoom's
+  // default "YYMMDD_Recording..." naming (underscore right after the
+  // date), which the old `/^(\d{6})\b/` regex silently failed to match —
+  // it never even showed up in the run's log. Bens'/Joana's equivalents
+  // used "-" and " " respectively right after the date, which is the only
+  // reason those worked while Sean's didn't.
+  const folder = fakeFolder([
+    '260825_Recording.transcript.vtt',   // Sean's real transcript — must be found
+    '260825_Recording_1920x1020.mp4',    // its video sibling — must be excluded
+    '260819 Training Plan'               // a previous run's output — must be excluded
+  ]);
+  const found = gas.findFlatTrainingTranscripts_(folder);
+  assert.equal(found.length, 1, 'exactly the one real transcript should be found');
+  assert.equal(found[0].file.getName(), '260825_Recording.transcript.vtt');
+  assert.equal(found[0].dateLabel, '260825');
+});
