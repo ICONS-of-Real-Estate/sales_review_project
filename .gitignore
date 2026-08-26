@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Downloaded Python wheels — pip/uv drops these in the CWD when inspecting a
+# package. They are build artifacts, never project files (and are not even the
+# versions tools/dashboard/requirements.txt pins).
+*.whl
+
 # Local OAuth artifacts for tools/transcribe_sean_calls.py — never commit secrets
 tools/credentials.json
 tools/token.json
