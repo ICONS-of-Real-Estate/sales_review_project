@@ -1295,3 +1295,73 @@ test('buildAndMaybeSendPlaybookReview_-style watermark day comparison does not e
   const callDateSameDay = gas.dateAtMidnightInBusinessTimezone_(2026, 8, 25);
   assert.ok(!(callDateSameDay < watermarkDayStart), 'a call dated the same business day as the watermark must not be excluded');
 });
+
+test('stripFencesAndParseJson_ finds the real JSON object even when prose before it contains a brace (real bug: first-brace/last-brace slicing)', () => {
+  const raw = 'Here is the evaluation {as requested}: {"reasoning": "ok", "call_quality_score": 4}';
+  const parsed = gas.stripFencesAndParseJson_(raw);
+  assert.equal(parsed.call_quality_score, 4);
+});
+
+test('stripFencesAndParseJson_ still works on the plain unfenced case with no stray braces', () => {
+  const parsed = gas.stripFencesAndParseJson_('{"a": 1, "b": {"c": 2}}');
+  assert.equal(parsed.a, 1);
+  assert.equal(parsed.b.c, 2);
+});
+
+test('isValidLeadVerdict_/isValidScoreRange_ reject out-of-vocabulary and out-of-range model output (real bug: typeof-only checks let these through)', () => {
+  assert.equal(gas.isValidLeadVerdict_('good_to_book'), true);
+  assert.equal(gas.isValidLeadVerdict_('should screen out'), false, 'a space instead of the real enum value must be rejected');
+  assert.equal(gas.isValidScoreRange_(4), true);
+  assert.equal(gas.isValidScoreRange_(4.5), false, 'a non-integer score must be rejected');
+  assert.equal(gas.isValidScoreRange_(8), false, 'an out-of-range severity must be rejected');
+});
+
+test('isValidJudgeSchema_ rejects a schema-shaped object with an invalid verdict or score even though every typeof check passes', () => {
+  const base = {
+    lead_quality: { verdict: 'good_to_book' },
+    call_quality_score: 4,
+    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    manual_review_recommended: false,
+    severity: 2
+  };
+  assert.equal(gas.isValidJudgeSchema_(base), true);
+  assert.equal(gas.isValidJudgeSchema_(Object.assign({}, base, { lead_quality: { verdict: 'should screen out' } })), false);
+  assert.equal(gas.isValidJudgeSchema_(Object.assign({}, base, { call_quality_score: 4.5 })), false);
+  assert.equal(gas.isValidJudgeSchema_(Object.assign({}, base, { severity: 8 })), false);
+});
+
+test('handleJudgeRetryError_ sleeps and lets a transport error retry, but throws once retries are exhausted (real bug: a rotated API key used to fall through to a fabricated score)', () => {
+  const sleeps = [];
+  gas.Utilities = { sleep: (ms) => sleeps.push(ms) };
+  const transportErr = new gas.LlmTransportError_('LiteLLM proxy HTTP 401: unauthorized');
+
+  // Not the last attempt: sleeps (backoff) and returns normally (the loop continues).
+  gas.handleJudgeRetryError_(transportErr, 0, 1);
+  assert.equal(sleeps.length, 1);
+
+  // Last attempt: must throw instead of letting the loop fall through to the fabricated-score sentinel.
+  assert.throws(() => gas.handleJudgeRetryError_(transportErr, 1, 1), /HTTP 401/);
+
+  // A genuine parse/schema error (plain Error, not LlmTransportError_) is untouched — no sleep, no throw —
+  // so the loop's existing retry-then-fallback-sentinel behavior for real parse failures is unchanged.
+  sleeps.length = 0;
+  gas.handleJudgeRetryError_(new Error('Parsed JSON missing required fields.'), 1, 1);
+  assert.equal(sleeps.length, 0);
+});
+
+test('loadExistingLegacyKeys_ keys on rep too (real bug: two different reps closing the same prospect the same day collided into one key)', () => {
+  const rows = [
+    ['Anthony Camperi', '', '', new Date('2026-07-02T12:00:00Z'), 'Bens'],
+    ['Anthony Camperi', '', '', new Date('2026-07-02T12:00:00Z'), 'Tomás']
+  ];
+  let call = 0;
+  const fakeSheet = {
+    getLastRow: () => rows.length + 1,
+    getRange: () => ({ getValues: () => rows })
+  };
+  gas.Utilities = { formatDate: realFormatDate };
+  const keys = gas.loadExistingLegacyKeys_(fakeSheet);
+  const keyList = Object.keys(keys);
+  assert.equal(keyList.length, 2, 'Bens\' and Tomás\' calls for the same prospect/day must be two distinct keys, not one');
+});

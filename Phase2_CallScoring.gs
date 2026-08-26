@@ -211,19 +211,69 @@ function stripFencesAndParseJson_(raw) {
   var s = String(raw || '').trim();
   var fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) s = fenced[1].trim();
-  var start = s.indexOf('{');
-  var end = s.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error('No JSON object found in model output.');
+
+  // Real bug found live (26/08/2026 silent-failure audit): this used to just
+  // slice between the FIRST '{' and the LAST '}' in the whole string — which
+  // breaks the moment the model's own prose contains a brace anywhere
+  // outside the real JSON object (e.g. "Here is the evaluation {as
+  // requested}: {...}" slices "{as requested}: {...}", not valid JSON).
+  // Scans every '{' as a candidate start, walks forward tracking brace depth
+  // (aware of string literals, so a brace INSIDE a quoted value can't
+  // confuse the count), and returns the first candidate that both balances
+  // and actually parses.
+  for (var i = 0; i < s.length; i++) {
+    if (s[i] !== '{') continue;
+    var depth = 0, inString = false, escaped = false;
+    for (var j = i; j < s.length; j++) {
+      var ch = s[j];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(s.slice(i, j + 1));
+          } catch (e) {
+            break; // this candidate didn't parse — try the next '{'
+          }
+        }
+      }
+    }
   }
-  return JSON.parse(s.slice(start, end + 1));
+  throw new Error('No JSON object found in model output.');
+}
+
+// Real bug found live (26/08/2026 silent-failure audit): every schema
+// validator below only ever checked typeof, never the actual value — so at
+// the mandated temperature:1, an out-of-vocabulary verdict ("should screen
+// out" with a space instead of an underscore) or an out-of-range score
+// (4.5, or a severity of 8) passed validation and reached the sheet intact.
+// A verdict that isn't the exact string 'should_screen_out' silently fails
+// every `=== 'should_screen_out'` comparison downstream (e.g. the review-
+// queue builder), and an out-of-range severity flows straight into
+// clusterScore's ×1000 multiplier, which assumes a 1-5 ceiling.
+var VALID_LEAD_VERDICTS_ = { good_to_book: true, should_screen_out: true };
+
+function isValidLeadVerdict_(v) {
+  return typeof v === 'string' && !!VALID_LEAD_VERDICTS_[v];
+}
+
+/** Score/severity must be a real integer 1-5 — not a float, not out of range. */
+function isValidScoreRange_(n) {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 5;
 }
 
 /** Minimal shape check — never trust a parsed object blindly onto a sheet row. */
 function isValidJudgeSchema_(obj) {
   return !!(obj &&
-    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
-    typeof obj.call_quality_score === 'number' &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
     obj.flags && typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
     typeof obj.flags.objections_overcome === 'boolean' &&
@@ -231,7 +281,7 @@ function isValidJudgeSchema_(obj) {
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
-    typeof obj.severity === 'number');
+    isValidScoreRange_(obj.severity));
 }
 
 /**
@@ -239,9 +289,87 @@ function isValidJudgeSchema_(obj) {
  * (a string, expected to be JSON — possibly fenced). Throws on transport/HTTP
  * failure; JSON validity is the caller's problem (stripFencesAndParseJson_).
  */
+/**
+ * Real bug found live (26/08/2026 silent-failure audit): DriveApp.Folder.getFiles()
+ * is top-level only, but tools/transcribe_sean_calls.py explicitly recurses
+ * into subfolders when writing transcripts ("seen for real in Sean's and
+ * Joana's folders", per its own docstring). A rep moving old calls into a
+ * dated subfolder made every transcript inside it invisible to these
+ * backfills — they'd report "scored 0" indistinguishable from a genuinely
+ * quiet week. Returns an iterator with the same hasNext()/next() shape as
+ * Folder.getFiles() (every existing call site works unchanged) plus a
+ * currentFolder() accessor, since a file found in a subfolder needs THAT
+ * folder — not the root — passed to anything doing a sibling-file lookup
+ * (e.g. resolveRealCallDate_'s paired-video search).
+ */
+function getFilesRecursive_(rootFolder) {
+  var folderQueue = [rootFolder];
+  var currentFolder = rootFolder;
+  var currentFileIterator = null;
+
+  function advance() {
+    while (true) {
+      if (currentFileIterator && currentFileIterator.hasNext()) return true;
+      if (!folderQueue.length) return false;
+      currentFolder = folderQueue.shift();
+      var subfolders = currentFolder.getFolders();
+      while (subfolders.hasNext()) folderQueue.push(subfolders.next());
+      currentFileIterator = currentFolder.getFiles();
+    }
+  }
+
+  return {
+    hasNext: function () { return advance(); },
+    next: function () { advance(); return currentFileIterator.next(); },
+    currentFolder: function () { return currentFolder; }
+  };
+}
+
+/**
+ * Thrown by callKimiJudge_ for a transport/API failure (missing secret,
+ * non-2xx HTTP, malformed response envelope) — distinct from a JSON.parse or
+ * schema-validation failure on the MODEL's own reply text. Real bug found
+ * live (26/08/2026 silent-failure audit): every judge wrapper used to catch
+ * both kinds of failure in the same block and, after exhausting retries,
+ * fall through to a fabricated "manual review" score (call_quality_score: 1,
+ * every flag false) that gets WRITTEN to the sheet and marked permanently
+ * scored — turning an API outage (a rotated key, a rate limit) into what
+ * looks like a real, terrible call. A transport error must instead propagate
+ * to the per-file caller's own catch, which already does the right thing:
+ * log it, count it as failed, write nothing, and let the next run retry.
+ */
+function LlmTransportError_(message) {
+  this.name = 'LlmTransportError_';
+  this.message = message;
+  this.stack = (new Error(message)).stack;
+}
+LlmTransportError_.prototype = Object.create(Error.prototype);
+LlmTransportError_.prototype.constructor = LlmTransportError_;
+
+/**
+ * Shared by every judge wrapper's retry loop. On a genuine JSON/schema parse
+ * failure, this is a no-op — the loop retries normally and eventually falls
+ * through to that wrapper's manual-review sentinel, unchanged behavior. On a
+ * TRANSPORT failure (LlmTransportError_), it sleeps with exponential backoff
+ * and lets the loop retry once more, or — once retries are exhausted —
+ * re-throws instead of letting the loop fall through, so the caller's own
+ * per-file try/catch handles it (log + count as failed + write nothing)
+ * rather than a fabricated score reaching the sheet.
+ */
+function handleJudgeRetryError_(e, attempt, maxRetries) {
+  if (!(e instanceof LlmTransportError_)) return;
+  if (attempt >= maxRetries) throw e;
+  Utilities.sleep(Math.min(30000, 1000 * Math.pow(2, attempt)));
+}
+
 function callKimiJudge_(systemPrompt, userPrompt) {
-  var url = getScriptSecret_(PHASE2_CONFIG.PROXY_URL_PROPERTY);
-  var key = getScriptSecret_(PHASE2_CONFIG.API_KEY_PROPERTY);
+  var url, key;
+  try {
+    url = getScriptSecret_(PHASE2_CONFIG.PROXY_URL_PROPERTY);
+    key = getScriptSecret_(PHASE2_CONFIG.API_KEY_PROPERTY);
+  } catch (e) {
+    throw new LlmTransportError_(String(e));
+  }
 
   var payload = {
     model: PHASE2_CONFIG.MODEL_NAME,
@@ -253,22 +381,32 @@ function callKimiJudge_(systemPrompt, userPrompt) {
     ]
   };
 
-  var resp = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + key },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
+  var resp;
+  try {
+    resp = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + key },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    throw new LlmTransportError_('UrlFetchApp.fetch failed: ' + e);
+  }
 
   var code = resp.getResponseCode();
   if (code < 200 || code >= 300) {
-    throw new Error('LiteLLM proxy HTTP ' + code + ': ' + resp.getContentText().slice(0, 500));
+    throw new LlmTransportError_('LiteLLM proxy HTTP ' + code + ': ' + resp.getContentText().slice(0, 500));
   }
-  var body = JSON.parse(resp.getContentText());
+  var body;
+  try {
+    body = JSON.parse(resp.getContentText());
+  } catch (e) {
+    throw new LlmTransportError_('LiteLLM proxy returned non-JSON envelope: ' + e);
+  }
   var content = body && body.choices && body.choices[0] && body.choices[0].message &&
     body.choices[0].message.content;
-  if (!content) throw new Error('LiteLLM response had no choices[0].message.content.');
+  if (!content) throw new LlmTransportError_('LiteLLM response had no choices[0].message.content.');
   return content;
 }
 
@@ -454,6 +592,7 @@ function scoreTranscript_(ctx) {
       return parsed;
     } catch (e) {
       log_('    ↳ scoreTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
     }
   }
 
@@ -864,8 +1003,8 @@ function buildBensJudgeSystemPrompt_() {
 function isValidBensJudgeSchema_(obj) {
   return !!(obj &&
     typeof obj.call_role === 'string' &&
-    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
-    typeof obj.call_quality_score === 'number' &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
     obj.flags &&
     typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
@@ -879,7 +1018,7 @@ function isValidBensJudgeSchema_(obj) {
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
     typeof obj.next_step_type === 'string' &&
     typeof obj.manual_review_recommended === 'boolean' &&
-    typeof obj.severity === 'number' &&
+    isValidScoreRange_(obj.severity) &&
     typeof obj.root_cause_if_no_booking === 'string');
 }
 
@@ -900,6 +1039,7 @@ function scoreBensTranscript_(ctx) {
       return parsed;
     } catch (e) {
       log_('    ↳ scoreBensTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
     }
   }
 
@@ -1224,7 +1364,7 @@ function previewLegacyTranscriptFolder(repName, folderId) {
   var existing = loadExistingLegacyKeys_(sheet);
 
   var folder = DriveApp.getFolderById(folderId);
-  var files = folder.getFiles();
+  var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
   var n = 0;
   while (files.hasNext()) {
     var file = files.next();
@@ -1234,7 +1374,7 @@ function previewLegacyTranscriptFolder(repName, folderId) {
       log_('  SKIP (name did not match convention): "' + file.getName() + '"');
       continue;
     }
-    var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr;
+    var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr + '|' + normalize_(repName);
     log_('  "' + file.getName() + '" → ' + parsed.prospectName + ' / ' + parsed.dateStr +
       (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
   }
@@ -1276,12 +1416,18 @@ function loadExistingLegacyKeys_(sheet) {
   if (!sheet) return keys;
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return keys;
-  var values = sheet.getRange(2, 1, lastRow - 1, 4).getValues(); // A:Name, D:Call Date
+  var values = sheet.getRange(2, 1, lastRow - 1, 5).getValues(); // A:Name, D:Call Date, E:Rep
   values.forEach(function (row) {
-    var name = row[0], date = row[3];
+    var name = row[0], date = row[3], rep = row[4];
     if (!name || !date) return;
     var d = (date instanceof Date) ? Utilities.formatDate(date, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd') : String(date);
-    keys[normalize_(name) + '|' + d] = true;
+    // Real bug found live (26/08/2026 silent-failure audit): this key used
+    // to omit Rep entirely, so a real second call for the same prospect on
+    // the same day by a DIFFERENT rep (e.g. Bens runs a QC, Tomás closes the
+    // same prospect that afternoon — exactly the documented funnel) computed
+    // an identical key and silently skipped as "already exists", with no log
+    // line distinguishing it from a genuine duplicate.
+    keys[normalize_(name) + '|' + d + '|' + normalize_(rep)] = true;
   });
   return keys;
 }
@@ -1332,9 +1478,17 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
     var sheet = resolveSheet_(ss, 'Sales Call Log');
     if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
+    // Real bug found live (26/08/2026 silent-failure audit): this function
+    // appends 18-20 positional values via appendRow with no header check at
+    // all, unlike every OTHER sheet-writing function in this file. A drifted
+    // header (a column inserted/renamed) means every value below lands one
+    // column off with no error. getValidatedColumnMap_ throws (and alerts)
+    // loudly on any mismatch before a single row gets written.
+    getValidatedColumnMap_(sheet);
+
     var existing = loadExistingLegacyKeys_(sheet);
     var folder = DriveApp.getFolderById(folderId);
-    var files = folder.getFiles();
+    var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
 
     var scored = 0, skippedExisting = 0, skippedUnparsed = 0, failed = 0;
     // Match Method is always 'fallback_heuristic' for this function (see the
@@ -1351,7 +1505,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         skippedUnparsed++;
         continue;
       }
-      var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr;
+      var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr + '|' + normalize_(repName);
       if (existing[key]) { skippedExisting++; continue; }
 
       try {
@@ -1516,8 +1670,8 @@ function buildSeanJudgeSystemPrompt_() {
 
 function isValidSeanJudgeSchema_(obj) {
   return !!(obj &&
-    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
-    typeof obj.call_quality_score === 'number' &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
     obj.flags &&
     typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
@@ -1531,7 +1685,7 @@ function isValidSeanJudgeSchema_(obj) {
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
-    typeof obj.severity === 'number' &&
+    isValidScoreRange_(obj.severity) &&
     typeof obj.root_cause_if_no_sale === 'string');
 }
 
@@ -1552,6 +1706,7 @@ function scoreSeanTranscript_(ctx) {
       return parsed;
     } catch (e) {
       log_('    ↳ scoreSeanTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
     }
   }
 
@@ -1610,14 +1765,20 @@ function previewSeanTranscripts() {
 
   Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
-    var files = folder.getFiles();
+    var files = getFilesRecursive_(folder);
     while (files.hasNext()) {
       var file = files.next();
       var name = file.getName();
       if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
       var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-      var dateStr = Utilities.formatDate(file.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-      var key = normalize_(prospectName) + '|' + dateStr;
+      // Real bug found live (26/08/2026 silent-failure audit): this preview
+      // used file.getDateCreated() — the exact bug documented as fixed below
+      // for the real scorer (see the comment on resolveRealCallDate_) — so
+      // the preview and the scorer it's meant to gate could disagree on
+      // whether a file is "new" or "already scored", in either direction.
+      var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+      var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+      var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Sean');
       n++;
       log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
         (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
@@ -1757,24 +1918,37 @@ function scoreSeanTranscripts() {
     var sheet = resolveSheet_(ss, 'Sales Call Log');
     if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
+    // Real bug found live (26/08/2026 silent-failure audit): this function
+    // appends 18-20 positional values via appendRow with no header check at
+    // all, unlike every OTHER sheet-writing function in this file. A drifted
+    // header (a column inserted/renamed) means every value below lands one
+    // column off with no error. getValidatedColumnMap_ throws (and alerts)
+    // loudly on any mismatch before a single row gets written.
+    getValidatedColumnMap_(sheet);
+
     var existing = loadExistingLegacyKeys_(sheet);
     var scored = 0, skippedExisting = 0, failed = 0;
 
     Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
-      var files = folder.getFiles();
+      var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
-        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = resolveRealCallDate_(folder, prospectName, file);
-        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-        var key = normalize_(prospectName) + '|' + dateStr;
-        if (existing[key]) { skippedExisting++; continue; }
-
+        // Real bug found live (26/08/2026 silent-failure audit): the per-file
+        // try used to start AFTER resolveRealCallDate_ (a Drive call) and the
+        // dedup check — so a routine Drive hiccup on any one file threw OUT
+        // OF THE LOOP entirely, silently abandoning every remaining file in
+        // this and every other folder with no summary log and no ops alert.
         try {
+          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Sean');
+          if (existing[key]) { skippedExisting++; continue; }
+
           var callType = label === 'Qualification Calls' ? 'QC' : 'Sales Call';
           var ctx = {
             rep: 'Sean',
@@ -1876,14 +2050,17 @@ function previewJoanaTranscripts() {
 
   Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
-    var files = folder.getFiles();
+    var files = getFilesRecursive_(folder);
     while (files.hasNext()) {
       var file = files.next();
       var name = file.getName();
       if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
       var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-      var dateStr = Utilities.formatDate(file.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-      var key = normalize_(prospectName) + '|' + dateStr;
+      // Real bug found live (26/08/2026 silent-failure audit): see the
+      // identical comment in previewSeanTranscripts above.
+      var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+      var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+      var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Joana');
       n++;
       log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
         (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
@@ -1917,24 +2094,36 @@ function scoreJoanaTranscripts() {
     var sheet = resolveSheet_(ss, 'Sales Call Log');
     if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
+    // Real bug found live (26/08/2026 silent-failure audit): this function
+    // appends 18-20 positional values via appendRow with no header check at
+    // all, unlike every OTHER sheet-writing function in this file. A drifted
+    // header (a column inserted/renamed) means every value below lands one
+    // column off with no error. getValidatedColumnMap_ throws (and alerts)
+    // loudly on any mismatch before a single row gets written.
+    getValidatedColumnMap_(sheet);
+
     var existing = loadExistingLegacyKeys_(sheet);
     var scored = 0, skippedExisting = 0, failed = 0;
 
     Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
-      var files = folder.getFiles();
+      var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
-        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = resolveRealCallDate_(folder, prospectName, file);
-        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-        var key = normalize_(prospectName) + '|' + dateStr;
-        if (existing[key]) { skippedExisting++; continue; }
-
+        // Real bug found live (26/08/2026 silent-failure audit): see the
+        // identical comment in scoreSeanTranscripts above — the per-file try
+        // must start before any Drive call, or one hiccup silently abandons
+        // every remaining file with no summary log and no ops alert.
         try {
+          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Joana');
+          if (existing[key]) { skippedExisting++; continue; }
+
           var ctx = {
             rep: 'Joana',
             prospectName: prospectName,
@@ -2221,8 +2410,8 @@ function buildTomasJudgeSystemPrompt_() {
 function isValidTomasJudgeSchema_(obj) {
   return !!(obj &&
     typeof obj.call_role === 'string' &&
-    obj.lead_quality && typeof obj.lead_quality.verdict === 'string' &&
-    typeof obj.call_quality_score === 'number' &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
     obj.flags &&
     typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
@@ -2234,7 +2423,7 @@ function isValidTomasJudgeSchema_(obj) {
     typeof obj.teachable_strength === 'string' &&
     typeof obj.coach_this === 'string' &&
     typeof obj.manual_review_recommended === 'boolean' &&
-    typeof obj.severity === 'number');
+    isValidScoreRange_(obj.severity));
 }
 
 /** Same retry/manual-review shape as scoreTranscript_/scoreSeanTranscript_, against the Tomás-specific prompt. */
@@ -2254,6 +2443,7 @@ function scoreTomasTranscript_(ctx) {
       return parsed;
     } catch (e) {
       log_('    ↳ scoreTomasTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
     }
   }
 
@@ -2299,7 +2489,7 @@ function previewTomasTranscripts() {
   var n = 0;
   Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
-    var files = folder.getFiles();
+    var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
     while (files.hasNext()) {
       var file = files.next();
       if (file.getName().indexOf('Transcript') === -1) continue;
@@ -2331,24 +2521,36 @@ function scoreTomasTranscripts() {
     var sheet = resolveSheet_(ss, 'Sales Call Log');
     if (!sheet) { log_('No Sales Call Log tab found — run setupSalesCallLog() first.'); return; }
 
+    // Real bug found live (26/08/2026 silent-failure audit): this function
+    // appends 18-20 positional values via appendRow with no header check at
+    // all, unlike every OTHER sheet-writing function in this file. A drifted
+    // header (a column inserted/renamed) means every value below lands one
+    // column off with no error. getValidatedColumnMap_ throws (and alerts)
+    // loudly on any mismatch before a single row gets written.
+    getValidatedColumnMap_(sheet);
+
     var existing = loadExistingLegacyKeys_(sheet);
     var scored = 0, skippedExisting = 0, failed = 0;
 
     Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
-      var files = folder.getFiles();
+      var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
         if (name.indexOf('Transcript') === -1) continue; // skip source videos
 
-        var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
-        var callDate = resolveRealCallDate_(folder, prospectName, file);
-        var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-        var key = normalize_(prospectName) + '|' + dateStr;
-        if (existing[key]) { skippedExisting++; continue; }
-
+        // Real bug found live (26/08/2026 silent-failure audit): see the
+        // identical comment in scoreSeanTranscripts above — the per-file try
+        // must start before any Drive call, or one hiccup silently abandons
+        // every remaining file with no summary log and no ops alert.
         try {
+          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
+          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Tomás');
+          if (existing[key]) { skippedExisting++; continue; }
+
           var ctx = {
             rep: 'Tomás',
             prospectName: prospectName,
