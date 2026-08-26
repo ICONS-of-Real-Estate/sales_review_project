@@ -10,6 +10,7 @@ not on sync.py's timer.
 """
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -29,21 +30,38 @@ def _slugify(text):
     return slug or "section"
 
 
+_FENCE_RE = re.compile(r"^(```|~~~)")
+
+
 def _split_sections(markdown_text):
     """Splits a playbook on its top-level (##) headings. Content before the
     first ## — the doc's own H1 + intro blockquote — becomes its own
-    section, titled after the H1 if present."""
+    section, titled after the H1 if present.
+
+    Real bug (B1): heading detection used to run on every line regardless
+    of fenced code blocks — a ```/~~~ fence containing an example line that
+    starts with "## " (a shell comment, a markdown-inside-markdown sample)
+    would be misread as a real section break, silently splitting one
+    section into two (or worse, orphaning the rest of that section's
+    content under the wrong heading). Now tracks fence state and skips
+    heading detection entirely while inside one.
+    """
     lines = markdown_text.splitlines()
     sections = []
     current_heading = None
     current_lines = []
+    in_fence = False
 
     def flush():
         if current_heading is not None or current_lines:
             sections.append((current_heading, "\n".join(current_lines)))
 
     for line in lines:
-        m = re.match(r"^##\s+(.*)$", line)
+        if _FENCE_RE.match(line.strip()):
+            in_fence = not in_fence
+            current_lines.append(line)
+            continue
+        m = None if in_fence else re.match(r"^##\s+(.*)$", line)
         if m:
             flush()
             current_heading = m.group(1).strip()
@@ -54,16 +72,29 @@ def _split_sections(markdown_text):
 
     if sections and sections[0][0] is None:
         body = sections[0][1]
-        h1_match = re.search(r"^#\s+(.*)$", body, re.MULTILINE)
-        title = h1_match.group(1).strip() if h1_match else "Overview"
-        # Strip the H1 line itself out of the body — it's already captured
-        # as this section's heading (rendered via <h3> + the TOC), so
-        # leaving it in would render a second, literal <h1> inside the page.
-        if h1_match:
-            body = body[: h1_match.start()] + body[h1_match.end():]
+        title, body = _extract_and_strip_h1(body)
         sections[0] = (title, body)
 
     return sections
+
+
+def _extract_and_strip_h1(body):
+    """Finds the intro section's own H1 (a real top-level `# heading` line,
+    not one inside a fenced code block — B2) and strips just that line out
+    of the body so it isn't rendered a second time as a literal <h1>."""
+    lines = body.splitlines(keepends=True)
+    in_fence = False
+    for i, line in enumerate(lines):
+        if _FENCE_RE.match(line.strip()):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.match(r"^#\s+(.*)$", line)
+        if m:
+            title = m.group(1).strip()
+            return title, "".join(lines[:i] + lines[i + 1:])
+    return "Overview", body
 
 
 def render_playbook(repo_root, filename):
@@ -111,6 +142,11 @@ def reindex_playbooks(db_path, repo_root):
         try:
             sections = render_playbook(repo_root, pb["filename"])
         except FileNotFoundError:
+            # Real bug (B3): silently skipping meant a renamed/moved/deleted
+            # playbook file just vanished from search with no signal at all
+            # — indistinguishable from "this rep genuinely has no playbook"
+            # (Joana, by design) unless someone happened to notice the gap.
+            print(f"WARNING: playbook file not found, skipping: {pb['filename']} (slug={pb['slug']!r})", file=sys.stderr)
             continue
         for s in sections:
             conn.execute(
