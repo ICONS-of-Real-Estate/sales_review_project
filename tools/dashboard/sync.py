@@ -158,43 +158,73 @@ def sheets_client():
 
 
 def fetch_tab(service, tab_name):
-    """Returns list[dict] keyed by header name. Empty list if the tab is missing
-    or has no data rows — logged as a warning, never a hard failure, so a
-    renamed/missing tab degrades the dashboard instead of killing the sync.
+    """Returns list[dict] keyed by header name, or None on a genuine fetch
+    failure (see below) so the caller can tell "this tab really has zero
+    rows" apart from "we couldn't read it this cycle."
 
-    Skips any row whose first column is blank. Real incident live (25/08/2026):
-    the live "Sales Call Log" sheet turned out to have a ~995-row gap of
-    genuinely empty rows above the real data (rows 2 through ~996, real calls
-    starting around row 997) — A1:Z20000 pulls those in just like real rows,
-    and since checkbox/dropdown columns like "Outcome Logged" write an actual
-    FALSE into every row in their validated range regardless of whether the
-    row has any real data, those rows aren't blank across every column, just
-    the identifying one. The dashboard was showing ~995 "(unnamed)" ghost
-    calls because of this. Column A is "Prospect Name" for the call log and
-    "Rep" for the other two synced tabs — always the one column a real row
-    can't be blank on — same convention Phase1_ComplianceCheck.gs's
-    setupSalesCallLog() already uses to detect a real vs. placeholder row.
+    Real bug (C-09/S1): this used to return [] for BOTH a tab that
+    legitimately has no rows AND a transient fetch failure (network blip,
+    expired credentials, a rate limit) — and main()/replace_table() DELETEs
+    the existing table before reinserting, so a single flaky sync cycle
+    silently wiped the live mirror to empty instead of leaving the last-good
+    data in place. Only a confirmed "this tab doesn't exist" (HttpError 400,
+    "Unable to parse range" — e.g. Training Assignments before Phase 6's
+    first real run ever creates it) is treated as genuinely empty; every
+    other exception is a real failure that must NOT touch the table (S2 —
+    this is also the exact shape of the live Training Assignments HttpError
+    400 seen 26/08/2026, which was the tab simply not existing yet, not a
+    transient error, and is the reason this distinction exists at all).
+
+    Not just A1:Z20000 (S3): a bare 'tab_name' range asks the Sheets API for
+    the tab's own full used range, so a column added past Z (this sheet has
+    already grown additively more than once — see SALES_CALL_LOG_COLUMNS's
+    own header comment) is never silently truncated out of the pull.
+
+    Skips any row whose first column is blank, logging how many were
+    skipped (S4) — a renamed/blanked identifying column would otherwise
+    silently drop every row with no signal at all, rather than just the
+    known/expected gap. Real incident live (25/08/2026): the live "Sales
+    Call Log" sheet turned out to have a ~995-row gap of genuinely empty
+    rows above the real data (rows 2 through ~996, real calls starting
+    around row 997) — and since checkbox/dropdown columns like "Outcome
+    Logged" write an actual FALSE into every row in their validated range
+    regardless of whether the row has any real data, those rows aren't
+    blank across every column, just the identifying one. The dashboard was
+    showing ~995 "(unnamed)" ghost calls because of this. Column A is
+    "Prospect Name" for the call log and "Rep" for the other two synced
+    tabs — always the one column a real row can't be blank on — same
+    convention Phase1_ComplianceCheck.gs's setupSalesCallLog() already uses
+    to detect a real vs. placeholder row.
     """
     try:
         resp = (
             service.spreadsheets()
             .values()
-            .get(spreadsheetId=SHEET_ID, range=f"'{tab_name}'!A1:Z20000")
+            .get(spreadsheetId=SHEET_ID, range=f"'{tab_name}'")
             .execute()
         )
     except Exception as e:
-        print(f"WARNING: could not read tab '{tab_name}': {e}", file=sys.stderr)
-        return []
+        from googleapiclient.errors import HttpError
+
+        if isinstance(e, HttpError) and e.resp.status == 400 and "Unable to parse range" in str(e):
+            print(f"NOTE: tab '{tab_name}' does not exist yet — treating as genuinely empty.", file=sys.stderr)
+            return []
+        print(f"ERROR: could not read tab '{tab_name}' — leaving its existing mirrored data untouched: {e}", file=sys.stderr)
+        return None
     rows = resp.get("values", [])
     if not rows:
         return []
     header = rows[0]
     out = []
+    skipped = 0
     for raw in rows[1:]:
         padded = raw + [""] * (len(header) - len(raw))
         if not str(padded[0]).strip():
+            skipped += 1
             continue
         out.append(dict(zip(header, padded)))
+    if skipped:
+        print(f"NOTE: tab '{tab_name}' — skipped {skipped} row(s) blank in column A (placeholder/gap rows).", file=sys.stderr)
     return out
 
 
@@ -202,17 +232,23 @@ def to_bool(v):
     return str(v).strip().upper() in ("TRUE", "YES", "1", "✓")
 
 
-def to_int_or_none(v):
+def to_int_or_none(v, column=None, warnings=None):
+    s = str(v).strip()
     try:
-        return int(str(v).strip())
+        return int(s)
     except (ValueError, TypeError):
+        if s and warnings is not None:
+            warnings.append(f"{column}={v!r}")
         return None
 
 
-def to_float_or_none(v):
+def to_float_or_none(v, column=None, warnings=None):
+    s = str(v).strip()
     try:
-        return float(str(v).strip())
+        return float(s)
     except (ValueError, TypeError):
+        if s and warnings is not None:
+            warnings.append(f"{column}={v!r}")
         return None
 
 
@@ -300,17 +336,29 @@ def rebuild_call_search_index(conn):
             "INSERT INTO call_search (call_id, prospect_name, rep, call_date, body) VALUES (?, ?, ?, ?, ?)",
             (call_id, prospect_name or "", rep or "", call_date or "", summary),
         )
-    conn.commit()
+    # NOT committed here (S7) — main() does one commit for the whole cycle.
 
 
 def replace_table(conn, table, columns_map, rows):
     """Full-refresh a table: delete everything, reinsert from the current
     sheet pull. Safe at this data volume (~400 rows) and much simpler than
     diffing — see DASHBOARD_RESEARCH_REPORT.md §1.2 on the mirror being
-    disposable/rebuildable rather than something to carefully upsert."""
+    disposable/rebuildable rather than something to carefully upsert.
+
+    NOT committed here (S7) — main() commits once, after every table has
+    been rebuilt, so a crash or exception partway through a sync cycle rolls
+    back to the last-good state instead of leaving some tables refreshed and
+    others stale/wiped.
+
+    Every int/float conversion failure is collected and logged as one
+    summary line per table (S5/S6) — a manually-typed non-numeric value
+    (e.g. "N/A" in Call Quality Score) used to become a silent NULL with no
+    diagnostic trail at all.
+    """
     cols = list(columns_map.values())
     conn.execute(f"DELETE FROM {table}")
     placeholders = ",".join("?" for _ in cols)
+    conversion_warnings = []
     for r in rows:
         values = []
         for sheet_name, col in columns_map.items():
@@ -318,42 +366,62 @@ def replace_table(conn, table, columns_map, rows):
             if col in BOOLEAN_COLUMNS:
                 v = int(to_bool(v))
             elif col in INT_COLUMNS:
-                v = to_int_or_none(v)
+                v = to_int_or_none(v, column=col, warnings=conversion_warnings)
             elif col in FLOAT_COLUMNS:
-                v = to_float_or_none(v)
+                v = to_float_or_none(v, column=col, warnings=conversion_warnings)
             values.append(v)
         conn.execute(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})", values)
-    conn.commit()
+    if conversion_warnings:
+        print(
+            f"WARNING: {table} — {len(conversion_warnings)} value(s) failed int/float conversion "
+            f"and were stored as NULL: {'; '.join(conversion_warnings[:10])}"
+            + (f" ... and {len(conversion_warnings) - 10} more" if len(conversion_warnings) > 10 else ""),
+            file=sys.stderr,
+        )
 
 
 def main():
     conn = sqlite3.connect(DB_PATH)
     init_schema(conn)
+    conn.commit()  # schema/migration DDL lands regardless of whether the rest of this sync succeeds
 
     service = sheets_client()
-    call_log_rows = fetch_tab(service, SALES_CALL_LOG_TAB)
-    training_rows = fetch_tab(service, TRAINING_ASSIGNMENTS_TAB)
-    practice_rows = fetch_tab(service, DAILY_PRACTICE_FOLLOWUP_TAB)
-    scorecard_history_rows = fetch_tab(service, SCORECARD_HISTORY_TAB)
+    tabs = {
+        "sales_call_log": (SALES_CALL_LOG_TAB, SALES_CALL_LOG_COLUMNS),
+        "training_assignments": (TRAINING_ASSIGNMENTS_TAB, TRAINING_ASSIGNMENTS_COLUMNS),
+        "daily_practice_followups": (DAILY_PRACTICE_FOLLOWUP_TAB, DAILY_PRACTICE_FOLLOWUP_COLUMNS),
+        "scorecard_history": (SCORECARD_HISTORY_TAB, SCORECARD_HISTORY_COLUMNS),
+    }
 
-    replace_table(conn, "sales_call_log", SALES_CALL_LOG_COLUMNS, call_log_rows)
-    replace_table(conn, "training_assignments", TRAINING_ASSIGNMENTS_COLUMNS, training_rows)
-    replace_table(conn, "daily_practice_followups", DAILY_PRACTICE_FOLLOWUP_COLUMNS, practice_rows)
-    replace_table(conn, "scorecard_history", SCORECARD_HISTORY_COLUMNS, scorecard_history_rows)
-    rebuild_call_search_index(conn)
+    try:
+        counts = {}
+        for table, (tab_name, columns_map) in tabs.items():
+            rows = fetch_tab(service, tab_name)
+            if rows is None:
+                # Genuine fetch failure (C-09/S1) — leave this table exactly as
+                # it was from the last successful sync rather than wiping it.
+                print(f"NOTE: {table} left untouched this cycle (fetch failed).", file=sys.stderr)
+                continue
+            replace_table(conn, table, columns_map, rows)
+            counts[table] = len(rows)
+        rebuild_call_search_index(conn)
 
-    conn.execute(
-        "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)",
-        (datetime.now(timezone.utc).isoformat(),),
-    )
-    conn.commit()
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()  # single commit for the whole cycle (S7) — a mid-cycle exception rolls everything back instead
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
     conn.close()
 
     print(
-        f"Synced {len(call_log_rows)} call-log row(s), "
-        f"{len(training_rows)} training-assignment row(s), "
-        f"{len(practice_rows)} daily-practice-followup row(s), "
-        f"{len(scorecard_history_rows)} scorecard-history row(s) into {DB_PATH}"
+        "Synced "
+        + ", ".join(f"{counts[t]} {t} row(s)" for t in counts)
+        + (" (some tabs skipped this cycle — see NOTE/ERROR lines above)" if len(counts) < len(tabs) else "")
+        + f" into {DB_PATH}"
     )
 
 

@@ -167,6 +167,7 @@ def seeded_db(db_path):
 
     c.commit()
     sync.rebuild_call_search_index(c)
+    c.commit()  # replace_table/rebuild_call_search_index no longer commit internally (S7) — callers must
     c.close()
     return db_path
 
