@@ -159,6 +159,18 @@ var INBOX_SLA_CONFIG = {
     'newsletter@screendollars.com',
     'hello@emailmeter.com'
   ],
+  // Real bug found live (26/08/2026 silent-failure audit): these used to be
+  // compiled into Gmail's `-subject:"..."` search operator, which is a
+  // word/phrase match, NOT a substring match — so 'Accepted:' silently
+  // excluded any thread whose subject contained the word "Accepted" anywhere
+  // (e.g. a real prospect reply "Re: Accepted — when can we record?" was
+  // dropped before it was ever fetched, with nothing logged either
+  // direction). It also meant these entries had to be truncated mid-word to
+  // dodge Gmail's own phrase tokenizing around the accented characters,
+  // which then couldn't match the real subject at all. These are now
+  // applied as real, case-insensitive JS substring checks AFTER fetching
+  // each thread's subject (see subjectLooksExcluded_ / findUnansweredThreadsForRep_)
+  // — the full, untruncated phrases are safe to use again.
   EXCLUDE_SUBJECT_CONTAINS: [
     'Accepted:',
     'Declined:',
@@ -169,10 +181,10 @@ var INBOX_SLA_CONFIG = {
     'Appointment Confirmation of',
     'Sales Call Confirmation of',
     'New Qualification Zoom Boooked',
-    'ingressou na sua Sala Pessoal de Reuni',
+    'ingressou na sua Sala Pessoal de Reunião',
     'has joined your Personal Meeting Room',
     'Zoom sign-in',
-    'Novo início de sess'
+    'Novo início de sessão'
   ],
 
   // Business time, reusing CONFIG.BUSINESS_TIMEZONE (Phase1_ComplianceCheck.gs)
@@ -281,12 +293,38 @@ function gmailApiGet_(accessToken, path) {
   return JSON.parse(resp.getContentText());
 }
 
-/** Builds the Gmail search string once, incl. the EXCLUDE_FROM/EXCLUDE_SUBJECT_CONTAINS noise filters — see their config comment for why these exist. */
+/**
+ * Builds the Gmail search string — EXCLUDE_FROM only. EXCLUDE_SUBJECT_CONTAINS
+ * is deliberately NOT compiled in here; see its config comment for why a
+ * real substring check has to happen client-side instead of via Gmail's
+ * `-subject:` operator.
+ */
 function buildInboxSlaSearchQuery_() {
   var parts = ['in:inbox', 'newer_than:' + INBOX_SLA_CONFIG.SEARCH_WINDOW_DAYS + 'd'];
   INBOX_SLA_CONFIG.EXCLUDE_FROM.forEach(function (addr) { parts.push('-from:' + addr); });
-  INBOX_SLA_CONFIG.EXCLUDE_SUBJECT_CONTAINS.forEach(function (s) { parts.push('-subject:"' + s + '"'); });
   return parts.join(' ');
+}
+
+/** Real (case-insensitive) substring check against EXCLUDE_SUBJECT_CONTAINS — see that config's comment. */
+function subjectLooksExcluded_(subject) {
+  var lower = String(subject || '').toLowerCase();
+  return INBOX_SLA_CONFIG.EXCLUDE_SUBJECT_CONTAINS.some(function (s) { return lower.indexOf(s.toLowerCase()) !== -1; });
+}
+
+/**
+ * Real bug found live (26/08/2026 silent-failure audit): fromRaw/subject
+ * used to be interpolated into htmlBody unescaped. A raw From header is
+ * "Name <addr@domain>" — the bracketed part parses as an unknown HTML tag
+ * and is simply not rendered, so the rep's nudge email showed "from Margaret
+ * Chen" with no address at all, and a subject containing "<" mangled
+ * everything after it. The plain-text body was always correct; MailApp
+ * renders htmlBody when present, so that's what the rep actually saw.
+ */
+function escapeHtml_(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function listInboxThreadIds_(accessToken) {
@@ -318,16 +356,29 @@ function getThreadLastMessageInfo_(accessToken, threadId) {
   var thread = gmailApiGet_(accessToken,
     '/threads/' + threadId + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject');
   var messages = thread.messages || [];
-  if (!messages.length) return null;
+  if (!messages.length) {
+    log_('  thread ' + threadId + ' returned no messages — skipped.');
+    return null;
+  }
   var last = messages[messages.length - 1];
+  // Real bug found live (26/08/2026 silent-failure audit): header names were
+  // keyed by their exact original casing ('From'/'Subject'), so a message
+  // whose raw header happened to be 'FROM:'/'from:' (Gmail preserves
+  // whatever casing the sender's system used) silently read as no header at
+  // all. Normalize the key, not just the values.
   var headers = {};
-  (last.payload && last.payload.headers || []).forEach(function (h) { headers[h.name] = h.value; });
+  (last.payload && last.payload.headers || []).forEach(function (h) { headers[String(h.name).toLowerCase()] = h.value; });
+  var internalDateMs = Number(last.internalDate);
+  if (!isFinite(internalDateMs)) {
+    log_('  thread ' + threadId + ' has a non-numeric internalDate ("' + last.internalDate + '") — skipped.');
+    return null;
+  }
   return {
     threadId: threadId,
-    fromEmail: extractEmailAddress_(headers['From']),
-    fromRaw: headers['From'] || '(unknown sender)',
-    subject: headers['Subject'] || '(no subject)',
-    internalDateMs: Number(last.internalDate)
+    fromEmail: extractEmailAddress_(headers['from']),
+    fromRaw: headers['from'] || '(unknown sender)',
+    subject: headers['subject'] || '(no subject)',
+    internalDateMs: internalDateMs
   };
 }
 
@@ -337,29 +388,59 @@ function getThreadLastMessageInfo_(accessToken, threadId) {
  * the rep replied last (even if the other side hasn't come back) is not
  * flagged — that's not on the rep to chase.
  */
+// Apps Script's hard execution ceiling is 6 minutes. One sequential Gmail
+// API round trip per thread (no batching) means an inbox in the hundreds-to-
+// low-thousands of threads (Joana's was recorded at 1,276 — see
+// INBOX_SLA_CONFIG's own comment on why she isn't in CONFIG.REPS yet) can
+// exceed it, and a hard timeout can't be caught, so nothing downstream gets
+// a chance to log or alert. Stop and report a partial result instead of
+// letting it die silently mid-run.
+var INBOX_SLA_TIME_BUDGET_MS_ = 5 * 60 * 1000; // leaves a margin under the 6-minute ceiling
+
 function findUnansweredThreadsForRep_(repCfg) {
   var accessToken = getGmailAccessTokenForUser_(repCfg.email);
   var threadIds = listInboxThreadIds_(accessToken);
   var now = new Date().getTime();
   var slaMs = INBOX_SLA_CONFIG.SLA_HOURS * 3600000;
   var unanswered = [];
+  var runStart = Date.now();
+  var truncated = false;
 
-  threadIds.forEach(function (threadId) {
-    var info = getThreadLastMessageInfo_(accessToken, threadId);
-    if (!info) return;
-    if (info.fromEmail === repCfg.email.toLowerCase()) return; // rep sent the last message -- answered
-    var ageMs = now - info.internalDateMs;
-    if (ageMs > slaMs) {
-      unanswered.push({
-        fromRaw: info.fromRaw,
-        subject: info.subject,
-        hoursOld: Math.floor(ageMs / 3600000),
-        threadId: info.threadId
-      });
+  for (var i = 0; i < threadIds.length; i++) {
+    if (Date.now() - runStart > INBOX_SLA_TIME_BUDGET_MS_) {
+      truncated = true;
+      log_('  findUnansweredThreadsForRep_(' + repCfg.name + '): time budget hit after ' + i + '/' +
+        threadIds.length + ' thread(s) — reporting a partial result rather than risking a hard timeout.');
+      break;
     }
-  });
+    var threadId = threadIds[i];
+    // Real bug found live (26/08/2026 silent-failure audit): a single failed
+    // thread fetch (a 404 from a thread the rep deleted between the list
+    // call and this GET, or a transient 429/5xx) used to throw straight out
+    // of this loop, discarding every thread already collected and leaving
+    // the rep with NO nudge at all that evening, even when other threads
+    // were genuinely over SLA.
+    try {
+      var info = getThreadLastMessageInfo_(accessToken, threadId);
+      if (!info) continue;
+      if (info.fromEmail === repCfg.email.toLowerCase()) continue; // rep sent the last message -- answered
+      if (subjectLooksExcluded_(info.subject)) continue; // real substring check — see EXCLUDE_SUBJECT_CONTAINS's comment
+      var ageMs = now - info.internalDateMs;
+      if (ageMs > slaMs) {
+        unanswered.push({
+          fromRaw: info.fromRaw,
+          subject: info.subject,
+          hoursOld: Math.floor(ageMs / 3600000),
+          threadId: info.threadId
+        });
+      }
+    } catch (e) {
+      log_('  ' + repCfg.name + ' thread ' + threadId + ' failed, skipping it: ' + e);
+    }
+  }
 
   unanswered.sort(function (a, b) { return b.hoursOld - a.hoursOld; });
+  unanswered._truncated = truncated;
   return unanswered;
 }
 
@@ -428,7 +509,7 @@ function runInboxSlaCheck() {
           return '• ' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — "' + u.subject + '"';
         });
         var htmlLines = unanswered.map(function (u) {
-          return '<li>' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — &quot;' + u.subject + '&quot;</li>';
+          return '<li>' + u.hoursOld + 'h old — from ' + escapeHtml_(u.fromRaw) + ' — &quot;' + escapeHtml_(u.subject) + '&quot;</li>';
         });
         var body =
           'Hi ' + repCfg.name + ',\n\n' +
@@ -453,13 +534,15 @@ function runInboxSlaCheck() {
           log_('  Would send to ' + repCfg.email + ': ' + subject);
           log_(body);
         } else {
-          guardedSend_(repCfg.email, subject, body, {
+          var sent = guardedSend_(repCfg.email, subject, body, {
             htmlBody: htmlBody,
             cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
             name: 'Inbox SLA Bot'
           }, 3);
+          if (!sent) log_('  SEND FAILED/SKIPPED for ' + repCfg.name + ' -- no state was advanced, next run retries fresh.');
         }
-        log_(repCfg.name + ': ' + unanswered.length + ' unanswered thread(s) over SLA.');
+        log_(repCfg.name + ': ' + unanswered.length + ' unanswered thread(s) over SLA.' +
+          (unanswered._truncated ? ' (partial scan -- hit the execution time budget, see earlier log line)' : ''));
       } catch (e) {
         log_('ERROR checking ' + repCfg.name + ': ' + e);
         sendOpsAlert_('Inbox SLA check error for ' + repCfg.name,

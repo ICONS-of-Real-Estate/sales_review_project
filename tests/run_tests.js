@@ -1396,3 +1396,25 @@ test('findMostRecentPriorScoredCall_ still finds a genuinely earlier row', () =>
   assert.ok(result, 'a genuinely earlier row must still be found');
   assert.equal(result.rep, 'Bens');
 });
+
+// ---------------------------------------------------------------------------
+// Phase4_InboxSLA.gs fixes (26/08/2026 silent-failure audit)
+// ---------------------------------------------------------------------------
+
+test('subjectLooksExcluded_ does real substring matching, not Gmail\'s phrase-tokenized -subject: operator (real bug: -subject:"Accepted:" excluded any subject containing the bare WORD "Accepted" anywhere, even without the colon)', () => {
+  assert.equal(gas.subjectLooksExcluded_('Accepted: Sync with Bens'), true, 'a genuine calendar-acceptance notification must still be excluded');
+  assert.equal(gas.subjectLooksExcluded_('Re: Accepted — when can we record?'), false,
+    'this real prospect reply has no "Accepted:" substring (no colon) -- Gmail\'s word-tokenized -subject:"Accepted:" used to drop it anyway because it matched on the bare word "Accepted"; a real substring check correctly keeps it');
+  assert.equal(gas.subjectLooksExcluded_('Re: podcast next steps'), false, 'an unrelated real reply must not be excluded');
+});
+
+test('subjectLooksExcluded_ matches the full accented phrases now that they are not Gmail-phrase-tokenized (real bug: entries were truncated mid-word to dodge that tokenizer and could never match)', () => {
+  assert.equal(gas.subjectLooksExcluded_('Fulano ingressou na sua Sala Pessoal de Reunião Zoom'), true);
+  assert.equal(gas.subjectLooksExcluded_('Novo início de sessão detectado'), true);
+});
+
+test('escapeHtml_ neutralizes a raw "Name <addr>" From header and stray angle brackets (real bug: unescaped fromRaw/subject broke HTML rendering in the nudge email)', () => {
+  assert.equal(gas.escapeHtml_('Margaret Chen <margaret@bhhsrealty.com>'), 'Margaret Chen &lt;margaret@bhhsrealty.com&gt;');
+  assert.equal(gas.escapeHtml_('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(gas.escapeHtml_('Tom & Jerry'), 'Tom &amp; Jerry');
+});
