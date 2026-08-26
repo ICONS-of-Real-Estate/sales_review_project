@@ -1140,3 +1140,59 @@ test('findFlatTrainingTranscripts_ finds a real transcript named the way Zoom ac
   assert.equal(found[0].file.getName(), '260825_Recording.transcript.vtt');
   assert.equal(found[0].dateLabel, '260825');
 });
+
+// ---------------------------------------------------------------------------
+// Training call review: role-aware skills (26/08/2026, per Kris). Bens only
+// runs ICONS 100 lead-gen interviews and QCs -- he never asks for money
+// (Phase2_CallScoring.gs's buildBensJudgeSystemPrompt_ already reflects this,
+// added 22/08/2026) and never explains the framework himself; his equivalent
+// of "the close" is asking to book the next concrete step. The training-call
+// review never got that same distinction, so his own training-plan email was
+// showing a misleading red "Asking for the money practiced: No" and
+// "Framework explanation practiced: No" for skills that were never his job.
+// ---------------------------------------------------------------------------
+
+test('buildTrainingReviewSystemPrompt_ grades Bens on asking for the appointment, not money, and drops framework explanation entirely', () => {
+  const bensPrompt = gas.buildTrainingReviewSystemPrompt_('Bens');
+  assert.ok(/asking for the appointment/i.test(bensPrompt), 'should describe his close-equivalent as booking the appointment');
+  assert.ok(!/asking for the money/i.test(bensPrompt), 'should not grade him on a money-ask that was never his job');
+  assert.equal(bensPrompt.indexOf('FRAMEWORK EXPLANATION = proactively'), -1, 'should not define/ask about framework explanation for him at all');
+  assert.ok(/practiced_framework.*false/i.test(bensPrompt) || bensPrompt.indexOf('always return') !== -1,
+    'should explicitly instruct the model to report no framework practice rather than silently omitting the field');
+});
+
+test('buildTrainingReviewSystemPrompt_ leaves Sean/Joana on the shared money-ask + framework rubric unchanged', () => {
+  const seanPrompt = gas.buildTrainingReviewSystemPrompt_('Sean');
+  assert.ok(/asking for the money/i.test(seanPrompt));
+  assert.ok(/FRAMEWORK EXPLANATION = proactively/.test(seanPrompt));
+  const joanaPrompt = gas.buildTrainingReviewSystemPrompt_('Joana');
+  assert.ok(/asking for the money/i.test(joanaPrompt));
+  assert.ok(/FRAMEWORK EXPLANATION = proactively/.test(joanaPrompt));
+});
+
+test('buildTrainingReviewEmail_ never shows a framework badge/section for Bens, and relabels the close-ask skill', () => {
+  const result = {
+    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false,
+    coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
+    close_ask_drill: null, framework_gaps_to_drill: [{ topic: 'recruit_agents', note: 'say this' }], team_notes: 'none'
+  };
+  const email = gas.buildTrainingReviewEmail_('Bens', '260825', result);
+  assert.ok(email.body.indexOf('Practiced asking for the appointment') !== -1);
+  assert.equal(email.body.indexOf('the money'), -1, 'must not mention money anywhere for Bens');
+  assert.equal(email.body.indexOf('Framework explanation'), -1,
+    'must not show a framework line at all, even if the model returned framework_gaps_to_drill by mistake');
+  assert.equal(email.htmlBody.indexOf('Framework explanation practiced'), -1);
+});
+
+test('buildTrainingReviewEmail_ still shows the framework badge/section for Sean/Joana as before', () => {
+  const result = {
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: false,
+    coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Budget', note: 'agree/isolate/repeat' }],
+    close_ask_drill: { label: 'Ready to get started?', note: 'ask again on objection' },
+    framework_gaps_to_drill: [{ topic: 'sell_more_houses', note: 'say this' }], team_notes: 'none'
+  };
+  const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
+  assert.ok(email.body.indexOf('Practiced asking for the money') !== -1);
+  assert.ok(email.body.indexOf('Framework explanation to drill') !== -1);
+  assert.ok(email.htmlBody.indexOf('Framework explanation practiced') !== -1);
+});

@@ -64,59 +64,121 @@ var TRAINING_REVIEW_CONFIG = {
   TRIGGER_HOUR: 9 // checked daily since Zoom's auto-transcript turnaround varies; most days finds nothing new
 };
 
+/**
+ * Role differences by rep — mirrors Phase2_CallScoring.gs's
+ * buildBensJudgeSystemPrompt_ (added 22/08/2026 per Kris: Bens is not a
+ * closer, he runs ICONS 100 lead-gen interviews and QCs, never asks for
+ * money himself, and books the next concrete step — a QC or Sales Call —
+ * for someone else on the team). The training-call review never got that
+ * same distinction until now (26/08/2026, per Kris): it graded EVERY rep,
+ * Bens included, on a straight money-ask and framework explanation —
+ * meaningless red "No" badges in his own training-plan email for skills
+ * that were never his job. Default (no entry here) = the shared
+ * closer/framework-explaining role Sean and Joana actually have.
+ */
+var TRAINING_REVIEW_ROLE_ = {
+  Bens: {
+    closeAskSkillLabel: 'asking for the appointment',
+    closeAskSkillDescription: 'a direct, explicit ask to book the next concrete step (a QC or a Sales Call) with ' +
+      'someone else on the team, at a specific date/time — not a vague "I\'ll be in touch" or "someone will ' +
+      'reach out." Ideally asked more than once: ask it, and whatever comes back is either another objection ' +
+      '(loop back into Agree/Isolate/Repeat, then ask again) or a yes (lock the date/time). A single ask with ' +
+      'no repeat attempt, or a soft-question substitute, does not count as the drill having landed.',
+    drillsFramework: false,
+    roleNote: 'he runs ICONS 100 lead-gen interviews and QCs, books the next step for someone else on the team, ' +
+      'and never asks for money or explains the framework himself'
+  }
+};
+
+function trainingReviewRoleFor_(rep) {
+  return TRAINING_REVIEW_ROLE_[rep] || {
+    closeAskSkillLabel: 'asking for the money',
+    closeAskSkillDescription: 'a direct line, e.g. "Ready to get started?" — not a soft/open question like ' +
+      '"what would it take to get you started?". Ideally asked MORE THAN ONCE in the same call: ask it, and ' +
+      'whatever comes back is either another objection (loop back into Agree/Isolate/Repeat, then ask again) ' +
+      'or a yes (go straight to payment). A single ask with no repeat attempt, or a soft-question substitute ' +
+      'for the direct line, does not count as the drill having landed.',
+    drillsFramework: true,
+    roleNote: ''
+  };
+}
+
 function buildTrainingReviewSystemPrompt_(rep) {
-  return [
-    'You are reviewing the TRANSCRIPT OF A LIVE 1:1 TRAINING CALL between Tomás (sales trainer) and ' +
-      rep + ' (rep) — not a sales call.',
-    'Tomás runs this call weekly, built around ' + rep + '\'s own performance review from the week',
-    'before, to drill three separate skills: objection handling, asking for the money, and explaining the',
-    'framework. A third person (e.g. "Admin"/Kris) may sit in on the call — treat their turns as context,',
-    'not as something to coach.',
-    '',
-    'These are our named frameworks — grade against these, not a generic sales methodology:',
-    '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise (don\'t argue it',
-    '    away), isolate it as the one thing standing in the way ("so if it weren\'t for X, you\'d be ready',
-    '    to move forward?"), then repeat/confirm that back before answering it.',
-    '  ASKING FOR THE MONEY = a direct line, e.g. "Ready to get started?" — not a soft/open question like',
-    '    "what would it take to get you started?". Ideally asked MORE THAN ONCE in the same call: ask it,',
-    '    and whatever comes back is either another objection (loop back into Agree/Isolate/Repeat, then ask',
-    '    again) or a yes (go straight to payment). A single ask with no repeat attempt, or a soft-question',
-    '    substitute for the direct line, does not count as the drill having landed.',
+  var role = trainingReviewRoleFor_(rep);
+
+  var skillListLine = role.drillsFramework
+    ? 'to drill three separate skills: objection handling, ' + role.closeAskSkillLabel + ', and explaining the framework.'
+    : 'to drill two separate skills: objection handling and ' + role.closeAskSkillLabel + '. ' + role.roleNote;
+
+  var closeAskDefinitionLines = [
+    '  ' + role.closeAskSkillLabel.toUpperCase() + ' = ' + role.closeAskSkillDescription
+  ];
+
+  var frameworkDefinitionLines = role.drillsFramework ? [
     '  FRAMEWORK EXPLANATION = proactively and specifically walking through all three pieces of our value',
     '    proposition: how the podcast helps RECRUIT AGENTS, how it builds #1-PODCAST-IN-YOUR-CITY authority,',
     '    and how it helps SELL MORE HOUSES. Explaining this clearly up front heads off the objections that',
     '    come from a lead never understanding the offer in the first place — added 25/08/2026 per Kris, same',
-    '    "prevention beats handling" logic as objection handling above, applied one step earlier in the call.',
+    '    "prevention beats handling" logic as objection handling above, applied one step earlier in the call.'
+  ] : [];
+
+  var closeAskExtractionLines = [
+    '  - Did ' + rep + ' actively practice ' + role.closeAskSkillLabel.toUpperCase() + ' (role-play the actual line,',
+    '    not just listen to Tomás describe it) in this call? Quote the moment. Be strict: Tomás merely telling ' + rep,
+    '    to do this is not the same as ' + rep + ' practicing saying it.'
+  ];
+
+  var frameworkExtractionLines = role.drillsFramework ? [
+    '  - Did ' + rep + ' actively practice FRAMEWORK EXPLANATION (role-play walking through recruit-agents /',
+    '    #1-podcast-in-your-city / sell-more-houses, not just listen to Tomás describe it) in this call?',
+    '    Quote the moment. Same strictness as above — Tomás telling ' + rep + ' to explain it better is not',
+    '    the same as ' + rep + ' practicing saying it.'
+  ] : [
+    '  - Framework explanation is NOT part of ' + rep + '\'s role (' + role.roleNote + ') — always return',
+    '    "practiced_framework": false and an empty "framework_gaps_to_drill" array. Do not grade, coach, or',
+    '    comment on framework explanation for ' + rep + ' anywhere in your answer.'
+  ];
+
+  var closeAskDrillExtractionLine = '  - If Tomás drilled ' + role.closeAskSkillLabel + ' specifically: a short label for the ' +
+    'exact line practiced and a one-clause note on the branch logic he taught. Omit (null) if it wasn\'t drilled this call.';
+
+  var frameworkDrillExtractionLine = role.drillsFramework
+    ? '  - If Tomás drilled framework explanation: which of the three specific pieces (recruit_agents | ' +
+      'number_one_podcast | sell_more_houses) he worked on with ' + rep + ', each with a short, concrete ' +
+      'one-clause note on what to say differently. Empty array if it wasn\'t drilled this call — these feed ' +
+      rep + '\'s daily practice assignment same as the objections above.'
+    : null;
+
+  return [
+    'You are reviewing the TRANSCRIPT OF A LIVE 1:1 TRAINING CALL between Tomás (sales trainer) and ' +
+      rep + ' (rep) — not a sales call.',
+    'Tomás runs this call weekly, built around ' + rep + '\'s own performance review from the week before, ' +
+      skillListLine,
+    'A third person (e.g. "Admin"/Kris) may sit in on the call — treat their turns as context, not as',
+    'something to coach.',
+    '',
+    'These are our named frameworks — grade against these, not a generic sales methodology:',
+    '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise (don\'t argue it',
+    '    away), isolate it as the one thing standing in the way ("so if it weren\'t for X, you\'d be ready',
+    '    to move forward?"), then repeat/confirm that back before answering it.'
+  ].concat(closeAskDefinitionLines, frameworkDefinitionLines, [
     '',
     'Extract:',
     '  - Did Tomás reference a specific real call/objection pattern of ' + rep + '\'s, and what did he say about it?',
     '  - Did ' + rep + ' actively practice OBJECTION HANDLING (role-play the Agree/Isolate/Repeat sequence,',
-    '    not just listen to Tomás describe it) in this call? Quote the moment.',
-    '  - Did ' + rep + ' actively practice ASKING FOR THE MONEY (role-play saying the direct "Ready to get',
-    '    started?" line or a clear equivalent, ideally more than once) in this call? Quote the moment. Be',
-    '    strict: Tomás merely telling ' + rep + ' to ask for the money is not the same as ' + rep + ' practicing',
-    '    saying it.',
-    '  - Did ' + rep + ' actively practice FRAMEWORK EXPLANATION (role-play walking through recruit-agents /',
-    '    #1-podcast-in-your-city / sell-more-houses, not just listen to Tomás describe it) in this call?',
-    '    Quote the moment. Same strictness as above — Tomás telling ' + rep + ' to explain it better is not',
-    '    the same as ' + rep + ' practicing saying it.',
+    '    not just listen to Tomás describe it) in this call? Quote the moment.'
+  ], closeAskExtractionLines, frameworkExtractionLines, [
     '  - What did Tomás explicitly tell ' + rep + ' to do differently before next week?',
     '  - The 2-3 SPECIFIC objections Tomás drilled ' + rep + ' on in this call (not a general theme —',
     '    the actual named objection, e.g. "I\'m too busy right now", "What does this cost?"), each with a',
     '    short, concrete one-clause note on how to handle it via Agree/Isolate/Repeat. These get sent to',
     '    ' + rep + ' as this week\'s daily practice assignment, so keep both the label and the note short',
     '    and usable as a checklist item.',
-    '  - If Tomás drilled the money-ask specifically: a short label for the exact line practiced (e.g.',
-    '    "Ready to get started?") and a one-clause note on the branch logic he taught (e.g. "ask again after',
-    '    handling the objection, then go straight to payment on a yes"). Omit (null) if the money-ask wasn\'t',
-    '    drilled this call.',
-    '  - If Tomás drilled framework explanation: which of the three specific pieces (recruit_agents |',
-    '    number_one_podcast | sell_more_houses) he worked on with ' + rep + ', each with a short, concrete',
-    '    one-clause note on what to say differently. Empty array if it wasn\'t drilled this call — these feed',
-    '    ' + rep + '\'s daily practice assignment same as the objections above.',
+    closeAskDrillExtractionLine
+  ], frameworkDrillExtractionLine ? [frameworkDrillExtractionLine] : [], [
     '',
     'Be skeptical: if ' + rep + ' was only listening, not practicing, mark the relevant practiced_* field',
-    'false — don\'t invent practice that didn\'t happen. The three skills are independent: a call can drill',
+    'false — don\'t invent practice that didn\'t happen. Each drilled skill is independent: a call can drill',
     'any combination of them, including none.',
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
@@ -141,7 +203,7 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  ],',
     '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\""',
     '}'
-  ].join('\n');
+  ]).join('\n');
 }
 
 function buildTrainingReviewUserPrompt_(rep, dateLabel, transcriptText) {
@@ -247,10 +309,12 @@ var FRAMEWORK_TOPIC_LABELS_ = {
 };
 
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
+  var role = trainingReviewRoleFor_(rep);
+  var closeAskLabelCap = role.closeAskSkillLabel.charAt(0).toUpperCase() + role.closeAskSkillLabel.slice(1);
   var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
   var objections = result.objections_to_drill || [];
   var closeAsk = result.close_ask_drill || null;
-  var frameworkGaps = result.framework_gaps_to_drill || [];
+  var frameworkGaps = role.drillsFramework ? (result.framework_gaps_to_drill || []) : [];
 
   var objectionsPlain = objections.map(function (o) {
     return '- ' + o.label + ' — ' + o.note;
@@ -261,9 +325,9 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
       }).join('') + '</ul>'
     : '';
 
-  var closeAskPlain = closeAsk ? '\nAsking for the money — "' + closeAsk.label + '": ' + closeAsk.note + '\n' : '';
+  var closeAskPlain = closeAsk ? '\n' + closeAskLabelCap + ' — "' + closeAsk.label + '": ' + closeAsk.note + '\n' : '';
   var closeAskHtml = closeAsk
-    ? trainingReviewCallout_('#f9ab00', '#fef7e0', 'Asking for the money',
+    ? trainingReviewCallout_('#f9ab00', '#fef7e0', closeAskLabelCap,
         '"' + closeAsk.label + '" — ' + closeAsk.note)
     : '';
 
@@ -282,11 +346,21 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
 
   var hasTeamNote = result.team_notes && result.team_notes.toLowerCase() !== 'none';
 
+  // Framework explanation isn't shown at all for a rep whose role doesn't
+  // cover it (e.g. Bens) — a red "No" badge for a skill that was never his
+  // job to begin with is misleading, not useful coaching signal.
+  var frameworkStatLinePlain = role.drillsFramework
+    ? ' | Practiced framework explanation: ' + (result.practiced_framework ? 'Yes' : 'No')
+    : '';
+  var frameworkStatBadgeHtml = role.drillsFramework
+    ? trainingReviewStatBadge_('Framework explanation practiced', result.practiced_framework)
+    : '';
+
   var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
     'Attended: ' + (result.attended ? 'Yes' : 'No') +
     ' | Practiced objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
-    ' | Practiced asking for the money: ' + (result.practiced_close_ask ? 'Yes' : 'No') +
-    ' | Practiced framework explanation: ' + (result.practiced_framework ? 'Yes' : 'No') + '\n\n' +
+    ' | Practiced ' + role.closeAskSkillLabel + ': ' + (result.practiced_close_ask ? 'Yes' : 'No') +
+    frameworkStatLinePlain + '\n\n' +
     'Notes: ' + result.coaching_notes + '\n\n' +
     'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
     closeAskPlain +
@@ -300,8 +374,8 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     '<div style="margin-bottom:14px;">' +
     trainingReviewStatBadge_('Attended', result.attended) +
     trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
-    trainingReviewStatBadge_('Asking for the money practiced', result.practiced_close_ask) +
-    trainingReviewStatBadge_('Framework explanation practiced', result.practiced_framework) +
+    trainingReviewStatBadge_(closeAskLabelCap + ' practiced', result.practiced_close_ask) +
+    frameworkStatBadgeHtml +
     '</div>' +
     trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', result.coaching_notes) +
     '<h3 style="color:#0b8043;font-size:14px;margin:0 0 6px;">This week\'s objections to drill (Agree → Isolate → Repeat)</h3>' +
