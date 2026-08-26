@@ -35,6 +35,30 @@ class TestParseCallDate:
     def test_strips_whitespace(self):
         assert app_module.parse_call_date("  05/08/2026  ") == date(2026, 8, 5)
 
+    def test_iso_datetime_with_space_separator(self):
+        # Real bug (P5): a genuine datetime-valued cell (not date-only) can
+        # come back space-separated rather than slash-separated.
+        assert app_module.parse_call_date("2026-08-05 14:30:00") == date(2026, 8, 5)
+
+    def test_iso_datetime_with_t_separator(self):
+        assert app_module.parse_call_date("2026-08-05T14:30:00") == date(2026, 8, 5)
+
+
+class TestIntOrNone:
+    def test_blank_string_is_none_not_a_422(self):
+        # Real bug (P1): a filter form submits min_score=/max_score= (empty
+        # string) when the field is left blank, not an omitted param —
+        # FastAPI would reject that with a 422 if the route param were typed
+        # as `int`, so calls_page takes `str` and converts through this.
+        assert app_module._int_or_none("") is None
+        assert app_module._int_or_none(None) is None
+
+    def test_valid_digits_convert(self):
+        assert app_module._int_or_none("3") == 3
+
+    def test_garbage_is_none_not_raises(self):
+        assert app_module._int_or_none("not a number") is None
+
 
 class TestMonthAdd:
     def test_within_year(self):

@@ -5,6 +5,7 @@ seeded_db fixture (see conftest.py for exactly what's in it).
 import sqlite3
 
 import app as app_module
+import sync
 from conftest import insert_call
 
 
@@ -214,6 +215,36 @@ class TestFilteredCalls:
         # empty list, not raise sqlite3.OperationalError up to the caller.
         calls = app_module.filtered_calls(q='"unbalanced')
         assert calls == []
+
+    def test_search_for_a_bareword_fts5_operator_is_treated_as_literal_text(self, seeded_db, conn):
+        """Real bug (M-03): an unquoted "or"/"not"/"near" in the search box
+        used to be interpreted as an FTS5 boolean/proximity operator instead
+        of the literal word — searching for a summary containing the word
+        "or" as ordinary English should find it, not silently reinterpret the
+        whole query."""
+        insert_call(conn, prospect_name="Or Test", rep="Alice", call_date="09/07/2026",
+                    ai_feedback_summary="Discussed pricing or timing, unclear which one mattered more.")
+        conn.commit()
+        sync.rebuild_call_search_index(conn)
+        conn.commit()
+        calls = app_module.filtered_calls(q="pricing or timing")
+        assert "Or Test" in {c["prospect_name"] for c in calls}
+
+    def test_search_snippet_escapes_html_but_keeps_mark_tags(self, seeded_db, conn):
+        """Real bug (M-05): the template renders this snippet with `| safe`
+        for the <mark> highlight tags — any literal "<"/">" in the
+        underlying ai_feedback_summary text must still be escaped, or it
+        renders as real markup (stored XSS)."""
+        insert_call(conn, prospect_name="XSS Test", rep="Alice", call_date="10/07/2026",
+                    ai_feedback_summary='Rep said <script>alert(1)</script> discovery was strong.')
+        conn.commit()
+        sync.rebuild_call_search_index(conn)
+        conn.commit()
+        calls = app_module.filtered_calls(q="discovery")
+        row = next(c for c in calls if c["prospect_name"] == "XSS Test")
+        assert "<script>" not in row["snippet"]
+        assert "&lt;script&gt;" in row["snippet"]
+        assert "<mark>" in row["snippet"], "the trusted highlight wrapper itself must still render as real HTML"
 
 
 class TestRepDetail:

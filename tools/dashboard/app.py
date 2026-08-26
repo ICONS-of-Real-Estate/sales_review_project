@@ -12,6 +12,7 @@ report's CSP guidance).
 Run with: uvicorn app:app --host <bind-host> --port 8000
 (tools/deploy/setup_dashboard.sh installs this as sales-dashboard.service.)
 """
+import html
 import json
 import os
 import sqlite3
@@ -26,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 import auth
+import sync
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
 # Which PLAYBOOKS slug belongs on which rep's own /reps/{rep} page.
@@ -104,6 +106,19 @@ def render(request: Request, name: str, context: dict):
     context = {**context, "user_email": request.session.get("user_email")}
     return templates.TemplateResponse(request, name, context)
 
+# Real bug (M-04): sqlite3.connect() silently creates an empty file if
+# DB_PATH doesn't exist yet — on a brand-new deployment where sync.py has
+# never run, every route querying sales_call_log/etc. would 500 with "no
+# such table" instead of rendering an empty/"no data yet" dashboard.
+# init_schema is the same idempotent CREATE TABLE IF NOT EXISTS sync.py
+# itself runs every cycle, so this is a no-op once a real sync has landed.
+try:
+    _startup_conn = sqlite3.connect(DB_PATH)
+    sync.init_schema(_startup_conn)
+    _startup_conn.close()
+except Exception as e:
+    print(f"WARNING: could not initialize schema at {DB_PATH}: {e}")
+
 # Playbooks are files in the repo (only change on a git pull + restart, not
 # on sync.py's timer), so index once at startup rather than on a schedule.
 try:
@@ -126,7 +141,12 @@ def freshness_status():
     conn.close()
     if not row:
         return {"last_synced_at": None, "age_minutes": None, "level": "stale"}
-    last_synced_at = datetime.fromisoformat(row["value"])
+    try:
+        last_synced_at = datetime.fromisoformat(row["value"])
+    except ValueError:
+        # A corrupted sync_meta value must not 500 the whole overview page —
+        # report it the same as "never synced" instead.
+        return {"last_synced_at": None, "age_minutes": None, "level": "stale"}
     age_minutes = (datetime.now(timezone.utc) - last_synced_at).total_seconds() / 60
     if age_minutes < FRESHNESS_WARN_MINUTES:
         level = "ok"
@@ -243,6 +263,13 @@ _DATE_PATTERNS = (
     "%Y-%m-%d",
     "%d/%m/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M:%S",
+    # Real bug (P5): the Sheets API can also hand back a raw ISO datetime
+    # (space-separated, or "T"-separated when the cell holds a genuine
+    # datetime rather than a date-only value) — neither was tried, so those
+    # rows silently dropped out of every chart/sort that depends on
+    # parse_call_date returning non-None.
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
 )
 
 
@@ -811,6 +838,28 @@ def all_reps_list():
     return [r["rep"] for r in rows]
 
 
+def sanitize_fts5_query(q):
+    """Turns free-text search-box input into a safe FTS5 MATCH expression.
+
+    Real bug (M-03): the raw query string used to be passed straight to
+    MATCH, but FTS5 MATCH syntax is a small query LANGUAGE, not literal
+    text — a bareword "or"/"not"/"near" is a boolean operator, a leading
+    "-" on a term excludes it, and "column:term" filters by column. A user
+    innocently searching for the word "or", or a phrase like "not sure" or
+    "day-to-day", got silently reinterpreted as an operator expression
+    instead of literal text — wrong (sometimes empty, sometimes just
+    confusing) results with no error at all. Wrapping every individual
+    token in its own escaped double-quoted phrase (FTS5's literal-string
+    syntax — a doubled `""` escapes a literal quote inside one) forces
+    every token to match as plain text; space-separated quoted phrases are
+    ANDed by default, preserving the original "all these words" behavior.
+    """
+    tokens = q.split()
+    if not tokens:
+        return ""
+    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+
+
 def filtered_calls(
     rep="", verdict="", failure_mode="", min_score=None, max_score=None,
     asked_for_close="", objections_handled="", match_method="", outcome_disposition="",
@@ -824,17 +873,21 @@ def filtered_calls(
     exclusive with it."""
     conn = get_conn()
     conn.row_factory = sqlite3.Row
+    q = q.strip() if q else ""
     try:
         if q:
             sql = (
                 "SELECT s.id, s.prospect_name, s.rep, s.call_date, s.call_type, s.lead_quality_verdict, "
                 "s.call_quality_score, s.primary_failure_mode, s.transcript_url, "
                 "s.outcome_disposition, s.flag_framework_explained, s.framework_gaps, "
-                "snippet(call_search, 4, '<mark>', '</mark>', '…', 20) AS snippet "
+                # \x01/\x02 (not real HTML) mark the highlight boundaries so they
+                # survive html.escape() below untouched — see the escaping step
+                # after the query runs for why (M-05).
+                "snippet(call_search, 4, '\x01', '\x02', '…', 20) AS snippet "
                 "FROM call_search cs JOIN sales_call_log s ON s.id = cs.call_id "
                 "WHERE call_search MATCH ?"
             )
-            params = [q]
+            params = [sanitize_fts5_query(q)]
         else:
             sql = (
                 "SELECT id, prospect_name, rep, call_date, call_type, lead_quality_verdict, "
@@ -898,9 +951,39 @@ def filtered_calls(
         conn.close()
 
     calls = [dict(r) for r in rows]
-    if not q:
+    if q:
+        # Real bug (M-05): the template renders this snippet with `| safe` so
+        # the <mark> highlight tags work — but snippet() returns raw text
+        # straight from ai_feedback_summary (an AI-written summary that can
+        # echo transcript content verbatim), so any literal "<"/">" in that
+        # text would render as real markup: stored XSS. \x01/\x02 (not real
+        # HTML — see the query above) stand in for the mark tags through
+        # html.escape(), then get swapped for the real tags afterward, so the
+        # untrusted text is escaped and only the trusted wrapper is HTML.
+        for c in calls:
+            if c.get("snippet"):
+                c["snippet"] = (
+                    html.escape(c["snippet"]).replace("\x01", "<mark>").replace("\x02", "</mark>")
+                )
+    else:
         calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
     return calls
+
+
+def _int_or_none(v):
+    """Real bug (P1): FastAPI/pydantic rejects an empty-string query param
+    against an `int` type with a 422, rather than treating it as "not
+    provided" — but a filter form's number input submits `min_score=` (an
+    empty string), not an omitted param, when left blank. Declaring these
+    params as plain `str` and converting through this instead means a blank
+    filter field degrades to "no filter" like every other blank field on
+    this same form, rather than the whole page erroring out."""
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
 
 
 @app.get("/calls", response_class=HTMLResponse)
@@ -909,8 +992,8 @@ def calls_page(
     rep: str = "",
     verdict: str = "",
     failure_mode: str = "",
-    min_score: int = None,
-    max_score: int = None,
+    min_score: str = "",
+    max_score: str = "",
     asked_for_close: str = "",
     objections_handled: str = "",
     match_method: str = "",
@@ -918,6 +1001,8 @@ def calls_page(
     framework_explained: str = "",
     q: str = "",
 ):
+    min_score = _int_or_none(min_score)
+    max_score = _int_or_none(max_score)
     return render(
         request,
         "calls.html",

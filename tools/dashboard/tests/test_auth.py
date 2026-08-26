@@ -67,3 +67,35 @@ class TestSessionSecretFailsClosed:
     def test_starts_fine_when_secret_is_explicitly_set(self):
         result = self._run({"DASHBOARD_REQUIRE_LOGIN": "true", "DASHBOARD_SESSION_SECRET": "a-real-secret"})
         assert result.returncode == 0, result.stderr
+
+
+class TestFreshDatabaseGuard:
+    """Real bug (M-04): sqlite3.connect() silently creates an empty file if
+    DASHBOARD_DB_PATH doesn't exist yet — on a brand-new deployment where
+    sync.py has never run, every route querying sales_call_log/etc. used to
+    500 with "no such table" instead of rendering an empty dashboard."""
+
+    def test_overview_route_200s_against_a_db_path_that_never_existed(self, tmp_path):
+        db_path = tmp_path / "never_existed.db"
+        assert not db_path.exists()
+        script = (
+            "import os; os.environ['DASHBOARD_DB_PATH'] = " + repr(str(db_path)) + "\n"
+            "os.environ['DASHBOARD_REQUIRE_LOGIN'] = 'false'\n"
+            "import app\n"
+            "from fastapi.testclient import TestClient\n"
+            "client = TestClient(app.app)\n"
+            "resp = client.get('/')\n"
+            "assert resp.status_code == 200, resp.text\n"
+            "print('OK')\n"
+        )
+        env = dict(os.environ)
+        env.pop("DASHBOARD_SESSION_SECRET", None)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(DASHBOARD_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "OK" in result.stdout

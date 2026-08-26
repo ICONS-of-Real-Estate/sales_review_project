@@ -49,6 +49,15 @@ def test_calls_page_with_filters(client, seeded_db):
     assert "Nicole Freed" in resp.text
 
 
+def test_calls_page_with_blank_score_filters_does_not_422(client, seeded_db):
+    # Real bug (P1): a filter form submits min_score=/max_score= (empty
+    # string, not an omitted param) when those fields are left blank —
+    # previously typed as `int`, FastAPI rejected that with a 422.
+    resp = client.get("/calls", params={"rep": "Bob", "min_score": "", "max_score": ""})
+    assert resp.status_code == 200
+    assert "Nicole Freed" in resp.text
+
+
 def test_calls_page_with_search_query(client, seeded_db):
     resp = client.get("/calls", params={"q": "discovery"})
     assert resp.status_code == 200
