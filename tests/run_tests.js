@@ -610,6 +610,30 @@ test('isValidDailyPracticeSchema_ accepts "framework" as a drill_type and requir
   assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, good, { drill_type: 'not_a_real_type' })), false);
 });
 
+function fakeThread(messages) {
+  return {
+    getMessages: () => messages.map((m) => ({ getFrom: () => m.from, getPlainBody: () => m.body }))
+  };
+}
+
+test('dailyPracticeThreadHasStopRequest_ ignores the bot\'s own nag message even though it is sent from Kris\'s own account and contains "cancel"/"stop" (real bug C-03: GAS sends as the script owner, so the very first automated nag would self-cancel the thread)', () => {
+  const botsOwnNag = fakeThread([
+    { from: 'Daily Practice Follow-up Bot <kris@iconsofrealestate.com>', body: 'This thread will keep getting a nag until the file lands, or Kris or Tomás replies-all here with "cancel" or "stop".' }
+  ]);
+  assert.equal(gas.dailyPracticeThreadHasStopRequest_(botsOwnNag), false);
+
+  const realStopFromKris = fakeThread([
+    { from: 'Daily Practice Follow-up Bot <kris@iconsofrealestate.com>', body: 'nag body mentioning cancel/stop' },
+    { from: 'Kris <kris@iconsofrealestate.com>', body: 'please stop, rep is out sick' }
+  ]);
+  assert.equal(gas.dailyPracticeThreadHasStopRequest_(realStopFromKris), true);
+
+  const repSayingDone = fakeThread([
+    { from: 'Sean <sean@iconsofrealestate.com>', body: 'done, uploaded, please stop' }
+  ]);
+  assert.equal(gas.dailyPracticeThreadHasStopRequest_(repSayingDone), false, 'only Kris/Tomás can cancel, not the rep');
+});
+
 // --- Bens rubric: directly-booked Sales Call outranks a QC-only booking (25/08/2026, Kris) ---
 test('buildBensJudgeSystemPrompt_ scores a directly-booked Sales Call higher than a QC-only booking for an interview', () => {
   const prompt = gas.buildBensJudgeSystemPrompt_();
@@ -1041,6 +1065,42 @@ test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, k
   assert.ok(quoteIdx < forTheRecordIdx, 'quote should come before the numeric section');
   assert.ok(scoreIdx > forTheRecordIdx, 'score should come after the "For the record" marker');
   assert.ok(email.body.indexOf(result.sharpen_next) < forTheRecordIdx, 'the one behavior to change should also be above the fold');
+});
+
+test('dailyPracticeFeedbackDocName_ builds the same name dailyPracticeAlreadyGraded_ and deliverDailyPracticeGrading_ both rely on (real bug C-02: two independently-written copies of this string transform can drift and never recognize each other\'s output, re-grading the same file forever)', () => {
+  // transcribe_daily_practice.py names the transcript doc with the video's
+  // extension still embedded, e.g. "<video name>.mp4 — Transcript".
+  assert.equal(gas.dailyPracticeFeedbackDocName_('260819_practice.mp4 — Transcript'), '260819_practice.mp4 — Feedback');
+  assert.equal(gas.dailyPracticeFeedbackDocName_('260819_practice.mp4 - Transcript'), '260819_practice.mp4 — Feedback');
+});
+
+test('findDailyPracticeFollowupThreadForFile_ matches a dateStr Sheets stored as a Number, not a String (real bug H-03: a numeric-looking cell value like "260819" round-trips through Sheets as a Number, so a bare === against the string dateStr silently never matches)', () => {
+  const rows = [
+    ['Sean', 260819, 'thread-abc', 'open', '', 0] // dateStr stored/read back as a Number, exactly what Sheets does to a numeric-looking string cell
+  ];
+  const sheet = {
+    getLastRow: () => rows.length + 1,
+    getRange: (row, col, numRows, numCols) => ({
+      getValues: () => rows
+    })
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet, insertSheet: () => sheet }) };
+  try {
+    const threadId = gas.findDailyPracticeFollowupThreadForFile_('Sean', '260819_practice.mp4 — Transcript');
+    assert.equal(threadId, 'thread-abc');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+test('sendDailyPracticeReminders_\'s lane rotation: day 1 (Wed) lands on lane index 0 (real bug L-12: label.day is 1-based against a 0-based lanes array, so a bare `day % length` never actually hit index 0 on the cycle\'s first day)', () => {
+  const lanes = ['close_ask', 'framework', 'objection'];
+  const dayToLane = (day) => lanes[(day - 1) % lanes.length];
+  assert.equal(dayToLane(1), 'close_ask');
+  assert.equal(dayToLane(2), 'framework');
+  assert.equal(dayToLane(3), 'objection');
+  assert.equal(dayToLane(4), 'close_ask');
 });
 
 // ---------------------------------------------------------------------------

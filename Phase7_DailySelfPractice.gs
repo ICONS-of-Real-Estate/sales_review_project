@@ -254,10 +254,24 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
   return { subject: subject, body: body };
 }
 
+/**
+ * The "<transcript doc name minus its trailing "— Transcript"> — Feedback"
+ * name — shared by dailyPracticeAlreadyGraded_ and deliverDailyPracticeGrading_
+ * so the two can never drift apart (real risk: transcribe_daily_practice.py
+ * names the doc "<video name, extension included> — Transcript", so there is
+ * no separate extension to strip here — a second .replace() trying to strip
+ * one would either no-op or, for a differently-shaped name, strip the wrong
+ * thing and leave the two functions building non-matching names, which would
+ * make dailyPracticeAlreadyGraded_ never find its own output and re-grade/
+ * re-send the same file forever).
+ */
+function dailyPracticeFeedbackDocName_(transcriptDocName) {
+  return transcriptDocName.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
+}
+
 /** True if a "<title> — Feedback" Doc already sits next to this practice file. */
 function dailyPracticeAlreadyGraded_(folder, fileName) {
-  var feedbackName = fileName.replace(/\.[^.]+$/, '').replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
-  return folder.getFilesByName(feedbackName).hasNext();
+  return folder.getFilesByName(dailyPracticeFeedbackDocName_(fileName)).hasNext();
 }
 
 /**
@@ -276,14 +290,20 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
       ' <- ' + email.subject +
       (escalate ? ' [would CC Kris+Tomás — score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ']' : '') +
       '\n' + email.body + '\n');
-    return;
+    return true;
   }
 
+  var sent;
   if (replyThreadId) {
     var thread = GmailApp.getThreadById(replyThreadId);
     if (thread) {
-      thread.replyAll(email.body, { cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL, name: 'Daily Practice Feedback Bot' });
-      log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) — replied on tracked assignment thread.');
+      sent = guardedReplyAll_(thread, email.body, { cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL, name: 'Daily Practice Feedback Bot' }, 3);
+      if (sent) {
+        log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) — replied on tracked assignment thread.');
+      } else {
+        log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) but reply-all SEND FAILED/SKIPPED — feedback doc not written.');
+        return false;
+      }
     } else {
       log_('  [' + rep + '] Tracked thread ' + replyThreadId + ' no longer exists — falling back to a standalone email.');
       replyThreadId = null;
@@ -296,16 +316,20 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
       sendOptions.cc = CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL;
       recipientsNeeded = 3;
     }
-    guardedSend_(repCfg.email, email.subject, email.body, sendOptions, recipientsNeeded);
+    sent = guardedSend_(repCfg.email, email.subject, email.body, sendOptions, recipientsNeeded);
+    if (!sent) {
+      log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) but SEND FAILED/SKIPPED — feedback doc not written.');
+      return false;
+    }
     log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5)' +
       (escalate ? ' — escalated to Kris/Tomás.' : '.'));
   }
 
-  var feedbackName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
-  var doc = DocumentApp.create(feedbackName);
+  var doc = DocumentApp.create(dailyPracticeFeedbackDocName_(name));
   doc.getBody().setText(email.body);
   doc.saveAndClose();
   DriveApp.getFileById(doc.getId()).moveTo(folder);
+  return true;
 }
 
 /** Shared by preview and live paths. dryRun=true never sends and never writes a Feedback doc. */
@@ -332,8 +356,9 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
       var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
       var replyThreadId = findDailyPracticeFollowupThreadForFile_(rep, name);
 
-      deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId);
+      var delivered = deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId);
       if (dryRun) continue;
+      if (!delivered) continue; // send failed/skipped — leave the thread row (if any) untouched so it's retried, not marked graded
       if (replyThreadId) markDailyPracticeFollowupGraded_(rep, replyThreadId);
       processed++;
     }
@@ -414,7 +439,12 @@ function sendDailyPracticeReminders_() {
     if (closeAsk) availableLanes.push('close_ask');
     if (frameworkGaps && frameworkGaps.length) availableLanes.push('framework');
     if (objections && objections.length) availableLanes.push('objection');
-    var todaysLane = availableLanes.length ? availableLanes[label.day % availableLanes.length] : 'objection';
+    // label.day is 1-based (Wed=1..Tue=5, see TRAINING_CYCLE_DAY_BY_WEEKDAY_)
+    // against this 0-based lanes array — `label.day - 1` before the modulo so
+    // day 1 actually lands on lane 0 and the rotation is a clean round-robin,
+    // rather than every day landing one lane off from where an 0-based reader
+    // would expect (real bug L-12).
+    var todaysLane = availableLanes.length ? availableLanes[(label.day - 1) % availableLanes.length] : 'objection';
     var assignCloseAskToday = todaysLane === 'close_ask';
     var assignFrameworkToday = todaysLane === 'framework';
 
@@ -547,7 +577,12 @@ function registerDailyPracticeFollowup_(rep, dateStr, threadId) {
   if (lastRow >= 2) {
     var existing = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
     for (var i = 0; i < existing.length; i++) {
-      if (existing[i][0] === rep && existing[i][1] === dateStr) return; // already tracked
+      // String(): dateStr ("260819") looks numeric, so Sheets silently
+      // stores it as a Number and getValues() reads it back as one — a bare
+      // === against the string dateStr then always fails, letting a
+      // duplicate 'open' row get appended for the same rep+day every time
+      // this runs (real bug H-03).
+      if (existing[i][0] === rep && String(existing[i][1]) === dateStr) return; // already tracked
     }
   }
   sheet.appendRow([rep, dateStr, threadId, 'open', '', 0]);
@@ -561,14 +596,17 @@ function loadDailyPracticeFollowupRows_(sheet, statusFilter) {
   var rows = [];
   values.forEach(function (row, i) {
     if (statusFilter && row[3] !== statusFilter) return;
-    rows.push({ rowIndex: i + 2, rep: row[0], dateStr: row[1], threadId: row[2], status: row[3], lastNagDate: row[4], nagCount: row[5] });
+    // dateStr/threadId coerced to String here (not left as whatever Sheets'
+    // auto-typing produced) so every downstream === comparison against a
+    // literal string works regardless of how the cell round-tripped.
+    rows.push({ rowIndex: i + 2, rep: row[0], dateStr: String(row[1]), threadId: row[2] ? String(row[2]) : '', status: row[3], lastNagDate: row[4], nagCount: row[5] });
   });
   return rows;
 }
 
 /** Finds the tracked assignment thread for a graded file by its leading YYMMDD prefix — null if none tracked (e.g. a pre-tracking backlog file). */
 function findDailyPracticeFollowupThreadForFile_(rep, fileName) {
-  var m = String(fileName).match(/^(\d{6})/);
+  var m = String(fileName).match(/^(\d{6})(?!\d)/); // (?!\d): don't misread a longer number as a 6-digit date
   if (!m) return null;
   var sheet = getOrCreateDailyPracticeFollowupSheet_();
   var rows = loadDailyPracticeFollowupRows_(sheet, null);
@@ -583,11 +621,23 @@ function markDailyPracticeFollowupGraded_(rep, threadId) {
   if (match) sheet.getRange(match.rowIndex, 4).setValue('graded');
 }
 
-/** True if any message in the thread from Kris or Tomás contains a standalone "cancel" or "stop". */
+/**
+ * True if any message in the thread from Kris or Tomás contains a standalone
+ * "cancel" or "stop". Real bug (C-03): every automated message on this thread
+ * is ALSO sent from the script owner's own account (kris@iconsofrealestate.com
+ * — GAS sends as the project owner, `name:` only changes the display name),
+ * and the nag body itself explains the words "cancel"/"stop" stop it — so
+ * without excluding the bot's own messages, the very first nag would match
+ * its own "From: Daily Practice Follow-up Bot <kris@...>" / own body text and
+ * immediately self-cancel the thread. Every automated sender name in this
+ * file ends in " Bot", so that's the exclusion signal.
+ */
 function dailyPracticeThreadHasStopRequest_(thread) {
   var stopRe = /\b(cancel|stop)\b/i;
+  var botSenderRe = /\bBot\b/;
   return thread.getMessages().some(function (msg) {
     var from = msg.getFrom();
+    if (botSenderRe.test(from)) return false; // our own automated send, not a real reply from a human
     var isKrisOrTomas = from.indexOf(CONFIG.KRIS_EMAIL) !== -1 || from.indexOf(CONFIG.TOMAS_EMAIL) !== -1;
     return isKrisOrTomas && stopRe.test(msg.getPlainBody());
   });
@@ -631,6 +681,20 @@ function checkDailyPracticeCompliance_(dryRun) {
   if (!rows.length) { log_('No open or pending daily-practice follow-ups.'); return; }
 
   rows.forEach(function (row) {
+    try {
+      checkDailyPracticeComplianceRow_(row, sheet, now, dryRun);
+    } catch (e) {
+      // One row's Drive/Gmail hiccup must not abort every other rep's row in
+      // this same pass (real risk: forEach has no per-iteration try/catch of
+      // its own, so an uncaught throw here — e.g. a transient Drive API
+      // error — would silently skip every row still queued after it, not
+      // just this one).
+      log_('[' + row.rep + '/' + row.dateStr + '] checkDailyPracticeCompliance_ threw: ' + e + ' — skipping this row, others still processed.');
+    }
+  });
+}
+
+function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === row.rep; })[0];
     if (!repCfg) { log_('No CONFIG.REPS entry for "' + row.rep + '" — skipping row ' + row.rowIndex); return; }
 
@@ -685,11 +749,13 @@ function checkDailyPracticeCompliance_(dryRun) {
             ' nag #' + nagNum + ' for [' + row.rep + '/' + row.dateStr + ']\n' + nagBody);
           return;
         }
-        if (thread) {
-          thread.replyAll(nagBody, { name: 'Daily Practice Follow-up Bot' });
-        } else {
-          guardedSend_(repCfg.email, row.rep + ' — daily practice follow-up #' + nagNum, nagBody,
-            { name: 'Daily Practice Follow-up Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+        var nagSent = thread
+          ? guardedReplyAll_(thread, nagBody, { name: 'Daily Practice Follow-up Bot' }, 1)
+          : guardedSend_(repCfg.email, row.rep + ' — daily practice follow-up #' + nagNum, nagBody,
+              { name: 'Daily Practice Follow-up Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+        if (!nagSent) {
+          log_('[' + row.rep + '/' + row.dateStr + '] Nag #' + nagNum + ' SEND FAILED/SKIPPED (quota-short or invalid config) — will retry next check.');
+          return;
         }
         sheet.getRange(row.rowIndex, 5, 1, 2).setValues([[now.toISOString(), nagNum]]);
         log_('[' + row.rep + '/' + row.dateStr + '] NON-COMPLIANT — reply-all nag #' + nagNum + ' sent on the tracked thread.');
@@ -699,7 +765,12 @@ function checkDailyPracticeCompliance_(dryRun) {
 
     // row.status === 'file_received' here (either already was, or just transitioned above).
     if (!namedFile) return; // shouldn't happen, but guard anyway
-    var transcriptDoc = folder.getFilesByName(namedFile.getName().replace(/\.[^.]+$/, '') + ' — Transcript');
+    // NOT .replace(/\.[^.]+$/, '') first: transcribe_daily_practice.py names
+    // the doc "<video name, EXTENSION INCLUDED> — Transcript" (real bug C-08
+    // — stripping the extension here built a name that never matched the doc
+    // that actually exists, so a graded file's transcript was never found and
+    // the row sat "waiting on transcription" forever).
+    var transcriptDoc = folder.getFilesByName(namedFile.getName() + ' — Transcript');
     if (!transcriptDoc.hasNext()) {
       log_('[' + row.rep + '/' + row.dateStr + '] File received, waiting on transcription before it can be graded.');
       return;
@@ -715,9 +786,11 @@ function checkDailyPracticeCompliance_(dryRun) {
     var result = gradeDailyPracticeTranscript_(row.rep, text, transcriptName);
     var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result);
     var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
-    deliverDailyPracticeGrading_(row.rep, repCfg, folder, transcriptName, result, email, escalate, dryRun, row.threadId);
-    if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('graded');
-  });
+    var delivered = deliverDailyPracticeGrading_(row.rep, repCfg, folder, transcriptName, result, email, escalate, dryRun, row.threadId);
+    // Only mark 'graded' on an actual successful delivery — leaving the row
+    // as 'file_received' on a failed/skipped send means the next pass retries
+    // it instead of silently losing the grading forever.
+    if (!dryRun && delivered) sheet.getRange(row.rowIndex, 4).setValue('graded');
 }
 
 /** Run this FIRST from the editor — logs compliance findings, sends nothing. */

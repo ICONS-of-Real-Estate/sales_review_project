@@ -956,6 +956,36 @@ function guardedSend_(to, subject, body, options, recipientsNeeded) {
   return true;
 }
 
+/**
+ * Same quota/config guard as guardedSend_, for GmailApp thread.replyAll()
+ * instead of MailApp.sendEmail(). GmailApp sends draw from the same daily
+ * email quota as MailApp — a bare thread.replyAll() call bypasses the
+ * quota check/ops-alert/return-value contract every other send in this
+ * codebase relies on. recipientsNeeded should count every address the
+ * reply-all will actually reach (thread participants + any explicit cc).
+ */
+function guardedReplyAll_(thread, body, options, recipientsNeeded) {
+  if (!auditConfig_().ok) {
+    log_('CONFIG INVALID — reply-all on thread ' + thread.getId() + ' blocked.');
+    return false;
+  }
+  var remaining = MailApp.getRemainingDailyQuota();
+  if (remaining - recipientsNeeded < CONFIG.QUOTA_RESERVE) {
+    log_('QUOTA SHORT: remaining=' + remaining + ', needed=' + recipientsNeeded +
+      ' — skipping reply-all on thread ' + thread.getId());
+    if (remaining > 1) {
+      MailApp.sendEmail(CONFIG.OPS_ALERT_EMAIL,
+        '[Compliance bot] Quota short — reply-all skipped',
+        'Skipped a reply-all on thread ' + thread.getId() +
+        ' because remaining daily quota is ' + remaining +
+        ' (reserve ' + CONFIG.QUOTA_RESERVE + ').\n\nBody that was not sent:\n\n' + body);
+    }
+    return false;
+  }
+  thread.replyAll(body, options || {});
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
