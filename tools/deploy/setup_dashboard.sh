@@ -51,16 +51,40 @@ python3 -m venv "$VENV_DIR"
 echo "==> Writing $ENV_FILE (edit DASHBOARD_BIND_HOST after install — see README)"
 sudo mkdir -p /etc/sales-dashboard
 if [[ ! -f "$ENV_FILE" ]]; then
-  sudo tee "$ENV_FILE" > /dev/null <<'EOF'
+  GENERATED_SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  sudo tee "$ENV_FILE" > /dev/null <<EOF
 # Bind address for the web app. Phase A (recommended first): set this to
-# this box's Tailscale IP (`tailscale ip -4`) so the dashboard is reachable
+# this box's Tailscale IP (\`tailscale ip -4\`) so the dashboard is reachable
 # only over the tailnet, with no public exposure and no auth code needed.
 # Phase B: switch to 127.0.0.1 once it's behind FASTPANEL's nginx + OAuth.
 DASHBOARD_BIND_HOST=127.0.0.1
 DASHBOARD_BIND_PORT=8000
+
+# Phase A (recommended first, matches DASHBOARD_BIND_HOST above): no login
+# at all, access is gated purely by being on the tailnet. app.py's own
+# default (DASHBOARD_REQUIRE_LOGIN unset) is actually "true" — this line
+# has to be here explicitly, or the app refuses to start Phase A without
+# the Phase B vars below filled in too (it fails closed on those by
+# design — see tools/dashboard/README.md). Flip to a value other than
+# "false" (or delete this line) once moving to Phase B.
+DASHBOARD_REQUIRE_LOGIN=false
+
+# Phase B (Google login) settings — see tools/dashboard/README.md. Only
+# matter once DASHBOARD_REQUIRE_LOGIN above is not "false"; app.py refuses
+# to start without DASHBOARD_SESSION_SECRET set at that point, and an empty
+# DASHBOARD_ALLOWED_EMAILS denies everyone (fail closed), not everyone.
+# A fresh random secret was generated for you below — do not reuse it
+# across environments, and do not commit this file (it's already 0600,
+# root-owned, outside the repo).
+DASHBOARD_SESSION_SECRET=$GENERATED_SESSION_SECRET
+DASHBOARD_ALLOWED_EMAILS=
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_REDIRECT_URI=
 EOF
   sudo chmod 0600 "$ENV_FILE"
-  echo "    Created $ENV_FILE with a 127.0.0.1 placeholder — edit it before starting the service."
+  echo "    Created $ENV_FILE with a 127.0.0.1 placeholder and a freshly-generated DASHBOARD_SESSION_SECRET."
+  echo "    Fill in DASHBOARD_ALLOWED_EMAILS and the GOOGLE_OAUTH_* vars (and flip DASHBOARD_REQUIRE_LOGIN) before enabling login — edit it before starting the service."
 else
   echo "    $ENV_FILE already exists, leaving it alone."
 fi

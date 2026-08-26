@@ -117,11 +117,34 @@ seeded with fixture rows (`tests/conftest.py`), so this is safe to run
 anywhere, anytime, including on the VPS against a copy of `dashboard.db`
 without touching the real file.
 
-## Moving to Phase B (public access + Google login)
+## Phase B (public access + Google login) — required env vars
 
-Not built yet — see the research report §6 (Phase B) and §3.3 for the
-plan: an OAuth consent screen set to **Internal**, `hd`-claim verification
-plus an email allowlist, fronted by FASTPANEL's own nginx + Let's Encrypt
-on a subdomain, with the app rebound to `127.0.0.1`. Needs answers to the
-research report's §7 questions (domain in FASTPANEL, which GCP project)
-before it can start.
+`auth.py`/`app.py` implement the plan from the research report §6/§3.3: an
+OAuth consent screen set to **Internal**, `hd`-claim verification plus an
+email allowlist, session cookies signed with a server-side secret. Three
+env vars gate this — **all three must be set explicitly once Phase B is
+live** (i.e. once `DASHBOARD_REQUIRE_LOGIN` is not `"false"`, which is the
+default):
+
+- `DASHBOARD_SESSION_SECRET` — signs the session cookie. Generate one with
+  `python3 -c "import secrets; print(secrets.token_hex(32))"` and put it in
+  `/etc/sales-dashboard/env` (0600, root-owned — see
+  `tools/deploy/setup_dashboard.sh`). **There is no working default** —
+  `app.py` refuses to start without this set unless `DASHBOARD_REQUIRE_LOGIN`
+  is explicitly `"false"` (local dev only), specifically so a fresh
+  deployment can't accidentally go live signed with the fallback dev
+  secret checked into this repo.
+- `DASHBOARD_ALLOWED_EMAILS` — comma-separated list of the exact Google
+  account emails allowed to log in (e.g.
+  `kris@iconsofrealestate.com,tomas@iconsofrealestate.com`). **An empty or
+  unset allowlist denies everyone**, not everyone-in-the-domain — the
+  Workspace `hd` check alone is not the access control.
+- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` — from the GCP
+  OAuth consent screen (set to **Internal**) and its Web application OAuth
+  client. `GOOGLE_OAUTH_REDIRECT_URI` should also be set explicitly (the
+  app sits behind Tailscale/a reverse proxy, so scheme auto-detection from
+  the raw request isn't reliable).
+
+Still needs FASTPANEL's own nginx + Let's Encrypt fronting on a subdomain,
+with the app rebound to `127.0.0.1` — see the research report's §7
+questions (domain in FASTPANEL, which GCP project) for that piece.

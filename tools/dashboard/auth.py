@@ -59,6 +59,26 @@ async def login(request: Request):
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
+def denial_reason_(hd, email):
+    """None if allowed, else the /login-denied?reason= value. Pulled out of
+    auth_callback as a small pure function so the two access-control checks
+    are unit-testable without going through a real OAuth round-trip.
+
+    Real bug (M-06): the allowlist check used to be
+    `if ALLOWED_EMAILS and email not in ALLOWED_EMAILS`, which skipped the
+    check ENTIRELY whenever DASHBOARD_ALLOWED_EMAILS was unset — fail-OPEN,
+    letting anyone in the Workspace domain log in on a fresh/rebuilt
+    deployment that hadn't configured the allowlist yet. Now an empty
+    allowlist means nobody is granted access until it's explicitly
+    configured (see tools/dashboard/README.md) — fail closed.
+    """
+    if hd != WORKSPACE_DOMAIN:
+        return "domain"
+    if email not in ALLOWED_EMAILS:
+        return "allowlist"
+    return None
+
+
 @router.get("/auth/callback", name="auth_callback")
 async def auth_callback(request: Request):
     token = await oauth.google.authorize_access_token(request)
@@ -67,10 +87,9 @@ async def auth_callback(request: Request):
     email = (userinfo.get("email") or "").lower()
     hd = userinfo.get("hd")
 
-    if hd != WORKSPACE_DOMAIN:
-        return RedirectResponse(url="/login-denied?reason=domain")
-    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
-        return RedirectResponse(url="/login-denied?reason=allowlist")
+    reason = denial_reason_(hd, email)
+    if reason:
+        return RedirectResponse(url=f"/login-denied?reason={reason}")
 
     request.session["user_email"] = email
     request.session["user_name"] = userinfo.get("name", email)

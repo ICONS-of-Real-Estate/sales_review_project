@@ -66,10 +66,32 @@ class RequireLoginMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+_REQUIRE_LOGIN = os.environ.get("DASHBOARD_REQUIRE_LOGIN", "true").lower() != "false"
+_SESSION_SECRET = os.environ.get("DASHBOARD_SESSION_SECRET")
+if _SESSION_SECRET is None:
+    if _REQUIRE_LOGIN:
+        # Real bug (M-06): this used to silently fall back to a hardcoded,
+        # public, checked-into-the-repo string
+        # ("dev-only-insecure-secret-change-me") whenever the env var wasn't
+        # set — on a fresh/rebuilt deployment that skipped this one setup
+        # step, session cookies would be forgeable by anyone who has read
+        # this file, with no error or warning at all. Fail closed instead:
+        # refuse to start rather than serve real sessions signed with a
+        # known secret. Local dev with DASHBOARD_REQUIRE_LOGIN=false (no
+        # real sessions ever gated on this) is the one case allowed to fall
+        # back, per tools/dashboard/README.md's setup instructions.
+        raise RuntimeError(
+            "DASHBOARD_SESSION_SECRET is not set. Generate one (see tools/dashboard/README.md, "
+            "e.g. `python3 -c \"import secrets; print(secrets.token_hex(32))\"`) and set it in the "
+            "environment before starting the app — refusing to start with an insecure default while "
+            "DASHBOARD_REQUIRE_LOGIN is not \"false\"."
+        )
+    _SESSION_SECRET = "dev-only-insecure-secret-change-me"
+
 app.add_middleware(RequireLoginMiddleware)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("DASHBOARD_SESSION_SECRET", "dev-only-insecure-secret-change-me"),
+    secret_key=_SESSION_SECRET,
     same_site="lax",
 )
 app.include_router(auth.router)
