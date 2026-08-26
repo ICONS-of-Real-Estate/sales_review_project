@@ -45,6 +45,12 @@ function realFormatDate(date, tz, pattern) {
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
       .format(date).replace(/-/g, '/');
   }
+  if (pattern === 'HH:mm') {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  }
+  if (pattern === 'EEEE') {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' }).format(date);
+  }
   throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
 }
 
@@ -1195,4 +1201,97 @@ test('buildTrainingReviewEmail_ still shows the framework badge/section for Sean
   assert.ok(email.body.indexOf('Practiced asking for the money') !== -1);
   assert.ok(email.body.indexOf('Framework explanation to drill') !== -1);
   assert.ok(email.htmlBody.indexOf('Framework explanation practiced') !== -1);
+});
+
+// ---------------------------------------------------------------------------
+// Silent-failure audit fixes (26/08/2026) — one regression test per verified
+// Critical/High finding that has a pure-logic surface to pin.
+// ---------------------------------------------------------------------------
+
+test('computeTrainingCycleLabel_ epoch is built in business time, not the script default timezone (real bug: every Tuesday reported next week\'s number)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const label = (isoNoon) => gas.computeTrainingCycleLabel_(new Date(isoNoon), tz).label;
+  assert.equal(label('2026-08-19T16:00:00Z'), 'Week 1, Day 1');
+  assert.equal(label('2026-08-25T16:00:00Z'), 'Week 1, Day 5', 'Tuesday must still read as Week 1');
+  assert.equal(label('2026-08-26T16:00:00Z'), 'Week 2, Day 1', 'the rollover happens Wednesday, not Tuesday');
+});
+
+test('sendOpsAlert_ does not route through guardedSend_\'s config gate (real bug: a config problem silenced the alert reporting it)', () => {
+  const calls = [];
+  gas.MailApp = { sendEmail: (...args) => calls.push(args) };
+  gas.CONFIG.OPS_ALERT_EMAIL = 'kris@iconsofrealestate.com';
+  // auditConfig_ would return not-ok here (a rep email not in INTERNAL_EMAILS) --
+  // guardedSend_ itself would refuse, but sendOpsAlert_ must not ask it.
+  const okBefore = gas.auditConfig_().ok;
+  const sent = gas.sendOpsAlert_('test subject', 'test body');
+  assert.equal(sent, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'kris@iconsofrealestate.com');
+  assert.ok(calls[0][1].indexOf('test subject') !== -1);
+  assert.equal(okBefore, gas.auditConfig_().ok, 'sanity: auditConfig_ itself is unaffected by this test');
+});
+
+test('reconcileComplianceBacklog_ does not let one logged row clear two different backlog entries for the same prospect', () => {
+  const backlog = [
+    { eventId: '', title: 'QC', prospectGuess: 'Jess Provencher', attendeeEmails: [], callDateLabel: '20/08/2026', firstFlaggedAt: '2026-08-20T22:00:00.000Z' },
+    { eventId: '', title: 'Sales Call', prospectGuess: 'Jess Provencher', attendeeEmails: [], callDateLabel: '24/08/2026', firstFlaggedAt: '2026-08-24T22:00:00.000Z' }
+  ];
+  const loggedRowsAnyDate = [
+    { rowIndex: 9, prospect: 'jess provencher', email: '', eventId: '', logged: true }
+  ];
+  const result = gas.reconcileComplianceBacklog_('Joana', backlog, loggedRowsAnyDate);
+  assert.equal(result.length, 1, 'only ONE entry should be cleared by the one logged row');
+});
+
+test('appendNewBacklogEntries_ does not duplicate a bare-title event with a blank event ID on a second run', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const backlog = [
+    { eventId: '', title: 'QC', prospectGuess: 'QC', attendeeEmails: [], callDateLabel: '25/08/2026', time: '09:00', firstFlaggedAt: '2026-08-25T22:00:00.000Z' }
+  ];
+  const missingToday = [
+    { id: '', title: 'QC', prospectGuess: 'QC', attendeeEmails: [], start: new Date('2026-08-26T13:00:00Z') }
+  ];
+  const result = gas.appendNewBacklogEntries_(backlog, missingToday, '25/08/2026', gas.CONFIG.BUSINESS_TIMEZONE, '2026-08-26T22:00:00.000Z');
+  assert.equal(result.length, 1, 'a blank-eventId bare-title event must dedupe by title+date+time, not accidentally re-add');
+});
+
+test('splitStaleBacklogEntries_ escalates entries at or past the age cap and keeps the rest', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const now = new Date('2026-08-26T22:00:00.000Z');
+  const backlog = [
+    { callDateLabel: '25/08/2026' }, // 1 day old -- keep
+    { callDateLabel: '12/08/2026' }  // 14 days old -- escalate
+  ];
+  const { keep, escalate } = gas.splitStaleBacklogEntries_(backlog, now, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(keep.length, 1);
+  assert.equal(escalate.length, 1);
+  assert.equal(escalate[0].callDateLabel, '12/08/2026');
+});
+
+test('buildComplianceEmail_ sorts and labels by the call\'s own date, not by when it was flagged', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
+  // Nicole's call is OLDER (12/08) but was flagged into the backlog LATER
+  // (26/08, e.g. a retroactively-added calendar entry) than Joseph's newer
+  // call (25/08) which was flagged first (25/08).
+  const backlog = [
+    { eventId: 'evt-2', title: 'QC / Joseph Bradley', prospectGuess: 'Joseph Bradley', callDateLabel: '25/08/2026', time: '10:00', firstFlaggedAt: '2026-08-25T22:00:00.000Z' },
+    { eventId: 'evt-1', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', callDateLabel: '12/08/2026', time: '09:00', firstFlaggedAt: '2026-08-26T22:00:00.000Z' }
+  ];
+  const email = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.ok(email.subject.indexOf('12/08/2026') !== -1, 'subject must name the call whose OWN date is oldest, not the one flagged first');
+  assert.ok(email.body.indexOf('Nicole Freed') < email.body.indexOf('Joseph Bradley'), 'body must list by call date, not flag time');
+});
+
+test('buildAndMaybeSendPlaybookReview_-style watermark day comparison does not exclude a call dated the same day the watermark was set', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Watermark set Tue 25 Aug at 08:00 business time; a call dated that same
+  // Tuesday (any time, since Call Date cells are date-only midnight) must
+  // still count as "on or after" the watermark, not be excluded forever.
+  const watermark = new Date('2026-08-25T12:00:00.000Z'); // 08:00 EDT
+  const watermarkDayStart = gas.businessDayStart_(watermark, tz);
+  const callDateSameDay = gas.dateAtMidnightInBusinessTimezone_(2026, 8, 25);
+  assert.ok(!(callDateSameDay < watermarkDayStart), 'a call dated the same business day as the watermark must not be excluded');
 });
