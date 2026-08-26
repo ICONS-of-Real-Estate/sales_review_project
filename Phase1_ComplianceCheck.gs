@@ -327,20 +327,45 @@ function matchEventsForRep_(repName, events, allRows, loggedRows, writeBack) {
 function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   var events = getRepCallEvents_(repCfg, dayStart, dayEnd);
   log_(repCfg.name + ': ' + events.length + ' sales/QC calendar event(s) on ' + priorDay);
-  if (events.length === 0) return;
 
-  var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
-  var loggedRows = allRows.filter(function (r) { return r.logged; });
-  log_(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
-    ' (' + allRows.length + ' total row(s) for the day)');
-
-  var missing = matchEventsForRep_(repCfg.name, events, allRows, loggedRows, /*writeBack=*/true);
-
-  if (missing.length === 0) {
-    log_(repCfg.name + ': fully compliant for ' + priorDay);
+  // Kris's ask (26/08/2026): a call flagged as unlogged one day used to never
+  // get looked at again — if the rep ignored the email, nothing re-flagged
+  // it and nothing recorded whether it was ever fixed. loadComplianceBacklog_
+  // carries every unresolved item forward across days; check it even on a
+  // day with zero calendar events, since there may still be older items
+  // outstanding that need re-flagging.
+  var backlog = loadComplianceBacklog_(repCfg.name);
+  if (events.length === 0 && backlog.length === 0) {
+    log_(repCfg.name + ': fully compliant for ' + priorDay + ' (no calls today, no outstanding backlog).');
     return;
   }
-  sendComplianceEmail_(repCfg, missing, priorDay, tz);
+
+  var missingToday = [];
+  if (events.length) {
+    var allRows = getAllTrackerRows_(repCfg, priorDay, tz);
+    var loggedRows = allRows.filter(function (r) { return r.logged; });
+    log_(repCfg.name + ': ' + loggedRows.length + ' logged tracker row(s) for ' + priorDay +
+      ' (' + allRows.length + ' total row(s) for the day)');
+    missingToday = matchEventsForRep_(repCfg.name, events, allRows, loggedRows, /*writeBack=*/true);
+  }
+
+  // Re-check every previously-flagged item against the WHOLE sheet (any
+  // date), not just today's rows — the rep may have logged it late, on the
+  // right date, any day since it was first flagged.
+  if (backlog.length) {
+    var allRowsAnyDate = getAllTrackerRows_(repCfg, null, tz);
+    var loggedRowsAnyDate = allRowsAnyDate.filter(function (r) { return r.logged; });
+    backlog = reconcileComplianceBacklog_(repCfg.name, backlog, loggedRowsAnyDate);
+  }
+
+  backlog = appendNewBacklogEntries_(backlog, missingToday, priorDay, tz, new Date().toISOString());
+  saveComplianceBacklog_(repCfg.name, backlog);
+
+  if (backlog.length === 0) {
+    log_(repCfg.name + ': fully compliant for ' + priorDay + ' (backlog cleared).');
+    return;
+  }
+  sendComplianceEmail_(repCfg, backlog, tz);
 }
 
 /**
@@ -385,6 +410,10 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
  * Read ALL of the rep's tracker rows for the given day (logged or not), each
  * carrying sheet/column references so a match can write the Calendar Event ID
  * and Match Method back. Compliance filtering happens in the caller via .logged.
+ * Pass priorDay as null/falsy to skip the date filter entirely and get rows
+ * for every date — used to re-check the compliance backlog against the whole
+ * sheet, since a backlogged item may get logged on any later day, not
+ * necessarily re-checked on its original date again.
  */
 function getAllTrackerRows_(repCfg, priorDay, tz) {
   var ss = SpreadsheetApp.openById(repCfg.spreadsheetId);
@@ -414,7 +443,7 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
     });
     if (!hasContent) continue;
 
-    if (col.callDate !== -1 && row[col.callDate] !== '' && row[col.callDate] != null) {
+    if (priorDay && col.callDate !== -1 && row[col.callDate] !== '' && row[col.callDate] != null) {
       if (formatDateCell_(row[col.callDate], tz) !== priorDay) continue; // wrong day
     }
 
@@ -537,49 +566,151 @@ function callTypeFromTitle_(title) {
   return (idx === -1 ? title : title.slice(0, idx)).trim();
 }
 
-function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
-  var n = missingEvents.length;
+// ---------------------------------------------------------------------------
+// Compliance backlog — Kris's ask (26/08/2026): checkRep_ used to only ever
+// compare TODAY's calendar events against TODAY's tracker rows. A call
+// flagged as unlogged one day was never looked at again — if the rep ignored
+// the email, nothing re-flagged it, nothing escalated, and there was no
+// record anywhere of whether it ever got fixed. This persists an
+// outstanding-items list per rep (Script Properties — this project has no
+// database) that carries every unresolved item forward day to day until a
+// matching LOGGED row shows up anywhere in the sheet (not just on that
+// item's original date — a rep might log it late, correctly dated), and
+// reports each item's own original date in the email, not just today's, so
+// "how long has this actually been sitting" is visible without digging
+// through old emails.
+// ---------------------------------------------------------------------------
+
+var COMPLIANCE_BACKLOG_PROP_PREFIX_ = 'COMPLIANCE_BACKLOG_';
+
+function loadComplianceBacklog_(repName) {
+  var raw = PropertiesService.getScriptProperties().getProperty(COMPLIANCE_BACKLOG_PROP_PREFIX_ + repName);
+  if (!raw) return [];
+  try {
+    var parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    log_('loadComplianceBacklog_: corrupt backlog JSON for ' + repName + ', resetting. ' + e);
+    return [];
+  }
+}
+
+function saveComplianceBacklog_(repName, backlog) {
+  PropertiesService.getScriptProperties().setProperty(COMPLIANCE_BACKLOG_PROP_PREFIX_ + repName, JSON.stringify(backlog));
+}
+
+/** Rebuilds a findMatch_-compatible event object from a stored backlog entry. */
+function backlogEntryToEvent_(entry) {
+  return { id: entry.eventId, title: entry.title, prospectGuess: entry.prospectGuess, attendeeEmails: entry.attendeeEmails || [] };
+}
+
+/** Drops any backlog entry that now has a matching LOGGED row anywhere in the sheet. Pure given its inputs — no I/O of its own. */
+function reconcileComplianceBacklog_(repName, backlog, loggedRowsAnyDate) {
+  return backlog.filter(function (entry) {
+    var hit = findMatch_(backlogEntryToEvent_(entry), loggedRowsAnyDate);
+    if (hit) {
+      log_('  [' + repName + '] backlog item "' + entry.prospectGuess + '" (' + entry.callDateLabel + ') is now logged — clearing.');
+    }
+    return !hit;
+  });
+}
+
+/**
+ * Appends today's newly-missing events to the backlog, each carrying the
+ * date it actually happened; skips anything already tracked by event ID
+ * (defensive — matchEventsForRep_/reconcileComplianceBacklog_ should already
+ * prevent a real duplicate, but a missing/blank event ID must never collide
+ * via the `existingIds[undefined]` truthiness trap). Mutates and returns
+ * `backlog` in place, matching Array.prototype.push's own convention.
+ */
+function appendNewBacklogEntries_(backlog, missingToday, priorDay, tz, nowIso) {
+  var existingIds = {};
+  backlog.forEach(function (e) { if (e.eventId) existingIds[e.eventId] = true; });
+  missingToday.forEach(function (ev) {
+    if (ev.id && existingIds[ev.id]) return;
+    backlog.push({
+      eventId: ev.id,
+      title: ev.title,
+      prospectGuess: ev.prospectGuess,
+      attendeeEmails: ev.attendeeEmails,
+      callDateLabel: priorDay,
+      time: Utilities.formatDate(ev.start, tz, 'HH:mm'),
+      firstFlaggedAt: nowIso
+    });
+  });
+  return backlog;
+}
+
+/**
+ * "3 days ago" / "1 day ago" / "today", computed from a dd/MM/yyyy label
+ * against `now` in business time. Reuses dateAtMidnightInBusinessTimezone_
+ * (Phase2_CallScoring.gs) rather than a plain `new Date(y,m,d)` so this can't
+ * reintroduce the exact script-timezone-vs-business-timezone bug that
+ * function exists to avoid (see parseLegacyFilename_'s history).
+ */
+function daysAgoLabel_(dateLabelDdMmYyyy, now, tz) {
+  var parts = dateLabelDdMmYyyy.split('/'); // ['dd', 'MM', 'yyyy']
+  var callDay = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
+  var today = businessDayStart_(now, tz);
+  var days = Math.round((today - callDay) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return 'today';
+  if (days === 1) return '1 day ago';
+  return days + ' days ago';
+}
+
+/** Pure email-content builder — {subject, body, htmlBody} — kept separate from guardedSend_ so it's testable without a real MailApp. */
+function buildComplianceEmail_(repCfg, backlog, tz) {
+  var n = backlog.length;
   var trackerUrl = 'https://docs.google.com/spreadsheets/d/' + repCfg.spreadsheetId + '/edit';
+  var now = new Date();
+
+  // Oldest-first: the email should read as a backlog, longest-outstanding
+  // item first, not today's newest items first.
+  var sorted = backlog.slice().sort(function (a, b) { return new Date(a.firstFlaggedAt) - new Date(b.firstFlaggedAt); });
+  var oldest = sorted[0];
 
   // Names in the subject (not just the body) so which prospect(s) this is
   // about is visible from the inbox list without opening the email. Caps at
-  // 3 named + "+N more" so a rare heavy day doesn't produce an unreadably
-  // long subject line.
-  var names = missingEvents.map(function (ev) { return ev.prospectGuess; });
+  // 3 named + "+N more" so a rare heavy backlog doesn't produce an
+  // unreadably long subject line.
+  var names = sorted.map(function (e) { return e.prospectGuess; });
   var namesForSubject = names.length <= 3
     ? names.join(', ')
     : names.slice(0, 3).join(', ') + ', +' + (names.length - 3) + ' more';
 
   var subject = repCfg.name + ' — [Action needed] Update your sales tracker — ' + namesForSubject +
-    ' (' + n + ' call(s) from ' + priorDay + ') not logged';
+    ' (' + n + ' call(s) still outstanding, oldest from ' + oldest.callDateLabel + ', ' +
+    daysAgoLabel_(oldest.callDateLabel, now, tz) + ')';
 
   // guessProspectFromTitle_ falls back to echoing the raw title verbatim when
   // it can't parse a name out of it (e.g. a bare "QC" event) -- show that
   // honestly instead of printing the same string twice on one line
   // ("QC — 07:45 — QC"), which reads as a meaningless duplicate.
-  var entries = missingEvents.map(function (ev) {
-    var nameParsed = ev.prospectGuess.trim().toLowerCase() !== ev.title.trim().toLowerCase();
+  var entries = sorted.map(function (e) {
+    var nameParsed = e.prospectGuess.trim().toLowerCase() !== e.title.trim().toLowerCase();
     return {
-      time: Utilities.formatDate(ev.start, tz, 'HH:mm'),
-      who: nameParsed ? ev.prospectGuess : '(name not parsed from calendar title)',
-      callType: callTypeFromTitle_(ev.title)
+      dateLabel: e.callDateLabel,
+      daysAgo: daysAgoLabel_(e.callDateLabel, now, tz),
+      time: e.time || '',
+      who: nameParsed ? e.prospectGuess : '(name not parsed from calendar title)',
+      callType: callTypeFromTitle_(e.title)
     };
   });
 
   var plainLines = entries.map(function (e) {
-    return '  • ' + e.time + ' — ' + e.who + ' — ' + e.callType;
+    return '  • ' + e.dateLabel + (e.time ? ' ' + e.time : '') + ' (' + e.daysAgo + ') — ' + e.who + ' — ' + e.callType;
   });
   var htmlLines = entries.map(function (e) {
-    return '<li>' + e.time + ' — <b>' + e.who + '</b> — ' + e.callType + '</li>';
+    return '<li>' + e.dateLabel + (e.time ? ' ' + e.time : '') + ' <i>(' + e.daysAgo + ')</i> — <b>' + e.who + '</b> — ' + e.callType + '</li>';
   });
 
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
-    'Your calendar shows ' + n + ' sales/QC call(s) on ' + priorDay +
-    ' with no matching outcome in your tracker:\n\n' +
+    'These ' + n + ' sales/QC call(s) still have no matching outcome in your tracker — each one shows the ' +
+    'date it actually happened, so you can see how long it\'s been sitting:\n\n' +
     plainLines.join('\n') + '\n\n' +
-    'Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes today ' +
-    'so it can be scored.\n\n' +
+    'Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for EACH of these — ' +
+    'this list carries over every day until an item is logged, it does not reset.\n\n' +
     'Tracker: ' + trackerUrl + '\n\n' +
     'Reply to this email once you\'ve updated the tracker, so Kris/Tomás know it\'s done.\n\n' +
     '— This is an automated check. This email was drafted by AI and sent automatically; ' +
@@ -587,23 +718,29 @@ function sendComplianceEmail_(repCfg, missingEvents, priorDay, tz) {
 
   var htmlBody =
     '<p>Hi ' + repCfg.name + ',</p>' +
-    '<p>Your calendar shows ' + n + ' sales/QC call(s) on ' + priorDay +
-    ' with no matching outcome in your tracker:</p>' +
+    '<p>These ' + n + ' sales/QC call(s) still have no matching outcome in your tracker — each one shows the ' +
+    'date it actually happened, so you can see how long it\'s been sitting:</p>' +
     '<ul>' + htmlLines.join('') + '</ul>' +
-    '<p>Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes today ' +
-    'so it can be scored.</p>' +
+    '<p>Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for <b>each</b> of these — ' +
+    'this list carries over every day until an item is logged, it does not reset.</p>' +
     '<p><b>Tracker:</b> <a href="' + trackerUrl + '">' + trackerUrl + '</a></p>' +
     '<p><b>Reply to this email once you\'ve updated the tracker</b>, so Kris/Tomás know it\'s done.</p>' +
     '<p><i>— This is an automated check. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.</i></p>';
 
+  return { subject: subject, body: body, htmlBody: htmlBody, oldestDateLabel: oldest.callDateLabel };
+}
+
+function sendComplianceEmail_(repCfg, backlog, tz) {
+  var email = buildComplianceEmail_(repCfg, backlog, tz);
   var recipientsNeeded = 3; // rep + Kris + Tomás (CC counts against recipient quota)
-  guardedSend_(repCfg.email, subject, body, {
+  guardedSend_(repCfg.email, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
-    htmlBody: htmlBody,
+    htmlBody: email.htmlBody,
     name: 'Call Tracker Compliance Bot'
   }, recipientsNeeded);
-  log_('Sent compliance email to ' + repCfg.email + ' for ' + n + ' unlogged call(s).');
+  log_('Sent compliance email to ' + repCfg.email + ' for ' + backlog.length +
+    ' outstanding unlogged call(s) (oldest: ' + email.oldestDateLabel + ').');
 }
 
 function sendOpsAlert_(subject, body) {

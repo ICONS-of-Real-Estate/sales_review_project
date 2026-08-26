@@ -29,7 +29,8 @@ const { loadGasProject } = require('./gas_env');
  * `new Date(y,m,d)` constructor silently uses the Apps Script project's own
  * default timezone, not the one asked for). Only supports the two patterns
  * those functions actually use ('Z' as a Java-SimpleDateFormat-style
- * "+HHMM"/"-HHMM" offset, and 'yyyy').
+ * "+HHMM"/"-HHMM" offset, and 'yyyy'). Also supports 'yyyy/MM/dd', which
+ * businessDayStart_ (and, through it, daysAgoLabel_) needs.
  */
 function realFormatDate(date, tz, pattern) {
   if (pattern === 'Z') {
@@ -39,6 +40,10 @@ function realFormatDate(date, tz, pattern) {
   }
   if (pattern === 'yyyy') {
     return new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(date);
+  }
+  if (pattern === 'yyyy/MM/dd') {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(date).replace(/-/g, '/');
   }
   throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
 }
@@ -1003,4 +1008,75 @@ test('buildDailyPracticeFeedbackEmail_ leads with the quoted feedback summary, k
   assert.ok(quoteIdx < forTheRecordIdx, 'quote should come before the numeric section');
   assert.ok(scoreIdx > forTheRecordIdx, 'score should come after the "For the record" marker');
   assert.ok(email.body.indexOf(result.sharpen_next) < forTheRecordIdx, 'the one behavior to change should also be above the fold');
+});
+
+// ---------------------------------------------------------------------------
+// Compliance backlog (26/08/2026): checkRep_ used to only ever compare
+// TODAY's calendar events against TODAY's tracker rows — an item flagged one
+// day was never looked at again. These pin the persisted-backlog behavior:
+// unresolved items carry forward with their ORIGINAL date, resolved items
+// drop out once logged anywhere in the sheet (not just on their own date),
+// and the email surfaces each item's own age rather than just today's date.
+// ---------------------------------------------------------------------------
+
+test('daysAgoLabel_ computes calendar-day age in business time, not a raw 24h-bucket diff', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const now = new Date('2026-08-26T20:00:00Z'); // mid-afternoon in America/New_York
+  assert.equal(gas.daysAgoLabel_('26/08/2026', now, tz), 'today');
+  assert.equal(gas.daysAgoLabel_('25/08/2026', now, tz), '1 day ago');
+  assert.equal(gas.daysAgoLabel_('20/08/2026', now, tz), '6 days ago');
+});
+
+test('reconcileComplianceBacklog_ drops an item once a LOGGED row matches it anywhere in the sheet, keeps the rest', () => {
+  const backlog = [
+    { eventId: 'evt-1', title: 'QC / Russell Kubach', prospectGuess: 'Russell Kubach', attendeeEmails: [], callDateLabel: '25/08/2026', firstFlaggedAt: '2026-08-25T22:00:00.000Z' },
+    { eventId: 'evt-2', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', attendeeEmails: [], callDateLabel: '25/08/2026', firstFlaggedAt: '2026-08-25T22:00:00.000Z' }
+  ];
+  // Russell's row got logged since, late, dated correctly — same event ID
+  // this time because stampMatch_ already backfilled it the day it was
+  // first flagged. Nicole's has nothing matching yet.
+  const loggedRowsAnyDate = [
+    { rowIndex: 7, prospect: 'russellkubach', email: '', eventId: 'evt-1', logged: true }
+  ];
+  const result = gas.reconcileComplianceBacklog_('Bens', backlog, loggedRowsAnyDate);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].eventId, 'evt-2');
+});
+
+test('appendNewBacklogEntries_ carries the ORIGINAL call date, and never double-tracks the same event ID twice', () => {
+  gas.Utilities = { formatDate: () => '09:00' };
+  const backlog = [
+    { eventId: 'evt-1', title: 'QC / Russell Kubach', prospectGuess: 'Russell Kubach', attendeeEmails: [], callDateLabel: '24/08/2026', firstFlaggedAt: '2026-08-24T22:00:00.000Z' }
+  ];
+  const missingToday = [
+    { id: 'evt-1', title: 'QC / Russell Kubach', prospectGuess: 'Russell Kubach', attendeeEmails: [], start: new Date('2026-08-26T13:00:00Z') }, // still unlogged, already tracked
+    { id: 'evt-3', title: 'QC / Joseph Bradley', prospectGuess: 'Joseph Bradley', attendeeEmails: [], start: new Date('2026-08-26T13:00:00Z') } // genuinely new
+  ];
+  const result = gas.appendNewBacklogEntries_(backlog, missingToday, '26/08/2026', gas.CONFIG.BUSINESS_TIMEZONE, '2026-08-26T22:00:00.000Z');
+
+  assert.equal(result.length, 2, 'evt-1 must not be duplicated');
+  const russell = result.find((e) => e.eventId === 'evt-1');
+  assert.equal(russell.callDateLabel, '24/08/2026', 'a still-open item must keep its ORIGINAL flagged date, not today\'s');
+  const joseph = result.find((e) => e.eventId === 'evt-3');
+  assert.equal(joseph.callDateLabel, '26/08/2026', 'a genuinely new item is dated today');
+});
+
+test('buildComplianceEmail_ lists every outstanding item oldest-first, each with its own date/age, and the subject names the oldest', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
+  const backlog = [
+    { eventId: 'evt-2', title: 'QC / Joseph Bradley', prospectGuess: 'Joseph Bradley', callDateLabel: '25/08/2026', time: '10:00', firstFlaggedAt: '2026-08-25T22:00:00.000Z' },
+    { eventId: 'evt-1', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', callDateLabel: '20/08/2026', time: '09:00', firstFlaggedAt: '2026-08-20T22:00:00.000Z' }
+  ];
+  const email = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE);
+
+  assert.ok(email.subject.indexOf('Nicole Freed') !== -1, 'subject should lead with the OLDEST outstanding item, not insertion order');
+  assert.ok(email.subject.indexOf('20/08/2026') !== -1, 'subject should name the oldest item\'s original date');
+  const nicoleIdx = email.body.indexOf('Nicole Freed');
+  const josephIdx = email.body.indexOf('Joseph Bradley');
+  assert.ok(nicoleIdx !== -1 && josephIdx !== -1 && nicoleIdx < josephIdx, 'body should list oldest-first');
+  assert.ok(email.body.indexOf('20/08/2026') !== -1 && email.body.indexOf('25/08/2026') !== -1,
+    'body should show each item\'s own original date, not just today\'s');
+  assert.ok(email.body.indexOf('does not reset') !== -1, 'body should say this list carries forward, not a one-day snapshot');
 });
