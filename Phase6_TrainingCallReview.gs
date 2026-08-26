@@ -316,12 +316,16 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
 }
 
 /** Finds the Zoom-generated transcript inside a dated subfolder (skips the video/audio siblings). */
+/** True for a filename that looks like a transcript (.vtt, or contains "Transcript") — false for Zoom's video/audio siblings (.mp4/.m4a/etc), which share the same date-prefixed naming but are never the transcript itself. */
+function looksLikeTranscriptFile_(name) {
+  return /\.vtt$/i.test(name) || name.indexOf('Transcript') !== -1;
+}
+
 function findTrainingTranscriptFile_(dateFolder) {
   var files = dateFolder.getFiles();
   while (files.hasNext()) {
     var file = files.next();
-    var name = file.getName();
-    if (/\.vtt$/i.test(name) || name.indexOf('Transcript') !== -1) return file;
+    if (looksLikeTranscriptFile_(file.getName())) return file;
   }
   return null;
 }
@@ -337,7 +341,21 @@ function trainingReviewAlreadyDone_(dateFolder) {
  * over, no Zoom video/audio bundle to keep it company. Identified by a
  * leading YYMMDD date in the file name (e.g. "260819" or "260819 Transcript"),
  * same date-label convention as the subfolder path below.
+ *
+ * Real incident live (26/08/2026): Tomás started dropping the FULL Zoom
+ * bundle (video + .vtt) flat into the rep's root folder instead of the
+ * documented dated subfolder. For Bens/Joana the transcript happened to
+ * iterate before the video and everything worked; for Sean the video
+ * (also date-prefixed, e.g. "260825_Recording_1920x1020.mp4") got matched
+ * as if IT were the transcript, and processTrainingTranscript_ choked on it
+ * — silently losing that rep's entire training review for the week, with
+ * no doc and no email, and no error visible anywhere but the Executions
+ * log. Excluding known Zoom recording extensions here means this path only
+ * ever matches an actual transcript, regardless of what else sits next to
+ * it or in what order Drive happens to return files.
  */
+var TRAINING_RECORDING_EXTENSIONS_ = /\.(mp4|m4a|mov|avi|wav|mp3|webm)$/i;
+
 function findFlatTrainingTranscripts_(repFolder) {
   var dateLabelPrefix = /^(\d{6})\b/;
   var files = repFolder.getFiles();
@@ -348,6 +366,7 @@ function findFlatTrainingTranscripts_(repFolder) {
     var m = name.match(dateLabelPrefix);
     if (!m) continue;
     if (/Training Plan$/.test(name)) continue; // a previous run's output doc, not a transcript to review
+    if (TRAINING_RECORDING_EXTENSIONS_.test(name)) continue; // Zoom's video/audio, not the transcript
     out.push({ file: file, dateLabel: m[1] });
   }
   return out;
@@ -507,7 +526,20 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
         continue;
       }
 
-      if (processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, 'Training Plan', dateFolder, dryRun)) processed++;
+      // One bad file (e.g. an unexpected format, or a transcript so long the
+      // judge call fails) must not silently take down every OTHER rep/date
+      // still left to process in this run — real incident live (26/08/2026):
+      // an uncaught throw partway through one rep's folder meant later reps
+      // never even got attempted, with nothing surfaced anywhere but the
+      // Executions log. Same "one rep's failure must not kill the others"
+      // rule runDailyComplianceCheck (Phase1) already follows.
+      try {
+        if (processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, 'Training Plan', dateFolder, dryRun)) processed++;
+      } catch (e) {
+        log_('ERROR reviewing ' + rep + '/' + dateLabel + ': ' + e);
+        sendOpsAlert_('Training call review error for ' + rep + '/' + dateLabel,
+          rep + '\'s training call transcript for ' + dateLabel + ' could not be reviewed.\n\n' + e);
+      }
     }
 
     // Path B: a single transcript file dropped directly in the rep's folder, named
@@ -521,7 +553,13 @@ function buildAndMaybeSendTrainingReviews_(dryRun) {
         log_('  ' + rep + '/' + entry.dateLabel + ' already has a "' + outputName + '" doc — skipping.');
         return;
       }
-      if (processTrainingTranscript_(rep, repCfg, entry.dateLabel, entry.file, outputName, repFolder, dryRun)) processed++;
+      try {
+        if (processTrainingTranscript_(rep, repCfg, entry.dateLabel, entry.file, outputName, repFolder, dryRun)) processed++;
+      } catch (e) {
+        log_('ERROR reviewing ' + rep + '/' + entry.dateLabel + ': ' + e);
+        sendOpsAlert_('Training call review error for ' + rep + '/' + entry.dateLabel,
+          rep + '\'s training call transcript for ' + entry.dateLabel + ' could not be reviewed.\n\n' + e);
+      }
     });
   });
 

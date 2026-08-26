@@ -25,6 +25,7 @@ const GAS_FILES = [
   'Phase1_ComplianceCheck.gs',
   'Phase2_CallScoring.gs',
   'Phase5_WeeklyScorecard.gs',
+  'Phase6_TrainingCallReview.gs',
   'Phase7_DailySelfPractice.gs'
 ];
 

@@ -1080,3 +1080,31 @@ test('buildComplianceEmail_ lists every outstanding item oldest-first, each with
     'body should show each item\'s own original date, not just today\'s');
   assert.ok(email.body.indexOf('does not reset') !== -1, 'body should say this list carries forward, not a one-day snapshot');
 });
+
+// ---------------------------------------------------------------------------
+// Training call review: flat-file transcript matching (26/08/2026 incident).
+// Tomás started dropping the FULL Zoom bundle (video + .vtt) flat into a
+// rep's root folder instead of the documented dated subfolder. Both files
+// share the same date-prefixed naming, so the old "any date-prefixed file"
+// matcher could pick up the .mp4 as if it were the transcript — for Sean
+// this silently ate his entire training review for the week (no doc, no
+// email, no visible error). These pin the fix: real transcripts still
+// match by their own name (however they're named), but a Zoom recording
+// extension never does, regardless of what else sits next to it.
+// ---------------------------------------------------------------------------
+
+test('looksLikeTranscriptFile_ matches real transcript naming, not just files that happen to sit near one', () => {
+  assert.equal(gas.looksLikeTranscriptFile_('GMT20260825-090022_Recording.transcript.vtt'), true);
+  assert.equal(gas.looksLikeTranscriptFile_('260819 Transcript'), true);
+  assert.equal(gas.looksLikeTranscriptFile_('260819'), false); // bare date, no extension/marker — Path B still wants this via TRAINING_RECORDING_EXTENSIONS_ exclusion, not this predicate
+  assert.equal(gas.looksLikeTranscriptFile_('260825_Recording_1920x1020.mp4'), false);
+});
+
+test('TRAINING_RECORDING_EXTENSIONS_ excludes Zoom video/audio siblings from the flat-transcript matcher (the real Sean incident)', () => {
+  const videoName = '260825_Recording_1920x1020.mp4';
+  const transcriptName = '260825_Recording.transcript.vtt';
+  const bareDocName = '260825'; // the documented bare-YYMMDD Google Doc case must still be allowed through
+  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(videoName), true, 'the recording itself must be excluded');
+  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(transcriptName), false, 'the real transcript must never be excluded');
+  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(bareDocName), false, 'a bare-dated Google Doc transcript must never be excluded');
+});
