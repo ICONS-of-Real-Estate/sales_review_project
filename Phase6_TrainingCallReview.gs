@@ -226,7 +226,10 @@ function isValidTrainingReviewSchema_(obj) {
     typeof obj.next_focus === 'string' &&
     typeof obj.team_notes === 'string' &&
     Array.isArray(obj.objections_to_drill) &&
-    obj.objections_to_drill.length > 0 &&
+    // NOT length > 0: the system prompt tells the judge a call can drill any
+    // combination of objections/close-ask/framework gaps, including none —
+    // a clean call with zero objections handled is a valid, real outcome,
+    // not a parse failure to fall back to the manual-review sentinel over.
     obj.objections_to_drill.every(function (o) {
       return o && typeof o.label === 'string' && typeof o.note === 'string';
     }) &&
@@ -424,11 +427,11 @@ function trainingReviewAlreadyDone_(dateFolder) {
  * as if IT were the transcript, and processTrainingTranscript_ choked on it
  * — silently losing that rep's entire training review for the week, with
  * no doc and no email, and no error visible anywhere but the Executions
- * log. Excluding known Zoom recording extensions here means this path only
- * ever matches an actual transcript, regardless of what else sits next to
- * it or in what order Drive happens to return files.
+ * log. This path now allowlists real transcript names (looksLikeTranscriptFile_
+ * plus the bare-Google-Doc case) instead of just denylisting known Zoom
+ * recording extensions, so it can't be fooled by any other kind of stray
+ * date-prefixed file either (a PDF, a screenshot, a .docx of notes).
  */
-var TRAINING_RECORDING_EXTENSIONS_ = /\.(mp4|m4a|mov|avi|wav|mp3|webm)$/i;
 
 function findFlatTrainingTranscripts_(repFolder) {
   // NOT \b: regex word-boundary treats "_" as a word character, so
@@ -449,8 +452,25 @@ function findFlatTrainingTranscripts_(repFolder) {
     var m = name.match(dateLabelPrefix);
     if (!m) continue;
     if (/Training Plan$/.test(name)) continue; // a previous run's output doc, not a transcript to review
-    if (TRAINING_RECORDING_EXTENSIONS_.test(name)) continue; // Zoom's video/audio, not the transcript
-    out.push({ file: file, dateLabel: m[1] });
+
+    // Real bug found live (26/08/2026 silent-failure audit): this used to be
+    // a DENYLIST (exclude known video/audio extensions), so any OTHER stray
+    // date-prefixed file (a PDF of notes, a screenshot, a .docx) would still
+    // be treated as the transcript — and getTranscriptText_'s blob-to-string
+    // fallback on binary content silently feeds garbage to the judge rather
+    // than throwing. Now an allowlist: a name that actually looks like a
+    // transcript, OR a bare-named Google Doc with no extension at all (the
+    // documented "260819" case — no video/audio bundle alongside it, so
+    // nothing else could disambiguate it). Anything else, including a
+    // stray extensioned file, is rejected.
+    if (looksLikeTranscriptFile_(name)) {
+      out.push({ file: file, dateLabel: m[1] });
+      continue;
+    }
+    var hasExtension = /\.[a-z0-9]{2,5}$/i.test(name);
+    if (!hasExtension && file.getMimeType && file.getMimeType() === MimeType.GOOGLE_DOCS) {
+      out.push({ file: file, dateLabel: m[1] });
+    }
   }
   return out;
 }
@@ -543,12 +563,32 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
     return false;
   }
 
+  // Write+move the marker doc BEFORE sending. hasTrainingPlanDoc_ (the
+  // dedupe check callers make before ever reaching this function) can only
+  // see the doc once it actually lands in outputParentFolder — writing it
+  // after the send meant a moveTo() failure left no marker at all, so the
+  // next run would see no doc, re-send the email, and re-run the judge,
+  // silently duplicating the rep's training plan on every subsequent pass
+  // while logging a misleading "could not be reviewed" alert. Doing it first
+  // means a doc-write failure throws before anything is sent, and this
+  // function can simply be re-run.
+  var doc = DocumentApp.create(outputDocName);
+  doc.getBody().setText(email.body);
+  doc.saveAndClose();
+  DriveApp.getFileById(doc.getId()).moveTo(outputParentFolder);
+
   // Goes to the rep being trained; Tomás (who ran the call) and Kris are cc'd.
-  guardedSend_(repCfg.email, email.subject, email.body, {
+  var sent = guardedSend_(repCfg.email, email.subject, email.body, {
     cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL,
     htmlBody: email.htmlBody,
     name: 'Training Call Review Bot'
   }, 3); // rep + Tomás + Kris
+
+  if (!sent) {
+    log_('  Reviewed ' + rep + '/' + dateLabel + ' -> wrote "' + outputDocName +
+      '" doc, but SEND FAILED/SKIPPED (quota-short or invalid config) — assignment properties left untouched.');
+    return true;
+  }
 
   // Persisted for Phase 7's daily assignment emails to read. Only overwrite on a
   // real, non-empty result — a parse-failure fallback (empty array) must NOT wipe
@@ -575,11 +615,6 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
   // tab so the dashboard sync job (and any human) can see the live assignment.
   // Phase 7 keeps reading the properties directly; this is a read-only copy.
   mirrorTrainingAssignment_(rep);
-
-  var doc = DocumentApp.create(outputDocName);
-  doc.getBody().setText(email.body);
-  doc.saveAndClose();
-  DriveApp.getFileById(doc.getId()).moveTo(outputParentFolder);
 
   log_('  Reviewed ' + rep + '/' + dateLabel + ' -> emailed training plan, wrote "' + outputDocName + '" doc.');
   return true;

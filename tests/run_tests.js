@@ -1129,22 +1129,20 @@ test('buildComplianceEmail_ lists every outstanding item oldest-first, each with
 test('looksLikeTranscriptFile_ matches real transcript naming, not just files that happen to sit near one', () => {
   assert.equal(gas.looksLikeTranscriptFile_('GMT20260825-090022_Recording.transcript.vtt'), true);
   assert.equal(gas.looksLikeTranscriptFile_('260819 Transcript'), true);
-  assert.equal(gas.looksLikeTranscriptFile_('260819'), false); // bare date, no extension/marker — Path B still wants this via TRAINING_RECORDING_EXTENSIONS_ exclusion, not this predicate
+  assert.equal(gas.looksLikeTranscriptFile_('260819'), false); // bare date, no extension/marker — findFlatTrainingTranscripts_ allows this via the bare-Google-Doc fallback, not this predicate
   assert.equal(gas.looksLikeTranscriptFile_('260825_Recording_1920x1020.mp4'), false);
 });
 
-test('TRAINING_RECORDING_EXTENSIONS_ excludes Zoom video/audio siblings from the flat-transcript matcher (the real Sean incident)', () => {
-  const videoName = '260825_Recording_1920x1020.mp4';
-  const transcriptName = '260825_Recording.transcript.vtt';
-  const bareDocName = '260825'; // the documented bare-YYMMDD Google Doc case must still be allowed through
-  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(videoName), true, 'the recording itself must be excluded');
-  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(transcriptName), false, 'the real transcript must never be excluded');
-  assert.equal(gas.TRAINING_RECORDING_EXTENSIONS_.test(bareDocName), false, 'a bare-dated Google Doc transcript must never be excluded');
-});
-
-/** Minimal DriveApp Folder fake — just enough of the getFiles()/getName() surface findFlatTrainingTranscripts_ actually calls. */
-function fakeFolder(fileNames) {
-  const files = fileNames.map((name) => ({ getName: () => name })); // each file's name is fixed, not a shared cursor — findFlatTrainingTranscripts_ stashes the file object and reads its name again later via .file.getName()
+/** Minimal DriveApp Folder fake — just enough of the getFiles()/getName()/getMimeType() surface findFlatTrainingTranscripts_ actually calls. */
+function fakeFolder(fileSpecs) {
+  // Each entry is either a bare name string, or {name, mimeType} for the
+  // bare-Google-Doc allowlist case. Fixed per-file, not a shared cursor —
+  // findFlatTrainingTranscripts_ stashes the file object and reads its name
+  // again later via .file.getName().
+  const files = fileSpecs.map((spec) => {
+    const { name, mimeType } = typeof spec === 'string' ? { name: spec, mimeType: null } : spec;
+    return { getName: () => name, getMimeType: () => mimeType };
+  });
   return {
     getFiles: () => {
       let i = 0;
@@ -1155,6 +1153,26 @@ function fakeFolder(fileNames) {
     }
   };
 }
+
+test('isValidTrainingReviewSchema_ accepts a clean call with zero objections drilled (real bug H-01: length > 0 contradicted the system prompt\'s own "including none" instruction)', () => {
+  const base = {
+    attended: true,
+    practiced_objections: false,
+    practiced_close_ask: true,
+    practiced_framework: true,
+    coaching_notes: 'Solid call, no objections came up.',
+    next_focus: 'Keep it up.',
+    team_notes: '',
+    objections_to_drill: [],
+    close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
+    framework_gaps_to_drill: []
+  };
+  assert.equal(gas.isValidTrainingReviewSchema_(base), true);
+
+  const malformed = Object.assign({}, base, { objections_to_drill: [{ label: 'ok' }] });
+  assert.equal(gas.isValidTrainingReviewSchema_(malformed), false,
+    'a malformed (non-string note) entry should still fail validation');
+});
 
 test('findFlatTrainingTranscripts_ finds a real transcript named the way Zoom actually names it (real bug: "_" broke the old \\b boundary check)', () => {
   // Sean's actual filenames from the live incident: the .vtt uses Zoom's
@@ -1172,6 +1190,22 @@ test('findFlatTrainingTranscripts_ finds a real transcript named the way Zoom ac
   assert.equal(found.length, 1, 'exactly the one real transcript should be found');
   assert.equal(found[0].file.getName(), '260825_Recording.transcript.vtt');
   assert.equal(found[0].dateLabel, '260825');
+});
+
+test('findFlatTrainingTranscripts_ allowlists real transcripts (incl. a bare Google Doc) instead of just denylisting known video extensions (real bug H-02: a stray date-prefixed PDF/screenshot could still be treated as the transcript)', () => {
+  const folder = fakeFolder([
+    '260819 Transcript',                                              // named transcript — allowed
+    { name: '260819', mimeType: 'application/vnd.google-apps.document' }, // bare Google Doc, no video alongside — allowed
+    '260819 notes.pdf',                                               // a stray date-prefixed PDF of notes — must be REJECTED, not silently fed to the judge
+    '260819_screenshot.png'                                           // a stray screenshot — must be REJECTED too
+  ]);
+  const found = gas.findFlatTrainingTranscripts_(folder);
+  // Array.from (not found.map) because `found` is an Array built inside the
+  // vm sandbox's own realm — .map() on it would return another foreign-realm
+  // array via species construction, which fails deepStrictEqual against a
+  // plain literal array purely on prototype identity, not actual content.
+  const names = Array.from(found, (f) => f.file.getName());
+  assert.deepEqual(names.sort(), ['260819', '260819 Transcript']);
 });
 
 // ---------------------------------------------------------------------------
