@@ -88,7 +88,17 @@ function isValidReplyClassifierSchema_(obj) {
     typeof obj.reasoning === 'string');
 }
 
-/** Same retry/manual-review shape as the Phase 2 judges, against the reply-classifier prompt. */
+/**
+ * Same retry/manual-review shape as the Phase 2 judges, against the
+ * reply-classifier prompt. handleJudgeRetryError_ re-throws once retries are
+ * exhausted on a genuine TRANSPORT failure (API outage, bad key) instead of
+ * letting this fall through to the sentinel below — the caller's own
+ * try/catch (classifyNewReplies) then counts it as `failed` and skips
+ * logging the thread entirely. Real bug (H-04) fixed here: previously every
+ * failure, transport or parse, silently landed in the Reply Tracker sheet as
+ * a real "negative" classification, quietly inflating the negative count
+ * with pipeline outages rather than actual lead sentiment.
+ */
 function classifyReply_(fromEmail, subject, bodyText) {
   var systemPrompt = buildReplyClassifierPrompt_();
   var userPrompt = 'From: ' + fromEmail + '\nSubject: ' + subject + '\n\nReply text:\n' + bodyText;
@@ -106,6 +116,7 @@ function classifyReply_(fromEmail, subject, bodyText) {
       return parsed;
     } catch (e) {
       log_('    ↳ classifyReply_ attempt ' + (attempt + 1) + ' failed: ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
     }
   }
   log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice). Raw: ' + String(lastRaw).slice(0, 500));
@@ -148,6 +159,21 @@ function extractPlainTextBody_(payload) {
   return '';
 }
 
+/** Walks a Gmail API message payload for the first text/html part and decodes it, stripping tags. */
+function extractHtmlBodyAsText_(payload) {
+  if (!payload) return '';
+  if (payload.mimeType === 'text/html' && payload.body && payload.body.data) {
+    var html = Utilities.newBlob(Utilities.base64DecodeWebSafe(payload.body.data)).getDataAsString();
+    return html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  var parts = payload.parts || [];
+  for (var i = 0; i < parts.length; i++) {
+    var found = extractHtmlBodyAsText_(parts[i]);
+    if (found) return found;
+  }
+  return '';
+}
+
 /** Full (not metadata-only) read of a thread's last message — this is the actual forwarded reply text. */
 function getThreadLastMessageFull_(accessToken, threadId) {
   var thread = gmailApiGet_(accessToken, '/threads/' + threadId + '?format=full');
@@ -156,12 +182,19 @@ function getThreadLastMessageFull_(accessToken, threadId) {
   var last = messages[messages.length - 1];
   var headers = {};
   (last.payload && last.payload.headers || []).forEach(function (h) { headers[h.name] = h.value; });
+  // Real bug (L-13): extractPlainTextBody_ only walks text/plain parts — an
+  // HTML-only reply (no text/plain alternative at all, common from webmail
+  // clients) came back as '', so the classifier prompt got an empty reply
+  // body and had nothing real to judge. Fall back to a tag-stripped
+  // text/html part when no text/plain part exists.
+  var bodyText = extractPlainTextBody_(last.payload) || extractHtmlBodyAsText_(last.payload);
   return {
     threadId: threadId,
+    messageId: last.id, // dedupe key — see loadLoggedMessageIds_ for why this must not be the thread ID
     date: new Date(Number(last.internalDate)),
     fromRaw: headers['From'] || '(unknown sender)',
     subject: headers['Subject'] || '(no subject)',
-    bodyText: extractPlainTextBody_(last.payload).slice(0, 4000) // plenty for a short reply; caps a pathological quote-chain.
+    bodyText: bodyText.slice(0, 4000) // plenty for a short reply; caps a pathological quote-chain.
   };
 }
 
@@ -170,7 +203,7 @@ function getThreadLastMessageFull_(accessToken, threadId) {
 // ---------------------------------------------------------------------------
 
 var REPLY_TRACKER_HEADERS = [
-  'Date', 'Thread ID', 'From', 'Subject', 'Sentiment', 'Reasoning', 'Lead Email'
+  'Date', 'Thread ID', 'From', 'Subject', 'Sentiment', 'Reasoning', 'Lead Email', 'Message ID'
 ];
 
 function getOrCreateReplyTrackerSheet_() {
@@ -186,11 +219,22 @@ function getOrCreateReplyTrackerSheet_() {
   return sheet;
 }
 
-function loadLoggedThreadIds_(sheet) {
+/**
+ * Dedupes by MESSAGE id, not thread id (real bug H-05). Gmail threads
+ * accumulate messages — dedupe-by-thread meant a lead's second, third, etc.
+ * reply on the SAME thread was silently treated as "already logged" the
+ * moment the first reply in that thread got classified, freezing that lead's
+ * sentiment at whatever their very first reply was and never re-classifying
+ * a later reply even if it flatly contradicted it (also breaking
+ * computeReplyStats_'s flip-rate math, which depends on a lead's later
+ * replies actually landing as their own rows).
+ */
+function loadLoggedMessageIds_(sheet) {
   var ids = {};
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return ids;
-  sheet.getRange(2, 2, lastRow - 1, 1).getValues().forEach(function (row) {
+  var col = REPLY_TRACKER_HEADERS.indexOf('Message ID') + 1;
+  sheet.getRange(2, col, lastRow - 1, 1).getValues().forEach(function (row) {
     if (row[0]) ids[row[0]] = true;
   });
   return ids;
@@ -205,16 +249,23 @@ function previewReplyClassification() {
   RUN_TAG = 'previewReplyClassification';
   var token = getGmailAccessTokenForUser_(REPLY_TRACKER_CONFIG.IMPERSONATE_EMAIL);
   var sheet = getOrCreateReplyTrackerSheet_();
-  var logged = loadLoggedThreadIds_(sheet);
+  var logged = loadLoggedMessageIds_(sheet);
   var threadIds = listReplyForwardThreadIds_(token);
-  var newCount = 0;
+  var newCount = 0, failed = 0;
   threadIds.forEach(function (id) {
-    if (logged[id]) return;
-    newCount++;
+    // Dedupe is by message id (see loadLoggedMessageIds_), so a full fetch
+    // per thread is needed even in preview mode to get an accurate count —
+    // still calls no model and writes nothing.
+    try {
+      var msg = getThreadLastMessageFull_(token, id);
+      if (msg && !logged[msg.messageId]) newCount++;
+    } catch (e) {
+      failed++;
+    }
   });
   log_('previewReplyClassification — ' + threadIds.length + ' thread(s) found in the last ' +
-    REPLY_TRACKER_CONFIG.SEARCH_WINDOW_DAYS + ' day(s), ' + newCount + ' not yet logged. ' +
-    'No model called, nothing written.');
+    REPLY_TRACKER_CONFIG.SEARCH_WINDOW_DAYS + ' day(s), ' + newCount + ' not yet logged' +
+    (failed ? ' (' + failed + ' thread(s) failed to fetch)' : '') + '. No model called, nothing written.');
 }
 
 function classifyNewReplies() {
@@ -226,18 +277,18 @@ function classifyNewReplies() {
 
   var token = getGmailAccessTokenForUser_(REPLY_TRACKER_CONFIG.IMPERSONATE_EMAIL);
   var sheet = getOrCreateReplyTrackerSheet_();
-  var logged = loadLoggedThreadIds_(sheet);
+  var logged = loadLoggedMessageIds_(sheet);
   var threadIds = listReplyForwardThreadIds_(token);
 
   var classified = 0, skippedExisting = 0, failed = 0;
   threadIds.forEach(function (id) {
-    if (logged[id]) { skippedExisting++; return; }
     try {
       var msg = getThreadLastMessageFull_(token, id);
       if (!msg) { failed++; return; }
+      if (logged[msg.messageId]) { skippedExisting++; return; } // dedupe by message, not thread — see loadLoggedMessageIds_
       var leadEmail = extractEmailAddress_(msg.fromRaw);
       var result = classifyReply_(msg.fromRaw, msg.subject, msg.bodyText);
-      sheet.appendRow([msg.date, id, msg.fromRaw, msg.subject, result.sentiment, result.reasoning, leadEmail]);
+      sheet.appendRow([msg.date, id, msg.fromRaw, msg.subject, result.sentiment, result.reasoning, leadEmail, msg.messageId]);
       log_('  Classified "' + msg.subject + '": ' + result.sentiment + (result._parseFailed ? ' [PARSE FAILED]' : ''));
       classified++;
       Utilities.sleep(300);
@@ -301,11 +352,25 @@ function computeReplyStats_(rows, start, end) {
     byLead[r.leadEmail] = byLead[r.leadEmail] || [];
     byLead[r.leadEmail].push(r);
   });
+  // Sort each lead's rows chronologically — appendRow order follows Gmail's
+  // thread-list/classification order, not necessarily reply date order, so
+  // byLead[email][0] was not reliably the lead's EARLIEST reply (real bug:
+  // "flip rate" compared a negative-in-range reply against whichever row
+  // happened to be first in the sheet for that lead, not against that
+  // specific negative reply's own date).
+  Object.keys(byLead).forEach(function (email) {
+    byLead[email].sort(function (a, b) { return a.date - b.date; });
+  });
   var negativeLeadsInRange = {};
   inRange.forEach(function (r) { if (r.sentiment === 'negative' && r.leadEmail) negativeLeadsInRange[r.leadEmail] = true; });
   var flipped = 0;
   Object.keys(negativeLeadsInRange).forEach(function (email) {
-    var hasLaterPositive = byLead[email].some(function (r) { return r.sentiment === 'positive' && r.date > byLead[email][0].date; });
+    // The negative reply actually in range for this lead, not just "the
+    // first row ever on file" — a lead can have gone negative, positive,
+    // negative again; only a positive AFTER the in-range negative counts.
+    var negativeInRangeDate = inRange.filter(function (r) { return r.leadEmail === email && r.sentiment === 'negative'; })
+      .reduce(function (earliest, r) { return (!earliest || r.date < earliest) ? r.date : earliest; }, null);
+    var hasLaterPositive = byLead[email].some(function (r) { return r.sentiment === 'positive' && r.date > negativeInRangeDate; });
     if (hasLaterPositive) flipped++;
   });
   var negativeLeadCount = Object.keys(negativeLeadsInRange).length;
@@ -322,7 +387,7 @@ function loadAllLoggedReplies_(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
   return sheet.getRange(2, 1, lastRow - 1, REPLY_TRACKER_HEADERS.length).getValues().map(function (row) {
-    return { date: row[0], threadId: row[1], fromRaw: row[2], subject: row[3], sentiment: row[4], reasoning: row[5], leadEmail: row[6] };
+    return { date: row[0], threadId: row[1], fromRaw: row[2], subject: row[3], sentiment: row[4], reasoning: row[5], leadEmail: row[6], messageId: row[7] };
   });
 }
 
@@ -357,9 +422,12 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
     '',
     line('Today', day),
     '',
-    line('Rolling 7-day average', week),
+    // "average" was mislabeling a raw rolling TOTAL (stats.count is a sum
+    // over the window, never divided by days) — "total" is what's actually
+    // being reported.
+    line('Rolling 7-day total', week),
     '',
-    line('Rolling 30-day average', month),
+    line('Rolling 30-day total', month),
     '',
     bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
   ].join('\n');
@@ -379,7 +447,8 @@ function sendReplyMetricsReport_() {
   var sheet = getOrCreateReplyTrackerSheet_();
   var rows = loadAllLoggedReplies_(sheet);
   var body = buildReplyMetricsReportBody_(rows, new Date(), CONFIG.BUSINESS_TIMEZONE);
-  guardedSend_(CONFIG.KRIS_EMAIL, 'Daily reply tracker', body, { cc: CONFIG.TOMAS_EMAIL, name: 'Reply Tracker Bot' }, 2);
+  var sent = guardedSend_(CONFIG.KRIS_EMAIL, 'Daily reply tracker', body, { cc: CONFIG.TOMAS_EMAIL, name: 'Reply Tracker Bot' }, 2);
+  if (!sent) { log_('SEND FAILED/SKIPPED (quota-short or invalid config) — daily reply tracker report not delivered.'); return; }
   log_('Sent daily reply tracker report.');
 }
 

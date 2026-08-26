@@ -28,7 +28,8 @@ const GAS_FILES = [
   'Phase4_InboxSLA.gs',
   'Phase5_WeeklyScorecard.gs',
   'Phase6_TrainingCallReview.gs',
-  'Phase7_DailySelfPractice.gs'
+  'Phase7_DailySelfPractice.gs',
+  'Phase8_ReplyTracker.gs'
 ];
 
 function stubApi(name) {
@@ -55,6 +56,7 @@ function loadGasProject(repoRoot) {
     DriveApp: stubApi('DriveApp'),
     CalendarApp: stubApi('CalendarApp'),
     MailApp: stubApi('MailApp'),
+    GmailApp: stubApi('GmailApp'),
     PropertiesService: stubApi('PropertiesService'),
     LockService: stubApi('LockService'),
     ScriptApp: stubApi('ScriptApp'),

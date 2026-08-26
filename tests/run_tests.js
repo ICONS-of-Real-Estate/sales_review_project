@@ -1598,3 +1598,62 @@ test('computeRepWeeklyStats_ matches Rep case-insensitively (real bug: a hand-ty
   const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
   assert.equal(stats.weekCalls.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8: Reply Tracker
+// ---------------------------------------------------------------------------
+
+test('extractHtmlBodyAsText_ falls back to a tag-stripped text/html part when there is no text/plain part (real bug L-13: an HTML-only reply came back as "" from extractPlainTextBody_, so the classifier got no reply text to judge)', () => {
+  const originalUtilities = gas.Utilities;
+  gas.Utilities = {
+    base64DecodeWebSafe: (s) => Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
+    newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') })
+  };
+  try {
+    const html = '<html><body><style>.x{color:red}</style><p>Sure, <b>tell me more</b>!</p></body></html>';
+    const payload = {
+      parts: [
+        { mimeType: 'text/html', body: { data: Buffer.from(html).toString('base64').replace(/\+/g, '-').replace(/\//g, '_') } }
+      ]
+    };
+    const text = gas.extractHtmlBodyAsText_(payload);
+    assert.match(text, /Sure, tell me more/);
+    assert.ok(text.indexOf('color:red') === -1, 'stray <style> block contents must not leak into the extracted text');
+  } finally {
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('computeReplyStats_ flip-rate compares against the negative reply\'s own date, not just whichever row happens to be first in the sheet for that lead (real bug: rows are appended in classification/thread-list order, not chronological order)', () => {
+  // Sheet append order (NOT chronological): a later positive reply got
+  // classified and appended before an earlier negative one for the same lead.
+  const rows = [
+    { date: new Date('2026-08-20T00:00:00Z'), leadEmail: 'lead@example.com', sentiment: 'positive' },
+    { date: new Date('2026-08-10T00:00:00Z'), leadEmail: 'lead@example.com', sentiment: 'negative' }
+  ];
+  const stats = gas.computeReplyStats_(rows, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-31T00:00:00Z'));
+  assert.equal(stats.pctNegativeTurnedPositive, 1, 'the Aug 20 positive comes after the Aug 10 negative, so this lead should count as flipped');
+});
+
+test('computeReplyStats_ does not count a positive reply that came BEFORE the in-range negative reply as a "flip"', () => {
+  const rows = [
+    { date: new Date('2026-08-01T00:00:00Z'), leadEmail: 'lead@example.com', sentiment: 'positive' },
+    { date: new Date('2026-08-10T00:00:00Z'), leadEmail: 'lead@example.com', sentiment: 'negative' }
+  ];
+  const stats = gas.computeReplyStats_(rows, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-31T00:00:00Z'));
+  assert.equal(stats.pctNegativeTurnedPositive, 0, 'the only positive reply predates the negative one, so this is not a flip');
+});
+
+test('loadLoggedMessageIds_ dedupes by the Message ID column, not Thread ID (real bug H-05: dedupe-by-thread froze a lead\'s sentiment at their first reply forever, since Gmail threads accumulate messages under the same thread id)', () => {
+  const rows = [
+    ['2026-08-10', 'thread-1', 'lead@example.com', 'Re: intro', 'negative', 'no thanks', 'lead@example.com', 'msg-1'],
+    ['2026-08-20', 'thread-1', 'lead@example.com', 'Re: intro', 'positive', 'actually interested', 'lead@example.com', 'msg-2']
+  ];
+  const sheet = {
+    getLastRow: () => rows.length + 1,
+    getRange: (row, col, numRows, numCols) => ({ getValues: () => rows.map((r) => [r[col - 1]]) })
+  };
+  const logged = gas.loadLoggedMessageIds_(sheet);
+  assert.deepEqual(Object.keys(logged).sort(), ['msg-1', 'msg-2'],
+    'both messages on the same thread must be tracked as separately-logged, not collapsed into one thread-id entry');
+});
