@@ -1766,6 +1766,37 @@ test('buildGhlStageLookup_ builds a stageId -> {pipelineName, stageName, disposi
   assert.deepEqual(Object.assign({}, lookup['stage-3']), { pipelineName: 'ICONS Podcast', stageName: 'No Show', disposition: 'No-show' });
 });
 
+test('contactNameLooksLikeQuery_ rejects the real "Desiree Doggett" noise (28/08/2026 live run: GHL returned 5 contacts with zero relation to the queried name)', () => {
+  const noise = [
+    { name: 'justin stamper' },
+    { name: 'avery carl' },
+    { name: 'carlos beruff' },
+    { name: 'patrick neal' },
+    { name: 'bob turner' }
+  ];
+  noise.forEach((c) => {
+    assert.equal(gas.contactNameLooksLikeQuery_(c, 'Desiree Doggett'), false, c.name + ' shares no token with Desiree Doggett');
+  });
+});
+
+test('contactNameLooksLikeQuery_ accepts a real match by shared name token, first/last order or partial overlap', () => {
+  assert.equal(gas.contactNameLooksLikeQuery_({ name: 'Anthony Camperi' }, 'Anthony Camperi'), true);
+  assert.equal(gas.contactNameLooksLikeQuery_({ firstName: 'Roger', lastName: 'Hance' }, 'Roger Hance'), true);
+  // "Danny Rodriguez - 2nd" (a real cleaned Prospect Name) still matches the plain contact name.
+  assert.equal(gas.contactNameLooksLikeQuery_({ name: 'Danny Rodriguez' }, 'Danny Rodriguez - 2nd'), true);
+});
+
+test('contactNameLooksLikeQuery_ does not let a short token like "2nd" -> "nd" count as a match on its own', () => {
+  // "nd" is 2 letters; the >= 3 length floor exists specifically so a
+  // coincidental short-token collision can't manufacture a false match.
+  assert.equal(gas.contactNameLooksLikeQuery_({ name: 'Andy Nixon' }, 'Danny Rodriguez - 2nd'), false);
+});
+
+test('contactNameLooksLikeQuery_ returns false, not throws, on missing/blank name fields', () => {
+  assert.equal(gas.contactNameLooksLikeQuery_({}, 'Desiree Doggett'), false);
+  assert.equal(gas.contactNameLooksLikeQuery_({ name: 'Desiree Doggett' }, ''), false);
+});
+
 function fakeSalesCallLogSheet(dataRows) {
   const headerRow = gas.SALES_CALL_LOG_HEADERS.slice();
   return {

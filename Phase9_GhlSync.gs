@@ -218,6 +218,39 @@ function ghlSearchContactByName_(locationId, name) {
 }
 
 /**
+ * Splits a name into lowercase alpha tokens of length >= 2 ("Danny
+ * Rodriguez - 2nd" -> ['danny','rodriguez','nd']), for comparing a Sales
+ * Call Log Prospect Name against a GHL contact's name field.
+ */
+function normalizeNameTokens_(raw) {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(function (t) { return t.length >= 2; });
+}
+
+/**
+ * True only if the contact's name actually shares a real name token (>= 3
+ * letters, so short filler like "nd" from "2nd" can't count) with the
+ * queried name. GHL's /contacts query param is confirmed (28/08/2026,
+ * "Desiree Doggett") to sometimes return contacts with NO relation to the
+ * query at all — 5 completely unrelated people, not even a fuzzy spelling
+ * match — rather than an empty list. Without this check, previewGhlMatching_
+ * would either misreport that noise as "ambiguous" (as happened) or, worse,
+ * accept a single unrelated result as a "confident" match.
+ */
+function contactNameLooksLikeQuery_(contact, queryName) {
+  var queryTokens = normalizeNameTokens_(queryName);
+  var contactName = contact.name || ((contact.firstName || '') + ' ' + (contact.lastName || ''));
+  var contactTokens = normalizeNameTokens_(contactName);
+  if (!queryTokens.length || !contactTokens.length) return false;
+  return queryTokens.some(function (qt) {
+    return qt.length >= 3 && contactTokens.indexOf(qt) !== -1;
+  });
+}
+
+/**
  * Opportunities belonging to one already-resolved contact. Same
  * best-effort/self-diagnosing contract as ghlSearchContactByName_ —
  * confirmed live (28/08/2026) that /opportunities/search wants snake_case
@@ -327,9 +360,24 @@ function previewGhlMatching_(perRep) {
       noMatch++;
       return;
     }
-    if (search.contacts.length > 1) {
-      log_('   AMBIGUOUS — ' + search.contacts.length + ' contacts matched, not guessing:');
-      search.contacts.forEach(function (c) {
+
+    // GHL's query param can return contacts with no real relation to the
+    // name searched (confirmed live, 28/08/2026 — see
+    // contactNameLooksLikeQuery_'s header comment) — discard those before
+    // deciding confident vs. ambiguous, so raw noise doesn't get reported
+    // as a genuine multi-candidate match.
+    var candidates = search.contacts.filter(function (c) {
+      return contactNameLooksLikeQuery_(c, row.prospectName);
+    });
+    if (!candidates.length) {
+      log_('   No GHL contact found for this name (' + search.contacts.length +
+        ' raw result(s) returned but none resembled the queried name).');
+      noMatch++;
+      return;
+    }
+    if (candidates.length > 1) {
+      log_('   AMBIGUOUS — ' + candidates.length + ' name-plausible contact(s) matched, not guessing:');
+      candidates.forEach(function (c) {
         log_('     - ' + (c.name || (c.firstName + ' ' + c.lastName)) + '  id=' + c.id +
           '  email=' + (c.email || '(none)') + '  phone=' + (c.phone || '(none)'));
       });
@@ -337,7 +385,7 @@ function previewGhlMatching_(perRep) {
       return;
     }
 
-    var contact = search.contacts[0];
+    var contact = candidates[0];
     log_('   Matched contact id=' + contact.id + '  email=' + (contact.email || '(none)') +
       '  phone=' + (contact.phone || '(none)'));
     oneMatch++;
