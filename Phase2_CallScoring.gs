@@ -1340,6 +1340,79 @@ function repairCallDates() {
   log_('repairCallDates() done — corrected ' + fixes.length + ' row(s).');
 }
 
+// ---------------------------------------------------------------------------
+// ONE-TIME data repair (28/08/2026): same shape as the Call Date repair
+// above, for the same root cause — every Sean/Joana/Tomás row already
+// written has whatever filename cruft cleanProspectNameForSheet_ now
+// strips going forward (a leading "1/21 " date token, a trailing ".mp4"
+// extension, a trailing "Sales Call"/"QC & SC" descriptor), since the
+// scorers only ever stripped the "— Transcript" suffix before this fix.
+// Confirmed live via a GHL contact-matching preview (Phase9_GhlSync.gs):
+// every one of 12 sampled rows with cruft like this failed to match a real
+// GHL contact by name; every clean Bens name matched. Bens is unaffected
+// and intentionally excluded (his name comes from parseLegacyFilename_,
+// never touched here) — same scoping as CALL_DATE_REPAIR_FOLDERS_ above.
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-derives the correct Prospect Name for every in-scope row using
+ * cleanProspectNameForSheet_, and returns only the ones that actually
+ * change. Scoped to fallback_heuristic rows for Sean/Joana/Tomás — same
+ * rep list as CALL_DATE_REPAIR_FOLDERS_, reused here as the "is this rep
+ * in scope" check rather than duplicating the rep list a third time.
+ */
+function computeProspectNameFixes_(sheet) {
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var fixes = [];
+
+  values.forEach(function (row, i) {
+    var rep = row[col['Rep'] - 1];
+    if (!CALL_DATE_REPAIR_FOLDERS_[rep]) return; // Bens, or an unrecognized rep -- not in scope
+    if (row[col['Match Method'] - 1] !== 'fallback_heuristic') return;
+
+    var storedName = row[col['Prospect Name'] - 1];
+    var cleanedName = cleanProspectNameForSheet_(storedName);
+    if (cleanedName === storedName || !cleanedName) return; // already clean, or cleaning would empty it out -- leave alone either way
+
+    fixes.push({ rowIndex: i + 2, rep: rep, oldName: storedName, newName: cleanedName });
+  });
+
+  return fixes;
+}
+
+/** Run this FIRST. Logs every Prospect Name correction it would make — writes nothing. */
+function previewProspectNameRepair() {
+  RUN_TAG = 'previewProspectNameRepair';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var fixes = computeProspectNameFixes_(sheet);
+  if (!fixes.length) { log_('No Prospect Name corrections found.'); return; }
+  log_('Found ' + fixes.length + ' row(s) needing a Prospect Name correction:');
+  fixes.forEach(function (f) {
+    log_('  Row ' + f.rowIndex + ' (' + f.rep + '): "' + f.oldName + '" -> "' + f.newName + '"');
+  });
+}
+
+/** Run previewProspectNameRepair() first. Actually writes every correction it found. */
+function repairProspectNames() {
+  RUN_TAG = 'repairProspectNames';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var col = getValidatedColumnMap_(sheet);
+  var fixes = computeProspectNameFixes_(sheet);
+  if (!fixes.length) { log_('No Prospect Name corrections found — nothing to do.'); return; }
+  fixes.forEach(function (f) {
+    sheet.getRange(f.rowIndex, col['Prospect Name']).setValue(f.newName);
+    log_('  Row ' + f.rowIndex + ' (' + f.rep + '): "' + f.oldName + '" -> "' + f.newName + '"');
+  });
+  log_('repairProspectNames() done — corrected ' + fixes.length + ' row(s).');
+}
+
 /**
  * Same wrapper for Joana, against the shared rubric (she is not on the
  * stricter Sean variant — same funnel/objection shape as Bens). Safely a
@@ -1778,7 +1851,13 @@ function previewSeanTranscripts() {
       // whether a file is "new" or "already scored", in either direction.
       var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
       var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-      var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Sean');
+      // normalize_(cleanProspectNameForSheet_(...)), not the raw prospectName:
+      // the sheet's own Prospect Name column holds the cleaned value (see
+      // cleanProspectNameForSheet_'s appendRow use below / the one-time
+      // repairProspectNames() repair) — keying off the uncleaned name here
+      // would silently stop matching existing[] after that repair runs,
+      // re-scoring and duplicating every already-repaired row.
+      var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Sean');
       n++;
       log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
         (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
@@ -1893,6 +1972,62 @@ function resolveRealCallDate_(folder, prospectName, transcriptFile) {
 }
 
 /**
+ * Strips filename cruft that survives into the Prospect Name column for
+ * Sean/Joana/Tomás's ongoing scorers (scoreSeanTranscripts/
+ * scoreJoanaTranscripts/scoreTomasTranscripts below) — those only ever
+ * strip the trailing "— Transcript"/"- Transcript" suffix from the raw
+ * filename, so whatever the underlying video's own filename convention
+ * embedded rides straight into the sheet untouched. Confirmed live
+ * (28/08/2026, via a GHL contact-matching preview — Phase9_GhlSync.gs):
+ * real values already in the Sales Call Log include "1/21 Anthony
+ * Camperi", "Will Salinas SC.mp4", "LUCY QUINONES Sales Call". Beyond
+ * being ugly, this silently broke exact-name matching against GHL — every
+ * one of 12 sampled rows with cruft like this failed to match a real GHL
+ * contact, while every clean name (Bens', whose legacy path already goes
+ * through parseLegacyFilename_ above) matched.
+ *
+ * IMPORTANT: only ever apply this to the value actually WRITTEN into the
+ * "Prospect Name" column — never to the `prospectName` used earlier for
+ * resolveRealCallDate_/the dedup key in each scorer. A leading date token
+ * there is load-bearing: parseDateFromTitlePrefix_ reads it to resolve the
+ * real call date for Sean's older Qualification Calls naming convention,
+ * so stripping it before that call would silently break date resolution.
+ */
+function cleanProspectNameForSheet_(rawName) {
+  var name = String(rawName || '').trim();
+
+  // Leading "M/D" or "M/D/YY" date token ("1/21 Anthony Camperi") — a
+  // different convention than the "YYMMDD_" prefix parseLegacyFilename_
+  // already handles elsewhere, so this doesn't overlap or conflict with it.
+  name = name.replace(/^\d{1,2}\/\d{1,2}(\/\d{2,4})?\s+/, '');
+
+  // Trailing file extension surviving from the original video filename —
+  // the transcript doc is named "<video name, extension included> —
+  // Transcript" (same root cause as the identical finding in Phase7/
+  // Phase8 this session), and the bare "— Transcript" strip in each
+  // scorer never accounted for an extension sitting in front of it.
+  name = name.replace(/\.[a-z0-9]{2,5}$/i, '');
+
+  // Trailing call-type descriptor from the same source filename — grounded
+  // in this system's own Call Type vocabulary (QC / Sales Call / Discovery
+  // / Second Call — see SALES_CALL_LOG_HEADERS and PHASE2_CONFIG.TOMAS_FOLDERS'
+  // "Sales Calls"/"Second Calls" labels), not an arbitrary guess. Order
+  // matters — longer, more specific phrases first, so e.g. "QC & SC"
+  // doesn't get caught by a bare "SC" rule and leave "QC &" behind.
+  [
+    /\s+QC\s*&\s*SC$/i,
+    /\s+Second\s+Sales\s+Call$/i,
+    /\s+Second\s+Call$/i,
+    /\s+Sales\s+Call$/i,
+    /\s+Discovery\s+Call$/i,
+    /\s+QC$/i,
+    /\s+SC$/i
+  ].forEach(function (re) { name = name.replace(re, ''); });
+
+  return name.trim();
+}
+
+/**
  * Scores every unscored "<video title> — Transcript" Doc across
  * PHASE2_CONFIG.SEAN_FOLDERS against the stricter Sean rubric and appends one
  * "Sales Call Log" row per call — same appendRow shape and same
@@ -1946,7 +2081,13 @@ function scoreSeanTranscripts() {
           var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Sean');
+          // normalize_(cleanProspectNameForSheet_(...)), not the raw prospectName:
+      // the sheet's own Prospect Name column holds the cleaned value (see
+      // cleanProspectNameForSheet_'s appendRow use below / the one-time
+      // repairProspectNames() repair) — keying off the uncleaned name here
+      // would silently stop matching existing[] after that repair runs,
+      // re-scoring and duplicating every already-repaired row.
+      var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Sean');
           if (existing[key]) { skippedExisting++; continue; }
 
           var callType = label === 'Qualification Calls' ? 'QC' : 'Sales Call';
@@ -1972,7 +2113,7 @@ function scoreSeanTranscripts() {
           // below would use the analytic score instead of result.call_quality_score.
 
           sheet.appendRow([
-            prospectName,                   // Prospect Name
+            cleanProspectNameForSheet_(prospectName), // Prospect Name — cruft-stripped, see cleanProspectNameForSheet_
             '',                              // Prospect Email — fill from Sean's tracker
             '',                              // Source — fill from Sean's tracker
             callDate,                        // Call Date
@@ -2060,7 +2201,8 @@ function previewJoanaTranscripts() {
       // identical comment in previewSeanTranscripts above.
       var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
       var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-      var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Joana');
+      // See the identical comment on the Sean key above — cleaned name, not raw.
+      var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Joana');
       n++;
       log_('  [' + label + '] "' + name + '" → ' + prospectName + ' / ' + dateStr +
         (existing[key] ? '  [already has a Sales Call Log row]' : '  [new]'));
@@ -2121,7 +2263,8 @@ function scoreJoanaTranscripts() {
           var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Joana');
+          // See the identical comment on the Sean key above — cleaned name, not raw.
+      var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Joana');
           if (existing[key]) { skippedExisting++; continue; }
 
           var ctx = {
@@ -2145,7 +2288,7 @@ function scoreJoanaTranscripts() {
           // below would use the analytic score instead of result.call_quality_score.
 
           sheet.appendRow([
-            prospectName,                    // Prospect Name
+            cleanProspectNameForSheet_(prospectName), // Prospect Name — cruft-stripped, see cleanProspectNameForSheet_
             '',                               // Prospect Email — fill from Joana's tracker
             '',                               // Source — fill from Joana's tracker
             callDate,                        // Call Date
@@ -2548,7 +2691,8 @@ function scoreTomasTranscripts() {
           var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
-          var key = normalize_(prospectName) + '|' + dateStr + '|' + normalize_('Tomás');
+          // See the identical comment on the Sean key above — cleaned name, not raw.
+          var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Tomás');
           if (existing[key]) { skippedExisting++; continue; }
 
           var ctx = {
@@ -2573,7 +2717,7 @@ function scoreTomasTranscripts() {
           // below would use the analytic score instead of result.call_quality_score.
 
           sheet.appendRow([
-            prospectName,                     // Prospect Name
+            cleanProspectNameForSheet_(prospectName), // Prospect Name — cruft-stripped, see cleanProspectNameForSheet_
             '',                                // Prospect Email — fill from tracker
             '',                                // Source — fill from tracker
             callDate,                          // Call Date

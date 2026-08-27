@@ -217,10 +217,19 @@ function ghlSearchContactByName_(locationId, name) {
   return { ok: true, contacts: contacts };
 }
 
-/** Opportunities belonging to one already-resolved contact. Same best-effort/self-diagnosing contract as ghlSearchContactByName_. */
+/**
+ * Opportunities belonging to one already-resolved contact. Same
+ * best-effort/self-diagnosing contract as ghlSearchContactByName_ —
+ * confirmed live (28/08/2026) that /opportunities/search wants snake_case
+ * location_id/contact_id, NOT the camelCase locationId/contactId that
+ * /opportunities/pipelines (fetchGhlPipelines_ above) actually takes —
+ * GHL's v2 API is genuinely inconsistent about this across endpoint
+ * groups. First real run 422'd with "property locationId should not
+ * exist... location_id must be a string" — spelling it out exactly.
+ */
 function ghlListOpportunitiesForContact_(locationId, contactId) {
-  var path = '/opportunities/search?locationId=' + encodeURIComponent(locationId) +
-    '&contactId=' + encodeURIComponent(contactId);
+  var path = '/opportunities/search?location_id=' + encodeURIComponent(locationId) +
+    '&contact_id=' + encodeURIComponent(contactId);
   var res = ghlApiGet_(path);
   if (res.status !== 200) {
     return { ok: false, status: res.status, body: res.body, url: res.url, opportunities: [] };

@@ -1820,3 +1820,54 @@ test('sampleSalesCallLogRows_ skips rows with a blank Rep rather than crashing o
     gas.SpreadsheetApp = originalSpreadsheetApp;
   }
 });
+
+// ---------------------------------------------------------------------------
+// cleanProspectNameForSheet_ (Phase2_CallScoring.gs) — real values pulled
+// straight from a live GHL contact-matching preview (28/08/2026): every one
+// of these was already sitting in the Sales Call Log's Prospect Name column
+// for Sean/Joana/Tomás, and every one of them failed to match a real GHL
+// contact by name until cleaned.
+// ---------------------------------------------------------------------------
+
+test('cleanProspectNameForSheet_ strips a leading "M/D" date token (Sean\'s older Qualification Calls naming convention)', () => {
+  assert.equal(gas.cleanProspectNameForSheet_('1/21 Anthony Camperi'), 'Anthony Camperi');
+  assert.equal(gas.cleanProspectNameForSheet_('1/7 Desiree Doggett'), 'Desiree Doggett');
+  assert.equal(gas.cleanProspectNameForSheet_('1/8 Sammy Lyon'), 'Sammy Lyon');
+  assert.equal(gas.cleanProspectNameForSheet_('1/13 Meriam Hansen'), 'Meriam Hansen');
+});
+
+test('cleanProspectNameForSheet_ strips a trailing file extension left over from the original video filename (Joana\'s naming convention)', () => {
+  assert.equal(gas.cleanProspectNameForSheet_('Will Salinas SC.mp4'), 'Will Salinas');
+  assert.equal(gas.cleanProspectNameForSheet_('Marija Volkman QC & SC.mp4'), 'Marija Volkman');
+  assert.equal(gas.cleanProspectNameForSheet_('Ryan Welch SC.mp4'), 'Ryan Welch');
+  assert.equal(gas.cleanProspectNameForSheet_('Roger Hance QC & SC.mp4'), 'Roger Hance');
+});
+
+test('cleanProspectNameForSheet_ strips a trailing call-type descriptor with no file extension (Tomás\'s naming convention)', () => {
+  assert.equal(gas.cleanProspectNameForSheet_('LUCY QUINONES Sales Call'), 'LUCY QUINONES');
+  assert.equal(gas.cleanProspectNameForSheet_('Chelsea Fernandez Sales Call'), 'Chelsea Fernandez');
+  assert.equal(gas.cleanProspectNameForSheet_('Monique Lewis Sales Call'), 'Monique Lewis');
+  assert.equal(gas.cleanProspectNameForSheet_('Salisia Murray Sales Call'), 'Salisia Murray');
+});
+
+test('cleanProspectNameForSheet_ leaves an already-clean name (Bens\' parseLegacyFilename_ path) untouched', () => {
+  assert.equal(gas.cleanProspectNameForSheet_('Peg Walsh'), 'Peg Walsh');
+  assert.equal(gas.cleanProspectNameForSheet_('Nicole Freed'), 'Nicole Freed');
+  assert.equal(gas.cleanProspectNameForSheet_(''), '');
+  assert.equal(gas.cleanProspectNameForSheet_(null), '');
+});
+
+test('computeProspectNameFixes_ only touches fallback_heuristic rows for Sean/Joana/Tomás, and skips a row that\'s already clean', () => {
+  const rows = [
+    fakeSalesCallLogRow({ 'Prospect Name': '1/21 Anthony Camperi', Rep: 'Sean', 'Match Method': 'fallback_heuristic' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Peg Walsh', Rep: 'Bens', 'Match Method': 'fallback_heuristic' }), // Bens excluded regardless of match method
+    fakeSalesCallLogRow({ 'Prospect Name': 'Already Clean', Rep: 'Joana', 'Match Method': 'fallback_heuristic' }), // no fix needed
+    fakeSalesCallLogRow({ 'Prospect Name': 'Some Prospect', Rep: 'Sean', 'Match Method': 'exact_key' }) // real calendar match, not legacy -- out of scope
+  ];
+  const sheet = fakeSalesCallLogSheet(rows);
+  const fixes = gas.computeProspectNameFixes_(sheet);
+  assert.equal(fixes.length, 1);
+  assert.equal(fixes[0].oldName, '1/21 Anthony Camperi');
+  assert.equal(fixes[0].newName, 'Anthony Camperi');
+  assert.equal(fixes[0].rowIndex, 2);
+});
