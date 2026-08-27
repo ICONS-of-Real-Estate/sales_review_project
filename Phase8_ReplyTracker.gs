@@ -56,10 +56,14 @@ var REPLY_TRACKER_CONFIG = {
   SHEET_NAME: 'Reply Tracker',
   DAILY_TRIGGER_HOUR: 21, // after the day's forwards have landed, before end of day.
 
-  // TODO(Kris): confirm the real tab name(s) holding the "Booked" column
-  // (values: a rep name, or "By the Lead") so reconcileBookingOutcomes_ can
-  // compute the two booking percentages instead of stubbing them.
-  BOOKING_TRACKER_TABS: []
+  // Confirmed 27/08/2026: "Icons Podcast Recordings" (same spreadsheet as
+  // Sales Call Log/Objection Playbook/etc.) has the "Booked" column this
+  // needs — Name/Email/Source/Booked in columns A-D, Booked values "Bens" or
+  // "By the Lead", matching reconcileBookingOutcomes_'s expected shape
+  // exactly. This is Bens' Icons 100 tracker specifically — if Sean/Joana/
+  // Tomás have an equivalent tracker tab of their own, add its name here too
+  // so their leads aren't silently missing from the booking percentages.
+  BOOKING_TRACKER_TABS: ['Icons Podcast Recordings']
 };
 
 // ---------------------------------------------------------------------------
@@ -335,11 +339,17 @@ function reconcileBookingOutcomes_(leadEmails) {
 }
 
 /**
- * Tallies logged replies in [start, end) into count/positive/negative, plus
- * the "negative turned positive" rate (per lead email, not per message — a
- * lead who first replied negative then later replied positive counts once).
+ * Tallies logged replies in [start, end) into count/positive/negative, the
+ * "negative turned positive" rate (per lead email, not per message — a lead
+ * who first replied negative then later replied positive counts once), and
+ * (when bookingOutcomes is available) what fraction of the leads who
+ * replied in THIS period ultimately booked themselves vs. got booked to QC
+ * by a rep — keyed off the reply date, not the booking date, since that's
+ * the natural reading of "of the leads who replied this period, how many
+ * converted" and needs no separate design decision about how a booking
+ * date should map back to a reply window.
  */
-function computeReplyStats_(rows, start, end) {
+function computeReplyStats_(rows, start, end, bookingOutcomes) {
   var inRange = rows.filter(function (r) { return r.date >= start && r.date < end; });
   var positive = inRange.filter(function (r) { return r.sentiment === 'positive'; }).length;
   var negative = inRange.filter(function (r) { return r.sentiment === 'negative'; }).length;
@@ -375,11 +385,30 @@ function computeReplyStats_(rows, start, end) {
   });
   var negativeLeadCount = Object.keys(negativeLeadsInRange).length;
 
+  var bookingStats = null;
+  if (bookingOutcomes) {
+    var leadsInRange = {};
+    inRange.forEach(function (r) { if (r.leadEmail) leadsInRange[r.leadEmail] = true; });
+    var repliedLeadCount = Object.keys(leadsInRange).length;
+    var bookedSelf = 0, bookedByRep = 0;
+    Object.keys(leadsInRange).forEach(function (email) {
+      var outcome = bookingOutcomes[email];
+      if (outcome === 'self') bookedSelf++;
+      else if (outcome === 'rep') bookedByRep++;
+    });
+    bookingStats = {
+      repliedLeadCount: repliedLeadCount,
+      pctBookedThemselves: repliedLeadCount ? (bookedSelf / repliedLeadCount) : null,
+      pctBookedToQCByRep: repliedLeadCount ? (bookedByRep / repliedLeadCount) : null
+    };
+  }
+
   return {
     count: inRange.length,
     positive: positive,
     negative: negative,
-    pctNegativeTurnedPositive: negativeLeadCount ? (flipped / negativeLeadCount) : null
+    pctNegativeTurnedPositive: negativeLeadCount ? (flipped / negativeLeadCount) : null,
+    bookingStats: bookingStats
   };
 }
 
@@ -399,32 +428,40 @@ function computeReplyMetricsPeriods_(rows, now, tz) {
   var monthStart = new Date(dayEnd.getTime() - 30 * 24 * 3600 * 1000);
 
   var leadEmails = rows.map(function (r) { return r.leadEmail; }).filter(Boolean);
+  var bookingOutcomes = reconcileBookingOutcomes_(leadEmails);
   return {
-    day: computeReplyStats_(rows, dayStart, dayEnd),
-    week: computeReplyStats_(rows, weekStart, dayEnd),
-    month: computeReplyStats_(rows, monthStart, dayEnd),
-    bookingOutcomes: reconcileBookingOutcomes_(leadEmails)
+    day: computeReplyStats_(rows, dayStart, dayEnd, bookingOutcomes),
+    week: computeReplyStats_(rows, weekStart, dayEnd, bookingOutcomes),
+    month: computeReplyStats_(rows, monthStart, dayEnd, bookingOutcomes),
+    bookingOutcomes: bookingOutcomes
   };
+}
+
+function bookingLineText_(bookingStats) {
+  if (!bookingStats) {
+    return '  Booked themselves / booked to QC by a rep: n/a (booking tracker tab(s) not configured yet — see ' +
+      'REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS)';
+  }
+  if (!bookingStats.repliedLeadCount) {
+    return '  Booked themselves / booked to QC by a rep: n/a (no leads replied in this period)';
+  }
+  return '  Booked themselves: ' + (bookingStats.pctBookedThemselves * 100).toFixed(0) +
+    '% / booked to QC by a rep: ' + (bookingStats.pctBookedToQCByRep * 100).toFixed(0) +
+    '% (of ' + bookingStats.repliedLeadCount + ' lead(s) who replied this period)';
 }
 
 function buildReplyMetricsReportBody_(rows, now, tz) {
   var periods = computeReplyMetricsPeriods_(rows, now, tz);
-  var bookingLine = periods.bookingOutcomes
-    ? '  Booked themselves / booked to QC by a rep: not yet computed per-period — reconciliation is wired up ' +
-      'but the per-period date-matching logic still needs to be designed once Kris confirms how a booking date ' +
-      'should map back to a reply period.'
-    : '  Booked themselves / booked to QC by a rep: n/a (booking tracker tab(s) not configured yet — see ' +
-      'REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS)';
 
   function line(label, stats) {
     var pct = stats.pctNegativeTurnedPositive;
     return label + ': ' + stats.count + ' reply(ies), ' + stats.positive + ' positive, ' + stats.negative +
       ' negative' + (pct !== null ? ', ' + (pct * 100).toFixed(0) + '% of negative leads later turned positive' : '') + '\n' +
-      bookingLine;
+      bookingLineText_(stats.bookingStats);
   }
 
   return [
-    'Daily reply tracker — ' + Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
+    'Daily reply tracker — ' + Utilities.formatDate(now, tz, 'dd/MM/yy'),
     '',
     line('Today', periods.day),
     '',
@@ -444,11 +481,18 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
  * ask (27/08/2026) that this read as more than a flat wall of text. */
 function buildReplyMetricsReportHtml_(rows, now, tz) {
   var periods = computeReplyMetricsPeriods_(rows, now, tz);
-  var bookingLine = periods.bookingOutcomes
-    ? 'Booked themselves / booked to QC by a rep: not yet computed per-period — reconciliation is wired up but ' +
-      'the per-period date-matching logic still needs to be designed once Kris confirms how a booking date ' +
-      'should map back to a reply period.'
-    : 'Booked themselves / booked to QC by a rep: n/a (booking tracker tab(s) not configured yet)';
+
+  function bookingLineHtml_(bookingStats) {
+    if (!bookingStats) {
+      return 'Booked themselves / booked to QC by a rep: n/a (booking tracker tab(s) not configured yet)';
+    }
+    if (!bookingStats.repliedLeadCount) {
+      return 'Booked themselves / booked to QC by a rep: n/a (no leads replied in this period)';
+    }
+    return 'Booked <strong>' + (bookingStats.pctBookedThemselves * 100).toFixed(0) + '%</strong> themselves / ' +
+      '<strong>' + (bookingStats.pctBookedToQCByRep * 100).toFixed(0) + '%</strong> booked to QC by a rep ' +
+      '(of ' + bookingStats.repliedLeadCount + ' lead(s) who replied this period)';
+  }
 
   function block(label, stats) {
     var pct = stats.pctNegativeTurnedPositive;
@@ -459,14 +503,14 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
       '<strong style="color:#c0392b;">' + stats.negative + ' negative</strong>' +
       (pct !== null ? ', <strong>' + (pct * 100).toFixed(0) + '%</strong> of negative leads later turned positive' : '') +
       '</p>' +
-      '<p style="margin:0 0 16px 0;color:#555;font-size:13px;">' + escapeHtml_(bookingLine) + '</p>'
+      '<p style="margin:0 0 16px 0;color:#555;font-size:13px;">' + bookingLineHtml_(stats.bookingStats) + '</p>'
     );
   }
 
   return (
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
     '<p style="font-size:16px;"><strong>Sales Review — Daily Tracker</strong> — ' +
-    escapeHtml_(Utilities.formatDate(now, tz, 'yyyy-MM-dd')) + '</p>' +
+    escapeHtml_(Utilities.formatDate(now, tz, 'dd/MM/yy')) + '</p>' +
     block('Today', periods.day) +
     block('Rolling 7-day total', periods.week) +
     block('Rolling 30-day total', periods.month) +

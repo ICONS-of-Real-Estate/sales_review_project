@@ -1644,6 +1644,25 @@ test('computeReplyStats_ does not count a positive reply that came BEFORE the in
   assert.equal(stats.pctNegativeTurnedPositive, 0, 'the only positive reply predates the negative one, so this is not a flip');
 });
 
+test('computeReplyStats_ computes booking percentages against the leads who REPLIED in this period, not the booking date, when a bookingOutcomes map is supplied', () => {
+  const rows = [
+    { date: new Date('2026-08-05T00:00:00Z'), leadEmail: 'self@example.com', sentiment: 'positive' },
+    { date: new Date('2026-08-06T00:00:00Z'), leadEmail: 'rep@example.com', sentiment: 'positive' },
+    { date: new Date('2026-08-07T00:00:00Z'), leadEmail: 'unbooked@example.com', sentiment: 'negative' }
+  ];
+  const bookingOutcomes = { 'self@example.com': 'self', 'rep@example.com': 'rep' };
+  const stats = gas.computeReplyStats_(rows, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-31T00:00:00Z'), bookingOutcomes);
+  assert.equal(stats.bookingStats.repliedLeadCount, 3);
+  assert.equal(stats.bookingStats.pctBookedThemselves, 1 / 3);
+  assert.equal(stats.bookingStats.pctBookedToQCByRep, 1 / 3);
+});
+
+test('computeReplyStats_ leaves bookingStats null when no bookingOutcomes map is supplied (real bug: booking percentages must read as unwired, not silently zero)', () => {
+  const rows = [{ date: new Date('2026-08-05T00:00:00Z'), leadEmail: 'lead@example.com', sentiment: 'positive' }];
+  const stats = gas.computeReplyStats_(rows, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-31T00:00:00Z'));
+  assert.equal(stats.bookingStats, null);
+});
+
 test('loadLoggedMessageIds_ dedupes by the Message ID column, not Thread ID (real bug H-05: dedupe-by-thread froze a lead\'s sentiment at their first reply forever, since Gmail threads accumulate messages under the same thread id)', () => {
   const rows = [
     ['2026-08-10', 'thread-1', 'lead@example.com', 'Re: intro', 'negative', 'no thanks', 'lead@example.com', 'msg-1'],
