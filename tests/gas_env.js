@@ -29,7 +29,8 @@ const GAS_FILES = [
   'Phase5_WeeklyScorecard.gs',
   'Phase6_TrainingCallReview.gs',
   'Phase7_DailySelfPractice.gs',
-  'Phase8_ReplyTracker.gs'
+  'Phase8_ReplyTracker.gs',
+  'Phase9_GhlSync.gs'
 ];
 
 function stubApi(name) {

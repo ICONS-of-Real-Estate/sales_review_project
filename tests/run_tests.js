@@ -1676,3 +1676,61 @@ test('loadLoggedMessageIds_ dedupes by the Message ID column, not Thread ID (rea
   assert.deepEqual(Object.keys(logged).sort(), ['msg-1', 'msg-2'],
     'both messages on the same thread must be tracked as separately-logged, not collapsed into one thread-id entry');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 9: GoHighLevel sync. Stage names below are the REAL ones recorded in
+// GHL_PIPELINE_MAP.md's survey of the live CRM, not invented examples.
+// ---------------------------------------------------------------------------
+
+test('ghlStageToOutcomeDisposition_ reads "Not Taken" as a no-show, NOT as a completed call (the substring trap: "Sales Call Not Taken" contains "Taken")', () => {
+  // If the bare "taken" check ever runs before the "not taken" one, every
+  // no-show silently becomes a completed call — which would corrupt the
+  // exact funnel numbers this sync exists to make trustworthy.
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Sales Call Not Taken'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Qualification Call Not Taken'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Discovery Call Not Taken'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('2nd Call Not Taken'), 'No-show');
+});
+
+test('ghlStageToOutcomeDisposition_ maps every real no-show spelling in the live CRM', () => {
+  // The CRM uses "No Show", "No-Show" and "Not Taken" interchangeably
+  // across pipelines — all three mean the same thing.
+  assert.equal(gas.ghlStageToOutcomeDisposition_('No Show'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Sales Call No-Show'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Second Sales Call No-Show'), 'No-show');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Qualification Call - No Show'), 'No-show');
+});
+
+test('ghlStageToOutcomeDisposition_ maps closed stages, case-insensitively (the CRM spells them "Closed Won" and "Closed won")', () => {
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Closed Won'), 'Sold');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Closed won'), 'Sold');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Closed lost'), 'Not Sold');
+});
+
+test('ghlStageToOutcomeDisposition_ maps reschedule/callback stages to Follow-up', () => {
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Sales call - Reschedule'), 'Follow-up');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Qualification Call Reschedule'), 'Follow-up');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Need to Reschedule'), 'Follow-up');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Callback'), 'Follow-up');
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Moving Forward Later'), 'Follow-up');
+});
+
+test('ghlStageToOutcomeDisposition_ infers NOTHING from a call that merely happened or is merely booked (the outcome is decided by a later stage)', () => {
+  // "Taken"/"Recorded" mean the call occurred; whether it sold is decided
+  // downstream. Writing a disposition here would be a guess, and a wrong
+  // disposition corrupts the funnel worse than a blank one.
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Sales Call Taken'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Podcast Recorded'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Qualification Call Taken (No SC)'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Sales Call - Booked'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Dial 1'), null);
+});
+
+test('ghlStageToOutcomeDisposition_ returns null for the stages deliberately left unmapped pending Kris\'s confirmation, and for junk input', () => {
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Failed Deal Form Filled'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Pre-Interview Reject'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_('Not Qualified/Valid'), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_(''), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_(null), null);
+  assert.equal(gas.ghlStageToOutcomeDisposition_(undefined), null);
+});
