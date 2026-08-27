@@ -80,6 +80,63 @@ function ghlApiGet_(path) {
   return { status: status, json: json, body: body, url: url };
 }
 
+/**
+ * Confirms both Script Properties exist before any GHL call. Every entry
+ * point below calls this first and bails with the same clear message
+ * rather than each failing on a different obscure error.
+ */
+function ghlCheckSetup_() {
+  var locationId = getScriptSecret_(GHL_CONFIG.LOCATION_ID_PROPERTY);
+  getScriptSecret_(GHL_CONFIG.API_KEY_PROPERTY); // presence check; value used inside ghlApiGet_
+  return locationId;
+}
+
+/**
+ * Fetches every pipeline + stage from the live API. Returns null (not [])
+ * on any failure, after logging the full diagnostic — same
+ * distinguish-failure-from-empty policy as sync.py's fetch_tab, for the
+ * same reason: a caller that can't tell "API failed" from "genuinely no
+ * pipelines" would silently treat a transient outage as "nothing to sync."
+ */
+function fetchGhlPipelines_(locationId) {
+  var path = '/opportunities/pipelines?locationId=' + encodeURIComponent(locationId);
+  var res = ghlApiGet_(path);
+
+  if (res.status !== 200) {
+    log_('GHL API returned HTTP ' + res.status + ' for ' + res.url);
+    log_('Response body (first 1000 chars): ' + String(res.body).slice(0, 1000));
+    log_('Interpretation guide:');
+    log_('  401/403 -> the token is wrong, expired, or lacks the Opportunities read scope.');
+    log_('  404     -> the endpoint path or API_BASE in GHL_CONFIG is wrong for this account.');
+    log_('  422     -> locationId is malformed or does not match the token\'s sub-account.');
+    log_('Paste this log back to Claude and the config will be corrected.');
+    return null;
+  }
+
+  var pipelines = (res.json && (res.json.pipelines || res.json.data)) || [];
+  if (!pipelines.length) {
+    log_('Connected OK (HTTP 200) but no pipelines came back. Raw body (first 1000 chars): ' +
+      String(res.body).slice(0, 1000));
+    return null;
+  }
+  return pipelines;
+}
+
+/** stageId -> {pipelineName, stageName, disposition}, built fresh from the live API every call — never hardcoded, so it can't drift from a renamed stage. */
+function buildGhlStageLookup_(pipelines) {
+  var lookup = {};
+  pipelines.forEach(function (p) {
+    (p.stages || []).forEach(function (s) {
+      lookup[s.id] = {
+        pipelineName: p.name,
+        stageName: s.name,
+        disposition: ghlStageToOutcomeDisposition_(s.name)
+      };
+    });
+  });
+  return lookup;
+}
+
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function previewGhlConnection() {
   return previewGhlConnection_();
@@ -98,8 +155,7 @@ function previewGhlConnection_() {
 
   var locationId;
   try {
-    locationId = getScriptSecret_(GHL_CONFIG.LOCATION_ID_PROPERTY);
-    getScriptSecret_(GHL_CONFIG.API_KEY_PROPERTY); // presence check; value used inside ghlApiGet_
+    locationId = ghlCheckSetup_();
   } catch (e) {
     log_('SETUP INCOMPLETE: ' + e);
     log_('Set both ' + GHL_CONFIG.API_KEY_PROPERTY + ' and ' + GHL_CONFIG.LOCATION_ID_PROPERTY +
@@ -107,26 +163,8 @@ function previewGhlConnection_() {
     return;
   }
 
-  var path = '/opportunities/pipelines?locationId=' + encodeURIComponent(locationId);
-  var res = ghlApiGet_(path);
-
-  if (res.status !== 200) {
-    log_('GHL API returned HTTP ' + res.status + ' for ' + res.url);
-    log_('Response body (first 1000 chars): ' + String(res.body).slice(0, 1000));
-    log_('Interpretation guide:');
-    log_('  401/403 -> the token is wrong, expired, or lacks the Opportunities read scope.');
-    log_('  404     -> the endpoint path or API_BASE in GHL_CONFIG is wrong for this account.');
-    log_('  422     -> locationId is malformed or does not match the token\'s sub-account.');
-    log_('Paste this log back to Claude and the config will be corrected.');
-    return;
-  }
-
-  var pipelines = (res.json && (res.json.pipelines || res.json.data)) || [];
-  if (!pipelines.length) {
-    log_('Connected OK (HTTP 200) but no pipelines came back. Raw body (first 1000 chars): ' +
-      String(res.body).slice(0, 1000));
-    return;
-  }
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
 
   log_('Connected OK — ' + pipelines.length + ' pipeline(s) found.');
   log_('(GHL_PIPELINE_MAP.md recorded 6 pipelines from a 27/08/2026 screenshot survey. ' +
@@ -147,6 +185,180 @@ function previewGhlConnection_() {
   log_('');
   log_('Next: paste this log back to Claude. The stage IDs above are what any ' +
     'stage -> Outcome Disposition sync gets built against.');
+}
+
+// ---------------------------------------------------------------------------
+// Matching: does a Sales Call Log row's Prospect Name resolve to a real GHL
+// contact, and if so, what pipeline/stage are they sitting in right now?
+// GHL_PIPELINE_MAP.md §"What this implies for the integration" flags this
+// as the real open question — every one of our 439 scored rows has a blank
+// Prospect Email (the legacy backfill wrote ''), so there's no stable join
+// key yet. This resolves a contact by NAME instead, which also recovers a
+// real email/phone as a side effect — the exact backfill step that doc
+// calls out as step 1, ahead of anything else.
+// ---------------------------------------------------------------------------
+
+/**
+ * Searches GHL contacts by free-text name. Endpoint/param names here are a
+ * best-effort guess (GHL's own docs are unreachable from this sandbox —
+ * see the file header) — same self-diagnosing contract as ghlApiGet_: a
+ * non-200 or an unrecognized response shape logs the raw body instead of
+ * silently returning nothing, so a wrong param name is a one-line fix, not
+ * a mystery.
+ */
+function ghlSearchContactByName_(locationId, name) {
+  var path = '/contacts/?locationId=' + encodeURIComponent(locationId) +
+    '&query=' + encodeURIComponent(name) + '&limit=5';
+  var res = ghlApiGet_(path);
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, body: res.body, url: res.url, contacts: [] };
+  }
+  var contacts = (res.json && (res.json.contacts || res.json.data)) || [];
+  return { ok: true, contacts: contacts };
+}
+
+/** Opportunities belonging to one already-resolved contact. Same best-effort/self-diagnosing contract as ghlSearchContactByName_. */
+function ghlListOpportunitiesForContact_(locationId, contactId) {
+  var path = '/opportunities/search?locationId=' + encodeURIComponent(locationId) +
+    '&contactId=' + encodeURIComponent(contactId);
+  var res = ghlApiGet_(path);
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, body: res.body, url: res.url, opportunities: [] };
+  }
+  var opps = (res.json && (res.json.opportunities || res.json.data)) || [];
+  return { ok: true, opportunities: opps };
+}
+
+/**
+ * Up to `perRep` of each CONFIG.REPS rep's most recent Sales Call Log
+ * rows, oldest-name-collision risk spread across reps rather than just
+ * taking the sheet's first N rows (which could all land on one rep
+ * depending on sheet order and tell us nothing about the others).
+ */
+function sampleSalesCallLogRows_(perRep) {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return []; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var perRepCount = {};
+  var sample = [];
+  rows.forEach(function (row) {
+    var rep = String(row[col['Rep'] - 1] || '').trim();
+    if (!rep) return;
+    perRepCount[rep] = perRepCount[rep] || 0;
+    if (perRepCount[rep] >= perRep) return;
+    perRepCount[rep]++;
+    sample.push({
+      prospectName: row[col['Prospect Name'] - 1],
+      rep: rep,
+      callDate: row[col['Call Date'] - 1],
+      outcomeDisposition: row[col['Outcome Disposition'] - 1]
+    });
+  });
+  return sample;
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewGhlMatching() {
+  return previewGhlMatching_(4); // 4 per rep -- ~16 rows across Bens/Joana/Sean/Tomás, enough to judge match quality without a long run
+}
+
+/**
+ * Read-only. For a sample of real Sales Call Log rows, searches GHL by
+ * Prospect Name and reports: no match / one confident match / ambiguous
+ * (multiple candidates — logged, not guessed at) — and for a resolved
+ * contact, which pipeline+stage they're currently sitting in and what
+ * Outcome Disposition that would imply. Writes nothing to the sheet.
+ *
+ * The tally at the end is the actual answer to "is name-matching viable at
+ * all" — that's the open question this preview exists to answer before any
+ * real sync gets built.
+ */
+function previewGhlMatching_(perRep) {
+  RUN_TAG = 'previewGhlMatching_';
+  log_('PREVIEW MODE — read-only GHL matching probe. Nothing will be written or sent.');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
+  var stageLookup = buildGhlStageLookup_(pipelines);
+
+  var sample = sampleSalesCallLogRows_(perRep);
+  if (!sample.length) { log_('No Sales Call Log rows found to sample.'); return; }
+  log_('Sampling ' + sample.length + ' row(s) (' + perRep + ' per rep found).');
+
+  var noMatch = 0, oneMatch = 0, ambiguous = 0, searchFailed = 0;
+
+  sample.forEach(function (row, i) {
+    log_('');
+    log_((i + 1) + '/' + sample.length + '  "' + row.prospectName + '" (' + row.rep + ', ' +
+      row.callDate + ') — Outcome Disposition on file: ' +
+      (row.outcomeDisposition || '(blank)'));
+
+    var search = ghlSearchContactByName_(locationId, row.prospectName);
+    if (!search.ok) {
+      log_('   SEARCH FAILED: HTTP ' + search.status + '. Body (first 500 chars): ' +
+        String(search.body).slice(0, 500));
+      searchFailed++;
+      return;
+    }
+    if (!search.contacts.length) {
+      log_('   No GHL contact found for this name.');
+      noMatch++;
+      return;
+    }
+    if (search.contacts.length > 1) {
+      log_('   AMBIGUOUS — ' + search.contacts.length + ' contacts matched, not guessing:');
+      search.contacts.forEach(function (c) {
+        log_('     - ' + (c.name || (c.firstName + ' ' + c.lastName)) + '  id=' + c.id +
+          '  email=' + (c.email || '(none)') + '  phone=' + (c.phone || '(none)'));
+      });
+      ambiguous++;
+      return;
+    }
+
+    var contact = search.contacts[0];
+    log_('   Matched contact id=' + contact.id + '  email=' + (contact.email || '(none)') +
+      '  phone=' + (contact.phone || '(none)'));
+    oneMatch++;
+
+    var oppsRes = ghlListOpportunitiesForContact_(locationId, contact.id);
+    if (!oppsRes.ok) {
+      log_('   Opportunity lookup FAILED: HTTP ' + oppsRes.status + '. Body (first 500 chars): ' +
+        String(oppsRes.body).slice(0, 500));
+      return;
+    }
+    if (!oppsRes.opportunities.length) {
+      log_('   Contact found, but no opportunities on file for them.');
+      return;
+    }
+    oppsRes.opportunities.forEach(function (o) {
+      var stageId = o.pipelineStageId || o.stageId;
+      var info = stageLookup[stageId];
+      log_('   Opportunity "' + (o.name || '(unnamed)') + '" — ' +
+        (info ? ('"' + info.pipelineName + '" / "' + info.stageName + '" -> Outcome Disposition: ' +
+          (info.disposition || '(none inferred)')) : 'unrecognized stage id ' + stageId + ' (raw: ' + JSON.stringify(o).slice(0, 300) + ')'));
+    });
+
+    Utilities.sleep(200); // polite pacing between rows, not a rate-limit workaround for a single call
+  });
+
+  log_('');
+  log_('Tally: ' + oneMatch + ' confident match(es), ' + ambiguous + ' ambiguous, ' +
+    noMatch + ' no match, ' + searchFailed + ' search failure(s), of ' + sample.length + ' sampled.');
+  log_('Paste this whole log back to Claude — it decides whether name-matching is viable ' +
+    'as the join key, or whether GHL_PIPELINE_MAP.md\'s email-backfill-first plan needs a different approach.');
 }
 
 /**

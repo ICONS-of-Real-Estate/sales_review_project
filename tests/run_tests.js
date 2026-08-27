@@ -1734,3 +1734,89 @@ test('ghlStageToOutcomeDisposition_ returns null for the stages deliberately lef
   assert.equal(gas.ghlStageToOutcomeDisposition_(null), null);
   assert.equal(gas.ghlStageToOutcomeDisposition_(undefined), null);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 9: GHL sync
+// ---------------------------------------------------------------------------
+
+test('buildGhlStageLookup_ builds a stageId -> {pipelineName, stageName, disposition} map straight from the live pipelines response, never hardcoded', () => {
+  const pipelines = [
+    {
+      name: 'Cold Calling',
+      stages: [
+        { id: 'stage-1', name: 'Qualification Call Not Taken' },
+        { id: 'stage-2', name: 'Closed Won' }
+      ]
+    },
+    {
+      name: 'ICONS Podcast',
+      stages: [
+        { id: 'stage-3', name: 'No Show' }
+      ]
+    }
+  ];
+  const lookup = gas.buildGhlStageLookup_(pipelines);
+  // Object.assign({}, ...) (not a direct deepEqual on the vm-sandbox object
+  // itself) because `lookup`'s entries are plain-object literals built
+  // inside the vm sandbox's own realm — deepStrictEqual fails purely on
+  // prototype identity against a literal from this (outer) realm otherwise,
+  // the same cross-realm trap documented elsewhere in this file for arrays.
+  assert.deepEqual(Object.assign({}, lookup['stage-1']), { pipelineName: 'Cold Calling', stageName: 'Qualification Call Not Taken', disposition: 'No-show' });
+  assert.deepEqual(Object.assign({}, lookup['stage-2']), { pipelineName: 'Cold Calling', stageName: 'Closed Won', disposition: 'Sold' });
+  assert.deepEqual(Object.assign({}, lookup['stage-3']), { pipelineName: 'ICONS Podcast', stageName: 'No Show', disposition: 'No-show' });
+});
+
+function fakeSalesCallLogSheet(dataRows) {
+  const headerRow = gas.SALES_CALL_LOG_HEADERS.slice();
+  return {
+    getLastRow: () => dataRows.length + 1,
+    getRange: (row) => {
+      if (row === 1) return { getValues: () => [headerRow] };
+      return { getValues: () => dataRows };
+    }
+  };
+}
+
+function fakeSalesCallLogRow(overrides) {
+  const row = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  Object.keys(overrides).forEach((header) => {
+    row[gas.SALES_CALL_LOG_HEADERS.indexOf(header)] = overrides[header];
+  });
+  return row;
+}
+
+test('sampleSalesCallLogRows_ caps the sample at N rows PER REP, not N rows total (real risk: sheet order could otherwise hand back only one rep and tell us nothing about the others)', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Sean Call A', Rep: 'Sean', 'Call Date': '01/07/2026' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Sean Call B', Rep: 'Sean', 'Call Date': '02/07/2026' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Sean Call C', Rep: 'Sean', 'Call Date': '03/07/2026' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Bens Call A', Rep: 'Bens', 'Call Date': '01/07/2026' })
+  ];
+  const sheet = fakeSalesCallLogSheet(dataRows);
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+  try {
+    const sample = gas.sampleSalesCallLogRows_(2);
+    assert.equal(sample.filter((r) => r.rep === 'Sean').length, 2, 'Sean has 3 real rows but the cap is 2 per rep');
+    assert.equal(sample.filter((r) => r.rep === 'Bens').length, 1, 'Bens only has 1 real row, cap does not pad it out');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+test('sampleSalesCallLogRows_ skips rows with a blank Rep rather than crashing or grouping them together', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'No Rep Row', Rep: '', 'Call Date': '01/07/2026' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Real Row', Rep: 'Joana', 'Call Date': '01/07/2026' })
+  ];
+  const sheet = fakeSalesCallLogSheet(dataRows);
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+  try {
+    const sample = gas.sampleSalesCallLogRows_(5);
+    assert.equal(sample.length, 1);
+    assert.equal(sample[0].prospectName, 'Real Row');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
