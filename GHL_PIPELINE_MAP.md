@@ -369,6 +369,37 @@ So a GHL join can't use email today, but **GHL can supply the email that
 makes email a stable join key from then on**. That's likely the correct
 first sync step, ahead of anything else.
 
+### E. GHL is not the only lead source — confirmed via a real "no match" investigation
+
+`previewGhlMatching_()` (Phase9_GhlSync.gs) flagged 4 Sales Call Log rows
+that found no GHL contact by name at all, all Tomás, all recorded
+28/08/2026: Lucy Quiñones, Chelsea Fernandez, Monique Lewis, Salisia
+Murray. Tomás's answers (28/08/2026) confirm this wasn't a data-quality
+bug — three of the four are real leads whose full history lives outside
+GHL entirely:
+
+| Prospect | Where it actually lives | Notes |
+|---|---|---|
+| Lucy Quiñones | **Icons of Real Estate Podcast Tracker** (Google Sheet, "Luis's episodes" tab) — `lucyqpa@gmail.com`, confirmed exact match | Was an ICONS Podcast **guest**. Recording Done / Sales Call Booked / Sales Call Taken / Discovery Call Booked all TRUE, Sale FALSE — comment "no show again not sure if they did it or not." Never entered GHL. |
+| Chelsea Fernandez | Unconfirmed — not in GHL, not found in the podcast tracker's "Luis's episodes" tab either | Guest on a **client's** podcast (not ICONS' own), `chelseaann.fernandez@gmail.com`. Discovery Call booked, never converted. 2024 lead. |
+| Monique Lewis | Unconfirmed — not in GHL | Originally proposed as a podcast guest, Tomás flipped it to a sales call. Discovery call booked, then backed out. 2024 lead. |
+| Salisia Murray | Unconfirmed — not in GHL | `salisiasellsgeorgia@gmail.com`. Close to converting, Kris was involved too; lead source unclear. 2024 lead. |
+
+**Live tracker**: https://docs.google.com/spreadsheets/d/1EkZ03TUMxWbTu6L7mu08tLHXofNqD79y3hqFdBzcWNE —
+the "Luis's episodes" tab is one export/snapshot of this; other reps
+likely have their own tabs, which may cover Chelsea/Monique/Salisia. Not
+checked yet — this session has no Google Sheets access to browse it live.
+
+**What this means for the integration**: a Sales Call Log row with no GHL
+match is NOT automatically a data-quality problem to fix. It can
+legitimately mean the lead is tracked in this separate podcast-guest
+pipeline instead, or (for older 2024 leads especially) nowhere formally at
+all. Any future sync's "no match" handling must surface this as "not
+found in GHL" — never silently treat it as broken data, and never assume
+GHL is the complete picture for Tomás's book specifically, since 3 of his
+4 sourced leads route around GHL by nature of the podcast-to-sales-call
+conversion path.
+
 ---
 
 ## Mapping GHL stages onto Sales Call Log concepts
@@ -450,3 +481,9 @@ Ranked by value-to-effort, based on the above:
 Nothing here should be built until the credential exists and the open
 questions above are answered — particularly (2), which determines whose
 calls are in scope at all.
+
+**Finding E above also changes item 3's framing**: "no-shows dominate and
+are invisible" is about GHL's own no-show stages, but a "no GHL match at
+all" is a distinct third case (see the confirmed Lucy Quiñones example)
+that any sync must report as its own outcome, not fold into either
+no-shows or data-quality cleanup.
