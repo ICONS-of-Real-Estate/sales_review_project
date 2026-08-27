@@ -71,6 +71,10 @@ Claude cannot run these steps itself — say so and tell the user to run them.
   pipeline, all 8 phases, data spine) — read before `DASHBOARD_RESEARCH_REPORT.md`.
 - `DASHBOARD_RESEARCH_REPORT.md` — the research behind `tools/dashboard/`'s
   design (stack, auth, security, deploy, phased build plan).
+- `GHL_PIPELINE_MAP.md` — survey of the GoHighLevel CRM's 6 pipelines
+  (stages, counts, how they map onto Sales Call Log concepts, open
+  questions). Read before designing anything that touches GHL. Note its
+  counts are a 27/08/2026 screenshot snapshot, not live API data.
 
 ## Apps Script conventions specific to this project
 
