@@ -391,19 +391,25 @@ function loadAllLoggedReplies_(sheet) {
   });
 }
 
-function buildReplyMetricsReportBody_(rows, now, tz) {
+/** Shared by both the plain-text and HTML renderers below, so the two can never drift apart on the actual numbers. */
+function computeReplyMetricsPeriods_(rows, now, tz) {
   var dayStart = businessDayStart_(now, tz);
   var dayEnd = new Date(dayStart.getTime() + 24 * 3600 * 1000);
   var weekStart = new Date(dayEnd.getTime() - 7 * 24 * 3600 * 1000);
   var monthStart = new Date(dayEnd.getTime() - 30 * 24 * 3600 * 1000);
 
-  var day = computeReplyStats_(rows, dayStart, dayEnd);
-  var week = computeReplyStats_(rows, weekStart, dayEnd);
-  var month = computeReplyStats_(rows, monthStart, dayEnd);
-
   var leadEmails = rows.map(function (r) { return r.leadEmail; }).filter(Boolean);
-  var bookingOutcomes = reconcileBookingOutcomes_(leadEmails);
-  var bookingLine = bookingOutcomes
+  return {
+    day: computeReplyStats_(rows, dayStart, dayEnd),
+    week: computeReplyStats_(rows, weekStart, dayEnd),
+    month: computeReplyStats_(rows, monthStart, dayEnd),
+    bookingOutcomes: reconcileBookingOutcomes_(leadEmails)
+  };
+}
+
+function buildReplyMetricsReportBody_(rows, now, tz) {
+  var periods = computeReplyMetricsPeriods_(rows, now, tz);
+  var bookingLine = periods.bookingOutcomes
     ? '  Booked themselves / booked to QC by a rep: not yet computed per-period — reconciliation is wired up ' +
       'but the per-period date-matching logic still needs to be designed once Kris confirms how a booking date ' +
       'should map back to a reply period.'
@@ -420,17 +426,55 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
   return [
     'Daily reply tracker — ' + Utilities.formatDate(now, tz, 'yyyy-MM-dd'),
     '',
-    line('Today', day),
+    line('Today', periods.day),
     '',
     // "average" was mislabeling a raw rolling TOTAL (stats.count is a sum
     // over the window, never divided by days) — "total" is what's actually
     // being reported.
-    line('Rolling 7-day total', week),
+    line('Rolling 7-day total', periods.week),
     '',
-    line('Rolling 30-day total', month),
+    line('Rolling 30-day total', periods.month),
     '',
-    bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
+    periods.bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
   ].join('\n');
+}
+
+/** Same numbers as buildReplyMetricsReportBody_, styled — colored period
+ * headings, bold counts, a green/red tint on positive/negative, per Kris's
+ * ask (27/08/2026) that this read as more than a flat wall of text. */
+function buildReplyMetricsReportHtml_(rows, now, tz) {
+  var periods = computeReplyMetricsPeriods_(rows, now, tz);
+  var bookingLine = periods.bookingOutcomes
+    ? 'Booked themselves / booked to QC by a rep: not yet computed per-period — reconciliation is wired up but ' +
+      'the per-period date-matching logic still needs to be designed once Kris confirms how a booking date ' +
+      'should map back to a reply period.'
+    : 'Booked themselves / booked to QC by a rep: n/a (booking tracker tab(s) not configured yet)';
+
+  function block(label, stats) {
+    var pct = stats.pctNegativeTurnedPositive;
+    return (
+      '<p style="margin:0 0 4px 0;"><strong style="color:#1a56db;font-size:15px;">' + escapeHtml_(label) + '</strong></p>' +
+      '<p style="margin:0 0 4px 0;"><strong>' + stats.count + '</strong> reply(ies) — ' +
+      '<strong style="color:#0a7d2c;">' + stats.positive + ' positive</strong>, ' +
+      '<strong style="color:#c0392b;">' + stats.negative + ' negative</strong>' +
+      (pct !== null ? ', <strong>' + (pct * 100).toFixed(0) + '%</strong> of negative leads later turned positive' : '') +
+      '</p>' +
+      '<p style="margin:0 0 16px 0;color:#555;font-size:13px;">' + escapeHtml_(bookingLine) + '</p>'
+    );
+  }
+
+  return (
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p style="font-size:16px;"><strong>Sales Review — Daily Tracker</strong> — ' +
+    escapeHtml_(Utilities.formatDate(now, tz, 'yyyy-MM-dd')) + '</p>' +
+    block('Today', periods.day) +
+    block('Rolling 7-day total', periods.week) +
+    block('Rolling 30-day total', periods.month) +
+    (periods.bookingOutcomes ? '' :
+      '<p style="color:#666;font-size:12px;">NOTE: booking percentages are not yet wired up — see ' +
+      'REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.</p>') +
+    '</div>'
+  );
 }
 
 function previewReplyMetricsReport() {
@@ -446,8 +490,11 @@ function sendReplyMetricsReport_() {
   if (!REPLY_TRACKER_CONFIG.ENABLED) { log_('REPLY_TRACKER_CONFIG.ENABLED is false — skipping send.'); return; }
   var sheet = getOrCreateReplyTrackerSheet_();
   var rows = loadAllLoggedReplies_(sheet);
-  var body = buildReplyMetricsReportBody_(rows, new Date(), CONFIG.BUSINESS_TIMEZONE);
-  var sent = guardedSend_(CONFIG.KRIS_EMAIL, 'Daily reply tracker', body, { cc: CONFIG.TOMAS_EMAIL, name: 'Reply Tracker Bot' }, 2);
+  var now = new Date();
+  var body = buildReplyMetricsReportBody_(rows, now, CONFIG.BUSINESS_TIMEZONE);
+  var htmlBody = buildReplyMetricsReportHtml_(rows, now, CONFIG.BUSINESS_TIMEZONE);
+  var sent = guardedSend_(CONFIG.KRIS_EMAIL, 'Sales Review - Daily Tracker', body,
+    { cc: CONFIG.TOMAS_EMAIL, htmlBody: htmlBody, name: 'Reply Tracker Bot' }, 2);
   if (!sent) { log_('SEND FAILED/SKIPPED (quota-short or invalid config) — daily reply tracker report not delivered.'); return; }
   log_('Sent daily reply tracker report.');
 }

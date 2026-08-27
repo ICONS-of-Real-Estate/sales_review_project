@@ -274,6 +274,34 @@ function buildHandoffBriefEmailBody_(brief, ctx) {
   ].join('\n');
 }
 
+/** Same content as buildHandoffBriefEmailBody_, styled — colored section
+ * labels + bold key facts, per Kris's ask (27/08/2026) that these read as
+ * a wall of plain text otherwise. escapeHtml_ (Phase4_InboxSLA.gs) guards
+ * every AI-generated/dynamic field since this is raw HTML, not Jinja. */
+function buildHandoffBriefEmailHtml_(brief, ctx) {
+  function section(label, text) {
+    return '<p style="margin:0 0 4px 0;"><strong style="color:#1a56db;">' + label + '</strong></p>' +
+      '<p style="margin:0 0 16px 0;">' + escapeHtml_(text).replace(/\n/g, '<br>') + '</p>';
+  }
+  return (
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Hi ' + escapeHtml_(ctx.nextRepFirstName) + ',</p>' +
+    '<p>You have a <strong>' + escapeHtml_(ctx.nextCallType) + '</strong> call with ' +
+    '<strong>' + escapeHtml_(ctx.prospectName) + '</strong> on <strong>' + escapeHtml_(ctx.nextCallDateStr) +
+    ' at ' + escapeHtml_(ctx.nextCallTimeStr) + '</strong> (' + escapeHtml_(CONFIG.BUSINESS_TIMEZONE) + ').<br>' +
+    escapeHtml_(ctx.priorRep) + ' spoke with them on ' + escapeHtml_(ctx.priorCallDateStr) + ' (' +
+    escapeHtml_(ctx.priorCallType) + ') — here\'s what to know before you join:</p>' +
+    section('WHO THEY ARE', brief.lead_summary) +
+    section('THEIR ISSUES / GOALS', brief.issues_and_goals) +
+    section('HOW PODCASTING FITS', brief.podcast_fit_angle) +
+    section('OBJECTIONS NOT YET RESOLVED', brief.unresolved_objections) +
+    section('ANYTHING ELSE WORTH KNOWING', brief.other_notes) +
+    '<p style="color:#666;font-size:12px;">— Automated handoff brief, generated from ' +
+    escapeHtml_(ctx.priorRep) + '\'s call transcript by AI.<br>Reply to Kris or Tomás with any issues.</p>' +
+    '</div>'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -414,6 +442,7 @@ function sendUpcomingHandoffBriefs_() {
             priorCallType: prior.callType
           };
           var body = buildHandoffBriefEmailBody_(brief, emailCtx);
+          var htmlBody = buildHandoffBriefEmailHtml_(brief, emailCtx);
           var subject = repCfg.name + ' — [Handoff Brief] ' + ev.prospectGuess + ' — your ' + emailCtx.nextCallType + ' call in ~24 hrs';
 
           // Real bug found live (26/08/2026 silent-failure audit):
@@ -437,7 +466,7 @@ function sendUpcomingHandoffBriefs_() {
             log_('  No CONFIG.REPS email found for prior rep "' + prior.rep + '" — not CC\'d on this brief.');
           }
           var cc = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL].filter(Boolean).join(',');
-          var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, name: 'Call Handoff Brief Bot' }, 4);
+          var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, htmlBody: htmlBody, name: 'Call Handoff Brief Bot' }, 4);
           if (!didSend) {
             log_('  Send blocked/skipped for "' + ev.title + '" — NOT marking sent, will retry next hourly firing.');
             failed++;

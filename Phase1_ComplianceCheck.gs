@@ -1393,10 +1393,15 @@ function objectionPlaybookSeedRows_() {
       'lead from an episode within a few weeks]. Tomás will walk you through the real structure on the call — ' +
       'does that work as a starting point?"',
       '', 'Approved (v1)', '', ''],
-    [3, 'That\'s too expensive', 2,
+    [3, 'That\'s too expensive', 1,
+      // Tomás's correction (27/08/2026): Dana Hindman-Allen's call was pulled
+      // out of this objection — "wanted pricing before committing more time"
+      // is the SAME underlying concern as objection #2 ("what does this cost/
+      // how does monetization work"), not a real cost objection ("too
+      // expensive" implies a stated number was already reacted to as too
+      // high, which never happened on her call). She stays under #2 only.
       'Tennitia Wilson ("the costs were prohibitive... more than my car note and insurance put together... in ' +
-      'sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen"), Dana ' +
-      'Hindman-Allen (wanted pricing before committing more time — same underlying concern).',
+      'sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen").',
       'Real budget sensitivity, especially for 1099 commission-only agents without steady income or benefits.',
       'Acknowledge, then quantify. Never acknowledge-then-deflect. Tennitia\'s call is the textbook example of ' +
       'what NOT to do: "maybe we can offer you something that fits" with no actual number. This is exactly the ' +
@@ -1615,6 +1620,46 @@ function patchObjectionPlaybookBensEdits_25aug_() {
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function patchObjectionPlaybookBensEdits() {
   patchObjectionPlaybookBensEdits_25aug_();
+}
+
+/**
+ * ONE-TIME PATCH (27/08/2026): Tomás's correction on Bens' objection #3
+ * ("That's too expensive") — Dana Hindman-Allen's call never reacted to a
+ * stated price as too high; "wanted pricing before committing more time" is
+ * the same underlying concern as objection #2 (monetization/cost question),
+ * not this one. Removes her from #3's Real Examples and drops Times Seen
+ * from 2 to 1 (she still stays under #2, untouched here). Safe to re-run —
+ * a no-op once already applied, since it matches on the exact old string.
+ */
+function patchObjectionPlaybookDanaMiscategorization_27aug_() {
+  RUN_TAG = 'patchObjectionPlaybookDanaMiscategorization_27aug_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(OBJECTION_PLAYBOOK_SHEET_NAME);
+  if (!sheet) { log_('No "' + OBJECTION_PLAYBOOK_SHEET_NAME + '" tab — run setupObjectionPlaybook() first.'); return; }
+
+  var lastRow = sheet.getLastRow();
+  var values = sheet.getRange(2, 1, Math.max(lastRow - 1, 0), OBJECTION_PLAYBOOK_HEADERS.length).getValues();
+  var rowIndex = null;
+  for (var i = 0; i < values.length; i++) {
+    if (Number(values[i][0]) === 3) { rowIndex = i + 2; break; }
+  }
+  if (!rowIndex) { log_('No row found for objection #3 — skipping.'); return; }
+
+  var timesSeenCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Times Seen (of 43, as of 17/08/2026)') + 1;
+  var realExamplesCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Real Examples') + 1;
+  var lastUpdatedByCol = OBJECTION_PLAYBOOK_HEADERS.indexOf('Last Updated By') + 1;
+
+  var current = String(sheet.getRange(rowIndex, realExamplesCol).getValue());
+  var danaClause = ', Dana Hindman-Allen (wanted pricing before committing more time — same underlying concern)';
+  if (current.indexOf(danaClause) === -1) {
+    log_('Objection #3 (row ' + rowIndex + ') does not contain the Dana Hindman-Allen clause verbatim — ' +
+      'already patched, or the cell was hand-edited since. Not touching it. Current value: ' + current);
+    return;
+  }
+  sheet.getRange(rowIndex, realExamplesCol).setValue(current.split(danaClause).join(''));
+  sheet.getRange(rowIndex, timesSeenCol).setValue(1);
+  sheet.getRange(rowIndex, lastUpdatedByCol).setValue('Tomás');
+  log_('Patched objection #3 (row ' + rowIndex + '): removed Dana Hindman-Allen, Times Seen 2 -> 1.');
 }
 
 /**
@@ -1906,7 +1951,7 @@ function sendJoanaPlaybookAsGoogleDoc() {
       'Heather Gorney — no ask at all, lowest score in the batch'],
     ['2', 'Accepts a stall as final instead of converting it', '5 of 16',
       'Manny Chamizo III — "let\'s move forward" became a link to use "whenever"'],
-    ['3', 'Objection surfaced, answered with nothing concrete', '4 of 16',
+    ['3', 'Objection surfaced, answered with nothing concrete', '3 of 16',
       'Shannon Driessen — had two tools ready, used neither'],
     ['4', 'No quantified proof point ready when challenged', '3 of 16',
       'Tim Saeland — deferred a client example to "ask my co-founder"']
@@ -1948,10 +1993,13 @@ function sendJoanaPlaybookAsGoogleDoc() {
     },
     {
       title: '3. A real objection gets surfaced but answered with nothing concrete',
-      freq: 'seen in 4 of 16 cases',
+      freq: 'seen in 3 of 16 cases',
+      // Mark Vincent Fansler (07/08) removed per Tomás's correction
+      // (27/08/2026) — Joana says she did not say the quoted line; this
+      // example was misattributed and pulled without Joana confirming it,
+      // unlike the others here which Tomás has not disputed.
       examples: [
         ['Shannon Driessen (06/08)', '"I really don\'t have the budget for it right now" met with "Perfect, I\'m going to send you these" — despite a sponsor cost-offset and a sub-$500 tier already being on the table earlier in the same call.'],
-        ['Mark Vincent Fansler (07/08)', 'Pressed three times for equipment specifics; told "I am not the person to tell you as well... but our team will be making sure that you have everything that you need."'],
         ['Douglas Rill (13/08)', 'Raised "money\'s a little bit short" and floated pricing help — the call drifted back to small talk with no answer.'],
         ['Joseph Bradley (20/08)', 'Named the DIY alternative; got "You can, but" — the thought was never finished.']
       ],
@@ -2088,7 +2136,7 @@ function sendBensPlaybookAsGoogleDoc() {
     ['#', 'Objection', 'Seen', 'Worst case'],
     ['1', '"I\'m too busy / not right now"', '6 of 43', 'David Leventhal, Kade Phillips — lead went cold, no placeholder date secured'],
     ['2', '"What does this cost / how does it work?"', '4 of 43', 'Barinder Maan — asked directly, got no answer at all'],
-    ['3', '"That\'s too expensive"', '2 of 43', 'Tennitia Wilson — real cost concern, answered with a vague deflection'],
+    ['3', '"That\'s too expensive"', '1 of 43', 'Tennitia Wilson — real cost concern, answered with a vague deflection'],
     ['4', '"I already have my own podcast/platform"', '4 of 43', 'Jeff Goodman, Thom Tillier — direct competing-solution objection, unaddressed'],
     ['5', '"I wouldn\'t know where to start"', '1 of 43', 'Katie Uei — reassured, not answered'],
     ['6', '"I don\'t know this platform — is it legit?"', '1 of 43', 'Phuong Phan — joked past, not addressed'],
@@ -2133,9 +2181,12 @@ function sendBensPlaybookAsGoogleDoc() {
     },
     {
       title: '3. "That\'s too expensive"',
+      // Dana Hindman-Allen removed per Tomás's correction (27/08/2026) — her
+      // call never reacted to a stated price as too high; "wanted pricing
+      // before committing more time" is the monetization-question objection
+      // (#2), not this one. See objectionPlaybookSeedRows_ for the same fix.
       examples: [
-        ['Tennitia Wilson', '"the costs were prohibitive... more than my car note and insurance put together... in sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen"'],
-        ['Dana Hindman-Allen', 'wanted pricing before committing more time — same underlying concern']
+        ['Tennitia Wilson', '"the costs were prohibitive... more than my car note and insurance put together... in sales you don\'t have a pension or 401k, to commit to that dollar amount I\'d be real brazen"']
       ],
       why: 'Real budget sensitivity, especially for 1099 commission-only agents without steady income or benefits.',
       technique: 'Acknowledge, then quantify. Never acknowledge-then-deflect. Tennitia\'s call is the textbook example of what NOT to do: "maybe we can offer you something that fits" with no actual number.',
