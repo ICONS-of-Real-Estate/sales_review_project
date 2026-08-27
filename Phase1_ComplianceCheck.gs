@@ -2492,7 +2492,7 @@ function sendDashboardAccessEmail() {
 // ---------------------------------------------------------------------------
 
 var PLAYBOOK_REVIEW_CONFIG = {
-  ENABLED: false, // preview-first — see ONE-TIME SETUP above
+  ENABLED: true, // Flipped true 27/08/2026 per Kris's ask — last-week-only training material, no all-time fallback. Still needs installPlaybookReviewTrigger() run once to actually schedule it.
   TRIGGER_HOUR: 8 // Tuesday morning, CONFIG.BUSINESS_TIMEZONE — ahead of that day's training session
 };
 
