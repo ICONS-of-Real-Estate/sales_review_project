@@ -469,9 +469,13 @@ them should be scored.
 Ranked by value-to-effort, based on the above:
 
 1. **Backfill Prospect Email from GHL** — unblocks every later join, small
-   and low-risk.
+   and low-risk. **Built** (29/08/2026): `previewGhlSync_()` /
+   `syncGhlEmailAndDisposition_()` in Phase9_GhlSync.gs. Preview is
+   read-only; the real write is gated by `GHL_CONFIG.ENABLED` (still
+   false) and only ever fills blanks.
 2. **Populate Outcome Disposition from GHL stage** — fills the most
    important empty column in the system, no workflow change for anyone.
+   **Built together with (1)** — same functions, same per-row lookup.
 3. **Surface no-shows** — the biggest blind spot; needs no scoring work,
    just counting stages we currently can't see.
 4. **Remarketing chase monitoring** — directly addresses Kris's stated

@@ -1852,6 +1852,159 @@ test('sampleSalesCallLogRows_ skips rows with a blank Rep rather than crashing o
   }
 });
 
+test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
+  const stageLookup = {
+    'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },
+    'sc-booked': { pipelineName: 'SALES CALL pipeline', stageName: 'Sales Call - Booked', disposition: null },
+    'qc-booked': { pipelineName: 'Cold Calling 2', stageName: 'Qualification Call Booked', disposition: null }
+  };
+  const result = gas.resolveBestDispositionForOpportunities_(
+    [{ pipelineStageId: 'podcast-booked' }, { pipelineStageId: 'sc-booked' }, { pipelineStageId: 'qc-booked' }],
+    stageLookup
+  );
+  assert.deepEqual(Object.assign({}, result), { disposition: null, conflict: false });
+});
+
+test('resolveBestDispositionForOpportunities_ returns the disposition when exactly one opportunity resolves to a real one', () => {
+  const stageLookup = { 'closed-won': { pipelineName: 'SALES CALL pipeline', stageName: 'Closed Won', disposition: 'Sold' } };
+  const result = gas.resolveBestDispositionForOpportunities_([{ pipelineStageId: 'closed-won' }], stageLookup);
+  assert.deepEqual(Object.assign({}, result), { disposition: 'Sold', conflict: false });
+});
+
+test('resolveBestDispositionForOpportunities_ flags a conflict rather than guessing when two opportunities imply DIFFERENT real dispositions', () => {
+  const stageLookup = {
+    'closed-won': { pipelineName: 'SALES CALL pipeline', stageName: 'Closed Won', disposition: 'Sold' },
+    'no-show': { pipelineName: 'Cold Calling 2', stageName: 'No Show', disposition: 'No-show' }
+  };
+  const result = gas.resolveBestDispositionForOpportunities_(
+    [{ pipelineStageId: 'closed-won' }, { pipelineStageId: 'no-show' }],
+    stageLookup
+  );
+  assert.equal(result.conflict, true);
+  assert.equal(result.disposition, null);
+});
+
+// ---------------------------------------------------------------------------
+// computeGhlSyncFixes_ (Phase9_GhlSync.gs) — the Prospect Email / Outcome
+// Disposition backfill at the heart of previewGhlSync_/syncGhlEmailAndDisposition_.
+// ---------------------------------------------------------------------------
+
+function withMockedGhlSync_(mocks, fn) {
+  const originals = {
+    SpreadsheetApp: gas.SpreadsheetApp,
+    Utilities: gas.Utilities,
+    ghlSearchContactByName_: gas.ghlSearchContactByName_,
+    ghlListOpportunitiesForContact_: gas.ghlListOpportunitiesForContact_
+  };
+  gas.Utilities = { sleep: () => {} };
+  Object.assign(gas, mocks);
+  try {
+    return fn();
+  } finally {
+    Object.assign(gas, originals);
+  }
+}
+
+test('computeGhlSyncFixes_ skips a row that already has BOTH Prospect Email and Outcome Disposition filled, with no GHL call at all', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Already Done', Rep: 'Sean', 'Prospect Email': 'done@x.com', 'Outcome Disposition': 'Sold' })
+  ];
+  let searchCalls = 0;
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => { searchCalls++; return { ok: true, contacts: [] }; }
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(searchCalls, 0, 'a fully-filled row must never trigger a GHL search');
+  assert.equal(result.stats.skippedAlreadyFilled, 1);
+  assert.equal(result.fixes.length, 0);
+});
+
+test('computeGhlSyncFixes_ backfills a blank Prospect Email from a single confident GHL match', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Anthony Camperi', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': 'Sold' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Anthony Camperi', email: 'camperirealestate@outlook.com' }] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.fixes.length, 1);
+  assert.equal(result.fixes[0].newEmail, 'camperirealestate@outlook.com');
+  assert.equal(result.fixes[0].newDisposition, undefined, 'Outcome Disposition was already filled, must not be touched');
+  assert.equal(result.stats.emailFixes, 1);
+});
+
+test('computeGhlSyncFixes_ fills a blank Outcome Disposition from the matched contact\'s single resolved opportunity', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Nicole Freed', Rep: 'Bens', 'Prospect Email': 'nicole.freed@yahoo.com', 'Outcome Disposition': '' })
+  ];
+  const stageLookup = { 'closed-won': { pipelineName: 'SALES CALL pipeline', stageName: 'Closed Won', disposition: 'Sold' } };
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Nicole Freed', email: 'nicole.freed@yahoo.com' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [{ pipelineStageId: 'closed-won' }] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', stageLookup));
+  assert.equal(result.fixes.length, 1);
+  assert.equal(result.fixes[0].newDisposition, 'Sold');
+  assert.equal(result.fixes[0].newEmail, undefined, 'Prospect Email was already filled, must not be touched');
+  assert.equal(result.stats.dispositionFixes, 1);
+});
+
+test('computeGhlSyncFixes_ reports the real "Desiree Doggett" case as no-match, not ambiguous, once garbage candidates are filtered by name', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Desiree Doggett', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({
+      ok: true,
+      contacts: [
+        { name: 'justin stamper' }, { name: 'avery carl' }, { name: 'carlos beruff' },
+        { name: 'patrick neal' }, { name: 'bob turner' }
+      ]
+    })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.stats.noMatch, 1);
+  assert.equal(result.stats.ambiguous, 0);
+  assert.equal(result.fixes.length, 0);
+});
+
+test('computeGhlSyncFixes_ leaves Outcome Disposition blank and counts a conflict, rather than guessing, when opportunities disagree', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Conflicted Contact', Rep: 'Sean', 'Prospect Email': 'x@x.com', 'Outcome Disposition': '' })
+  ];
+  const stageLookup = {
+    'closed-won': { pipelineName: 'SALES CALL pipeline', stageName: 'Closed Won', disposition: 'Sold' },
+    'no-show': { pipelineName: 'Cold Calling 2', stageName: 'No Show', disposition: 'No-show' }
+  };
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Conflicted Contact' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [{ pipelineStageId: 'closed-won' }, { pipelineStageId: 'no-show' }] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', stageLookup));
+  assert.equal(result.fixes.length, 0);
+  assert.equal(result.stats.dispositionConflicts, 1);
+});
+
+test('computeGhlSyncFixes_ stops at the time budget and reports a partial scan, rather than risking a hard Apps Script timeout', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Row One', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Row Two', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const originalBudget = gas.GHL_SYNC_TIME_BUDGET_MS_;
+  gas.GHL_SYNC_TIME_BUDGET_MS_ = -1; // already "expired" before the loop even starts
+  let searchCalls = 0;
+  try {
+    const result = withMockedGhlSync_({
+      SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+      ghlSearchContactByName_: () => { searchCalls++; return { ok: true, contacts: [] }; }
+    }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+    assert.equal(result.truncated, true);
+    assert.equal(searchCalls, 0, 'the budget check must run before the first GHL call, not after');
+  } finally {
+    gas.GHL_SYNC_TIME_BUDGET_MS_ = originalBudget;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // cleanProspectNameForSheet_ (Phase2_CallScoring.gs) — real values pulled
 // straight from a live GHL contact-matching preview (28/08/2026): every one

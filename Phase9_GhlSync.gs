@@ -17,8 +17,13 @@
  *     ICONS Podcast pipeline alone) and are structurally invisible to this
  *     system, which only ever sees calls that happened AND got transcribed.
  *
- * CURRENT STATE: read-only connectivity probe only. Nothing writes to the
- * sheet yet, and GHL_CONFIG.ENABLED gates anything that ever will.
+ * CURRENT STATE: connectivity + matching are read-only probes.
+ * previewGhlSync() is also read-only. The only function that writes to the
+ * sheet is syncGhlEmailAndDisposition_(), and GHL_CONFIG.ENABLED (still
+ * false) gates it — it refuses to run until that's flipped, which should
+ * only happen after previewGhlSync()'s output has been reviewed and looks
+ * right. Even then it only ever fills BLANK Prospect Email / Outcome
+ * Disposition cells; it never overwrites an existing value.
  *
  * SETUP (one-time, in the Apps Script editor — NOT in this repo):
  *   Project Settings (gear icon) -> Script Properties -> Add:
@@ -29,10 +34,13 @@
  *   will not be reverted (unlike ENABLED flags or .gs edits — see
  *   CLAUDE.md). Same pattern as LITELLM_API_KEY for Moonshot.
  *
- * THEN: run previewGhlConnection() from the editor (not the
- * trailing-underscore version — Apps Script's "Select function" dropdown
- * hides those). It calls no writes and sends nothing; it just proves the
- * credential works and dumps every pipeline + stage ID we'd build against.
+ * THEN, in order: previewGhlConnection() proves the credential works and
+ * dumps every pipeline + stage ID. previewGhlMatching() samples ~16 rows to
+ * judge whether name-matching finds real contacts at all. previewGhlSync()
+ * is the real one — a full-sheet scan reporting every Prospect Email /
+ * Outcome Disposition fix that would be applied. All three are entry
+ * points (not the trailing-underscore versions — Apps Script's "Select
+ * function" dropdown hides those), call no writes, and send nothing.
  */
 
 var GHL_CONFIG = {
@@ -458,4 +466,230 @@ function ghlStageToOutcomeDisposition_(stageName) {
   // decided by a LATER stage — so no disposition is inferable from these
   // alone. Same for any "...Booked" stage, which is simply pending.
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Backfill: Prospect Email + Outcome Disposition from GHL. This is items 1
+// and 2 of GHL_PIPELINE_MAP.md's "What this implies for the integration"
+// ranked plan — the highest-value, lowest-risk sync, and both share the same
+// per-row contact/opportunity lookup so they're done together. Never
+// overwrites a value that's already there — this only fills blanks, exactly
+// like every other one-time repair in this codebase
+// (computeCallDateFixes_/computeProspectNameFixes_ in Phase2_CallScoring.gs).
+// ---------------------------------------------------------------------------
+
+// Leaves a margin under Apps Script's 6-minute ceiling — same policy as
+// INBOX_SLA_TIME_BUDGET_MS_ (Phase4_InboxSLA.gs). A full-sheet scan here
+// costs up to 2 GHL calls per row, so hitting this on the first run is
+// expected, not a bug — because this only ever fills BLANK cells, a
+// truncated run is always safe to just re-run: already-filled rows are
+// skipped before any API call, so nothing is redone and nothing is lost.
+var GHL_SYNC_TIME_BUDGET_MS_ = 5 * 60 * 1000;
+
+/**
+ * Picks the single Outcome Disposition implied by a contact's opportunities,
+ * or null if none is decided yet. Returns { disposition, conflict } rather
+ * than guessing when two OPEN opportunities across different pipelines imply
+ * different dispositions (e.g. "Closed Won" in one, "No-show" in another) —
+ * same never-guess-on-a-real-conflict policy as ghlStageToOutcomeDisposition_
+ * returning null on an unmapped stage. `conflict: true` means a human needs
+ * to look at this contact's opportunities directly; nothing gets written.
+ */
+function resolveBestDispositionForOpportunities_(opportunities, stageLookup) {
+  var dispositions = [];
+  (opportunities || []).forEach(function (o) {
+    var stageId = o.pipelineStageId || o.stageId;
+    var info = stageLookup[stageId];
+    if (info && info.disposition && dispositions.indexOf(info.disposition) === -1) {
+      dispositions.push(info.disposition);
+    }
+  });
+  if (dispositions.length === 1) return { disposition: dispositions[0], conflict: false };
+  if (dispositions.length > 1) return { disposition: null, conflict: true };
+  return { disposition: null, conflict: false };
+}
+
+/**
+ * Scans the live Sales Call Log for rows missing Prospect Email and/or
+ * Outcome Disposition, resolves each by GHL contact name (same
+ * name-similarity filter as previewGhlMatching_ — see
+ * contactNameLooksLikeQuery_'s header comment and GHL_PIPELINE_MAP.md
+ * finding E), and returns what WOULD change. Never writes. Shared by both
+ * previewGhlSync_ (logs it) and syncGhlEmailAndDisposition_ (applies it).
+ */
+function computeGhlSyncFixes_(locationId, stageLookup) {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var stats = {
+    scanned: 0, skippedAlreadyFilled: 0, confidentMatch: 0, ambiguous: 0,
+    noMatch: 0, searchFailed: 0, emailFixes: 0, dispositionFixes: 0, dispositionConflicts: 0
+  };
+  if (!sheet) { log_('No Sales Call Log tab found.'); return { fixes: [], stats: stats, truncated: false }; }
+
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { fixes: [], stats: stats, truncated: false };
+  var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var fixes = [];
+  var runStart = Date.now();
+  var truncated = false;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var prospectName = row[col['Prospect Name'] - 1];
+    var existingEmail = String(row[col['Prospect Email'] - 1] || '').trim();
+    var existingDisposition = String(row[col['Outcome Disposition'] - 1] || '').trim();
+
+    if (!prospectName || (existingEmail && existingDisposition)) {
+      stats.skippedAlreadyFilled++;
+      continue;
+    }
+
+    if (Date.now() - runStart > GHL_SYNC_TIME_BUDGET_MS_) {
+      truncated = true;
+      log_('computeGhlSyncFixes_: time budget hit after ' + i + '/' + rows.length +
+        ' row(s) — re-run to continue (already-filled rows are skipped automatically, so this is always safe).');
+      break;
+    }
+
+    stats.scanned++;
+    var search = ghlSearchContactByName_(locationId, prospectName);
+    if (!search.ok) { stats.searchFailed++; continue; }
+
+    var candidates = search.contacts.filter(function (c) {
+      return contactNameLooksLikeQuery_(c, prospectName);
+    });
+    if (!candidates.length) { stats.noMatch++; continue; }
+    if (candidates.length > 1) { stats.ambiguous++; continue; }
+
+    var contact = candidates[0];
+    stats.confidentMatch++;
+    var fix = { row: i + 2, prospectName: prospectName, rep: row[col['Rep'] - 1] };
+
+    if (!existingEmail && contact.email) {
+      fix.newEmail = contact.email;
+      stats.emailFixes++;
+    }
+
+    if (!existingDisposition) {
+      var oppsRes = ghlListOpportunitiesForContact_(locationId, contact.id);
+      if (oppsRes.ok && oppsRes.opportunities.length) {
+        var resolved = resolveBestDispositionForOpportunities_(oppsRes.opportunities, stageLookup);
+        if (resolved.conflict) {
+          stats.dispositionConflicts++;
+        } else if (resolved.disposition) {
+          fix.newDisposition = resolved.disposition;
+          stats.dispositionFixes++;
+        }
+      }
+    }
+
+    if (fix.newEmail || fix.newDisposition) fixes.push(fix);
+    Utilities.sleep(250); // polite pacing — 2 GHL calls per matched row here, not 1
+  }
+
+  return { fixes: fixes, stats: stats, truncated: truncated };
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewGhlSync() {
+  return previewGhlSync_();
+}
+
+/**
+ * Read-only. Full-sheet scan (not a sample — this is the real backfill,
+ * not an exploratory probe) reporting every Prospect Email / Outcome
+ * Disposition fix computeGhlSyncFixes_ would apply. Writes nothing.
+ */
+function previewGhlSync_() {
+  RUN_TAG = 'previewGhlSync_';
+  log_('PREVIEW MODE — read-only GHL email/disposition backfill probe. Nothing will be written.');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
+  var stageLookup = buildGhlStageLookup_(pipelines);
+
+  var result = computeGhlSyncFixes_(locationId, stageLookup);
+  result.fixes.forEach(function (fix) {
+    var parts = [];
+    if (fix.newEmail) parts.push('Prospect Email -> "' + fix.newEmail + '"');
+    if (fix.newDisposition) parts.push('Outcome Disposition -> "' + fix.newDisposition + '"');
+    log_('Row ' + fix.row + ' (' + fix.rep + ') "' + fix.prospectName + '": ' + parts.join(', '));
+  });
+
+  log_('');
+  log_('Scanned ' + result.stats.scanned + ' row(s) needing a fix (' + result.stats.skippedAlreadyFilled +
+    ' already fully filled, skipped with no API call).');
+  log_('Confident match: ' + result.stats.confidentMatch + ', ambiguous: ' + result.stats.ambiguous +
+    ', no match: ' + result.stats.noMatch + ', search failed: ' + result.stats.searchFailed + '.');
+  log_(result.fixes.length + ' row(s) would be updated — ' + result.stats.emailFixes + ' email backfill(s), ' +
+    result.stats.dispositionFixes + ' disposition fill(s)' +
+    (result.stats.dispositionConflicts ? (', ' + result.stats.dispositionConflicts +
+      ' skipped for conflicting dispositions across pipelines (needs a human look)') : '') + '.');
+  if (result.truncated) {
+    log_('PARTIAL SCAN — time budget hit. Re-run previewGhlSync() to see the rest (safe: already-filled rows are skipped automatically).');
+  }
+  log_('Paste this whole log back to Claude before running the real sync.');
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function syncGhlEmailAndDisposition() {
+  return syncGhlEmailAndDisposition_();
+}
+
+/**
+ * LIVE WRITE. Gated by GHL_CONFIG.ENABLED — run previewGhlSync() first and
+ * confirm the output looks right before flipping that to true. Applies
+ * exactly what computeGhlSyncFixes_ computed: fills Prospect Email and/or
+ * Outcome Disposition ONLY where they were blank. Never overwrites an
+ * existing value in either column.
+ */
+function syncGhlEmailAndDisposition_() {
+  RUN_TAG = 'syncGhlEmailAndDisposition_';
+  if (!GHL_CONFIG.ENABLED) {
+    log_('GHL_CONFIG.ENABLED is false — run previewGhlSync() first, confirm the output looks right, then flip GHL_CONFIG.ENABLED to true in Phase9_GhlSync.gs.');
+    return;
+  }
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
+  var stageLookup = buildGhlStageLookup_(pipelines);
+
+  var result = computeGhlSyncFixes_(locationId, stageLookup);
+  if (!result.fixes.length) {
+    log_('No Prospect Email / Outcome Disposition fixes found.' +
+      (result.truncated ? ' (PARTIAL scan — time budget hit, re-run to continue.)' : ''));
+    return;
+  }
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var col = getValidatedColumnMap_(sheet);
+
+  result.fixes.forEach(function (fix) {
+    if (fix.newEmail) sheet.getRange(fix.row, col['Prospect Email']).setValue(fix.newEmail);
+    if (fix.newDisposition) sheet.getRange(fix.row, col['Outcome Disposition']).setValue(fix.newDisposition);
+    log_('Row ' + fix.row + ' (' + fix.rep + ') "' + fix.prospectName + '" updated.');
+  });
+
+  log_('syncGhlEmailAndDisposition_() done — updated ' + result.fixes.length + ' row(s) (' +
+    result.stats.emailFixes + ' email, ' + result.stats.dispositionFixes + ' disposition).' +
+    (result.truncated ? ' PARTIAL scan — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
 }
