@@ -2469,22 +2469,25 @@ function sendDashboardAccessEmail() {
 // Weekly Playbook Review — Kris's ask (25/08/2026): sendBensPlaybookAsGoogleDoc/
 // sendSeanPlaybookAsGoogleDoc/sendJoanaPlaybookAsGoogleDoc above each did a
 // one-off, all-time sweep of every flagged call in history — that's now done.
-// Going forward each week should only look at calls SINCE the last review,
-// not re-sweep the whole history again. And a rep genuinely having no new
-// flagged calls in that window has to be an explicit flag to Tomás, not a
-// silent empty email — falling back to a link to the existing (all-time)
-// playbook so that week's session still has real material to work from.
+//
+// Going forward, per Kris's explicit follow-up (27/08/2026): each week's
+// training material must be scoped to ONLY the previous week's calls —
+// never a running "since last review" window, and never a fallback to the
+// old all-time playbook. Reps who've already been trained on an issue
+// should not have it resurface in a later week's session just because
+// nothing new happened to come up since whenever this last ran. So this
+// uses the exact same "most recently completed Mon-Sun week" window
+// (getWeekBounds_, Phase5_WeeklyScorecard.gs) the weekly scorecard already
+// uses — stateless, no watermark, no history to accidentally re-surface. A
+// week with nothing flagged is reported as exactly that (nothing to train
+// on this week for objections), not redirected back to old material.
 //
 // ONE-TIME SETUP:
-//   1. Run initPlaybookReviewWatermarks() once — it records "now" as the
-//      last-reviewed point for every rep in CONFIG.REPS (Bens/Joana/Sean),
-//      since their playbooks built earlier this session already cover every
-//      flagged call up to now.
-//   2. Run previewWeeklyPlaybookReview() from the Apps Script editor (NOT the
+//   1. Run previewWeeklyPlaybookReview() from the Apps Script editor (NOT the
 //      trailing-underscore version — the "Select function" dropdown hides
-//      those). It logs, per rep, how many new flagged calls it found since
-//      their watermark — nothing is sent. Check the numbers look sane.
-//   3. Flip PLAYBOOK_REVIEW_CONFIG.ENABLED to true and run
+//      those). It logs, per rep, how many calls were flagged last week —
+//      nothing is sent. Check the numbers look sane.
+//   2. Flip PLAYBOOK_REVIEW_CONFIG.ENABLED to true and run
 //      installPlaybookReviewTrigger().
 // ---------------------------------------------------------------------------
 
@@ -2492,8 +2495,6 @@ var PLAYBOOK_REVIEW_CONFIG = {
   ENABLED: false, // preview-first — see ONE-TIME SETUP above
   TRIGGER_HOUR: 8 // Tuesday morning, CONFIG.BUSINESS_TIMEZONE — ahead of that day's training session
 };
-
-var PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ = 'LAST_PLAYBOOK_REVIEW_AT_';
 
 // Same "flagged for an objection issue" test sendJoanaRawMaterialToTomas
 // (above) used, pulled out so the weekly review can reuse it for any rep.
@@ -2504,22 +2505,6 @@ function isObjectionFlaggedRow_(row, col) {
   var objectionsHandled = row[col['Flag: Objections Handled'] - 1];
   return PLAYBOOK_REVIEW_OBJECTION_FAILURE_MODES_.indexOf(mode) !== -1 ||
     ((mode === '' || mode === 'none') && objectionsHandled === false);
-}
-
-/**
- * One-time. Baselines "last reviewed" to now for every rep in CONFIG.REPS —
- * run once, before the first real (non-preview) run, since today's playbooks
- * already cover all history up to now. Re-running resets the clock for
- * everyone, so don't re-run casually once real weekly reviews are live.
- */
-function initPlaybookReviewWatermarks() {
-  RUN_TAG = 'initPlaybookReviewWatermarks';
-  var props = PropertiesService.getScriptProperties();
-  var now = new Date();
-  CONFIG.REPS.forEach(function (repCfg) {
-    props.setProperty(PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ + repCfg.name, now.toISOString());
-    log_('initPlaybookReviewWatermarks: ' + repCfg.name + ' watermark set to ' + now.toISOString() + '.');
-  });
 }
 
 /** Run this FIRST from the editor. Builds this week's review and only logs it — sends nothing. */
@@ -2554,7 +2539,6 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
     return;
   }
 
-  var props = PropertiesService.getScriptProperties();
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var logSheet = resolveSheet_(ss, 'Sales Call Log');
   if (!logSheet) { log_('buildAndMaybeSendPlaybookReview_: no Sales Call Log tab found.'); return; }
@@ -2562,83 +2546,64 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
   var col = getValidatedColumnMap_(logSheet);
   var lastRow = logSheet.getLastRow();
   var rows = lastRow < 2 ? [] : logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
-  var now = new Date();
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  // Strictly the most recently completed Mon-Sun week (same window
+  // getWeekBounds_ gives the weekly scorecard) — not a running watermark.
+  // Per Kris's explicit ask (27/08/2026): a rep who's already been trained
+  // on an issue should never see it resurface in a later week's session
+  // just because a run got skipped or nothing new happened to come up since
+  // then. Every week only ever looks at that one week, full stop.
+  var week = getWeekBounds_(new Date(), tz);
+  var windowLabel = Utilities.formatDate(week.start, tz, 'dd/MM/yyyy') + ' - ' +
+    Utilities.formatDate(shiftBusinessDate_(week.end, tz, -1), tz, 'dd/MM/yyyy');
 
   CONFIG.REPS.forEach(function (repCfg) {
-    var watermarkProp = PLAYBOOK_REVIEW_WATERMARK_PROP_PREFIX_ + repCfg.name;
-    var watermarkRaw = props.getProperty(watermarkProp);
-    if (!watermarkRaw) {
-      log_('buildAndMaybeSendPlaybookReview_: no watermark for ' + repCfg.name +
-        ' — run initPlaybookReviewWatermarks() once before this. Skipping ' + repCfg.name + '.');
-      return;
-    }
-    var watermark = new Date(watermarkRaw);
-    // Call Date cells are date-only (business-tz midnight); the watermark is
-    // a full timestamp written at whatever time this last ran. Comparing the
-    // raw timestamp against midnight meant a call dated the SAME DAY the
-    // watermark was set (midnight <= watermark's time-of-day) was excluded
-    // forever, once the watermark advanced past that morning — real bug
-    // found live (26/08/2026 silent-failure audit). Compare against the
-    // watermark's own business-day start instead, so "since the watermark"
-    // means "on or after that whole day", not "after that exact instant".
-    var watermarkDayStart = businessDayStart_(watermark, CONFIG.BUSINESS_TIMEZONE);
-
-    var newFlagged = [];
+    var flagged = [];
     rows.forEach(function (row) {
       if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repCfg.name.toLowerCase()) return;
       var callDate = row[col['Call Date'] - 1];
-      if (!(callDate instanceof Date) || callDate < watermarkDayStart) return;
+      if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
       if (!isObjectionFlaggedRow_(row, col)) return;
-      newFlagged.push({
+      flagged.push({
         prospectName: row[col['Prospect Name'] - 1],
-        callDate: Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy'),
+        callDate: Utilities.formatDate(callDate, tz, 'dd/MM/yyyy'),
         score: row[col['Call Quality Score'] - 1],
         feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim()
       });
     });
 
-    var windowLabel = Utilities.formatDate(watermark, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + ' - ' +
-      Utilities.formatDate(now, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
-
     if (forcePreview) {
-      log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + newFlagged.length +
-        ' new flagged call(s) since ' + windowLabel + '.');
+      log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + flagged.length +
+        ' flagged call(s) last week (' + windowLabel + ').');
       return;
     }
 
-    var sent = newFlagged.length
-      ? sendPlaybookReviewNewMaterialEmail_(repCfg, newFlagged, windowLabel)
+    var sent = flagged.length
+      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel)
       : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel);
-    // Only advance the watermark once the email actually went out — real bug
-    // found live (26/08/2026 silent-failure audit): this used to advance
-    // unconditionally, so a quota-short or config-invalid guardedSend_
-    // refusal permanently dropped every flagged call in that window (they'd
-    // sort below the new watermark on every future run, forever).
     if (!sent) {
-      log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped — watermark NOT advanced, ' +
-        'will retry these ' + newFlagged.length + ' call(s) next run.');
+      log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
+        windowLabel + '.');
       return;
     }
-    props.setProperty(watermarkProp, now.toISOString());
-    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - ' + newFlagged.length +
-      ' new flagged call(s), watermark advanced to ' + now.toISOString() + '.');
+    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - ' + flagged.length +
+      ' flagged call(s) for the week of ' + windowLabel + '.');
   });
 }
 
 function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
   var body =
     'Tomás,\n\n' +
-    'New objection-handling material for ' + repCfg.name + ' since the last review (' + windowLabel + ') — ' +
-    flagged.length + ' flagged call(s). Same as before: raw data, not a finished playbook — fold whatever\'s ' +
-    'real here into ' + repCfg.name + '\'s existing playbook rather than replacing it.\n\n' +
+    repCfg.name + '\'s objection-handling material for last week (' + windowLabel + ') — ' +
+    flagged.length + ' flagged call(s). Raw data, not a finished playbook — this week\'s session should focus ' +
+    'on just these, not older material already covered.\n\n' +
     flagged.map(function (c, i) {
       return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
         (c.feedback || '(no AI feedback summary on file)');
     }).join('\n\n') +
-    '\n\n' + repCfg.name + '\'s current playbook: ' + DASHBOARD_URL_ + 'reps/' + repCfg.name +
     '\n\n— Sent automatically ahead of this week\'s session.';
 
-  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — new calls to review this week (' + windowLabel + ')', body, {
+  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — last week\'s calls to review (' + windowLabel + ')', body, {
     cc: CONFIG.KRIS_EMAIL,
     name: 'Training Prep Bot'
   }, 2);
@@ -2647,13 +2612,12 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
 function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel) {
   var body =
     'Tomás,\n\n' +
-    'No new flagged calls for ' + repCfg.name + ' since the last review (' + windowLabel + ') — nothing to ' +
-    'add to the playbook this week. Flagging this explicitly rather than sending nothing: use ' +
-    repCfg.name + '\'s existing playbook for this session, built from the full call history.\n\n' +
-    repCfg.name + '\'s playbook: ' + DASHBOARD_URL_ + 'reps/' + repCfg.name +
-    '\n\n— Sent automatically ahead of this week\'s session.';
+    'No flagged calls for ' + repCfg.name + ' last week (' + windowLabel + ') — nothing new to train on for ' +
+    'objections this session. Per Kris\'s ask, this is deliberately NOT a pointer back to older material — ' +
+    'training should stay scoped to what actually happened last week.\n\n' +
+    '— Sent automatically ahead of this week\'s session.';
 
-  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no new calls this week, use historic playbook', body, {
+  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no flagged calls last week', body, {
     cc: CONFIG.KRIS_EMAIL,
     name: 'Training Prep Bot'
   }, 2);
