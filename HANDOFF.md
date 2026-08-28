@@ -1,4 +1,170 @@
-# Handoff — 25/08/2026 (session 11 — analytic score shadow mode, QA report §1.4)
+# Handoff — 28/08/2026 (session 12 — GHL integration built, Inbox SLA alias bug fixed, Reply Tracker bug found)
+
+## 0. What happened this session (read this first)
+
+Three separate threads: (1) built out the GoHighLevel CRM integration from
+scratch through a real (but not-yet-enabled) data backfill, (2) found and
+fixed a real production bug in the Inbox SLA check, (3) found but did NOT
+yet fix a real bug in the Reply Tracker's per-lead metrics. Also several
+smaller fixes carried over from immediately before this session's context
+was summarized (playbook corrections, email formatting). All `.gs` changes
+this session were pushed straight to `main` (branch workflow dropped
+partway through — Kris's explicit call, see commit history for the exact
+point).
+
+### 1. GoHighLevel (GHL) CRM integration — built, mostly still preview-only
+
+New file **Phase9_GhlSync.gs**, new doc **GHL_PIPELINE_MAP.md** (full survey
+of all 6 GHL pipelines/stages, keep reading this before touching anything
+GHL-related further).
+
+- `previewGhlConnection()` — read-only, dumps every pipeline+stage ID. Run
+  and confirmed working live.
+- `previewGhlMatching()` — read-only, samples ~16 Sales Call Log rows,
+  resolves each to a GHL contact by name. First real run: only 4/16
+  confident matches, one real bug found and fixed (`/opportunities/search`
+  needs snake_case `location_id`/`contact_id`, not camelCase — GHL's v2 API
+  is genuinely inconsistent about this across endpoint groups).
+- **Real data-quality bug found and fixed at the source**: Sean/Joana/
+  Tomás's Prospect Name column had filename cruft ("1/21 Anthony Camperi",
+  "Will Salinas SC.mp4") breaking every GHL name search. Fixed going
+  forward (`cleanProspectNameForSheet_` in `Phase2_CallScoring.gs`, applied
+  at write time + dedup-key computation) AND retroactively — Kris ran
+  `repairProspectNames()` live, **315 rows corrected** in the production
+  Sales Call Log, confirmed idempotent (immediate re-run found 0 more).
+- **Second real bug found and fixed**: GHL's contact search can return
+  completely unrelated contacts (5 for "Desiree Doggett", zero name
+  overlap) instead of an empty list. Added `contactNameLooksLikeQuery_`
+  name-similarity filter so garbage results read as "no match," not a
+  false "ambiguous" or (worse) a false "confident" match.
+- Re-ran `previewGhlMatching()` after both fixes: **11/16 confident, 1
+  ambiguous, 4 no-match, 0 search failures** — up from 4/16. The 4
+  no-matches (all Tomás, all 28/08 same afternoon) are **confirmed real,
+  not a bug**: Tomás's answers + a podcast-tracker xlsx Kris provided
+  confirmed Lucy Quiñones is a real lead tracked entirely in a separate
+  "Icons of Real Estate Podcast Tracker" Google Sheet
+  (docs.google.com/spreadsheets/d/1EkZ03TUMxWbTu6L7mu08tLHXofNqD79y3hqFdBzcWNE),
+  never in GHL at all — exact email match confirmed
+  (`lucyqpa@gmail.com`). Chelsea Fernandez/Monique Lewis/Salisia Murray are
+  also real 2024 leads not found in GHL, source unconfirmed. Written up as
+  **finding E** in `GHL_PIPELINE_MAP.md` — a "no GHL match" must be treated
+  as its own category (lead lives elsewhere / predates tracking), never
+  auto-treated as broken data.
+- **Built the actual backfill** (items 1-2 of `GHL_PIPELINE_MAP.md`'s
+  ranked plan): `previewGhlSync()` (read-only, full-sheet scan) and
+  `syncGhlEmailAndDisposition_()` (the live write — gated by
+  `GHL_CONFIG.ENABLED`, **still false**). Fills blank Prospect Email and
+  Outcome Disposition from the matched GHL contact/opportunity; never
+  overwrites anything already there; flags (writes nothing for) a contact
+  whose opportunities imply conflicting dispositions across pipelines
+  rather than guessing; time-boxed (`GHL_SYNC_TIME_BUDGET_MS_`, same
+  pattern as `INBOX_SLA_TIME_BUDGET_MS_`) since a full ~439-row scan can
+  cost up to 2 GHL calls/row.
+
+**Not done yet**: Kris has NOT yet run `previewGhlSync()` on the real
+sheet. That's the immediate next step before `GHL_CONFIG.ENABLED` can be
+considered. Also still open, unanswered by Kris — see
+`GHL_PIPELINE_MAP.md`'s "Open questions" section: Cold Calling 2's 619
+"Qualification Call Booked" count (real or import artifact?), who Bruno/
+Simon/Ty and assignee initials SC/JP/BO/PC/KD/AA are and whether their
+calls should be scored, the unused-looking "…Booked" stages reading 0 in
+ICONS Podcast, what the "Advanced filters (1)" chip on every GHL board
+actually filters, and whether the Remarketing chase ladder (Dial 2/3/
+Social DM/Tomas Email) is meant to be used.
+
+### 2. Inbox SLA false positive — real bug found and fixed, deployed
+
+Bens got flagged for an email he'd already replied to. Root cause
+(confirmed by Kris): Sean and Bens' `@iconsofrealestate.com` and
+`@ardorseo.com` addresses are the SAME GSuite mailbox — either can be the
+`From` address on a message they send — but
+`findUnansweredThreadsForRep_` (`Phase4_InboxSLA.gs`) only ever compared
+against one hardcoded address. Fixed: added `aliases` to each rep in
+`INBOX_SLA_CONFIG.REPS` (`sean@ardorseo.com`/`bens@ardorseo.com`) and a new
+`repOwnEmails_()` helper; the "did the rep answer" check now matches any of
+a rep's own addresses. **Deployed live** (`git pull` + `clasp push`
+confirmed done by Kris) — takes effect on tomorrow's 18:00 run.
+
+Separately raised, deliberately NOT actioned: Bens' complaint that the
+bot also flags pure-FYI ICONS-internal broadcast emails ("your episode is
+LIVE", promo-kit notices). **Kris's explicit call: skip this, tell Bens to
+archive them manually instead** (that's the only lever that actually
+works — the bot only checks `in:inbox`, never read/unread status, so
+marking read/unread does nothing).
+
+### 3. Reply Tracker — real bug found, NOT yet fixed, needs real sample data
+
+Kris flagged the "Sales Review - Daily Tracker" email as inaccurate: 131
+replies today but "0% booked themselves / 0% booked to QC" AND only "6
+leads who replied this period" (should be closer to 131). Root cause
+theory, strongly supported by this file's own header comment: **`Phase8_
+ReplyTracker.gs`'s "Lead Email" is extracted from the forwarded message's
+own `From` header** (`extractEmailAddress_(msg.fromRaw)` in
+`classifyNewReplies`), which per that file's documented finding is very
+likely `network@ardorseo.com` (the Maildoso forwarding relay) on most/all
+threads — NOT the real lead's address. That would explain both symptoms:
+per-lead grouping in `computeReplyStats_` collapses to almost nothing, and
+`reconcileBookingOutcomes_`'s join to the booking tracker (keyed by lead
+email) never matches, permanently reading 0%.
+
+**Not yet fixed** — need real evidence before touching the extraction
+logic (same discipline as every other fix this session): either a couple
+of real rows from the "Reply Tracker" sheet tab's `From`/`Lead Email`
+columns, or the raw "From:" line + quoted forwarded-header block from one
+of Joana's actual forwarded reply emails, to see the real Maildoso forward
+format and extract the actual lead address correctly (probably from the
+quoted header block in the body text, not the envelope `From`).
+
+### 4. Carried over from just before this session's context was summarized
+
+- **Objection Handling Playbook factual fixes** (`Phase1_ComplianceCheck.gs`):
+  removed "Dana Hindman-Allen" miscategorization from Bens' playbook
+  (count 2→1, live sheet patched too) and the disputed "Mark Vincent
+  Fansler" example from Joana's playbook (count 4→3) — both per Tomás's
+  review feedback.
+- **Handoff Brief and Reply Tracker emails** got HTML formatting (colored
+  section labels, bold key facts) per Kris's ask that they "needs colour
+  and bolding." Reply Tracker subject changed to "Sales Review - Daily
+  Tracker".
+- **Playbook review rewritten to be strictly week-scoped** — per Kris's
+  explicit instruction ("training should focus on only the calls that
+  happened in the previous week... don't want to revisit OLD issues").
+  Removed the old cumulative/watermark-based logic entirely from
+  `Phase1_ComplianceCheck.gs`. `PLAYBOOK_REVIEW_CONFIG.ENABLED` flipped to
+  `true`, and `installPlaybookReviewTrigger()` confirmed run live —
+  weekly, Tuesdays 8am America/New_York.
+
+## 1. Deploy status
+
+Everything through commit `0691a0a` (Inbox SLA alias fix) is confirmed
+deployed — Kris ran `git pull && clasp push` and confirmed. Nothing
+`.gs`-side is currently un-deployed as of the end of this session. No
+dashboard (`tools/dashboard/`) changes were made this session — nothing to
+deploy there.
+
+## 2. What a human needs to do next, in rough priority order
+
+1. **Get real sample data for the Reply Tracker "Lead Email" bug** (§3
+   above) — this is actively producing a misleading daily email (0%
+   booked, wrong lead counts) and is the highest-value fix outstanding.
+2. **Run `previewGhlSync()`** (`Phase9_GhlSync.gs`) and review the output
+   before considering flipping `GHL_CONFIG.ENABLED`.
+3. Answer the open `GHL_PIPELINE_MAP.md` questions (§1 above) whenever
+   convenient — nothing is blocked on them except completing the GHL→Rep
+   mapping for calls outside `CONFIG.REPS`.
+4. Confirm tomorrow that Bens' specific false-positive thread stops
+   getting flagged post-deploy, and that he's archiving the FYI-only
+   broadcast emails per the "ignore, tell him to archive" decision above.
+
+## 3. Test suite
+
+`tests/run_tests.js`: **137 → 153** this session (name-similarity filter,
+the GHL email/disposition backfill's fixes/conflict/time-budget behavior,
+the Inbox SLA alias fix). All passing.
+
+---
+
+
 
 ## 0. What happened this session (read this first) — SHADOW MODE ONLY, NOTHING LIVE CHANGED
 
