@@ -90,6 +90,9 @@ function buildHandoffBriefSystemPrompt_() {
     '   to address what they said above",',
     '  "unresolved_objections": "string — objections raised on this call that were NOT fully put to',
     '   rest, so the next rep can pre-empt them; \\"None identified\\" if the prior call resolved everything",',
+    '  "prospect_links": "string — any website, social media handle, or company page URL the LEAD actually',
+    '   said or spelled out on this call, comma-separated; \\"Not mentioned on this call\\" if none were —',
+    '   never guess, infer, or construct a URL that was not stated verbatim",',
     '  "other_notes": "string — anything else worth knowing before joining: rapport details, promises',
     '   made, scheduling quirks, tone/personality notes; \\"None\\" if nothing stands out"',
     '}'
@@ -102,6 +105,7 @@ function isValidHandoffBriefSchema_(obj) {
     typeof obj.issues_and_goals === 'string' &&
     typeof obj.podcast_fit_angle === 'string' &&
     typeof obj.unresolved_objections === 'string' &&
+    typeof obj.prospect_links === 'string' &&
     typeof obj.other_notes === 'string');
 }
 
@@ -143,6 +147,7 @@ function generateHandoffBrief_(ctx) {
     issues_and_goals: 'See Apps Script log for the raw model output; read the prior transcript directly.',
     podcast_fit_angle: 'Not available — generation failed.',
     unresolved_objections: 'Not available — generation failed.',
+    prospect_links: 'Not available — generation failed.',
     other_notes: 'Not available — generation failed.',
     _parseFailed: true
   };
@@ -266,6 +271,9 @@ function buildHandoffBriefEmailBody_(brief, ctx) {
     'OBJECTIONS NOT YET RESOLVED',
     brief.unresolved_objections,
     '',
+    'WEBSITE / SOCIAL MEDIA',
+    brief.prospect_links,
+    '',
     'ANYTHING ELSE WORTH KNOWING',
     brief.other_notes,
     '',
@@ -279,9 +287,20 @@ function buildHandoffBriefEmailBody_(brief, ctx) {
  * a wall of plain text otherwise. escapeHtml_ (Phase4_InboxSLA.gs) guards
  * every AI-generated/dynamic field since this is raw HTML, not Jinja. */
 function buildHandoffBriefEmailHtml_(brief, ctx) {
-  function section(label, text) {
+  function section(label, text, linkify) {
+    var escaped = escapeHtml_(text);
+    // Joana's ask (28/08/2026): make website/social links Kris actually clicks,
+    // not plain text he has to copy-paste. Only ever wraps a URL the model
+    // already extracted verbatim from the transcript (isValidHandoffBriefSchema_
+    // enforces that field is always a string) — this never invents a link.
+    if (linkify) {
+      escaped = escaped.replace(/((?:https?:\/\/|www\.)[^\s,<]+)/g, function (url) {
+        var href = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+        return '<a href="' + href + '" style="color:#1a56db;">' + url + '</a>';
+      });
+    }
     return '<p style="margin:0 0 4px 0;"><strong style="color:#1a56db;">' + label + '</strong></p>' +
-      '<p style="margin:0 0 16px 0;">' + escapeHtml_(text).replace(/\n/g, '<br>') + '</p>';
+      '<p style="margin:0 0 16px 0;">' + escaped.replace(/\n/g, '<br>') + '</p>';
   }
   return (
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
@@ -295,6 +314,7 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
     section('THEIR ISSUES / GOALS', brief.issues_and_goals) +
     section('HOW PODCASTING FITS', brief.podcast_fit_angle) +
     section('OBJECTIONS NOT YET RESOLVED', brief.unresolved_objections) +
+    section('WEBSITE / SOCIAL MEDIA', brief.prospect_links, true) +
     section('ANYTHING ELSE WORTH KNOWING', brief.other_notes) +
     '<p style="color:#666;font-size:12px;">— Automated handoff brief, generated from ' +
     escapeHtml_(ctx.priorRep) + '\'s call transcript by AI.<br>Reply to Kris or Tomás with any issues.</p>' +

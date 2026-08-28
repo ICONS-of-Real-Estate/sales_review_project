@@ -2487,3 +2487,72 @@ test('checkDailyPracticeCompliance_ end-to-end: a file claimed by a row that has
     gas.DriveApp = originalDriveApp;
   }
 });
+
+test('isValidHandoffBriefSchema_ requires prospect_links (Joana\'s ask, 28/08/2026: handoff briefs should surface any website/social media the lead mentioned)', () => {
+  assert.equal(gas.isValidHandoffBriefSchema_({
+    lead_summary: 'a', issues_and_goals: 'b', podcast_fit_angle: 'c',
+    unresolved_objections: 'd', prospect_links: 'e', other_notes: 'f'
+  }), true);
+  assert.equal(gas.isValidHandoffBriefSchema_({
+    lead_summary: 'a', issues_and_goals: 'b', podcast_fit_angle: 'c',
+    unresolved_objections: 'd', other_notes: 'f'
+  }), false);
+});
+
+test('buildHandoffBriefEmailBody_ includes a WEBSITE / SOCIAL MEDIA section with the extracted links', () => {
+  const brief = {
+    lead_summary: 'Runs a boutique brokerage.',
+    issues_and_goals: 'Wants more inbound leads.',
+    podcast_fit_angle: 'Podcast builds authority.',
+    unresolved_objections: 'None identified',
+    prospect_links: 'https://acmerealty.com, instagram.com/acmerealty',
+    other_notes: 'None'
+  };
+  const ctx = {
+    nextRepFirstName: 'Joana', prospectName: 'Crystal Gargiulo', nextCallType: 'QC',
+    nextCallDateStr: '29/08/2026', nextCallTimeStr: '10:00',
+    priorRep: 'Bens', priorCallDateStr: '28/08/2026', priorCallType: 'Recording'
+  };
+  const body = gas.buildHandoffBriefEmailBody_(brief, ctx);
+  assert.ok(body.indexOf('WEBSITE / SOCIAL MEDIA') !== -1);
+  assert.ok(body.indexOf('https://acmerealty.com, instagram.com/acmerealty') !== -1);
+});
+
+test('buildHandoffBriefEmailHtml_ renders the extracted links as clickable <a> tags, not plain text', () => {
+  const brief = {
+    lead_summary: 'a', issues_and_goals: 'b', podcast_fit_angle: 'c',
+    unresolved_objections: 'None identified',
+    prospect_links: 'https://acmerealty.com, www.instagram.com/acmerealty',
+    other_notes: 'None'
+  };
+  const ctx = {
+    nextRepFirstName: 'Joana', prospectName: 'Crystal Gargiulo', nextCallType: 'QC',
+    nextCallDateStr: '29/08/2026', nextCallTimeStr: '10:00',
+    priorRep: 'Bens', priorCallDateStr: '28/08/2026', priorCallType: 'Recording'
+  };
+  const html = gas.buildHandoffBriefEmailHtml_(brief, ctx);
+  assert.ok(html.indexOf('<a href="https://acmerealty.com"') !== -1);
+  assert.ok(html.indexOf('<a href="https://www.instagram.com/acmerealty"') !== -1);
+});
+
+test('buildHandoffBriefEmailHtml_ does not linkify a plain "Not mentioned on this call" value', () => {
+  const brief = {
+    lead_summary: 'a', issues_and_goals: 'b', podcast_fit_angle: 'c',
+    unresolved_objections: 'None identified',
+    prospect_links: 'Not mentioned on this call',
+    other_notes: 'None'
+  };
+  const ctx = {
+    nextRepFirstName: 'Joana', prospectName: 'Crystal Gargiulo', nextCallType: 'QC',
+    nextCallDateStr: '29/08/2026', nextCallTimeStr: '10:00',
+    priorRep: 'Bens', priorCallDateStr: '28/08/2026', priorCallType: 'Recording'
+  };
+  const html = gas.buildHandoffBriefEmailHtml_(brief, ctx);
+  assert.ok(html.indexOf('<a href') === -1);
+  assert.ok(html.indexOf('Not mentioned on this call') !== -1);
+});
+
+test('guessCallTypeFromTitle_ falls back to bare "call" when no known call type keyword is in the title (real bug spotted live 28/08/2026: produced "your call call in ~24 hrs")', () => {
+  assert.equal(gas.guessCallTypeFromTitle_('Crystal Gargiulo / ICONS of Real Estate'), 'call');
+  assert.equal(gas.guessCallTypeFromTitle_('Podcast Qualification Call / Tom Wood'), 'QC');
+});
