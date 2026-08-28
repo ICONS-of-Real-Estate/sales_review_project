@@ -2186,6 +2186,71 @@ test('selectLateDailyPracticeFileName_ falls through to the next candidate when 
   assert.equal(gas.selectLateDailyPracticeFileName_(excludingClaimed, '260825'), '260828  next best');
 });
 
+// Minimal DriveApp-shaped fakes for listDailyPracticeFilesRecursive_/findDailyPracticeFileByName_.
+// next() advances its own index eagerly (not lazily on .getName()) — matching real
+// Apps Script FileIterator behavior. A prior version of this mock advanced lazily,
+// which caused a real infinite loop against code that stores the returned file
+// before reading its name (confirmed live 28/08/2026 while adding these helpers).
+function fakeFileIterator_(names) {
+  let i = 0;
+  return { hasNext: () => i < names.length, next: () => { const n = names[i]; i++; return { getName: () => n }; } };
+}
+function fakeDriveFolder_(rootNames, subfolders) {
+  return {
+    getFiles: () => fakeFileIterator_(rootNames),
+    getFilesByName: (name) => {
+      const found = rootNames.indexOf(name) !== -1;
+      let served = false;
+      return { hasNext: () => found && !served, next: () => { served = true; return { getName: () => name }; } };
+    },
+    getFolders: () => {
+      const subs = (subfolders || []).map((names) => fakeDriveSubfolder_(names));
+      let i = 0;
+      return { hasNext: () => i < subs.length, next: () => { const s = subs[i]; i++; return s; } };
+    }
+  };
+}
+function fakeDriveSubfolder_(names) {
+  return {
+    getFiles: () => fakeFileIterator_(names),
+    getFilesByName: (name) => {
+      const found = names.indexOf(name) !== -1;
+      let served = false;
+      return { hasNext: () => found && !served, next: () => { served = true; return { getName: () => name }; } };
+    }
+  };
+}
+
+test('listDailyPracticeFilesRecursive_ includes files directly in the folder plus one level into each subfolder (real bug, confirmed live 28/08/2026: Bens\' Zoom exports landed inside a same-named subfolder — DriveApp.getFiles() never recurses, so 5 real completed drills were invisible to every scan in this file)', () => {
+  const folder = fakeDriveFolder_(
+    ['260819  root file'],
+    [['260827_objection_practice.mp4', '260827.txt'], ['260826_objection_practice.mp4']]
+  );
+  // .join() on a string comparison sidesteps deepEqual across the gas vm
+  // realm's Array vs. the test file's own Array (same class of issue as
+  // resolveDailyPracticeFileMatches_'s object-identity fix above).
+  const names = gas.listDailyPracticeFilesRecursive_(folder).map((f) => f.getName()).sort().join('|');
+  assert.equal(names, ['260819  root file', '260826_objection_practice.mp4', '260827.txt', '260827_objection_practice.mp4'].sort().join('|'));
+});
+
+test('listDailyPracticeFilesRecursive_ does not descend two levels — only the folder itself and its immediate subfolders', () => {
+  const folder = fakeDriveFolder_(['top.mp4'], [['nested.mp4']]);
+  const names = gas.listDailyPracticeFilesRecursive_(folder).map((f) => f.getName()).sort().join('|');
+  assert.equal(names, ['nested.mp4', 'top.mp4'].join('|'));
+});
+
+test('findDailyPracticeFileByName_ finds a file that only exists one level into a subfolder, not just directly in the folder', () => {
+  const folder = fakeDriveFolder_(['unrelated.mp4'], [['260827_objection_practice.mp4']]);
+  const found = gas.findDailyPracticeFileByName_(folder, '260827_objection_practice.mp4');
+  assert.ok(found, 'expected to find the nested file');
+  assert.equal(found.getName(), '260827_objection_practice.mp4');
+});
+
+test('findDailyPracticeFileByName_ returns null (not throw) when the name exists nowhere', () => {
+  const folder = fakeDriveFolder_(['unrelated.mp4'], [['also-unrelated.mp4']]);
+  assert.equal(gas.findDailyPracticeFileByName_(folder, '260827_objection_practice.mp4'), null);
+});
+
 test('resolveDailyPracticeFileMatches_ never lets a late-fallback match steal another row\'s own exact match, regardless of processing order (real bug: 260825, processed first in sheet order, grabbed 260827\'s own exact file via late-fallback before 260827 got a turn)', () => {
   const rows = [{ dateStr: '260825' }, { dateStr: '260827' }]; // 260825 listed first, as it is in the real sheet
   const candidateNames = ['260827  budget/partner/hospital'];
@@ -2290,13 +2355,14 @@ test('checkDailyPracticeCompliance_ end-to-end: repairing a double-claim in one 
     const fakeFolder = {
       getFiles: () => {
         let i = 0;
-        return { hasNext: () => i < folderFileNames.length, next: () => ({ getName: () => folderFileNames[i++] }) };
+        return { hasNext: () => i < folderFileNames.length, next: () => { const name = folderFileNames[i]; i++; return { getName: () => name }; } };
       },
       getFilesByName: (name) => {
         let served = false;
         const exists = folderFileNames.indexOf(name) !== -1;
         return { hasNext: () => exists && !served, next: () => { served = true; return { getName: () => name }; } };
-      }
+      },
+      getFolders: () => ({ hasNext: () => false }) // no subfolders in this scenario
     };
     gas.DriveApp = { getFolderById: () => fakeFolder };
 
@@ -2339,9 +2405,10 @@ test('checkDailyPracticeCompliance_ end-to-end: a file claimed by a row that has
     const fakeFolder = {
       getFiles: () => {
         let i = 0;
-        return { hasNext: () => i < folderFileNames.length, next: () => ({ getName: () => folderFileNames[i++] }) };
+        return { hasNext: () => i < folderFileNames.length, next: () => { const name = folderFileNames[i]; i++; return { getName: () => name }; } };
       },
-      getFilesByName: () => ({ hasNext: () => false, next: () => { throw new Error('should not be called'); } })
+      getFilesByName: () => ({ hasNext: () => false, next: () => { throw new Error('should not be called'); } }),
+      getFolders: () => ({ hasNext: () => false }) // no subfolders in this scenario
     };
     gas.DriveApp = { getFolderById: () => fakeFolder };
 

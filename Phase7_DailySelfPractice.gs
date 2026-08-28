@@ -269,9 +269,45 @@ function dailyPracticeFeedbackDocName_(transcriptDocName) {
   return transcriptDocName.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
 }
 
+/**
+ * Files directly in `folder`, PLUS one level into any of its subfolders.
+ * Real bug (confirmed live 28/08/2026): Bens' Zoom-exported recordings
+ * landed inside a same-named subfolder (e.g. a "260827_objection_practice.mp4"
+ * FOLDER containing the actual .mp4 inside it) instead of directly in his
+ * practice folder — DriveApp.getFiles() never recurses, so every scan in
+ * this file was completely blind to 5 real completed drills, going back to
+ * 260819. transcribe_daily_practice.py apparently does recurse (real
+ * Transcript docs already existed for these), so this brings the grading
+ * side in line with it rather than requiring every rep to avoid ever
+ * nesting an upload. Returns a flat array of File objects.
+ */
+function listDailyPracticeFilesRecursive_(folder) {
+  var out = [];
+  var files = folder.getFiles();
+  while (files.hasNext()) out.push(files.next());
+  var subfolders = folder.getFolders();
+  while (subfolders.hasNext()) {
+    var subFiles = subfolders.next().getFiles();
+    while (subFiles.hasNext()) out.push(subFiles.next());
+  }
+  return out;
+}
+
+/** Finds a file by exact name in `folder` or one level into a subfolder — same recursion as listDailyPracticeFilesRecursive_. Returns the File or null. */
+function findDailyPracticeFileByName_(folder, name) {
+  var direct = folder.getFilesByName(name);
+  if (direct.hasNext()) return direct.next();
+  var subfolders = folder.getFolders();
+  while (subfolders.hasNext()) {
+    var match = subfolders.next().getFilesByName(name);
+    if (match.hasNext()) return match.next();
+  }
+  return null;
+}
+
 /** True if a "<title> — Feedback" Doc already sits next to this practice file. */
 function dailyPracticeAlreadyGraded_(folder, fileName) {
-  return folder.getFilesByName(dailyPracticeFeedbackDocName_(fileName)).hasNext();
+  return !!findDailyPracticeFileByName_(folder, dailyPracticeFeedbackDocName_(fileName));
 }
 
 /**
@@ -383,16 +419,14 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
     if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping.'); return; }
 
     var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
-    var files = folder.getFiles();
     var found = 0, processed = 0;
 
-    while (files.hasNext()) {
-      var file = files.next();
+    listDailyPracticeFilesRecursive_(folder).forEach(function (file) {
       var name = file.getName();
-      if (!isDailyPracticeTranscriptDocName_(name)) continue; // skip source videos and anything not actually ending in "— Transcript"
+      if (!isDailyPracticeTranscriptDocName_(name)) return; // skip source videos and anything not actually ending in "— Transcript"
       found++;
 
-      if (!dryRun && dailyPracticeAlreadyGraded_(folder, name)) continue;
+      if (!dryRun && dailyPracticeAlreadyGraded_(folder, name)) return;
 
       var text = getTranscriptText_(file);
       var result = gradeDailyPracticeTranscript_(rep, text, name);
@@ -401,11 +435,11 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
       var replyThreadId = findDailyPracticeFollowupThreadForFile_(rep, name);
 
       var delivered = deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId);
-      if (dryRun) continue;
-      if (!delivered) continue; // send failed/skipped — leave the thread row (if any) untouched so it's retried, not marked graded
+      if (dryRun) return;
+      if (!delivered) return; // send failed/skipped — leave the thread row (if any) untouched so it's retried, not marked graded
       if (replyThreadId) markDailyPracticeFollowupGraded_(rep, replyThreadId);
       processed++;
-    }
+    });
 
     log_('[' + rep + '] ' + found + ' transcript(s) found, ' + processed + ' graded this run.');
   });
@@ -864,11 +898,10 @@ function checkDailyPracticeCompliance_(dryRun) {
     var alreadyClaimed = claimedByRep[rep] || {};
     var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
     var candidateNames = [];
-    var files = folder.getFiles();
-    while (files.hasNext()) {
-      var name = files.next().getName();
+    listDailyPracticeFilesRecursive_(folder).forEach(function (f) {
+      var name = f.getName();
       if (!/Transcript|Feedback/i.test(name) && !alreadyClaimed[name]) candidateNames.push(name);
-    }
+    });
     var matches = resolveDailyPracticeFileMatches_(unmatched, candidateNames);
     unmatched.forEach(function (r) {
       if (!matches[r.dateStr]) return;
@@ -920,8 +953,7 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[row.rep]);
     var namedFile = null;
     if (row.matchedFile) {
-      var pinned = folder.getFilesByName(row.matchedFile);
-      namedFile = pinned.hasNext() ? pinned.next() : null;
+      namedFile = findDailyPracticeFileByName_(folder, row.matchedFile);
     }
 
     if (row.status === 'open') {
@@ -996,13 +1028,12 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     // — stripping the extension here built a name that never matched the doc
     // that actually exists, so a graded file's transcript was never found and
     // the row sat "waiting on transcription" forever).
-    var transcriptDoc = folder.getFilesByName(namedFile.getName() + ' — Transcript');
-    if (!transcriptDoc.hasNext()) {
+    var transcriptFile = findDailyPracticeFileByName_(folder, namedFile.getName() + ' — Transcript');
+    if (!transcriptFile) {
       log_('[' + row.rep + '/' + row.dateStr + '] "' + namedFile.getName() +
         '" received, waiting on transcription before it can be graded.');
       return;
     }
-    var transcriptFile = transcriptDoc.next();
     var transcriptName = transcriptFile.getName();
     if (!dryRun && dailyPracticeAlreadyGraded_(folder, transcriptName)) {
       sheet.getRange(row.rowIndex, 4).setValue('graded');
