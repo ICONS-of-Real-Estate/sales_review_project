@@ -770,6 +770,55 @@ function repairDuplicateDailyPracticeFileClaims_(sheet, allRows, dryRun) {
   });
 }
 
+/**
+ * Resolves file matches for every still-unmatched row of ONE rep in a
+ * single pass, so an exact match for one row's own date can never be
+ * pre-empted by another row's late-submission fallback claiming it first.
+ * Real bug (confirmed live 28/08/2026): rows were being resolved one at a
+ * time in sheet order with a claim snapshot taken once at the start of the
+ * run — 260825 (processed before 260827 in sheet order) grabbed 260827's
+ * OWN exact-match file via late-fallback before 260827 ever got a turn,
+ * because nothing updated the claim set mid-run. Exact matches (a file
+ * whose name starts with the row's own dateStr) are claimed first, for
+ * EVERY row, before any late-fallback runs at all — a row's own exact
+ * match can never be stolen by another row's fallback. Only rows still
+ * unmatched after that go through selectLateDailyPracticeFileName_,
+ * processed in dateStr order so the earliest outstanding assignment gets
+ * first claim on the earliest qualifying late file.
+ *
+ * rows: [{dateStr}] — every active row for this rep still needing a match.
+ * candidateNames: file names in the folder, already filtered by the caller
+ * to exclude generated Transcript/Feedback docs.
+ * Returns {dateStr: matchedFileName} — a dateStr with no match is omitted.
+ */
+function resolveDailyPracticeFileMatches_(rows, candidateNames) {
+  var remaining = candidateNames.slice();
+  var matches = {};
+  var stillUnmatched = [];
+
+  rows.forEach(function (r) {
+    var idx = -1;
+    for (var i = 0; i < remaining.length; i++) {
+      if (remaining[i].indexOf(r.dateStr) === 0) { idx = i; break; }
+    }
+    if (idx === -1) { stillUnmatched.push(r); return; }
+    matches[r.dateStr] = remaining[idx];
+    remaining.splice(idx, 1);
+  });
+
+  stillUnmatched
+    .slice()
+    .sort(function (a, b) { return Number(a.dateStr) - Number(b.dateStr); })
+    .forEach(function (r) {
+      var lateName = selectLateDailyPracticeFileName_(remaining, r.dateStr);
+      if (!lateName) return;
+      matches[r.dateStr] = lateName;
+      remaining.splice(remaining.indexOf(lateName), 1);
+    });
+
+  return matches;
+}
+
 function checkDailyPracticeCompliance_(dryRun) {
   RUN_TAG = 'checkDailyPracticeCompliance_';
   var now = new Date();
@@ -777,29 +826,42 @@ function checkDailyPracticeCompliance_(dryRun) {
   var allRows = loadDailyPracticeFollowupRows_(sheet, null);
   repairDuplicateDailyPracticeFileClaims_(sheet, allRows, dryRun);
 
-  // Real bug (confirmed live 28/08/2026): with no record of which file a row
-  // already matched, the late-submission fallback (selectLateDailyPracticeFileName_)
-  // matched the SAME file to two different rows for Sean at once (260825 and
-  // 260827 both landed on "260827 budget/partner/hospital") — every file a
-  // row has ever matched (row.matchedFile) is off-limits to every OTHER row
-  // for that rep, regardless of that row's own status, so a file can never
-  // be double-claimed across assignment days.
-  var claimedFilesByRep = {};
-  allRows.forEach(function (r) {
-    if (!r.matchedFile) return;
-    claimedFilesByRep[r.rep] = claimedFilesByRep[r.rep] || {};
-    claimedFilesByRep[r.rep][r.matchedFile] = true;
-  });
-
   var rows = allRows.filter(function (r) {
     return r.status === 'open' || r.status === 'file_received';
   });
 
   if (!rows.length) { log_('No open or pending daily-practice follow-ups.'); return; }
 
+  // Resolve every rep's still-unmatched rows TOGETHER (see
+  // resolveDailyPracticeFileMatches_) before any row-level nag/grading logic
+  // runs, and persist the result immediately — this also catches up any row
+  // that reached 'file_received' before Matched File tracking existed
+  // (confirmed live 28/08/2026: the column was empty even for an
+  // already-file_received row, which meant it kept re-deriving an untracked
+  // match every single run forever).
+  var byRep = {};
+  rows.forEach(function (r) { (byRep[r.rep] = byRep[r.rep] || []).push(r); });
+  Object.keys(byRep).forEach(function (rep) {
+    var unmatched = byRep[rep].filter(function (r) { return !r.matchedFile; });
+    if (!unmatched.length) return;
+    var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
+    var candidateNames = [];
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var name = files.next().getName();
+      if (!/Transcript|Feedback/i.test(name)) candidateNames.push(name);
+    }
+    var matches = resolveDailyPracticeFileMatches_(unmatched, candidateNames);
+    unmatched.forEach(function (r) {
+      if (!matches[r.dateStr]) return;
+      r.matchedFile = matches[r.dateStr];
+      if (!dryRun) sheet.getRange(r.rowIndex, 7).setValue(r.matchedFile);
+    });
+  });
+
   rows.forEach(function (row) {
     try {
-      checkDailyPracticeComplianceRow_(row, sheet, now, dryRun, claimedFilesByRep[row.rep] || {});
+      checkDailyPracticeComplianceRow_(row, sheet, now, dryRun);
     } catch (e) {
       // One row's Drive/Gmail hiccup must not abort every other rep's row in
       // this same pass (real risk: forEach has no per-iteration try/catch of
@@ -811,7 +873,7 @@ function checkDailyPracticeCompliance_(dryRun) {
   });
 }
 
-function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun, claimedFiles) {
+function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === row.rep; })[0];
     if (!repCfg) { log_('No CONFIG.REPS entry for "' + row.rep + '" — skipping row ' + row.rowIndex); return; }
 
@@ -833,44 +895,20 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun, claimedFiles)
       return;
     }
 
+    // Matching itself already happened for every rep in checkDailyPracticeCompliance_
+    // (resolveDailyPracticeFileMatches_) — row.matchedFile is either already
+    // set from that, or genuinely has no match this pass. Just resolve the
+    // File object here.
     var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[row.rep]);
     var namedFile = null;
-
     if (row.matchedFile) {
-      // Already pinned by an earlier pass — look it up directly by that
-      // exact name rather than re-scanning/re-matching the folder, so a
-      // once-claimed file can't drift to a different match on a later run.
       var pinned = folder.getFilesByName(row.matchedFile);
       namedFile = pinned.hasNext() ? pinned.next() : null;
-    } else {
-      var files = folder.getFiles();
-      while (files.hasNext()) {
-        var f = files.next();
-        if (f.getName().indexOf(row.dateStr) === 0 && !claimedFiles[f.getName()]) { namedFile = f; break; }
-      }
-      if (!namedFile) {
-        // See selectLateDailyPracticeFileName_ — handles a rep submitting late
-        // under that day's own real date instead of the assignment's date.
-        // claimedFiles excludes anything another row already pinned (see
-        // checkDailyPracticeCompliance_) so one file can't satisfy two days.
-        var lateFiles = folder.getFiles();
-        var lateCandidates = {}; // name -> File, so the winning name can be resolved back to a File object.
-        while (lateFiles.hasNext()) {
-          var f2 = lateFiles.next();
-          if (claimedFiles[f2.getName()]) continue;
-          lateCandidates[f2.getName()] = f2;
-        }
-        var lateName = selectLateDailyPracticeFileName_(Object.keys(lateCandidates), row.dateStr);
-        if (lateName) namedFile = lateCandidates[lateName];
-      }
     }
 
     if (row.status === 'open') {
       if (namedFile) {
-        if (!dryRun) {
-          sheet.getRange(row.rowIndex, 4).setValue('file_received');
-          sheet.getRange(row.rowIndex, 7).setValue(namedFile.getName()); // pin it — see claimedFiles above
-        }
+        if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('file_received');
         log_('[' + row.rep + '/' + row.dateStr + '] Correctly-named file landed ("' + namedFile.getName() +
           '") — stopping nag.' + (dryRun ? ' (preview — not written)' : ''));
         // Per Kris (28/08/2026): the file name only ever showed up in the
@@ -922,13 +960,17 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun, claimedFiles)
     // row.status === 'file_received' here (either already was, or just transitioned above).
     if (!namedFile) {
       // Real gap found live (28/08/2026, Sean's 260825 row): once a row is
-      // 'file_received' it's out of the nagging path entirely, so if the
-      // file that triggered that transition is later renamed/moved/deleted,
-      // this returns silently forever with no visible trace anywhere — the
-      // row just sits stuck with nothing to tell anyone it's stuck. Log it.
-      log_('[' + row.rep + '/' + row.dateStr + '] Row is file_received but no matching file exists in the folder ' +
-        'right now (renamed, moved, or deleted since?) — stuck until a file starting with ' + row.dateStr +
-        ' or later reappears.');
+      // 'file_received' it's out of the nagging path entirely, so if its
+      // file is gone now — renamed, moved, deleted, or (the actual case
+      // here) its earlier match got legitimately reassigned to the row that
+      // really owned it once double-claim resolution existed — it used to
+      // sit here silently forever with no visible trace and no reminder.
+      // Revert to 'open' so the normal nag path picks it back up on the
+      // next compliance pass instead.
+      if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('open');
+      log_('[' + row.rep + '/' + row.dateStr + '] Was file_received but no matching file exists right now ' +
+        '(renamed, moved, deleted, or reassigned to another day) — reverting to open so it gets nagged again.' +
+        (dryRun ? ' (preview — not written)' : ''));
       return;
     }
     // NOT .replace(/\.[^.]+$/, '') first: transcribe_daily_practice.py names

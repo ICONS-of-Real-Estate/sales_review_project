@@ -2160,6 +2160,36 @@ test('selectLateDailyPracticeFileName_ falls through to the next candidate when 
   assert.equal(gas.selectLateDailyPracticeFileName_(excludingClaimed, '260825'), '260828  next best');
 });
 
+test('resolveDailyPracticeFileMatches_ never lets a late-fallback match steal another row\'s own exact match, regardless of processing order (real bug: 260825, processed first in sheet order, grabbed 260827\'s own exact file via late-fallback before 260827 got a turn)', () => {
+  const rows = [{ dateStr: '260825' }, { dateStr: '260827' }]; // 260825 listed first, as it is in the real sheet
+  const candidateNames = ['260827  budget/partner/hospital'];
+  const matches = gas.resolveDailyPracticeFileMatches_(rows, candidateNames);
+  assert.equal(matches['260827'], '260827  budget/partner/hospital');
+  assert.equal(matches['260825'], undefined); // no file left for the late-fallback phase — must NOT get 260827's file
+});
+
+test('resolveDailyPracticeFileMatches_ gives a late file to the earliest still-unmatched row when there is no exact match for anyone', () => {
+  const rows = [{ dateStr: '260827' }, { dateStr: '260825' }]; // order shouldn't matter — sorted internally
+  const candidateNames = ['260828  only file available'];
+  const matches = gas.resolveDailyPracticeFileMatches_(rows, candidateNames);
+  assert.equal(matches['260825'], '260828  only file available');
+  assert.equal(matches['260827'], undefined); // only one file existed; the earlier assignment day claims it
+});
+
+test('resolveDailyPracticeFileMatches_ assigns exact matches for every row first, then late-fallback (earliest still-unmatched row first) only for what remains', () => {
+  const rows = [{ dateStr: '260825' }, { dateStr: '260826' }, { dateStr: '260827' }];
+  const candidateNames = ['260827  exact for 827', '260828  late candidate']; // 826 has no exact match
+  const matches = gas.resolveDailyPracticeFileMatches_(rows, candidateNames);
+  assert.equal(matches['260827'], '260827  exact for 827'); // exact match claimed first
+  assert.equal(matches['260825'], '260828  late candidate'); // earliest still-unmatched row claims the one remaining late candidate
+  assert.equal(matches['260826'], undefined); // nothing left for it this pass
+});
+
+test('resolveDailyPracticeFileMatches_ returns an empty result when there are no candidate files at all', () => {
+  const matches = gas.resolveDailyPracticeFileMatches_([{ dateStr: '260825' }], []);
+  assert.equal(Object.keys(matches).length, 0);
+});
+
 test('sortDailyPracticeFileClaimantsByRightfulOwner_ puts the claimant with the LARGEST dateStr first (real bug: "260827 budget/partner/hospital" got pinned to both the 260825 and 260827 rows for Sean before double-claim tracking existed — 260827 is the rightful match)', () => {
   const claimants = [
     { rep: 'Sean', dateStr: '260825', matchedFile: '260827  budget/partner/hospital' },
