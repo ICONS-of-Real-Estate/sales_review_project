@@ -853,11 +853,43 @@ function resolveDailyPracticeFileMatches_(rows, candidateNames) {
   return matches;
 }
 
+/**
+ * 'cancelled' is only ever supposed to mean "a real human replied cancel/
+ * stop on THIS assignment's own thread" — dailyPracticeThreadHasStopRequest_
+ * is the only code path that sets it. Real bug (confirmed live 28/08/2026):
+ * Bens' and Joana's 260824-260826 rows were all 'cancelled', but re-checking
+ * their tracked threads directly found no real cancel/stop message from
+ * Kris or Tomás anywhere. Root cause: sendDailyPracticeReminders_ used to
+ * find the just-sent thread via a racy GmailApp.search() (see
+ * guardedSendAndGetThread_'s own comment for the fix) that could track the
+ * WRONG thread — so the original cancel check was evaluating content that
+ * was never actually about this assignment. Re-verifies the same condition
+ * that would have produced 'cancelled' in the first place; reverts to
+ * 'open' if it no longer holds, so a row that should have been nagging the
+ * whole time actually starts nagging. A thread that genuinely still has a
+ * real stop request is left alone.
+ */
+function repairFalselyCancelledDailyPracticeRows_(sheet, allRows, dryRun) {
+  allRows.forEach(function (row) {
+    if (row.status !== 'cancelled') return;
+    if (!row.threadId) return; // nothing to re-verify against either way — leave as-is
+    var thread = null;
+    try { thread = GmailApp.getThreadById(row.threadId); } catch (e) { thread = null; }
+    if (thread && dailyPracticeThreadHasStopRequest_(thread)) return; // genuinely still cancelled
+    log_('[' + row.rep + '/' + row.dateStr + '] Was cancelled, but its tracked thread has no real cancel/stop ' +
+      'message (likely mistracked before the send-thread fix) — reverting to open.' +
+      (dryRun ? ' (preview — not written)' : ''));
+    if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('open');
+    row.status = 'open';
+  });
+}
+
 function checkDailyPracticeCompliance_(dryRun) {
   RUN_TAG = 'checkDailyPracticeCompliance_';
   var now = new Date();
   var sheet = getOrCreateDailyPracticeFollowupSheet_();
   var allRows = loadDailyPracticeFollowupRows_(sheet, null);
+  repairFalselyCancelledDailyPracticeRows_(sheet, allRows, dryRun);
   repairDuplicateDailyPracticeFileClaims_(sheet, allRows, dryRun);
 
   var rows = allRows.filter(function (r) {

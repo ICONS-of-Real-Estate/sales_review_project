@@ -2330,6 +2330,63 @@ test('repairDuplicateDailyPracticeFileClaims_ writes nothing in dry-run mode but
   assert.equal(rows[0].matchedFile, '');
 });
 
+function fakeStopThread_(messages) {
+  return { getMessages: () => messages };
+}
+function fakeStopMessage_(from, body) {
+  return { getFrom: () => from, getPlainBody: () => body };
+}
+
+test('repairFalselyCancelledDailyPracticeRows_ reverts a cancelled row to open when its tracked thread has no real cancel/stop message (real bug, confirmed live 28/08/2026: Bens\' and Joana\'s 260824-260826 rows were all cancelled with no actual stop reply anywhere on their real threads — a mistracked thread ID from before the send-thread fix)', () => {
+  const written = [];
+  const fakeSheet = { getRange: (rowIndex, col) => ({ setValue: (v) => written.push({ rowIndex, col, value: v }) }) };
+  const thread = fakeStopThread_([
+    fakeStopMessage_('Daily Practice Reminder Bot <kris@iconsofrealestate.com>', 'Record a video practicing objection handling...'),
+    fakeStopMessage_('bens@iconsofrealestate.com', 'Copy, will do')
+  ]);
+  gas.GmailApp = { getThreadById: () => thread };
+  const rows = [{ rowIndex: 5, rep: 'Bens', dateStr: '260824', status: 'cancelled', threadId: 'thread-abc' }];
+  gas.repairFalselyCancelledDailyPracticeRows_(fakeSheet, rows, false);
+  assert.equal(rows[0].status, 'open');
+  assert.deepEqual(written, [{ rowIndex: 5, col: 4, value: 'open' }]);
+});
+
+test('repairFalselyCancelledDailyPracticeRows_ leaves a row cancelled when its thread genuinely has a real cancel/stop reply from Kris or Tomás', () => {
+  const fakeSheet = { getRange: () => { throw new Error('must not write — this row is genuinely still cancelled'); } };
+  const thread = fakeStopThread_([
+    fakeStopMessage_('kris@iconsofrealestate.com', 'please cancel this one, not needed')
+  ]);
+  gas.GmailApp = { getThreadById: () => thread };
+  const rows = [{ rowIndex: 5, rep: 'Bens', dateStr: '260824', status: 'cancelled', threadId: 'thread-abc' }];
+  gas.repairFalselyCancelledDailyPracticeRows_(fakeSheet, rows, false);
+  assert.equal(rows[0].status, 'cancelled');
+});
+
+test('repairFalselyCancelledDailyPracticeRows_ leaves a row alone when it has no tracked thread at all — nothing to verify against', () => {
+  const fakeSheet = { getRange: () => { throw new Error('must not write — no thread to check'); } };
+  gas.GmailApp = { getThreadById: () => { throw new Error('must not be called'); } };
+  const rows = [{ rowIndex: 5, rep: 'Bens', dateStr: '260819', status: 'cancelled', threadId: '' }];
+  gas.repairFalselyCancelledDailyPracticeRows_(fakeSheet, rows, false);
+  assert.equal(rows[0].status, 'cancelled');
+});
+
+test('repairFalselyCancelledDailyPracticeRows_ ignores rows that aren\'t cancelled', () => {
+  const fakeSheet = { getRange: () => { throw new Error('must not write — not a cancelled row'); } };
+  gas.GmailApp = { getThreadById: () => { throw new Error('must not be called'); } };
+  const rows = [{ rowIndex: 5, rep: 'Bens', dateStr: '260827', status: 'open', threadId: 'thread-abc' }];
+  gas.repairFalselyCancelledDailyPracticeRows_(fakeSheet, rows, false);
+  assert.equal(rows[0].status, 'open');
+});
+
+test('repairFalselyCancelledDailyPracticeRows_ writes nothing in dry-run mode but still updates the in-memory row', () => {
+  const fakeSheet = { getRange: () => { throw new Error('must not write in dry-run'); } };
+  const thread = fakeStopThread_([]);
+  gas.GmailApp = { getThreadById: () => thread };
+  const rows = [{ rowIndex: 5, rep: 'Bens', dateStr: '260824', status: 'cancelled', threadId: 'thread-abc' }];
+  gas.repairFalselyCancelledDailyPracticeRows_(fakeSheet, rows, true);
+  assert.equal(rows[0].status, 'open');
+});
+
 test('checkDailyPracticeCompliance_ end-to-end: repairing a double-claim in one pass must not let the freed row immediately re-steal the same file from the rightful owner (real bug, confirmed live 28/08/2026: repair reverted 260825, then match-resolution re-pinned it to 260827\'s own file in the SAME run, because 260827 — already matched — never entered the "unmatched" set and so its file looked free in a plain folder scan)', () => {
   const originalSpreadsheetApp = gas.SpreadsheetApp;
   const originalDriveApp = gas.DriveApp;
