@@ -41,6 +41,17 @@
  * Outcome Disposition fix that would be applied. All three are entry
  * points (not the trailing-underscore versions — Apps Script's "Select
  * function" dropdown hides those), call no writes, and send nothing.
+ *
+ * Once previewGhlSync()'s output looks right, flip GHL_CONFIG.ENABLED to
+ * true and run syncGhlEmailAndDisposition() once by hand to confirm a real
+ * write looks correct, THEN run installGhlSyncTrigger() so it keeps running
+ * on its own daily from then on — same "install after a clean preview"
+ * pattern as every other phase in this codebase (see CLAUDE.md). Without
+ * this trigger the sync only ever runs when someone remembers to trigger it
+ * by hand, which is exactly the kind of thing that stops happening after a
+ * week — Sean's real ask (28/08/2026) was for GHL No-Show status to keep
+ * his tracker current WITHOUT him manually doing anything, which only holds
+ * if this runs unattended.
  */
 
 var GHL_CONFIG = {
@@ -692,4 +703,32 @@ function syncGhlEmailAndDisposition_() {
   log_('syncGhlEmailAndDisposition_() done — updated ' + result.fixes.length + ' row(s) (' +
     result.stats.emailFixes + ' email, ' + result.stats.dispositionFixes + ' disposition).' +
     (result.truncated ? ' PARTIAL scan — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
+}
+
+/**
+ * ONE-TIME setup, run manually — ONLY after previewGhlSync() has been
+ * reviewed and GHL_CONFIG.ENABLED has been flipped to true (see this file's
+ * header). Installs a daily trigger for syncGhlEmailAndDisposition_ using
+ * the same reinstallHourlyTrigger_ helper every other phase's trigger
+ * installer uses (Phase2_CallScoring.gs) — safe to re-run, replaces any
+ * existing trigger for this handler rather than stacking duplicates.
+ *
+ * Daily, not hourly: GHL pipeline stage changes (a call resolving to
+ * Sold/Not Sold/No-show) don't need sub-day latency the way a live
+ * compliance nag does, and a full-sheet scan costs up to 2 GHL API calls per
+ * unresolved row — daily keeps that light. Re-run this (or just call
+ * syncGhlEmailAndDisposition() by hand) sooner if a fresher sync is ever
+ * needed.
+ */
+function installGhlSyncTrigger() {
+  RUN_TAG = 'installGhlSyncTrigger';
+  if (!GHL_CONFIG.ENABLED) {
+    log_('GHL_CONFIG.ENABLED is still false — the trigger will install, but syncGhlEmailAndDisposition_ ' +
+      'will no-op on every firing until you flip that (after reviewing previewGhlSync()\'s output).');
+  }
+  reinstallHourlyTrigger_('syncGhlEmailAndDisposition_', 24);
+  log_('GHL sync installed: syncGhlEmailAndDisposition_() now runs once a day. ' +
+    (GHL_CONFIG.ENABLED
+      ? 'GHL_CONFIG.ENABLED is true — Prospect Email / Outcome Disposition will be backfilled from GHL automatically.'
+      : 'GHL_CONFIG.ENABLED is still false — nothing will actually sync until you flip that.'));
 }
