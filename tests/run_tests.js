@@ -2579,27 +2579,3 @@ test('getAllTrackerRows_ treats a filled Outcome Disposition as logged, not just
     gas.SpreadsheetApp = originalSpreadsheetApp;
   }
 });
-
-test('sendDailyPracticeReminders_ tells the rep the upload is transcribed automatically (Kris\'s ask 28/08/2026, after Bens\' upload sat for hours looking silently stuck)', () => {
-  gas.Utilities = { formatDate: realFormatDate };
-  const originalEnabled = gas.DAILY_PRACTICE_CONFIG.ENABLED;
-  const originalProps = gas.PropertiesService;
-  const originalLogger = gas.Logger;
-  const logs = [];
-  gas.DAILY_PRACTICE_CONFIG.ENABLED = false; // preview mode: logs the body instead of sending
-  gas.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null }) };
-  gas.Logger = { log: (msg) => logs.push(msg) };
-  try {
-    gas.sendDailyPracticeReminders_();
-  } catch (e) {
-    // computeTrainingCycleLabel_ needs Date.now() to land on a real cycle day —
-    // if it doesn't (weekend), fall through and skip rather than fail the test.
-  }
-  gas.DAILY_PRACTICE_CONFIG.ENABLED = originalEnabled;
-  gas.PropertiesService = originalProps;
-  gas.Logger = originalLogger;
-  const joined = logs.join('\n');
-  if (!joined) return; // ran on a weekend in real time — nothing to assert
-  assert.ok(joined.indexOf('transcribed automatically') !== -1,
-    'expected the assignment email body to explain automatic transcription');
-});

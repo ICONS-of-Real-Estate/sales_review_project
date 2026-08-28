@@ -492,17 +492,6 @@ function sendDailyPracticeReminders_() {
     ' (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
   var namingLineHtml = 'Name the file starting with today\'s date, <b>' + dateStr +
     '</b> (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
-  // Kris's ask (28/08/2026, after Bens' upload sat for hours looking "stuck"
-  // with no explanation): the video is all a rep needs to upload — grading
-  // needs a transcript too, but that step is automatic and happens on its
-  // own. Without this line the gap between "uploaded" and "graded" reads as
-  // broken instead of as a normal, unattended background step.
-  var transcriptionLine = 'That\'s it — once the video lands, it\'s transcribed automatically in the ' +
-    'background (usually within a few hours) and graded from that transcript. No need to upload a transcript ' +
-    'yourself or do anything else after uploading.';
-  var transcriptionLineHtml = 'That\'s it — once the video lands, it\'s transcribed automatically in the ' +
-    'background (usually within a few hours) and graded from that transcript. No need to upload a transcript ' +
-    'yourself or do anything else after uploading.';
 
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
@@ -553,14 +542,12 @@ function sendDailyPracticeReminders_() {
         'Record a video practicing FRAMEWORK EXPLANATION — walk through this like you\'re actually pitching a lead:\n\n' +
         frameworkPlainList + '\n\n' +
         namingLine + '\n\n' +
-        transcriptionLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
         '<p>Record a video practicing <b>FRAMEWORK EXPLANATION</b> — walk through this like you\'re actually pitching a lead:</p>' +
         frameworkHtmlList +
         '<p>' + namingLineHtml + '</p>' +
-        '<p>' + transcriptionLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (assignCloseAskToday) {
@@ -570,7 +557,6 @@ function sendDailyPracticeReminders_() {
         '"' + closeAsk.label + '" — ' + closeAsk.note + '\n\n' +
         'Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.\n\n' +
         namingLine + '\n\n' +
-        transcriptionLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
@@ -578,7 +564,6 @@ function sendDailyPracticeReminders_() {
         '<p>"' + closeAsk.label + '" — ' + closeAsk.note + '</p>' +
         '<p>Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.</p>' +
         '<p>' + namingLineHtml + '</p>' +
-        '<p>' + transcriptionLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (objections && objections.length) {
@@ -592,7 +577,6 @@ function sendDailyPracticeReminders_() {
         'Record a video practicing objection handling (Agree, Isolate, Repeat):\n\n' +
         plainList + '\n\n' +
         namingLine + '\n\n' +
-        transcriptionLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
 
@@ -600,7 +584,6 @@ function sendDailyPracticeReminders_() {
         '<p>Record a video practicing objection handling (Agree, Isolate, Repeat):</p>' +
         htmlList +
         '<p>' + namingLineHtml + '</p>' +
-        '<p>' + transcriptionLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else {
@@ -609,14 +592,12 @@ function sendDailyPracticeReminders_() {
         'Record a video practicing objection handling (no specific objections on file yet — pick one you ' +
         'want to sharpen).\n\n' +
         namingLine + '\n\n' +
-        transcriptionLine + '\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
         '<p>Record a video practicing objection handling (no specific objections on file yet — pick one ' +
         'you want to sharpen).</p>' +
         '<p>' + namingLineHtml + '</p>' +
-        '<p>' + transcriptionLineHtml + '</p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     }
