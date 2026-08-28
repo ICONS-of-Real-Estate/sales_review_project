@@ -2264,3 +2264,52 @@ test('repairDuplicateDailyPracticeFileClaims_ writes nothing in dry-run mode but
   assert.equal(rows[0].status, 'open');
   assert.equal(rows[0].matchedFile, '');
 });
+
+test('checkDailyPracticeCompliance_ end-to-end: repairing a double-claim in one pass must not let the freed row immediately re-steal the same file from the rightful owner (real bug, confirmed live 28/08/2026: repair reverted 260825, then match-resolution re-pinned it to 260827\'s own file in the SAME run, because 260827 — already matched — never entered the "unmatched" set and so its file looked free in a plain folder scan)', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  try {
+    const recentTimestamp = new Date().toISOString();
+    // Row order matches the live sheet: 260825 before 260827.
+    const data = [
+      ['Sean', '260825', '', 'file_received', recentTimestamp, 0, '260827  budget/partner/hospital'],
+      ['Sean', '260827', '', 'file_received', '', 0, '260827  budget/partner/hospital']
+    ];
+    const fakeSheet = {
+      getLastRow: () => data.length + 1,
+      getLastColumn: () => 7,
+      getRange: (row, col, numRows) => ({
+        getValues: () => data.slice(row - 2, row - 2 + (numRows || 1)),
+        setValue: (v) => { data[row - 2][col - 1] = v; },
+        setValues: (vals) => { vals[0].forEach((v, i) => { data[row - 2][col - 1 + i] = v; }); }
+      })
+    };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
+
+    const folderFileNames = ['260827  budget/partner/hospital'];
+    const fakeFolder = {
+      getFiles: () => {
+        let i = 0;
+        return { hasNext: () => i < folderFileNames.length, next: () => ({ getName: () => folderFileNames[i++] }) };
+      },
+      getFilesByName: (name) => {
+        let served = false;
+        const exists = folderFileNames.indexOf(name) !== -1;
+        return { hasNext: () => exists && !served, next: () => { served = true; return { getName: () => name }; } };
+      }
+    };
+    gas.DriveApp = { getFolderById: () => fakeFolder };
+
+    gas.checkDailyPracticeCompliance_(false);
+
+    // 260825 must stay freed — not re-claim 260827's file in this same run.
+    assert.equal(data[0][3], 'open');
+    assert.equal(data[0][6], '');
+    // 260827's own claim must survive untouched throughout.
+    assert.equal(data[1][3], 'file_received');
+    assert.equal(data[1][6], '260827  budget/partner/hospital');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+  }
+});
