@@ -497,6 +497,10 @@ function ghlStageToOutcomeDisposition_(stageName) {
 // skipped before any API call, so nothing is redone and nothing is lost.
 var GHL_SYNC_TIME_BUDGET_MS_ = 5 * 60 * 1000;
 
+// How often computeGhlSyncFixes_ prints a "still going" heartbeat while
+// scanning — see that function's own comment for why this exists.
+var GHL_SYNC_HEARTBEAT_INTERVAL_MS_ = 15 * 1000;
+
 /**
  * Picks the single Outcome Disposition implied by a contact's opportunities,
  * or null if none is decided yet. Returns { disposition, conflict } rather
@@ -546,6 +550,24 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
   var runStart = Date.now();
   var truncated = false;
 
+  // Real gap found live (29/08/2026, Kris): previewGhlSync_ prints one line
+  // ("PREVIEW MODE...") and then goes completely silent — 2 blocking GHL
+  // calls per row scanned, up to hundreds of blank rows in this sheet — so a
+  // multi-minute normal run looks identical to a hang. Log the size of the
+  // job up front, then a heartbeat every HEARTBEAT_INTERVAL_MS_ so there's
+  // always a recent line proving it's still making progress.
+  var needingScan = 0;
+  for (var n = 0; n < rows.length; n++) {
+    var nameCell = rows[n][col['Prospect Name'] - 1];
+    var emailCell = String(rows[n][col['Prospect Email'] - 1] || '').trim();
+    var dispositionCell = String(rows[n][col['Outcome Disposition'] - 1] || '').trim();
+    if (nameCell && !(emailCell && dispositionCell)) needingScan++;
+  }
+  log_('computeGhlSyncFixes_: ' + needingScan + ' of ' + rows.length + ' row(s) need a Prospect Email/Outcome ' +
+    'Disposition fix — scanning now (up to 2 GHL calls per row, so this can take a few minutes; a heartbeat ' +
+    'line prints every ' + Math.round(GHL_SYNC_HEARTBEAT_INTERVAL_MS_ / 1000) + 's while it runs).');
+  var lastHeartbeatAt = runStart;
+
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var prospectName = row[col['Prospect Name'] - 1];
@@ -562,6 +584,12 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
       log_('computeGhlSyncFixes_: time budget hit after ' + i + '/' + rows.length +
         ' row(s) — re-run to continue (already-filled rows are skipped automatically, so this is always safe).');
       break;
+    }
+
+    if (Date.now() - lastHeartbeatAt > GHL_SYNC_HEARTBEAT_INTERVAL_MS_) {
+      log_('computeGhlSyncFixes_: still going — ' + stats.scanned + '/' + needingScan + ' row(s) scanned so far, ' +
+        fixes.length + ' fix(es) found.');
+      lastHeartbeatAt = Date.now();
     }
 
     stats.scanned++;
