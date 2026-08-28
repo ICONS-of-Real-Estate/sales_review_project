@@ -103,6 +103,7 @@ DAILY_PRACTICE_FOLLOWUP_COLUMNS = {
     "Status": "status",
     "Last Nag At": "last_nag_at",
     "Nag Count": "nag_count",
+    "Matched File": "matched_file",
 }
 
 # Must match SCORECARD_HISTORY_HEADERS in Phase5_WeeklyScorecard.gs. Purely
@@ -289,7 +290,7 @@ def init_schema(conn):
         CREATE TABLE IF NOT EXISTS daily_practice_followups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rep TEXT, assignment_date TEXT, thread_id TEXT, status TEXT,
-            last_nag_at TEXT, nag_count INTEGER
+            last_nag_at TEXT, nag_count INTEGER, matched_file TEXT
         );
         CREATE TABLE IF NOT EXISTS scorecard_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,6 +311,10 @@ def init_schema(conn):
     _add_column_if_missing(conn, "sales_call_log", "flag_framework_explained", "INTEGER")
     _add_column_if_missing(conn, "sales_call_log", "framework_gaps", "TEXT")
     _add_column_if_missing(conn, "training_assignments", "training_framework_json", "TEXT")
+    # 28/08/2026: "Matched File" pins whichever file a Daily Practice
+    # Follow-ups row claimed, so a late-submission match can't be reused by
+    # a different assignment day (Phase7_DailySelfPractice.gs).
+    _add_column_if_missing(conn, "daily_practice_followups", "matched_file", "TEXT")
     conn.commit()
 
 

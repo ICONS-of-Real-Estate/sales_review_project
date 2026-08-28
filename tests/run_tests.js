@@ -1080,6 +1080,7 @@ test('findDailyPracticeFollowupThreadForFile_ matches a dateStr Sheets stored as
   ];
   const sheet = {
     getLastRow: () => rows.length + 1,
+    getLastColumn: () => 7, // already has the "Matched File" column — no header migration needed
     getRange: (row, col, numRows, numCols) => ({
       getValues: () => rows
     })
@@ -2148,4 +2149,13 @@ test('selectLateDailyPracticeFileName_ returns null when nothing on/after the as
 test('selectLateDailyPracticeFileName_ picks the EARLIEST qualifying date, not the latest, when multiple late files exist', () => {
   const names = ['260829  much later', '260827  soonest after', '260828  in between'];
   assert.equal(gas.selectLateDailyPracticeFileName_(names, '260826'), '260827  soonest after');
+});
+
+test('selectLateDailyPracticeFileName_ falls through to the next candidate when the caller has excluded an already-claimed name (real bug: one late file got matched to two different assignment rows at once — 260827 satisfied both the 260825 and 260827 rows)', () => {
+  const names = ['260828  next best', '260827  budget/partner/hospital'];
+  // Simulates checkDailyPracticeComplianceRow_ filtering out anything another
+  // row already pinned (claimedFiles) before calling this — the row for
+  // 260825 must NOT be able to claim the same file the 260827 row already has.
+  const excludingClaimed = names.filter((n) => n !== '260827  budget/partner/hospital');
+  assert.equal(gas.selectLateDailyPracticeFileName_(excludingClaimed, '260825'), '260828  next best');
 });
