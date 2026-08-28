@@ -332,6 +332,50 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
   return true;
 }
 
+/**
+ * Real bug (confirmed live 28/08/2026, Sean's "260820" file): a plain
+ * substring check ("Transcript" anywhere in the name) also matched a "<...>
+ * — Feedback" doc whose OWN name still contained the word "Transcript" from
+ * an earlier mis-stripped ancestor (dailyPracticeFeedbackDocName_ only
+ * strips "Transcript" when it's at the very END of the name — a malformed
+ * transcript doc with "Transcript" in the middle survives the strip
+ * untouched). That Feedback doc then got graded AS IF it were a fresh
+ * transcript, and a new "... — Feedback — Feedback" doc landed the next
+ * day — every day, forever. Only the actual naming convention ("<video
+ * name> — Transcript", see transcribe_daily_practice.py) should count.
+ */
+function isDailyPracticeTranscriptDocName_(name) {
+  return /Transcript\s*$/i.test(name);
+}
+
+/**
+ * Real bug (confirmed live 28/08/2026): Sean uploaded "260827 budget/
+ * partner/hospital" for the assignment dated 260826 — he named it with the
+ * day he ACTUALLY recorded it (correct per the naming instructions), one
+ * day late, not the assignment's own date. An exact match on the
+ * assignment's dateStr then never fires and the thread nags forever even
+ * though a real, correctly-dated submission is sitting right there.
+ * Picks the earliest name whose 6-digit date prefix is on/after
+ * assignmentDateStr, excluding "— Transcript"/"— Feedback" docs (which
+ * carry the same date prefix as their source video). Returns null if
+ * nothing qualifies.
+ */
+function selectLateDailyPracticeFileName_(names, assignmentDateStr) {
+  var bestDate = null, bestName = null;
+  names.forEach(function (n) {
+    if (/Transcript|Feedback/i.test(n)) return;
+    var m = n.match(/^(\d{6})\b/);
+    if (!m) return;
+    var candidateDate = Number(m[1]);
+    if (candidateDate < Number(assignmentDateStr)) return; // dated before the assignment — not this one
+    if (bestDate === null || candidateDate < bestDate) {
+      bestDate = candidateDate;
+      bestName = n;
+    }
+  });
+  return bestName;
+}
+
 /** Shared by preview and live paths. dryRun=true never sends and never writes a Feedback doc. */
 function buildAndMaybeGradeDailyPractice_(dryRun) {
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
@@ -345,7 +389,7 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
     while (files.hasNext()) {
       var file = files.next();
       var name = file.getName();
-      if (name.indexOf('Transcript') === -1) continue; // skip source videos, only grade transcript docs
+      if (!isDailyPracticeTranscriptDocName_(name)) continue; // skip source videos and anything not actually ending in "— Transcript"
       found++;
 
       if (!dryRun && dailyPracticeAlreadyGraded_(folder, name)) continue;
@@ -722,6 +766,18 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     while (files.hasNext()) {
       var f = files.next();
       if (f.getName().indexOf(row.dateStr) === 0) { namedFile = f; break; }
+    }
+    if (!namedFile) {
+      // See selectLateDailyPracticeFileName_ — handles a rep submitting late
+      // under that day's own real date instead of the assignment's date.
+      var lateFiles = folder.getFiles();
+      var lateCandidates = {}; // name -> File, so the winning name can be resolved back to a File object.
+      while (lateFiles.hasNext()) {
+        var f2 = lateFiles.next();
+        lateCandidates[f2.getName()] = f2;
+      }
+      var lateName = selectLateDailyPracticeFileName_(Object.keys(lateCandidates), row.dateStr);
+      if (lateName) namedFile = lateCandidates[lateName];
     }
 
     if (row.status === 'open') {

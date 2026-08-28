@@ -2119,3 +2119,33 @@ test('getMessageHeader_ finds a header by name and returns empty string when abs
   assert.equal(gas.getMessageHeader_(message, 'To'), '');
   assert.equal(gas.getMessageHeader_({}, 'From'), '');
 });
+
+test('isDailyPracticeTranscriptDocName_ only matches the real "<video name> — Transcript" convention, not a doc with "Transcript" elsewhere in its name (real bug: a "— Feedback" doc with a mis-stripped "Transcript" survived and re-graded itself daily)', () => {
+  assert.equal(gas.isDailyPracticeTranscriptDocName_('260820  speak with the spouse — Transcript'), true);
+  assert.equal(gas.isDailyPracticeTranscriptDocName_('260820 — Transcript  speak with spouse'), false);
+  assert.equal(gas.isDailyPracticeTranscriptDocName_('260820 — Transcript  speak with spouse — Feedback'), false);
+  assert.equal(gas.isDailyPracticeTranscriptDocName_('260820  speak with the spouse.mp4'), false);
+});
+
+test('selectLateDailyPracticeFileName_ picks a late submission named with its own real (later) date, excluding generated docs (real bug: Sean\'s "260827 budget/partner/hospital" against a 260826 assignment)', () => {
+  const names = [
+    '260826  speak with the spouse.mp4',
+    '260827  budget/partner/hospital',
+    '260827  budget/partner/hospital — Transcript',
+    '260825  old file — Feedback'
+  ];
+  // 260826 itself is present and would be caught by the exact-match check first;
+  // this exercises the fallback in isolation, so drop it to simulate that case.
+  const withoutExact = names.filter((n) => n !== '260826  speak with the spouse.mp4');
+  assert.equal(gas.selectLateDailyPracticeFileName_(withoutExact, '260826'), '260827  budget/partner/hospital');
+});
+
+test('selectLateDailyPracticeFileName_ returns null when nothing on/after the assignment date qualifies', () => {
+  assert.equal(gas.selectLateDailyPracticeFileName_(['260820  old file', '260820  old file — Transcript'], '260826'), null);
+  assert.equal(gas.selectLateDailyPracticeFileName_([], '260826'), null);
+});
+
+test('selectLateDailyPracticeFileName_ picks the EARLIEST qualifying date, not the latest, when multiple late files exist', () => {
+  const names = ['260829  much later', '260827  soonest after', '260828  in between'];
+  assert.equal(gas.selectLateDailyPracticeFileName_(names, '260826'), '260827  soonest after');
+});
