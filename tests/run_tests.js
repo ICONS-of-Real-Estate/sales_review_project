@@ -2313,3 +2313,53 @@ test('checkDailyPracticeCompliance_ end-to-end: repairing a double-claim in one 
     gas.DriveApp = originalDriveApp;
   }
 });
+
+test('checkDailyPracticeCompliance_ end-to-end: a file claimed by a row that has since graded out of the active set must stay off-limits to every other row (real bug, confirmed live 28/08/2026: 260827 graded — dropping out of the open/file_received filter — and 260825 immediately re-claimed its file, because the exclusion set was built only from the active rows, not from every row that ever registered a claim)', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  try {
+    const data = [
+      ['Sean', '260825', '', 'open', '', 0, ''],
+      ['Sean', '260827', '', 'graded', '2026-08-28T00:21:31.932Z', 1, '260827  budget/partner/hospital']
+    ];
+    const fakeSheet = {
+      getLastRow: () => data.length + 1,
+      getLastColumn: () => 7,
+      getRange: (row, col, numRows) => ({
+        getValues: () => data.slice(row - 2, row - 2 + (numRows || 1)),
+        setValue: (v) => { data[row - 2][col - 1] = v; },
+        setValues: (vals) => { vals[0].forEach((v, i) => { data[row - 2][col - 1 + i] = v; }); }
+      })
+    };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
+
+    // The folder still physically contains the graded file (its Transcript/
+    // Feedback docs exist too, but those are filtered out by name already).
+    const folderFileNames = ['260827  budget/partner/hospital'];
+    const fakeFolder = {
+      getFiles: () => {
+        let i = 0;
+        return { hasNext: () => i < folderFileNames.length, next: () => ({ getName: () => folderFileNames[i++] }) };
+      },
+      getFilesByName: () => ({ hasNext: () => false, next: () => { throw new Error('should not be called'); } })
+    };
+    gas.DriveApp = { getFolderById: () => fakeFolder };
+
+    // Live (not dryRun): dryRun never persists a match to the sheet at all,
+    // which would make this assertion pass trivially whether or not the bug
+    // is actually fixed. 260825's own nag send will throw against the
+    // unstubbed MailApp — that's expected and gets swallowed by
+    // checkDailyPracticeCompliance_'s per-row try/catch; it happens after
+    // (and is irrelevant to) the matching writes this test checks.
+    gas.checkDailyPracticeCompliance_(false);
+
+    // 260825 must NOT claim the graded row's file.
+    assert.equal(data[0][6], '');
+    // The graded row's own claim must remain untouched.
+    assert.equal(data[1][6], '260827  budget/partner/hospital');
+    assert.equal(data[1][3], 'graded');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+  }
+});

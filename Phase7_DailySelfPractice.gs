@@ -832,6 +832,23 @@ function checkDailyPracticeCompliance_(dryRun) {
 
   if (!rows.length) { log_('No open or pending daily-practice follow-ups.'); return; }
 
+  // Every filename ANY row has ever claimed, from ALL rows regardless of
+  // status — not just the active open/file_received set. Real bug
+  // (confirmed live 28/08/2026): 260827 graded out (dailyPracticeAlreadyGraded_
+  // found its Feedback doc and flipped it to 'graded' between runs), which
+  // drops it out of the active `rows` filter entirely — and the previous
+  // version of this exclusion set was built ONLY from that same filtered
+  // list, so the instant 260827 left the active set, its claimed file
+  // stopped being excluded and 260825 grabbed it right back. A file a row
+  // once claimed must stay off-limits forever, not just while that row is
+  // still active.
+  var claimedByRep = {};
+  allRows.forEach(function (r) {
+    if (!r.matchedFile) return;
+    claimedByRep[r.rep] = claimedByRep[r.rep] || {};
+    claimedByRep[r.rep][r.matchedFile] = true;
+  });
+
   // Resolve every rep's still-unmatched rows TOGETHER (see
   // resolveDailyPracticeFileMatches_) before any row-level nag/grading logic
   // runs, and persist the result immediately — this also catches up any row
@@ -844,15 +861,7 @@ function checkDailyPracticeCompliance_(dryRun) {
   Object.keys(byRep).forEach(function (rep) {
     var unmatched = byRep[rep].filter(function (r) { return !r.matchedFile; });
     if (!unmatched.length) return;
-    // Real bug (confirmed live 28/08/2026): repairDuplicateDailyPracticeFileClaims_
-    // reverted 260825's bad pin in this SAME run, but 260827's own (correct)
-    // pin was untouched and so 260827 never entered `unmatched` — its file
-    // still showed up in a plain folder scan as if nothing owned it, and
-    // 260825 immediately re-claimed it via late-fallback right after being
-    // freed. Exclude every name already pinned to another row of this rep
-    // (matchedFile set, whether or not that row made it into `unmatched`).
-    var alreadyClaimed = {};
-    byRep[rep].forEach(function (r) { if (r.matchedFile) alreadyClaimed[r.matchedFile] = true; });
+    var alreadyClaimed = claimedByRep[rep] || {};
     var folder = DriveApp.getFolderById(DAILY_PRACTICE_CONFIG.FOLDERS[rep]);
     var candidateNames = [];
     var files = folder.getFiles();
