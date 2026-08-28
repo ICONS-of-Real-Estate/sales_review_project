@@ -2159,3 +2159,52 @@ test('selectLateDailyPracticeFileName_ falls through to the next candidate when 
   const excludingClaimed = names.filter((n) => n !== '260827  budget/partner/hospital');
   assert.equal(gas.selectLateDailyPracticeFileName_(excludingClaimed, '260825'), '260828  next best');
 });
+
+test('sortDailyPracticeFileClaimantsByRightfulOwner_ puts the claimant with the LARGEST dateStr first (real bug: "260827 budget/partner/hospital" got pinned to both the 260825 and 260827 rows for Sean before double-claim tracking existed — 260827 is the rightful match)', () => {
+  const claimants = [
+    { rep: 'Sean', dateStr: '260825', matchedFile: '260827  budget/partner/hospital' },
+    { rep: 'Sean', dateStr: '260827', matchedFile: '260827  budget/partner/hospital' }
+  ];
+  const sorted = gas.sortDailyPracticeFileClaimantsByRightfulOwner_(claimants);
+  assert.equal(sorted[0].dateStr, '260827');
+  assert.equal(sorted[1].dateStr, '260825');
+  // Original array is untouched (pure sort, per the function's own comment).
+  assert.equal(claimants[0].dateStr, '260825');
+});
+
+test('repairDuplicateDailyPracticeFileClaims_ reverts every non-rightful claimant to open with its pin cleared, leaves the rightful owner and unique claims untouched', () => {
+  const written = [];
+  const fakeSheet = {
+    getRange: (rowIndex, col) => ({
+      setValue: (v) => written.push({ rowIndex, col, value: v })
+    })
+  };
+  const rows = [
+    { rowIndex: 2, rep: 'Sean', dateStr: '260825', status: 'file_received', matchedFile: '260827  budget/partner/hospital' },
+    { rowIndex: 3, rep: 'Sean', dateStr: '260827', status: 'file_received', matchedFile: '260827  budget/partner/hospital' },
+    { rowIndex: 4, rep: 'Joana', dateStr: '260826', status: 'file_received', matchedFile: '260826  some file' } // unique claim, untouched
+  ];
+  gas.repairDuplicateDailyPracticeFileClaims_(fakeSheet, rows, false);
+
+  // Only the loser (260825) got written: status -> 'open' (col 4), matchedFile -> '' (col 7).
+  assert.deepEqual(written, [
+    { rowIndex: 2, col: 4, value: 'open' },
+    { rowIndex: 2, col: 7, value: '' }
+  ]);
+  assert.equal(rows[0].status, 'open');
+  assert.equal(rows[0].matchedFile, '');
+  assert.equal(rows[1].status, 'file_received'); // rightful owner untouched
+  assert.equal(rows[1].matchedFile, '260827  budget/partner/hospital');
+  assert.equal(rows[2].matchedFile, '260826  some file'); // unrelated unique claim untouched
+});
+
+test('repairDuplicateDailyPracticeFileClaims_ writes nothing in dry-run mode but still updates the in-memory rows so the rest of that preview pass sees the repair', () => {
+  const fakeSheet = { getRange: () => { throw new Error('must not write in dry-run'); } };
+  const rows = [
+    { rowIndex: 2, rep: 'Sean', dateStr: '260825', status: 'file_received', matchedFile: 'x.mp4' },
+    { rowIndex: 3, rep: 'Sean', dateStr: '260827', status: 'file_received', matchedFile: 'x.mp4' }
+  ];
+  gas.repairDuplicateDailyPracticeFileClaims_(fakeSheet, rows, true);
+  assert.equal(rows[0].status, 'open');
+  assert.equal(rows[0].matchedFile, '');
+});

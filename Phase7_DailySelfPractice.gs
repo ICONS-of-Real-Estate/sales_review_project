@@ -718,11 +718,64 @@ function dailyPracticeThreadHasStopRequest_(thread) {
  * date) gates re-nagging so the two firings actually land ~12h apart instead
  * of collapsing to once a day.
  */
+/**
+ * Sorts same-file claimant rows (same rep, same matchedFile — can only exist
+ * from before double-claim tracking existed) so the rightful owner comes
+ * first: the claimant whose own assignment date is closest to (on or
+ * before) the file's real date, i.e. the LARGEST dateStr. That's rightful
+ * because selectLateDailyPracticeFileName_ always picks the EARLIEST
+ * qualifying date on/after a row's own dateStr — on a clean run, the row
+ * with the largest dateStr is the one that would actually have won this
+ * file. Pure sort (no Sheet I/O) so repairDuplicateDailyPracticeFileClaims_
+ * is testable without a fake Sheet.
+ */
+function sortDailyPracticeFileClaimantsByRightfulOwner_(rows) {
+  return rows.slice().sort(function (a, b) { return Number(b.dateStr) - Number(a.dateStr); });
+}
+
+/**
+ * One-time self-heal for rows written by the buggy pre-claim-tracking code
+ * (confirmed live 28/08/2026: Sean's 260825 AND 260827 rows both pinned
+ * "260827 budget/partner/hospital"). Every claim is legitimate going
+ * forward (checkDailyPracticeCompliance_'s claimedFilesByRep prevents new
+ * ones), but existing bad pins from before that fix need clearing — a row
+ * with row.matchedFile set is trusted outright and never re-matched, so a
+ * stale double-claim would otherwise be stuck forever. Reverts every
+ * non-rightful claimant back to 'open' with its pin cleared so it
+ * re-evaluates fresh (and gets nagged like it should have been all along).
+ */
+function repairDuplicateDailyPracticeFileClaims_(sheet, allRows, dryRun) {
+  var byRepAndFile = {};
+  allRows.forEach(function (r) {
+    if (!r.matchedFile) return;
+    var key = r.rep + '|' + r.matchedFile;
+    byRepAndFile[key] = byRepAndFile[key] || [];
+    byRepAndFile[key].push(r);
+  });
+  Object.keys(byRepAndFile).forEach(function (key) {
+    if (byRepAndFile[key].length < 2) return;
+    var claimants = sortDailyPracticeFileClaimantsByRightfulOwner_(byRepAndFile[key]);
+    var rightfulOwner = claimants[0];
+    claimants.slice(1).forEach(function (loser) {
+      log_('[' + loser.rep + '/' + loser.dateStr + '] Repairing double-claimed file "' + loser.matchedFile +
+        '" — ' + rightfulOwner.rep + '/' + rightfulOwner.dateStr + ' is the rightful match, reverting this row to open.' +
+        (dryRun ? ' (preview — not written)' : ''));
+      if (!dryRun) {
+        sheet.getRange(loser.rowIndex, 4).setValue('open');
+        sheet.getRange(loser.rowIndex, 7).setValue('');
+      }
+      loser.matchedFile = ''; // keep the in-memory row consistent with the sheet write for the rest of this pass
+      loser.status = 'open';
+    });
+  });
+}
+
 function checkDailyPracticeCompliance_(dryRun) {
   RUN_TAG = 'checkDailyPracticeCompliance_';
   var now = new Date();
   var sheet = getOrCreateDailyPracticeFollowupSheet_();
   var allRows = loadDailyPracticeFollowupRows_(sheet, null);
+  repairDuplicateDailyPracticeFileClaims_(sheet, allRows, dryRun);
 
   // Real bug (confirmed live 28/08/2026): with no record of which file a row
   // already matched, the late-submission fallback (selectLateDailyPracticeFileName_)
