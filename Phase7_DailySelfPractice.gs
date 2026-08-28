@@ -539,31 +539,35 @@ function sendDailyPracticeReminders_() {
       }).join('') + '</ol>';
 
       body =
-        'Record a video practicing FRAMEWORK EXPLANATION — walk through this like you\'re actually pitching a lead:\n\n' +
+        'Record a VIDEO practicing FRAMEWORK EXPLANATION — walk through this like you\'re actually pitching a lead:\n\n' +
         frameworkPlainList + '\n\n' +
         namingLine + '\n\n' +
+        'Transcript happens automatically once the video lands — nothing else to upload.\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
-        '<p>Record a video practicing <b>FRAMEWORK EXPLANATION</b> — walk through this like you\'re actually pitching a lead:</p>' +
+        '<p>Record a <b>video</b> practicing <b>FRAMEWORK EXPLANATION</b> — walk through this like you\'re actually pitching a lead:</p>' +
         frameworkHtmlList +
         '<p>' + namingLineHtml + '</p>' +
+        '<p><i>Transcript happens automatically once the video lands — nothing else to upload.</i></p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (assignCloseAskToday) {
       subject = subjectPrefix;
       body =
-        'Record a video practicing ASKING FOR THE MONEY:\n\n' +
+        'Record a VIDEO practicing ASKING FOR THE MONEY:\n\n' +
         '"' + closeAsk.label + '" — ' + closeAsk.note + '\n\n' +
         'Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.\n\n' +
         namingLine + '\n\n' +
+        'Transcript happens automatically once the video lands — nothing else to upload.\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
-        '<p>Record a video practicing <b>ASKING FOR THE MONEY</b>:</p>' +
+        '<p>Record a <b>video</b> practicing <b>ASKING FOR THE MONEY</b>:</p>' +
         '<p>"' + closeAsk.label + '" — ' + closeAsk.note + '</p>' +
         '<p>Ask it, handle whatever comes back (objection or hesitation), then ask again — don\'t stop at one ask.</p>' +
         '<p>' + namingLineHtml + '</p>' +
+        '<p><i>Transcript happens automatically once the video lands — nothing else to upload.</i></p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else if (objections && objections.length) {
@@ -574,30 +578,34 @@ function sendDailyPracticeReminders_() {
       }).join('') + '</ol>';
 
       body =
-        'Record a video practicing objection handling (Agree, Isolate, Repeat):\n\n' +
+        'Record a VIDEO practicing objection handling (Agree, Isolate, Repeat):\n\n' +
         plainList + '\n\n' +
         namingLine + '\n\n' +
+        'Transcript happens automatically once the video lands — nothing else to upload.\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
 
       htmlBody =
-        '<p>Record a video practicing objection handling (Agree, Isolate, Repeat):</p>' +
+        '<p>Record a <b>video</b> practicing objection handling (Agree, Isolate, Repeat):</p>' +
         htmlList +
         '<p>' + namingLineHtml + '</p>' +
+        '<p><i>Transcript happens automatically once the video lands — nothing else to upload.</i></p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     } else {
       subject = subjectPrefix;
       body =
-        'Record a video practicing objection handling (no specific objections on file yet — pick one you ' +
+        'Record a VIDEO practicing objection handling (no specific objections on file yet — pick one you ' +
         'want to sharpen).\n\n' +
         namingLine + '\n\n' +
+        'Transcript happens automatically once the video lands — nothing else to upload.\n\n' +
         'Delivery folder: ' + folderLink + '\n\n' +
         '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
       htmlBody =
-        '<p>Record a video practicing objection handling (no specific objections on file yet — pick one ' +
+        '<p>Record a <b>video</b> practicing objection handling (no specific objections on file yet — pick one ' +
         'you want to sharpen).</p>' +
         '<p>' + namingLineHtml + '</p>' +
+        '<p><i>Transcript happens automatically once the video lands — nothing else to upload.</i></p>' +
         '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
         '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
     }
