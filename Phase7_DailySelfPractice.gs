@@ -777,6 +777,18 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
         if (!dryRun) sheet.getRange(row.rowIndex, 4).setValue('file_received');
         log_('[' + row.rep + '/' + row.dateStr + '] Correctly-named file landed ("' + namedFile.getName() +
           '") — stopping nag.' + (dryRun ? ' (preview — not written)' : ''));
+        // Per Kris (28/08/2026): the file name only ever showed up in the
+        // Apps Script execution log, which nobody actually reads day to day
+        // — say it on the thread itself so it's visible without digging,
+        // and so a late-submission fallback match (selectLateDailyPracticeFileName_)
+        // picking an unexpected file is immediately obvious, not silent.
+        var foundBody = 'Found "' + namedFile.getName() + '" — stopping the nag. ' +
+          'Will grade it and reply here once its transcript is ready.';
+        if (dryRun) {
+          log_('(preview) would reply-all on tracked thread with file-found confirmation:\n' + foundBody);
+        } else if (thread) {
+          guardedReplyAll_(thread, foundBody, { name: 'Daily Practice Follow-up Bot' }, 1);
+        }
         row.status = 'file_received'; // fall through to the grading check below in this same pass
       } else {
         // lastNagDate now holds a full timestamp (ISO string, or a real Date if
@@ -830,7 +842,8 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     // the row sat "waiting on transcription" forever).
     var transcriptDoc = folder.getFilesByName(namedFile.getName() + ' — Transcript');
     if (!transcriptDoc.hasNext()) {
-      log_('[' + row.rep + '/' + row.dateStr + '] File received, waiting on transcription before it can be graded.');
+      log_('[' + row.rep + '/' + row.dateStr + '] "' + namedFile.getName() +
+        '" received, waiting on transcription before it can be graded.');
       return;
     }
     var transcriptFile = transcriptDoc.next();
