@@ -1537,6 +1537,44 @@ test('escapeHtml_ neutralizes a raw "Name <addr>" From header and stray angle br
   assert.equal(gas.escapeHtml_('Tom & Jerry'), 'Tom &amp; Jerry');
 });
 
+test('repOwnEmails_ includes both a rep\'s primary address and their aliases, lowercased (real bug, 29/08/2026: Bens\' iconsofrealestate.com and ardorseo.com addresses are the SAME GSuite mailbox, so a reply sent from either one is still him answering)', () => {
+  // Array.from(...) rebuilds the array in THIS (outer) realm before
+  // comparing — repOwnEmails_'s own .map(...) return value is built inside
+  // the vm sandbox's realm, and assert.deepEqual fails on that alone against
+  // an outer-realm array literal, same cross-realm trap documented elsewhere
+  // in this file for plain objects.
+  assert.deepEqual(Array.from(gas.repOwnEmails_({ email: 'Bens@IconsOfRealEstate.com', aliases: ['Bens@ArdorSEO.com'] })),
+    ['bens@iconsofrealestate.com', 'bens@ardorseo.com']);
+});
+
+test('repOwnEmails_ falls back to just the primary address when a rep has no aliases configured', () => {
+  assert.deepEqual(Array.from(gas.repOwnEmails_({ email: 'sean@iconsofrealestate.com' })), ['sean@iconsofrealestate.com']);
+});
+
+test('findUnansweredThreadsForRep_ does NOT flag a thread the rep answered from their alias address (real bug, 29/08/2026: Bens replied to an agent from bens@ardorseo.com and was flagged as unanswered anyway, because the old check only compared against bens@iconsofrealestate.com)', () => {
+  const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com', aliases: ['bens@ardorseo.com'] };
+  const oldGmailApiGet = gas.gmailApiGet_;
+  const oldGetToken = gas.getGmailAccessTokenForUser_;
+  gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+  gas.gmailApiGet_ = (token, path) => {
+    if (path.indexOf('/threads?q=') === 0) return { threads: [{ id: 'thread-1' }] };
+    // Bens' reply, sent from his ardorseo.com alias -- not his iconsofrealestate.com primary address.
+    return {
+      messages: [{
+        internalDate: String(Date.now() - 48 * 3600000),
+        payload: { headers: [{ name: 'From', value: 'Bens Olano <bens@ardorseo.com>' }, { name: 'Subject', value: 'Re: agent follow-up' }] }
+      }]
+    };
+  };
+  try {
+    const unanswered = gas.findUnansweredThreadsForRep_(repCfg);
+    assert.equal(unanswered.length, 0, 'a reply from the rep\'s own alias must count as answered, not flagged');
+  } finally {
+    gas.gmailApiGet_ = oldGmailApiGet;
+    gas.getGmailAccessTokenForUser_ = oldGetToken;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Phase5_WeeklyScorecard.gs fixes (26/08/2026 silent-failure audit)
 // ---------------------------------------------------------------------------

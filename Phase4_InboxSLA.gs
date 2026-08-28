@@ -88,9 +88,16 @@ var INBOX_SLA_CONFIG = {
   // Joana deliberately excluded (20/08/2026, Kris's call) — she has hundreds
   // of leads to work through and this SLA nudge would just be noise on top
   // of that backlog. Add her back once that's under control.
+  //
+  // `aliases`: real false-positive bug found live (29/08/2026) — Sean and
+  // Bens' iconsofrealestate.com and ardorseo.com addresses are the SAME
+  // GSuite mailbox/account, so either can appear as the From address on a
+  // message THEY sent. Bens replied to an agent from his ardorseo.com
+  // address and got flagged as "unanswered" anyway, because the check only
+  // compared against `email`. See repOwnEmails_/findUnansweredThreadsForRep_.
   REPS: [
-    { name: 'Sean', email: 'sean@iconsofrealestate.com' },
-    { name: 'Bens', email: 'bens@iconsofrealestate.com' }
+    { name: 'Sean', email: 'sean@iconsofrealestate.com', aliases: ['sean@ardorseo.com'] },
+    { name: 'Bens', email: 'bens@iconsofrealestate.com', aliases: ['bens@ardorseo.com'] }
   ],
 
   SLA_HOURS: 24,
@@ -383,10 +390,23 @@ function getThreadLastMessageInfo_(accessToken, threadId) {
 }
 
 /**
+ * Every address that counts as "the rep, replying" — their primary address
+ * plus any aliases on the same mailbox (see INBOX_SLA_CONFIG.REPS's comment:
+ * Sean and Bens' iconsofrealestate.com/ardorseo.com addresses are the same
+ * GSuite account, so a reply sent from either one is still them answering).
+ */
+function repOwnEmails_(repCfg) {
+  return [repCfg.email].concat(repCfg.aliases || []).map(function (e) {
+    return String(e).toLowerCase();
+  });
+}
+
+/**
  * A thread counts as "unanswered" when the LAST message in it is not from the
- * rep themselves, and that message is older than SLA_HOURS. A thread where
- * the rep replied last (even if the other side hasn't come back) is not
- * flagged — that's not on the rep to chase.
+ * rep themselves (any of their own addresses — see repOwnEmails_), and that
+ * message is older than SLA_HOURS. A thread where the rep replied last (even
+ * if the other side hasn't come back) is not flagged — that's not on the rep
+ * to chase.
  */
 // Apps Script's hard execution ceiling is 6 minutes. One sequential Gmail
 // API round trip per thread (no batching) means an inbox in the hundreds-to-
@@ -400,6 +420,7 @@ var INBOX_SLA_TIME_BUDGET_MS_ = 5 * 60 * 1000; // leaves a margin under the 6-mi
 function findUnansweredThreadsForRep_(repCfg) {
   var accessToken = getGmailAccessTokenForUser_(repCfg.email);
   var threadIds = listInboxThreadIds_(accessToken);
+  var repEmails = repOwnEmails_(repCfg);
   var now = new Date().getTime();
   var slaMs = INBOX_SLA_CONFIG.SLA_HOURS * 3600000;
   var unanswered = [];
@@ -423,7 +444,7 @@ function findUnansweredThreadsForRep_(repCfg) {
     try {
       var info = getThreadLastMessageInfo_(accessToken, threadId);
       if (!info) continue;
-      if (info.fromEmail === repCfg.email.toLowerCase()) continue; // rep sent the last message -- answered
+      if (repEmails.indexOf(info.fromEmail) !== -1) continue; // rep sent the last message (from any of their own addresses) -- answered
       if (subjectLooksExcluded_(info.subject)) continue; // real substring check — see EXCLUDE_SUBJECT_CONTAINS's comment
       var ageMs = now - info.internalDateMs;
       if (ageMs > slaMs) {
