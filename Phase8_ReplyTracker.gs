@@ -10,6 +10,20 @@
  * quoted original message underneath comes from a different domain each
  * time. That one address is what this file filters on.
  *
+ * Real bug found + fixed 28/08/2026 (Kris flagged "0% booked" + "6 leads"
+ * for 131 replies): the relay address above is right for finding threads,
+ * but two things downstream of that were wrong. (1) getThreadLastMessageFull_
+ * took the thread's chronologically LAST message, which is often Joana's
+ * own reply sent later in the same thread, not the lead's forward — fixed
+ * to walk backwards for the last message actually FROM the relay address.
+ * (2) Lead Email was extracted from that message's envelope From header,
+ * which is always the relay address (or, per bug 1, sometimes Joana's own
+ * address) — never the real lead. Fixed to pull the real lead address out
+ * of the body's quoted-reply header instead (extractLeadEmailFromReplyBody_).
+ * Together these two bugs collapsed ~131 distinct leads into a handful of
+ * fromRaw values, which is exactly why "of 6 leads" showed up, and broke
+ * the booking-tracker join (keyed on lead email) so it always read 0%.
+ *
  * Reuses Phase 4's Gmail service-account plumbing (getGmailAccessTokenForUser_,
  * gmailApiGet_, buildServiceAccountJwt_ — same file, same Apps Script project,
  * no import needed) rather than duplicating it. Domain-wide delegation for
@@ -178,14 +192,38 @@ function extractHtmlBodyAsText_(payload) {
   return '';
 }
 
-/** Full (not metadata-only) read of a thread's last message — this is the actual forwarded reply text. */
+function getMessageHeader_(message, name) {
+  var headers = (message.payload && message.payload.headers) || [];
+  for (var i = 0; i < headers.length; i++) {
+    if (headers[i].name === name) return headers[i].value;
+  }
+  return '';
+}
+
+/**
+ * Full (not metadata-only) read of a thread's last FORWARDED-RELAY message —
+ * NOT simply the thread's chronologically last message. Real bug (confirmed
+ * live 28/08/2026, thread 1a042d0067c3adf7): Joana routinely replies to the
+ * lead from within the same Gmail thread the forward landed in, and Gmail
+ * thread order is purely chronological, not directional — messages[len-1]
+ * was very often Joana's OWN outgoing reply (From: joana@iconsofrealestate.com),
+ * not the lead's forwarded reply. The classifier then scored Joana's own
+ * sent text as if it were the lead's sentiment, and every downstream field
+ * (fromRaw, and therefore Lead Email) came from Joana's message instead of
+ * the lead's. Walk backwards for the last message actually sent FROM
+ * REPLY_TRACKER_CONFIG.FORWARD_ADDRESS instead.
+ */
 function getThreadLastMessageFull_(accessToken, threadId) {
   var thread = gmailApiGet_(accessToken, '/threads/' + threadId + '?format=full');
   var messages = thread.messages || [];
-  if (!messages.length) return null;
-  var last = messages[messages.length - 1];
-  var headers = {};
-  (last.payload && last.payload.headers || []).forEach(function (h) { headers[h.name] = h.value; });
+  var last = null;
+  for (var i = messages.length - 1; i >= 0; i--) {
+    if (getMessageHeader_(messages[i], 'From').indexOf(REPLY_TRACKER_CONFIG.FORWARD_ADDRESS) !== -1) {
+      last = messages[i];
+      break;
+    }
+  }
+  if (!last) return null; // matched the search query but no message in the thread is actually from the relay — don't guess.
   // Real bug (L-13): extractPlainTextBody_ only walks text/plain parts — an
   // HTML-only reply (no text/plain alternative at all, common from webmail
   // clients) came back as '', so the classifier prompt got an empty reply
@@ -196,10 +234,34 @@ function getThreadLastMessageFull_(accessToken, threadId) {
     threadId: threadId,
     messageId: last.id, // dedupe key — see loadLoggedMessageIds_ for why this must not be the thread ID
     date: new Date(Number(last.internalDate)),
-    fromRaw: headers['From'] || '(unknown sender)',
-    subject: headers['Subject'] || '(no subject)',
+    fromRaw: getMessageHeader_(last, 'From') || '(unknown sender)',
+    subject: getMessageHeader_(last, 'Subject') || '(no subject)',
     bodyText: bodyText.slice(0, 4000) // plenty for a short reply; caps a pathological quote-chain.
   };
+}
+
+/**
+ * The forwarded message's own From header is always
+ * REPLY_TRACKER_CONFIG.FORWARD_ADDRESS (see file header) — never the real
+ * lead's address. The real lead's email survives only in the quoted-reply
+ * header Gmail inserts at the top of the body text — confirmed live
+ * 28/08/2026 against real forwards, e.g. "On Wednesday, Aug 26, 2026 at
+ * 3:03 pm jborwick@chaseinternational.com wrote:" (no display name) and
+ * "On Wed, Aug 26, 2026 at 8:07 AM Joana Peixe <joanap@iconsrealestateco.com>
+ * wrote:" (display name + bracketed address, further down for a team
+ * member's own quoted message) — so this takes the FIRST "wrote:" line in
+ * the body, which is always the lead's own reply, not a later quoted one.
+ * Falls back to the (known-wrong) envelope From so a message with no
+ * recognizable quote header still gets logged rather than silently dropped.
+ */
+function extractLeadEmailFromReplyBody_(bodyText) {
+  if (!bodyText) return '';
+  var wroteAt = bodyText.search(/\bwrote:/i);
+  if (wroteAt === -1) return '';
+  var headerLines = bodyText.slice(0, wroteAt).split('\n').filter(function (l) { return l.trim(); });
+  var candidateLine = headerLines.length ? headerLines[headerLines.length - 1] : '';
+  var match = candidateLine.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  return match ? match[0].toLowerCase() : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +352,7 @@ function classifyNewReplies() {
       var msg = getThreadLastMessageFull_(token, id);
       if (!msg) { failed++; return; }
       if (logged[msg.messageId]) { skippedExisting++; return; } // dedupe by message, not thread — see loadLoggedMessageIds_
-      var leadEmail = extractEmailAddress_(msg.fromRaw);
+      var leadEmail = extractLeadEmailFromReplyBody_(msg.bodyText) || extractEmailAddress_(msg.fromRaw);
       var result = classifyReply_(msg.fromRaw, msg.subject, msg.bodyText);
       sheet.appendRow([msg.date, id, msg.fromRaw, msg.subject, result.sentiment, result.reasoning, leadEmail, msg.messageId]);
       log_('  Classified "' + msg.subject + '": ' + result.sentiment + (result._parseFailed ? ' [PARSE FAILED]' : ''));

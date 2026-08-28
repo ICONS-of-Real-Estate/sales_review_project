@@ -2093,3 +2093,29 @@ test('computeProspectNameFixes_ only touches fallback_heuristic rows for Sean/Jo
   assert.equal(fixes[0].newName, 'Anthony Camperi');
   assert.equal(fixes[0].rowIndex, 2);
 });
+
+test('extractLeadEmailFromReplyBody_ pulls the real lead address out of the first Gmail quote header, not the relay envelope (real bug: Lead Email always read as network@ardorseo.com)', () => {
+  const body = 'On Wednesday, Aug 26, 2026 at 3:03 pm jborwick@chaseinternational.com wrote:\n' +
+    'Not interested.\nThanks for the inquiry, please take me off your list.\nJennifer\n\n' +
+    'On Mon, Aug 24, 2026 at 9:22 AM Joana Peixe <joanap@iconsrealestatecenter.com> wrote:\n> Hi Jennifer,';
+  assert.equal(gas.extractLeadEmailFromReplyBody_(body), 'jborwick@chaseinternational.com');
+});
+
+test('extractLeadEmailFromReplyBody_ handles a bare (no display name) quote header the same as one with a name', () => {
+  const body = 'On Wednesday, Aug 26, 2026 at 7:10 pm jnixrealtor@gmail.com wrote:\nYes please\n\n' +
+    'On Wed, Aug 26, 2026 at 8:07 AM Joana Peixe <joanap@iconsrealestateco.com> wrote:\n> John, I\'ve tried reaching out';
+  assert.equal(gas.extractLeadEmailFromReplyBody_(body), 'jnixrealtor@gmail.com');
+});
+
+test('extractLeadEmailFromReplyBody_ returns empty string (not a throw) for a body with no recognizable quote header, so the caller can fall back', () => {
+  assert.equal(gas.extractLeadEmailFromReplyBody_('Sure, sounds good, call me tomorrow.'), '');
+  assert.equal(gas.extractLeadEmailFromReplyBody_(''), '');
+});
+
+test('getMessageHeader_ finds a header by name and returns empty string when absent', () => {
+  const message = { payload: { headers: [{ name: 'From', value: 'network@ardorseo.com' }, { name: 'Subject', value: 'Fwd: Hi' }] } };
+  assert.equal(gas.getMessageHeader_(message, 'From'), 'network@ardorseo.com');
+  assert.equal(gas.getMessageHeader_(message, 'Subject'), 'Fwd: Hi');
+  assert.equal(gas.getMessageHeader_(message, 'To'), '');
+  assert.equal(gas.getMessageHeader_({}, 'From'), '');
+});

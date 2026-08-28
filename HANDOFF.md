@@ -92,28 +92,44 @@ archive them manually instead** (that's the only lever that actually
 works — the bot only checks `in:inbox`, never read/unread status, so
 marking read/unread does nothing).
 
-### 3. Reply Tracker — real bug found, NOT yet fixed, needs real sample data
+### 3. Reply Tracker — real bug found AND fixed 28/08/2026 (two bugs, not one)
 
 Kris flagged the "Sales Review - Daily Tracker" email as inaccurate: 131
 replies today but "0% booked themselves / 0% booked to QC" AND only "6
-leads who replied this period" (should be closer to 131). Root cause
-theory, strongly supported by this file's own header comment: **`Phase8_
-ReplyTracker.gs`'s "Lead Email" is extracted from the forwarded message's
-own `From` header** (`extractEmailAddress_(msg.fromRaw)` in
-`classifyNewReplies`), which per that file's documented finding is very
-likely `network@ardorseo.com` (the Maildoso forwarding relay) on most/all
-threads — NOT the real lead's address. That would explain both symptoms:
-per-lead grouping in `computeReplyStats_` collapses to almost nothing, and
-`reconcileBookingOutcomes_`'s join to the booking tracker (keyed by lead
-email) never matches, permanently reading 0%.
+leads who replied this period" (should be closer to 131). Confirmed against
+real Gmail threads (Kris granted Gmail + Drive access this session) — the
+original theory (Lead Email always reading as the relay address) was half
+right, but there was a second, worse bug compounding it:
 
-**Not yet fixed** — need real evidence before touching the extraction
-logic (same discipline as every other fix this session): either a couple
-of real rows from the "Reply Tracker" sheet tab's `From`/`Lead Email`
-columns, or the raw "From:" line + quoted forwarded-header block from one
-of Joana's actual forwarded reply emails, to see the real Maildoso forward
-format and extract the actual lead address correctly (probably from the
-quoted header block in the body text, not the envelope `From`).
+1. **`getThreadLastMessageFull_`** (`Phase8_ReplyTracker.gs`) took the
+   thread's chronologically LAST message — but Joana routinely replies to
+   the lead from within the same Gmail thread the forward landed in
+   (confirmed on thread `1a042d0067c3adf7`: lead's forward lands 10:41,
+   Joana's own reply sends 16:08, same thread), and Gmail thread order is
+   purely chronological, not directional. So the "last message" was very
+   often **Joana's own outgoing reply**, not the lead's — the classifier
+   scored her own sent text as the lead's sentiment. Fixed: walk backwards
+   for the last message actually sent FROM `REPLY_TRACKER_CONFIG.FORWARD_ADDRESS`.
+2. **Lead Email** (`classifyNewReplies`) was extracted from that message's
+   envelope `From` header, which is always the relay address (or, per bug
+   1, sometimes a team member's own address) — never the real lead. Fixed:
+   new `extractLeadEmailFromReplyBody_()` pulls the real lead address out
+   of the body's Gmail quote header instead, e.g. confirmed real format
+   `"On Wednesday, Aug 26, 2026 at 3:03 pm jborwick@chaseinternational.com
+   wrote:"`.
+
+Together these two bugs collapsed ~131 distinct leads into a handful of
+`fromRaw` values (the relay address plus whichever team member's address
+happened to reply within a thread) — exactly matching the "6 leads"
+symptom — and broke the booking-tracker join (keyed on lead email), which
+always read 0%.
+
+**Fixed, tested (5 new unit tests in `tests/run_tests.js`, all 157 passing),
+committed — NOT yet deployed.** This sandbox has no `.clasp.json`; per
+CLAUDE.md, Kris needs to `git pull && clasp push` on the machine that has
+it. After deploying, watch the next `classifyNewReplies` run (every 4h) and
+`previewReplyMetricsReport()` to confirm the lead count and booking % look
+sane before trusting the next daily email.
 
 ### 4. Carried over from just before this session's context was summarized
 
