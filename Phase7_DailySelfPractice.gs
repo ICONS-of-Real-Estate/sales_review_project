@@ -572,24 +572,16 @@ function sendDailyPracticeReminders_() {
       log_('(preview, config disabled) ' + repCfg.email + ' <- ' + subject + ' (cc ' + CONFIG.TOMAS_EMAIL + ')\n' + body + '\n');
       return;
     }
-    var sent = guardedSend_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
+    // guardedSendAndGetThread_ returns the REAL sent thread directly (no
+    // GmailApp.search race — see its own comment for the real bug this
+    // replaced: a search-based lookup could and did track the wrong thread).
+    var thread = guardedSendAndGetThread_(repCfg.email, subject, body, { htmlBody: htmlBody, name: 'Daily Practice Reminder Bot', cc: CONFIG.TOMAS_EMAIL }, 2);
     var isGenericFallback = todaysLane === 'objection' && !(objections && objections.length);
     log_('[' + rep + '] Sent ' + label.label + ' assignment (lane: ' + todaysLane + ')' +
       (isGenericFallback ? ' (generic fallback — nothing on file for any lane).' : '.') + ' (cc\'d Tomás)');
-    if (!sent) return;
+    if (!thread) return; // send failed/skipped — guardedSendAndGetThread_ already logged why
 
-    // Register the assignment as tracked regardless of whether Gmail's search
-    // index has caught up with the send yet — a missing threadId only means
-    // checkDailyPracticeCompliance_ can't reply-all on the original thread
-    // later (it falls back to a fresh nag email), it must not mean the
-    // assignment silently vanishes from the follow-up sheet/dashboard.
-    // Utilities.sleep gives the index a moment before we try once.
-    Utilities.sleep(3000);
-    var thread = GmailApp.search('subject:"' + subject + '" to:' + repCfg.email + ' newer_than:1d', 0, 1)[0];
-    if (!thread) {
-      log_('[' + rep + '] Could not find the just-sent thread (search-index lag) — tracking without a threadId.');
-    }
-    registerDailyPracticeFollowup_(rep, dateStr, thread ? thread.getId() : '');
+    registerDailyPracticeFollowup_(rep, dateStr, thread.getId());
   });
 }
 
@@ -820,7 +812,17 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     }
 
     // row.status === 'file_received' here (either already was, or just transitioned above).
-    if (!namedFile) return; // shouldn't happen, but guard anyway
+    if (!namedFile) {
+      // Real gap found live (28/08/2026, Sean's 260825 row): once a row is
+      // 'file_received' it's out of the nagging path entirely, so if the
+      // file that triggered that transition is later renamed/moved/deleted,
+      // this returns silently forever with no visible trace anywhere — the
+      // row just sits stuck with nothing to tell anyone it's stuck. Log it.
+      log_('[' + row.rep + '/' + row.dateStr + '] Row is file_received but no matching file exists in the folder ' +
+        'right now (renamed, moved, or deleted since?) — stuck until a file starting with ' + row.dateStr +
+        ' or later reappears.');
+      return;
+    }
     // NOT .replace(/\.[^.]+$/, '') first: transcribe_daily_practice.py names
     // the doc "<video name, EXTENSION INCLUDED> — Transcript" (real bug C-08
     // — stripping the extension here built a name that never matched the doc

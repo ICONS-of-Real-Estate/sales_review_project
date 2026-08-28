@@ -957,6 +957,44 @@ function guardedSend_(to, subject, body, options, recipientsNeeded) {
 }
 
 /**
+ * Same quota/config guard as guardedSend_, but for a caller that needs the
+ * REAL thread it just created — MailApp.sendEmail() returns nothing, so the
+ * only way to find "the email I just sent" afterward is a GmailApp.search(),
+ * racing Gmail's own indexing. Real bug (confirmed live 28/08/2026):
+ * sendDailyPracticeReminders_ used to do exactly that (sleep 3s, then
+ * search by subject+recipient) to find the just-sent assignment thread to
+ * track — under indexing lag, or when Bens/Sean/Joana's near-simultaneous
+ * sends left ambiguous search state, it could come back with the WRONG
+ * thread (confirmed: the tracked thread ID for one such row didn't match
+ * any real thread with that subject). Every nag and cancel/stop check after
+ * that then operated on the wrong data — a row could get marked 'cancelled'
+ * from content that was never actually a cancel/stop reply on that
+ * assignment. GmailApp.createDraft(...).send() returns the actual sent
+ * GmailMessage — .getThread() is the real thread, no search, no race.
+ */
+function guardedSendAndGetThread_(to, subject, body, options, recipientsNeeded) {
+  if (!auditConfig_().ok) {
+    log_('CONFIG INVALID — send of "' + subject + '" to ' + to + ' blocked.');
+    return null;
+  }
+  var remaining = MailApp.getRemainingDailyQuota();
+  if (remaining - recipientsNeeded < CONFIG.QUOTA_RESERVE) {
+    log_('QUOTA SHORT: remaining=' + remaining + ', needed=' + recipientsNeeded +
+      ' — skipping send of "' + subject + '" to ' + to);
+    if (to !== CONFIG.OPS_ALERT_EMAIL && remaining > 1) {
+      MailApp.sendEmail(CONFIG.OPS_ALERT_EMAIL,
+        '[Compliance bot] Quota short — email skipped',
+        'Skipped sending "' + subject + '" to ' + to +
+        ' because remaining daily quota is ' + remaining +
+        ' (reserve ' + CONFIG.QUOTA_RESERVE + ').\n\nBody that was not sent:\n\n' + body);
+    }
+    return null;
+  }
+  var message = GmailApp.createDraft(to, subject, body, options || {}).send();
+  return message.getThread();
+}
+
+/**
  * Same quota/config guard as guardedSend_, for GmailApp thread.replyAll()
  * instead of MailApp.sendEmail(). GmailApp sends draw from the same daily
  * email quota as MailApp — a bare thread.replyAll() call bypasses the
