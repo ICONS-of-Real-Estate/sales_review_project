@@ -1299,6 +1299,7 @@ test('buildTrainingReviewSystemPrompt_ leaves Sean/Joana on the shared money-ask
 });
 
 test('buildTrainingReviewEmail_ never shows a framework badge/section for Bens, and relabels the close-ask skill', () => {
+  gas.Utilities = { formatDate: realFormatDate };
   const result = {
     attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
@@ -1313,6 +1314,7 @@ test('buildTrainingReviewEmail_ never shows a framework badge/section for Bens, 
 });
 
 test('buildTrainingReviewEmail_ still shows the framework badge/section for Sean/Joana as before', () => {
+  gas.Utilities = { formatDate: realFormatDate };
   const result = {
     attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: false,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Budget', note: 'agree/isolate/repeat' }],
@@ -1323,6 +1325,30 @@ test('buildTrainingReviewEmail_ still shows the framework badge/section for Sean
   assert.ok(email.body.indexOf('Practiced asking for the money') !== -1);
   assert.ok(email.body.indexOf('Framework explanation to drill') !== -1);
   assert.ok(email.htmlBody.indexOf('Framework explanation practiced') !== -1);
+});
+
+test('trainingCallPlanWeekLabel_ reads the WEEK the training call\'s Tuesday feeds (the following week\'s cycle), not the week the call itself falls in (per Kris, 28/08/2026: so the weekly plan email carries the same number as that week\'s daily practice assignments)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // 260825 = Tue 25 Aug 2026, the training call that kicks off Week 2
+  // (Wed 26 Aug is Week 2 Day 1 — see the epoch test below).
+  assert.equal(gas.trainingCallPlanWeekLabel_('260825', tz), 'Week 2');
+});
+
+test('trainingCallPlanWeekLabel_ returns null for a dateLabel that doesn\'t parse as YYMMDD, so the caller falls back to the raw label instead of throwing', () => {
+  assert.equal(gas.trainingCallPlanWeekLabel_('not-a-date', 'America/New_York'), null);
+  assert.equal(gas.trainingCallPlanWeekLabel_('', 'America/New_York'), null);
+});
+
+test('buildTrainingReviewEmail_ subject carries the week number, not the raw call date', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false,
+    coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
+    close_ask_drill: null, framework_gaps_to_drill: [], team_notes: 'none'
+  };
+  const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
+  assert.equal(email.subject, 'Training Call Plan — Sean — Week 2');
 });
 
 // ---------------------------------------------------------------------------

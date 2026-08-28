@@ -311,10 +311,32 @@ var FRAMEWORK_TOPIC_LABELS_ = {
   sell_more_houses: 'Sell more houses'
 };
 
+/**
+ * Kris's ask (28/08/2026): the subject should carry the SAME week number as
+ * the daily practice assignment emails this training call feeds
+ * (sendDailyPracticeReminders_, "<rep> — Week N, Day D — Training Plan"),
+ * not the raw call date — so a rep's whole week of related emails is
+ * recognizable as one group at a glance. The Tuesday training call always
+ * kicks off the FOLLOWING week's cycle (TRAINING_CYCLE_DAY_BY_WEEKDAY_ maps
+ * Tuesday to day 5, the last day of the week that's ending) — so this reads
+ * the label one day after the call date, landing on the Wednesday that
+ * starts the week whose assignments this plan actually drives.
+ * Returns null (falls back to the raw dateLabel) if dateLabel doesn't parse.
+ */
+function trainingCallPlanWeekLabel_(dateLabel, tz) {
+  var m = String(dateLabel).match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  var callDate = dateAtMidnightInBusinessTimezone_(2000 + Number(m[1]), Number(m[2]), Number(m[3]));
+  var nextDay = new Date(callDate.getTime() + 24 * 3600 * 1000);
+  var cycle = computeTrainingCycleLabel_(nextDay, tz);
+  return cycle ? 'Week ' + cycle.week : null;
+}
+
 function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var role = trainingReviewRoleFor_(rep);
   var closeAskLabelCap = role.closeAskSkillLabel.charAt(0).toUpperCase() + role.closeAskSkillLabel.slice(1);
-  var subject = 'Training Call Plan — ' + rep + ' — ' + dateLabel;
+  var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
+  var subject = 'Training Call Plan — ' + rep + ' — ' + (weekLabel || dateLabel);
   var objections = result.objections_to_drill || [];
   var closeAsk = result.close_ask_drill || null;
   var frameworkGaps = role.drillsFramework ? (result.framework_gaps_to_drill || []) : [];
