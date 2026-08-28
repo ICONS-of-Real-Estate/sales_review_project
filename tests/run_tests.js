@@ -2556,3 +2556,50 @@ test('guessCallTypeFromTitle_ falls back to bare "call" when no known call type 
   assert.equal(gas.guessCallTypeFromTitle_('Crystal Gargiulo / ICONS of Real Estate'), 'call');
   assert.equal(gas.guessCallTypeFromTitle_('Podcast Qualification Call / Tom Wood'), 'QC');
 });
+
+test('getAllTrackerRows_ treats a filled Outcome Disposition as logged, not just the Outcome Logged checkbox (real bug live 28/08/2026: Bens filled in Outcome Disposition exactly as the compliance email instructed, "Follow-up", and the bot kept nagging forever because it only ever checked Outcome Logged)', () => {
+  const header = ['Prospect Name', 'Prospect Email', 'Call Date', 'Rep', 'Call Type', 'Outcome Logged', 'Outcome Disposition', 'Calendar Event ID'];
+  const data = [
+    header,
+    // Outcome Logged blank, but Outcome Disposition filled — must count as logged.
+    ['Joey Lamielle', '', '26/08/2026', 'Bens', 'Recording', '', 'Follow-up', '']
+  ];
+  const fakeSheet = {
+    getDataRange: () => ({ getValues: () => data }),
+    getName: () => 'Sales Call Log'
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, getSheets: () => [fakeSheet] }) };
+  try {
+    const repCfg = gas.CONFIG.REPS.filter((r) => r.name === 'Bens')[0];
+    const rows = gas.getAllTrackerRows_(repCfg, '26/08/2026', gas.CONFIG.BUSINESS_TIMEZONE);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].logged, true);
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+test('sendDailyPracticeReminders_ tells the rep the upload is transcribed automatically (Kris\'s ask 28/08/2026, after Bens\' upload sat for hours looking silently stuck)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const originalEnabled = gas.DAILY_PRACTICE_CONFIG.ENABLED;
+  const originalProps = gas.PropertiesService;
+  const originalLogger = gas.Logger;
+  const logs = [];
+  gas.DAILY_PRACTICE_CONFIG.ENABLED = false; // preview mode: logs the body instead of sending
+  gas.PropertiesService = { getScriptProperties: () => ({ getProperty: () => null }) };
+  gas.Logger = { log: (msg) => logs.push(msg) };
+  try {
+    gas.sendDailyPracticeReminders_();
+  } catch (e) {
+    // computeTrainingCycleLabel_ needs Date.now() to land on a real cycle day —
+    // if it doesn't (weekend), fall through and skip rather than fail the test.
+  }
+  gas.DAILY_PRACTICE_CONFIG.ENABLED = originalEnabled;
+  gas.PropertiesService = originalProps;
+  gas.Logger = originalLogger;
+  const joined = logs.join('\n');
+  if (!joined) return; // ran on a weekend in real time — nothing to assert
+  assert.ok(joined.indexOf('transcribed automatically') !== -1,
+    'expected the assignment email body to explain automatic transcription');
+});

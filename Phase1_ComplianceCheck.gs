@@ -133,6 +133,7 @@ var CONFIG = {
         prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date', 'Recording Date', 'Booking Date'],
         outcomeLogged: ['Outcome Logged', 'Call Taken', 'Recording Done'],
+        outcomeDisposition: ['Outcome Disposition'],
         callType: ['Call Type'],
         calendarEventId: ['Calendar Event ID'],
         rep: ['Rep']
@@ -151,6 +152,7 @@ var CONFIG = {
         prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date'],
         outcomeLogged: ['Outcome Logged'],
+        outcomeDisposition: ['Outcome Disposition'],
         callType: ['Call Type'],
         calendarEventId: ['Calendar Event ID'],
         rep: ['Rep']
@@ -168,6 +170,7 @@ var CONFIG = {
         prospectEmail: ['Prospect Email', 'Email'],
         callDate: ['Call Date', 'First Call Date'],
         outcomeLogged: ['Outcome Logged'],
+        outcomeDisposition: ['Outcome Disposition'],
         callType: ['Call Type'],
         calendarEventId: ['Calendar Event ID'],
         rep: ['Rep']
@@ -456,7 +459,17 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
     col[key] = findColumn_(header, repCfg.columns[key]);
   }
   if (col.prospectName === -1) throw new Error('No prospect-name column found in ' + sheet.getName());
-  if (col.outcomeLogged === -1) throw new Error('No outcome-logged column found in ' + sheet.getName());
+  // Real bug found live (28/08/2026, Bens): the compliance email tells reps
+  // to fill in "Outcome Disposition" (Sold/Not Sold/Follow-up/No-show) —
+  // that's literally the instruction in buildComplianceEmail_ below — but
+  // this used to only ever check the separate "Outcome Logged" checkbox
+  // column for compliance. A rep who did exactly what the email asked never
+  // satisfied it: isTruthyOutcome_ doesn't even recognize "Follow-up" etc.
+  // as truthy, and it was reading the wrong column besides. A row now counts
+  // as logged if EITHER column says so. At least one of the two must exist.
+  if (col.outcomeLogged === -1 && col.outcomeDisposition === -1) {
+    throw new Error('No outcome-logged or outcome-disposition column found in ' + sheet.getName());
+  }
   // callDate may be -1 on legacy sheets: without it we can't date-filter, so
   // treat all rows as candidates.
 
@@ -501,7 +514,8 @@ function getAllTrackerRows_(repCfg, priorDay, tz) {
       sheet: sheet,
       eventIdCol: col.calendarEventId,   // -1 if the sheet has no such column
       matchMethodCol: findColumn_(header, ['Match Method']),
-      logged: col.outcomeLogged !== -1 && isTruthyOutcome_(row[col.outcomeLogged]),
+      logged: (col.outcomeLogged !== -1 && isTruthyOutcome_(row[col.outcomeLogged])) ||
+        (col.outcomeDisposition !== -1 && String(row[col.outcomeDisposition] || '').trim() !== ''),
       prospect: normalize_(String(row[col.prospectName] || '')),
       email: col.prospectEmail !== -1 ? String(row[col.prospectEmail] || '').toLowerCase().trim() : '',
       eventId: col.calendarEventId !== -1 ? String(row[col.calendarEventId] || '').trim() : '',
