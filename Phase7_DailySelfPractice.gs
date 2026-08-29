@@ -233,6 +233,13 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
  * section rather than the headline — same information, reordered so the
  * first thing a rep reads is a concrete moment, not a number.
  */
+/** Green at/above 4, amber at 3, red at/below ESCALATE_AT_OR_BELOW (2) — same score the escalation logic already treats as needing attention. */
+function dailyPracticeScoreColor_(score) {
+  if (score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW) return '#c0392b';
+  if (score < 4) return '#b8860b';
+  return '#1a7a3c';
+}
+
 function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
   var subject = 'Practice Drill Feedback — ' + fileName;
   var focusLine = result.drill_type === 'close_ask'
@@ -240,6 +247,7 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
     : result.drill_type === 'framework'
       ? 'Drill: Framework explanation (' + result.framework_topic + ')'
       : 'Objection practiced: ' + result.objection_type;
+  var techniqueLine = result.technique_used ? 'Yes — ' + result.technique_description : 'No';
   var body =
     'Hi ' + rep + ',\n\n' +
     'On today\'s practice drill ("' + fileName + '"):\n\n' +
@@ -247,11 +255,33 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
     'One thing to sharpen next: ' + result.sharpen_next + '\n\n' +
     '— For the record —\n' +
     focusLine + '\n' +
-    'Technique used: ' + (result.technique_used ? 'Yes — ' + result.technique_description : 'No') + '\n' +
+    'Technique used: ' + techniqueLine + '\n' +
     'Delivery: ' + result.delivery_quality + '\n' +
     'Score: ' + result.overall_score + '/5\n\n' +
     '— This is an automated review of your practice drill. Drafted by AI; reply to Kris or Tomás with any issues.';
-  return { subject: subject, body: body };
+
+  // Kris's ask (29/08/2026): the plain-text version above reads as a wall of
+  // text — bold/italic + color on the score, same "for the record, styled"
+  // treatment already given to the Handoff Brief and Weekly Scorecard
+  // emails. escapeHtml_ (Phase4_InboxSLA.gs) guards every AI-generated/
+  // dynamic field since this is raw HTML, not Jinja.
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Hi ' + escapeHtml_(rep) + ',</p>' +
+    '<p>On today\'s practice drill (<i>"' + escapeHtml_(fileName) + '"</i>):</p>' +
+    '<p>' + escapeHtml_(result.feedback_summary).replace(/\n/g, '<br>') + '</p>' +
+    '<p><strong>One thing to sharpen next:</strong> ' + escapeHtml_(result.sharpen_next) + '</p>' +
+    '<p style="margin:16px 0 4px 0;"><strong style="color:#1a56db;">FOR THE RECORD</strong></p>' +
+    '<p style="margin:0;">' + escapeHtml_(focusLine) + '<br>' +
+    '<strong>Technique used:</strong> ' + escapeHtml_(techniqueLine) + '<br>' +
+    '<strong>Delivery:</strong> ' + escapeHtml_(result.delivery_quality) + '<br>' +
+    '<strong>Score:</strong> <strong style="color:' + dailyPracticeScoreColor_(result.overall_score) + ';">' +
+    escapeHtml_(String(result.overall_score)) + '/5</strong></p>' +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated review of your practice ' +
+    'drill. Drafted by AI; reply to Kris or Tomás with any issues.</i></p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
 /**
@@ -333,7 +363,8 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
   if (replyThreadId) {
     var thread = GmailApp.getThreadById(replyThreadId);
     if (thread) {
-      sent = guardedReplyAll_(thread, email.body, { cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL, name: 'Daily Practice Feedback Bot' }, 3);
+      sent = guardedReplyAll_(thread, email.body,
+        { cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL, name: 'Daily Practice Feedback Bot', htmlBody: email.htmlBody }, 3);
       if (sent) {
         log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) — replied on tracked assignment thread.');
       } else {
@@ -346,7 +377,7 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
     }
   }
   if (!replyThreadId) {
-    var sendOptions = { name: 'Daily Practice Feedback Bot' };
+    var sendOptions = { name: 'Daily Practice Feedback Bot', htmlBody: email.htmlBody };
     var recipientsNeeded = 1;
     if (escalate) {
       sendOptions.cc = CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL;

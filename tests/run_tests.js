@@ -2579,3 +2579,29 @@ test('getAllTrackerRows_ treats a filled Outcome Disposition as logged, not just
     gas.SpreadsheetApp = originalSpreadsheetApp;
   }
 });
+
+test('dailyPracticeScoreColor_ colors low scores red, mid amber, high green (Kris\'s ask 29/08/2026: color the score so it stands out)', () => {
+  assert.equal(gas.dailyPracticeScoreColor_(2), '#c0392b');
+  assert.equal(gas.dailyPracticeScoreColor_(3), '#b8860b');
+  assert.equal(gas.dailyPracticeScoreColor_(4), '#1a7a3c');
+  assert.equal(gas.dailyPracticeScoreColor_(5), '#1a7a3c');
+});
+
+test('buildDailyPracticeFeedbackEmail_ includes a styled htmlBody with bold labels and a colored score', () => {
+  const result = {
+    drill_type: 'objection',
+    objection_type: 'timing',
+    technique_used: true,
+    technique_description: 'Partial Agree/Isolate/Repeat.',
+    delivery_quality: 'hesitant',
+    overall_score: 3,
+    sharpen_next: 'Isolate time as the only obstacle before responding.',
+    feedback_summary: '"I completely understand" — a real Agree step, but Isolate/Repeat were skipped.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Bens', '260825_objection_practice.mp4', result);
+  assert.ok(email.htmlBody, 'expected an htmlBody to be present');
+  assert.ok(email.htmlBody.indexOf('<strong>One thing to sharpen next:</strong>') !== -1);
+  assert.ok(email.htmlBody.indexOf('<strong>Score:</strong>') !== -1);
+  assert.ok(email.htmlBody.indexOf('color:#b8860b') !== -1, 'expected the amber color for a score of 3');
+  assert.ok(email.htmlBody.indexOf('3/5') !== -1);
+});
