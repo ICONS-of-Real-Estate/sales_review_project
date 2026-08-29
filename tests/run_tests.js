@@ -2620,3 +2620,58 @@ test('buildDailyPracticeFeedbackEmail_ includes a styled htmlBody with bold labe
   assert.ok(email.htmlBody.indexOf('color:#b8860b') !== -1, 'expected the amber color for a score of 3');
   assert.ok(email.htmlBody.indexOf('3/5') !== -1);
 });
+
+test('salesCallLogRowLink_ builds a deep link to the exact Sales Call Log row', () => {
+  const fakeSheet = { getSheetId: () => 987654321 };
+  const link = gas.salesCallLogRowLink_(fakeSheet, 252);
+  assert.ok(link.indexOf(gas.SALES_CALL_LOG_SPREADSHEET_ID) !== -1);
+  assert.ok(link.indexOf('gid=987654321') !== -1);
+  assert.ok(link.indexOf('range=A252') !== -1);
+});
+
+test('sendRandomCalibrationDigest_ formats with bold names and both a transcript link and a sheet-row link (Kris\'s ask 29/08/2026: "Bad formatting. No bold. Add the links!")', () => {
+  const sample = [
+    { rowIndex: 252, rep: 'Sean', prospectName: 'William Schlunaker', transcriptUrl: 'https://docs.google.com/document/d/abc123/edit' },
+    { rowIndex: 72, rep: 'Tomás', prospectName: 'Tennitia Wilson', transcriptUrl: '' }
+  ];
+  const fakeSheet = { getSheetId: () => 111 };
+  const logs = [];
+  const originalLogger = gas.Logger;
+  const originalEnabled = gas.RANDOM_CALIBRATION_CONFIG.ENABLED;
+  gas.Logger = { log: (msg) => logs.push(msg) };
+  gas.RANDOM_CALIBRATION_CONFIG.ENABLED = false; // preview path: logs the plain body instead of sending
+  try {
+    gas.sendRandomCalibrationDigest_(sample, false, fakeSheet);
+  } finally {
+    gas.Logger = originalLogger;
+    gas.RANDOM_CALIBRATION_CONFIG.ENABLED = originalEnabled;
+  }
+  const joined = logs.join('\n');
+  assert.ok(joined.indexOf('William Schlunaker') !== -1);
+  assert.ok(joined.indexOf('https://docs.google.com/document/d/abc123/edit') !== -1, 'expected the transcript link in the logged preview');
+  assert.ok(joined.indexOf('range=A252') !== -1, 'expected the sheet-row link in the logged preview');
+});
+
+test('sendRandomCalibrationDigest_\'s live send includes an htmlBody with bold names and clickable links, and handles a missing transcript URL without a broken link', () => {
+  const sample = [
+    { rowIndex: 455, rep: 'Bens', prospectName: 'William Holder', transcriptUrl: 'https://docs.google.com/document/d/xyz789/edit' },
+    { rowIndex: 193, rep: 'Sean', prospectName: 'Margaret Bruno', transcriptUrl: '' }
+  ];
+  const fakeSheet = { getSheetId: () => 222 };
+  let captured = null;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalEnabled = gas.RANDOM_CALIBRATION_CONFIG.ENABLED;
+  gas.guardedSend_ = (to, subject, body, options) => { captured = { to, subject, body, options }; return true; };
+  gas.RANDOM_CALIBRATION_CONFIG.ENABLED = true;
+  try {
+    gas.sendRandomCalibrationDigest_(sample, false, fakeSheet);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+    gas.RANDOM_CALIBRATION_CONFIG.ENABLED = originalEnabled;
+  }
+  assert.ok(captured, 'expected guardedSend_ to be called');
+  assert.ok(captured.options.htmlBody, 'expected an htmlBody');
+  assert.ok(captured.options.htmlBody.indexOf('<strong>William Holder</strong>') !== -1);
+  assert.ok(captured.options.htmlBody.indexOf('href="https://docs.google.com/document/d/xyz789/edit"') !== -1);
+  assert.ok(captured.options.htmlBody.indexOf('no transcript on file') !== -1, 'expected a graceful fallback for the row with no transcript');
+});

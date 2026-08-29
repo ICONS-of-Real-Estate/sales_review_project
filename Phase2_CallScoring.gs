@@ -3397,7 +3397,8 @@ function buildRandomCalibrationSampleImpl_(forcePreview) {
       rep: row[col['Rep'] - 1],
       prospectName: row[col['Prospect Name'] - 1],
       aiFlag: !!row[col['Manual Review Recommended'] - 1],
-      score: Number(row[col['Call Quality Score'] - 1]) || 0
+      score: Number(row[col['Call Quality Score'] - 1]) || 0,
+      transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim()
     });
   }
 
@@ -3413,7 +3414,7 @@ function buildRandomCalibrationSampleImpl_(forcePreview) {
     log_('  Row ' + c.rowIndex + ': ' + c.prospectName + ' (' + c.rep + ') — AI flag ' + c.aiFlag + ', score ' + c.score);
   });
 
-  sendRandomCalibrationDigest_(sample, forcePreview);
+  sendRandomCalibrationDigest_(sample, forcePreview, sheet);
 
   return sample.map(function (c) { return { rowIndex: c.rowIndex, prospectName: c.prospectName, rep: c.rep }; });
 }
@@ -3425,21 +3426,56 @@ function buildRandomCalibrationSampleImpl_(forcePreview) {
  * runWeeklyCalibration() reads. Including the AI's own verdict here would
  * anchor her judgment and defeat the point of a blind sample.
  */
-function sendRandomCalibrationDigest_(sample, forcePreview) {
-  var lines = ['This week\'s ' + sample.length + ' random calibration call(s) — reviewed BLIND of the AI\'s ' +
+/** Deep-link straight to a Sales Call Log row — same spreadsheet, jumps to and selects that row's range. */
+function salesCallLogRowLink_(sheet, rowIndex) {
+  return 'https://docs.google.com/spreadsheets/d/' + SALES_CALL_LOG_SPREADSHEET_ID +
+    '/edit#gid=' + sheet.getSheetId() + '&range=A' + rowIndex;
+}
+
+/**
+ * Kris's ask (29/08/2026), looking at the real weekly digest: "Bad
+ * formatting. Bad spacing. No bold. Add the links!" — this was plain text
+ * with no clickable anything, so reviewing a call meant hunting it down by
+ * hand in the sheet. Now links straight to each call's Transcript URL (the
+ * actual thing being judged) and to its Sales Call Log row (where the
+ * verdict gets typed in), with bold/spacing so it reads as a list, not a
+ * paragraph.
+ */
+function sendRandomCalibrationDigest_(sample, forcePreview, sheet) {
+  var intro = 'This week\'s ' + sample.length + ' random calibration call(s) — reviewed BLIND of the AI\'s ' +
     'own flag/score, per QA_COACHING_RESEARCH_REPORT.md §1.1. For each, fill in "Kris Manual Review ' +
     'Verdict" (Yes/No) in the Sales Call Log — same column the flagged review queue uses — so ' +
-    'runWeeklyCalibration() picks it up automatically:', ''];
+    'runWeeklyCalibration() picks it up automatically:';
+
+  var plainLines = [intro, ''];
   sample.forEach(function (c, i) {
-    lines.push((i + 1) + '. ' + c.prospectName + ' (' + c.rep + ') — row ' + c.rowIndex);
+    plainLines.push((i + 1) + '. ' + c.prospectName + ' (' + c.rep + ') — row ' + c.rowIndex);
+    if (c.transcriptUrl) plainLines.push('   Transcript: ' + c.transcriptUrl);
+    plainLines.push('   Sheet row: ' + salesCallLogRowLink_(sheet, c.rowIndex));
+    plainLines.push('');
   });
+  var body = plainLines.join('\n');
+
+  var htmlItems = sample.map(function (c, i) {
+    return '<li style="margin-bottom:12px;"><strong>' + escapeHtml_(c.prospectName) + '</strong> (' +
+      escapeHtml_(c.rep) + ') — row ' + c.rowIndex + '<br>' +
+      (c.transcriptUrl
+        ? '<a href="' + escapeHtml_(c.transcriptUrl) + '">Transcript</a> · '
+        : '<span style="color:#999;">(no transcript on file)</span> · ') +
+      '<a href="' + salesCallLogRowLink_(sheet, c.rowIndex) + '">Sheet row</a></li>';
+  }).join('');
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>' + escapeHtml_(intro) + '</p>' +
+    '<ol style="padding-left:20px;">' + htmlItems + '</ol>' +
+    '</div>';
 
   if (forcePreview || !RANDOM_CALIBRATION_CONFIG.ENABLED) {
-    log_('  (preview — random calibration digest logged only, not emailed)\n' + lines.join('\n'));
+    log_('  (preview — random calibration digest logged only, not emailed)\n' + body);
     return;
   }
   guardedSend_(CONFIG.KRIS_EMAIL, '[Call Review] This week\'s random calibration sample (' + sample.length + ' call(s))',
-    lines.join('\n'), {}, 1);
+    body, { htmlBody: htmlBody }, 1);
 }
 
 function installRandomCalibrationSampleTrigger() {
