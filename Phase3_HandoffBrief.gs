@@ -254,7 +254,7 @@ function buildHandoffBriefEmailBody_(brief, ctx) {
   return [
     'Hi ' + ctx.nextRepFirstName + ',',
     '',
-    'You have a ' + ctx.nextCallType + ' call with ' + ctx.prospectName + ' on ' + ctx.nextCallDateStr +
+    'You have a ' + callTypePhrase_(ctx.nextCallType) + ' with ' + ctx.prospectName + ' on ' + ctx.nextCallDateStr +
       ' at ' + ctx.nextCallTimeStr + ' (' + CONFIG.BUSINESS_TIMEZONE + ').',
     ctx.priorRep + ' spoke with them on ' + ctx.priorCallDateStr + ' (' + ctx.priorCallType +
       ') — here\'s what to know before you join:',
@@ -305,7 +305,7 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
   return (
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
     '<p>Hi ' + escapeHtml_(ctx.nextRepFirstName) + ',</p>' +
-    '<p>You have a <strong>' + escapeHtml_(ctx.nextCallType) + '</strong> call with ' +
+    '<p>You have a <strong>' + escapeHtml_(callTypePhrase_(ctx.nextCallType)) + '</strong> with ' +
     '<strong>' + escapeHtml_(ctx.prospectName) + '</strong> on <strong>' + escapeHtml_(ctx.nextCallDateStr) +
     ' at ' + escapeHtml_(ctx.nextCallTimeStr) + '</strong> (' + escapeHtml_(CONFIG.BUSINESS_TIMEZONE) + ').<br>' +
     escapeHtml_(ctx.priorRep) + ' spoke with them on ' + escapeHtml_(ctx.priorCallDateStr) + ' (' +
@@ -463,7 +463,7 @@ function sendUpcomingHandoffBriefs_() {
           };
           var body = buildHandoffBriefEmailBody_(brief, emailCtx);
           var htmlBody = buildHandoffBriefEmailHtml_(brief, emailCtx);
-          var subject = repCfg.name + ' — [Handoff Brief] ' + ev.prospectGuess + ' — your ' + emailCtx.nextCallType + ' call in ~24 hrs';
+          var subject = repCfg.name + ' — [Handoff Brief] ' + ev.prospectGuess + ' — your ' + callTypePhrase_(emailCtx.nextCallType) + ' in ~24 hrs';
 
           // Real bug found live (26/08/2026 silent-failure audit):
           // markHandoffBriefSent_ used to sit OUTSIDE this if/else and run
@@ -511,13 +511,35 @@ function sendUpcomingHandoffBriefs_() {
   }
 }
 
-/** Best-effort call-type label for the subject line, reusing the same keyword list Phase 1 classifies events with. */
+/**
+ * Appends " call" to a call-type label, unless the label already ends in
+ * "call" (case-insensitive) — real bug spotted live 28/08/2026: "Sales Call"
+ * (a genuine guessCallTypeFromTitle_ result, not just its "call" fallback)
+ * produced "your Sales Call call with..." wherever the template hardcoded a
+ * trailing " call" after the label. Every place this codebase builds a
+ * "your <type> call..." phrase should go through this instead of
+ * concatenating " call" directly.
+ */
+function callTypePhrase_(callType) {
+  var label = String(callType || '').trim();
+  return /call$/i.test(label) ? label : label + ' call';
+}
+
+/**
+ * Best-effort call-type label for the subject line, reusing the same
+ * keyword list Phase 1 classifies events with. Falls back to 'upcoming'
+ * (not 'call') when no keyword matches — real bug spotted live 28/08/2026:
+ * the old 'call' fallback combined with the subject template's hardcoded
+ * trailing " call" produced "your call call in ~24 hrs". 'upcoming' reads
+ * correctly through callTypePhrase_ regardless of whether the caller then
+ * appends " call" or not.
+ */
 function guessCallTypeFromTitle_(title) {
   var t = String(title || '').toLowerCase();
   if (t.indexOf('qc') !== -1 || t.indexOf('qualification') !== -1) return 'QC';
   if (t.indexOf('discovery') !== -1) return 'Discovery';
   if (t.indexOf('sales call') !== -1) return 'Sales Call';
-  return 'call';
+  return 'upcoming';
 }
 
 /**

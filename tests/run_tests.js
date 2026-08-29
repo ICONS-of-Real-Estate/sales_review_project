@@ -2552,9 +2552,24 @@ test('buildHandoffBriefEmailHtml_ does not linkify a plain "Not mentioned on thi
   assert.ok(html.indexOf('Not mentioned on this call') !== -1);
 });
 
-test('guessCallTypeFromTitle_ falls back to bare "call" when no known call type keyword is in the title (real bug spotted live 28/08/2026: produced "your call call in ~24 hrs")', () => {
-  assert.equal(gas.guessCallTypeFromTitle_('Crystal Gargiulo / ICONS of Real Estate'), 'call');
+test('guessCallTypeFromTitle_ falls back to "upcoming" (not "call") when no known call type keyword is in the title — fixed 29/08/2026, was "call", which combined with the subject template\'s trailing " call" produced "your call call in ~24 hrs"', () => {
+  assert.equal(gas.guessCallTypeFromTitle_('Crystal Gargiulo / ICONS of Real Estate'), 'upcoming');
   assert.equal(gas.guessCallTypeFromTitle_('Podcast Qualification Call / Tom Wood'), 'QC');
+});
+
+test('callTypePhrase_ never doubles "call" — real bug spotted live 28/08/2026: "Sales Call" (a genuine guessCallTypeFromTitle_ result) plus a hardcoded trailing " call" produced "your Sales Call call..."', () => {
+  assert.equal(gas.callTypePhrase_('QC'), 'QC call');
+  assert.equal(gas.callTypePhrase_('Discovery'), 'Discovery call');
+  assert.equal(gas.callTypePhrase_('Sales Call'), 'Sales Call');
+  assert.equal(gas.callTypePhrase_('upcoming'), 'upcoming call');
+});
+
+test('sendUpcomingHandoffBriefs_\'s subject template never doubles "call" for any real guessCallTypeFromTitle_ output', () => {
+  ['QC', 'Discovery', 'Sales Call', 'upcoming'].forEach((callType) => {
+    var subject = 'Joana — [Handoff Brief] Crystal Gargiulo — your ' + gas.callTypePhrase_(callType) + ' in ~24 hrs';
+    var matches = subject.match(/call/gi) || [];
+    assert.ok(matches.length <= 1, 'subject should mention "call" at most once: ' + subject);
+  });
 });
 
 test('getAllTrackerRows_ treats a filled Outcome Disposition as logged, not just the Outcome Logged checkbox (real bug live 28/08/2026: Bens filled in Outcome Disposition exactly as the compliance email instructed, "Follow-up", and the bot kept nagging forever because it only ever checked Outcome Logged)', () => {
