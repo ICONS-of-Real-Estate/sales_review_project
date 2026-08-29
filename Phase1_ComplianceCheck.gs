@@ -52,6 +52,7 @@ var CONFIG = {
   // Email routing
   KRIS_EMAIL: 'kris@iconsofrealestate.com',
   TOMAS_EMAIL: 'tomas@iconsofrealestate.com',
+  JOANA_EMAIL: 'joana@iconsofrealestate.com',
   OPS_ALERT_EMAIL: 'kris@iconsofrealestate.com', // quota/ops alerts go here
 
   // Keep this many recipients of quota in reserve for ops alerts; if remaining

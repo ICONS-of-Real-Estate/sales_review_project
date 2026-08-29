@@ -1742,6 +1742,144 @@ test('loadLoggedMessageIds_ dedupes by the Message ID column, not Thread ID (rea
     'both messages on the same thread must be tracked as separately-logged, not collapsed into one thread-id entry');
 });
 
+test('classifyNewReplies leaves Lead Email blank, not the relay address, when no quote header can be found (real bug, 29/08/2026, root cause of the reply tracker\'s stuck-at-0% booking stat: every failed extraction used to fall back to extractEmailAddress_(msg.fromRaw), which is always network@ardorseo.com, silently making every such row look like the SAME "lead")', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalUtilities = gas.Utilities;
+  const originalGetToken = gas.getGmailAccessTokenForUser_;
+  const originalGmailApiGet = gas.gmailApiGet_;
+  const originalClassifyReply = gas.classifyReply_;
+  try {
+    const appended = [];
+    const fakeSheet = {
+      getLastRow: () => 1, // empty — nothing logged yet
+      getRange: () => ({ getValues: () => [] }),
+      appendRow: (row) => appended.push(row)
+    };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
+    gas.Utilities = {
+      base64DecodeWebSafe: (s) => Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64'),
+      newBlob: (bytes) => ({ getDataAsString: () => Buffer.from(bytes).toString('utf8') }),
+      sleep: () => {}
+    };
+    gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+    gas.classifyReply_ = () => ({ sentiment: 'negative', reasoning: 'No reply text, likely a bounce.' });
+    const bodyB64 = Buffer.from('Please take me off this list.').toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
+    gas.gmailApiGet_ = (token, path) => {
+      if (path.indexOf('/threads?q=') === 0) return { threads: [{ id: 't1' }] };
+      if (path === '/threads/t1?format=full') {
+        return {
+          messages: [{
+            id: 'm1',
+            internalDate: '1000',
+            payload: {
+              mimeType: 'text/plain',
+              body: { data: bodyB64 },
+              headers: [
+                { name: 'From', value: '"Joana Peixe" via Network <network@ardorseo.com>' },
+                { name: 'Subject', value: 'Fwd: Stop' }
+              ]
+            }
+          }]
+        };
+      }
+      throw new Error('unexpected gmailApiGet_ path: ' + path);
+    };
+
+    gas.classifyNewReplies();
+
+    assert.equal(appended.length, 1);
+    const leadEmailCol = gas.REPLY_TRACKER_HEADERS.indexOf('Lead Email');
+    assert.equal(appended[0][leadEmailCol], '', 'no quote header in this body — Lead Email must be blank, not the relay address');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.Utilities = originalUtilities;
+    gas.getGmailAccessTokenForUser_ = originalGetToken;
+    gas.gmailApiGet_ = originalGmailApiGet;
+    gas.classifyReply_ = originalClassifyReply;
+  }
+});
+
+test('buildReplyMetricsReportBody_ reports the 7-day and 30-day figures as a true per-day average, not a raw window total (real bug, 29/08/2026: labeled "total" was already honest, but Kris asked for it as an actual average instead)', () => {
+  const rows = [];
+  const now = new Date('2026-08-29T21:00:00Z');
+  for (let i = 0; i < 14; i++) {
+    rows.push({ date: new Date(now.getTime() - i * 24 * 3600 * 1000), leadEmail: 'lead' + i + '@example.com', sentiment: i % 2 === 0 ? 'positive' : 'negative', subject: 'Re: outreach', reasoning: 'r' });
+  }
+  const originalBookingTabs = gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS;
+  const originalUtilities = gas.Utilities;
+  gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = []; // reconcileBookingOutcomes_ short-circuits without touching SpreadsheetApp
+  gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
+  try {
+    const periods = gas.computeReplyMetricsPeriods_(rows, now, 'America/New_York');
+    const expectedWeekAvg = (periods.week.count / 7).toFixed(1);
+    const expectedMonthAvg = (periods.month.count / 30).toFixed(1);
+    const body = gas.buildReplyMetricsReportBody_(rows, now, 'America/New_York');
+    assert.match(body, new RegExp('Rolling 7-day average: ' + expectedWeekAvg + ' reply\\(ies\\)/day avg'));
+    assert.match(body, new RegExp('Rolling 30-day average: ' + expectedMonthAvg + ' reply\\(ies\\)/day avg'));
+    assert.ok(body.indexOf('Rolling 7-day total') === -1, 'must not still say "total" anywhere');
+    assert.ok(body.indexOf('Rolling 30-day total') === -1, 'must not still say "total" anywhere');
+  } finally {
+    gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('buildReplyMetricsReportBody_ and buildReplyMetricsReportHtml_ list today\'s individual positive and negative replies by subject/lead (Kris\'s ask 29/08/2026, so Joana can confirm each classification)', () => {
+  const now = new Date('2026-08-29T21:00:00Z');
+  const rows = [
+    { date: now, leadEmail: 'sabrina@example.com', sentiment: 'positive', subject: 'Fwd: Re: Sabrina, hosting a podcast?', reasoning: 'Explicitly interested.' },
+    { date: now, leadEmail: 'marilyn@example.com', sentiment: 'negative', subject: 'Fwd: Re: Marilyn, hosting a podcast?', reasoning: 'Not interested.' }
+  ];
+  const originalBookingTabs = gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS;
+  const originalUtilities = gas.Utilities;
+  gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = [];
+  gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
+  try {
+    const body = gas.buildReplyMetricsReportBody_(rows, now, 'America/New_York');
+    assert.match(body, /Today — positive:\n {2}- Fwd: Re: Sabrina, hosting a podcast\? — sabrina@example\.com — Explicitly interested\./);
+    assert.match(body, /Today — negative:\n {2}- Fwd: Re: Marilyn, hosting a podcast\? — marilyn@example\.com — Not interested\./);
+
+    const html = gas.buildReplyMetricsReportHtml_(rows, now, 'America/New_York');
+    assert.match(html, /Today — positive/);
+    assert.match(html, /Sabrina, hosting a podcast\?/);
+    assert.match(html, /sabrina@example\.com/);
+    assert.match(html, /Today — negative/);
+    assert.match(html, /Marilyn, hosting a podcast\?/);
+  } finally {
+    gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('sendReplyMetricsReport_ cc\'s Joana on the daily digest, alongside Tomás (Kris\'s ask 29/08/2026: she should be able to confirm the AI\'s classifications are right)', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalBookingTabs = gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS;
+  const originalEnabled = gas.REPLY_TRACKER_CONFIG.ENABLED;
+  const originalUtilities = gas.Utilities;
+  try {
+    gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = [];
+    gas.REPLY_TRACKER_CONFIG.ENABLED = true;
+    gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
+    const fakeSheet = { getLastRow: () => 1, getRange: () => ({ getValues: () => [] }) };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
+    let captured = null;
+    gas.guardedSend_ = (to, subject, body, options) => { captured = { to, subject, options }; return true; };
+
+    gas.sendReplyMetricsReport_();
+
+    assert.equal(captured.to, gas.CONFIG.KRIS_EMAIL);
+    assert.ok(captured.options.cc.indexOf(gas.CONFIG.JOANA_EMAIL) !== -1, 'Joana must be cc\'d');
+    assert.ok(captured.options.cc.indexOf(gas.CONFIG.TOMAS_EMAIL) !== -1, 'Tomás must still be cc\'d');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
+    gas.REPLY_TRACKER_CONFIG.ENABLED = originalEnabled;
+    gas.Utilities = originalUtilities;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Phase 9: GoHighLevel sync. Stage names below are the REAL ones recorded in
 // GHL_PIPELINE_MAP.md's survey of the live CRM, not invented examples.
@@ -2137,6 +2275,14 @@ test('extractLeadEmailFromReplyBody_ handles a bare (no display name) quote head
 test('extractLeadEmailFromReplyBody_ returns empty string (not a throw) for a body with no recognizable quote header, so the caller can fall back', () => {
   assert.equal(gas.extractLeadEmailFromReplyBody_('Sure, sounds good, call me tomorrow.'), '');
   assert.equal(gas.extractLeadEmailFromReplyBody_(''), '');
+});
+
+test('extractLeadEmailFromReplyBody_ takes the email closest to "wrote:", not the first one in the body (real bug, 29/08/2026: an HTML-derived body from extractHtmlBodyAsText_ has no newlines at all, so the old last-line-split logic collapsed the whole preceding body into one "line" and returned the FIRST email anywhere in it — usually the outreach signature\'s own address, not the lead\'s)', () => {
+  // No newlines anywhere, same as extractHtmlBodyAsText_'s tag-stripped output — the pitch signature's
+  // own address (network@ardorseo.com) sits well before the lead's, which is the one right before "wrote:".
+  const body = 'Hi George, this is Sean from Icons, reach us any time at network@ardorseo.com if you have questions. ' +
+    'On Wed, Aug 26, 2026 at 3:03 pm jborwick@chaseinternational.com wrote: Not interested, thanks anyway.';
+  assert.equal(gas.extractLeadEmailFromReplyBody_(body), 'jborwick@chaseinternational.com');
 });
 
 test('getMessageHeader_ finds a header by name and returns empty string when absent', () => {

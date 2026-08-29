@@ -249,19 +249,28 @@ function getThreadLastMessageFull_(accessToken, threadId) {
  * 3:03 pm jborwick@chaseinternational.com wrote:" (no display name) and
  * "On Wed, Aug 26, 2026 at 8:07 AM Joana Peixe <joanap@iconsrealestateco.com>
  * wrote:" (display name + bracketed address, further down for a team
- * member's own quoted message) — so this takes the FIRST "wrote:" line in
- * the body, which is always the lead's own reply, not a later quoted one.
- * Falls back to the (known-wrong) envelope From so a message with no
- * recognizable quote header still gets logged rather than silently dropped.
+ * member's own quoted message) — so this takes the FIRST "wrote:" in the
+ * body, which is always the lead's own reply, not a later quoted one.
+ *
+ * Real bug found 29/08/2026 (Kris flagged "0% booked" for 98 leads): this
+ * used to isolate the header by splitting on '\n' and taking the last
+ * non-empty line before "wrote:" — correct for a plain-text body, but
+ * extractHtmlBodyAsText_'s tag-stripped output (used whenever a reply has
+ * no text/plain part, common from webmail clients) has NO newlines at all,
+ * collapsing the entire preceding body into one "line" and returning the
+ * FIRST email address anywhere in it — usually the outreach signature's own
+ * address, not the lead's. A bounded lookback window right before "wrote:",
+ * taking the LAST email in it, is correct for both a real header line and a
+ * collapsed one, since the lead's address always sits immediately before
+ * "wrote:" either way.
  */
 function extractLeadEmailFromReplyBody_(bodyText) {
   if (!bodyText) return '';
   var wroteAt = bodyText.search(/\bwrote:/i);
   if (wroteAt === -1) return '';
-  var headerLines = bodyText.slice(0, wroteAt).split('\n').filter(function (l) { return l.trim(); });
-  var candidateLine = headerLines.length ? headerLines[headerLines.length - 1] : '';
-  var match = candidateLine.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-  return match ? match[0].toLowerCase() : '';
+  var headerWindow = bodyText.slice(Math.max(0, wroteAt - 400), wroteAt);
+  var matches = headerWindow.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+  return matches && matches.length ? matches[matches.length - 1].toLowerCase() : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +361,16 @@ function classifyNewReplies() {
       var msg = getThreadLastMessageFull_(token, id);
       if (!msg) { failed++; return; }
       if (logged[msg.messageId]) { skippedExisting++; return; } // dedupe by message, not thread — see loadLoggedMessageIds_
-      var leadEmail = extractLeadEmailFromReplyBody_(msg.bodyText) || extractEmailAddress_(msg.fromRaw);
+      // Real bug (29/08/2026): falling back to extractEmailAddress_(msg.fromRaw)
+      // here put the RELAY address (msg.fromRaw is always REPLY_TRACKER_CONFIG.
+      // FORWARD_ADDRESS) into Lead Email whenever extraction failed — every such
+      // row then looked like the SAME "lead," silently corrupting both the
+      // flip-rate calc and the booking join (which key off Lead Email) rather
+      // than just being correctly excluded from them. Leaving it blank on a
+      // failed extraction is what every downstream calc already expects
+      // (they all skip rows with a falsy leadEmail) — the row itself still
+      // gets logged either way, only the Lead Email column is affected.
+      var leadEmail = extractLeadEmailFromReplyBody_(msg.bodyText);
       var result = classifyReply_(msg.fromRaw, msg.subject, msg.bodyText);
       sheet.appendRow([msg.date, id, msg.fromRaw, msg.subject, result.sentiment, result.reasoning, leadEmail, msg.messageId]);
       log_('  Classified "' + msg.subject + '": ' + result.sentiment + (result._parseFailed ? ' [PARSE FAILED]' : ''));
@@ -470,7 +488,8 @@ function computeReplyStats_(rows, start, end, bookingOutcomes) {
     positive: positive,
     negative: negative,
     pctNegativeTurnedPositive: negativeLeadCount ? (flipped / negativeLeadCount) : null,
-    bookingStats: bookingStats
+    bookingStats: bookingStats,
+    rows: inRange // exposed so callers can list individual replies (e.g. today's positive/negative) without recomputing the range boundaries themselves
   };
 }
 
@@ -512,13 +531,28 @@ function bookingLineText_(bookingStats) {
     '% (of ' + bookingStats.repliedLeadCount + ' lead(s) who replied this period)';
 }
 
+/** One "- Subject — lead — reasoning" line per reply of the given sentiment, sorted newest first. */
+function replyListLinesText_(rows, sentiment) {
+  var matches = rows.filter(function (r) { return r.sentiment === sentiment; })
+    .sort(function (a, b) { return b.date - a.date; });
+  if (!matches.length) return '  (none)';
+  return matches.map(function (r) {
+    return '  - ' + (r.subject || '(no subject)') + ' — ' + (r.leadEmail || '(lead email not extracted)') +
+      ' — ' + (r.reasoning || '');
+  }).join('\n');
+}
+
 function buildReplyMetricsReportBody_(rows, now, tz) {
   var periods = computeReplyMetricsPeriods_(rows, now, tz);
 
-  function line(label, stats) {
+  function line(label, stats, avgOverDays) {
     var pct = stats.pctNegativeTurnedPositive;
-    return label + ': ' + stats.count + ' reply(ies), ' + stats.positive + ' positive, ' + stats.negative +
-      ' negative' + (pct !== null ? ', ' + (pct * 100).toFixed(0) + '% of negative leads later turned positive' : '') + '\n' +
+    var counts = avgOverDays
+      ? (stats.count / avgOverDays).toFixed(1) + ' reply(ies)/day avg, ' + (stats.positive / avgOverDays).toFixed(1) +
+        ' positive/day avg, ' + (stats.negative / avgOverDays).toFixed(1) + ' negative/day avg'
+      : stats.count + ' reply(ies), ' + stats.positive + ' positive, ' + stats.negative + ' negative';
+    return label + ': ' + counts +
+      (pct !== null ? ', ' + (pct * 100).toFixed(0) + '% of negative leads later turned positive' : '') + '\n' +
       bookingLineText_(stats.bookingStats);
   }
 
@@ -527,12 +561,18 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
     '',
     line('Today', periods.day),
     '',
-    // "average" was mislabeling a raw rolling TOTAL (stats.count is a sum
-    // over the window, never divided by days) — "total" is what's actually
-    // being reported.
-    line('Rolling 7-day total', periods.week),
+    'Today — positive:',
+    replyListLinesText_(periods.day.rows, 'positive'),
     '',
-    line('Rolling 30-day total', periods.month),
+    'Today — negative:',
+    replyListLinesText_(periods.day.rows, 'negative'),
+    '',
+    // Real bug (29/08/2026): this used to label a raw rolling TOTAL as an
+    // "average" — stats.count is a sum over the window, never divided by
+    // days. Now actually averaged per day, as the label says.
+    line('Rolling 7-day average', periods.week, 7),
+    '',
+    line('Rolling 30-day average', periods.month, 30),
     '',
     periods.bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
   ].join('\n');
@@ -556,17 +596,38 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
       '(of ' + bookingStats.repliedLeadCount + ' lead(s) who replied this period)';
   }
 
-  function block(label, stats) {
+  function block(label, stats, avgOverDays) {
     var pct = stats.pctNegativeTurnedPositive;
+    var counts = avgOverDays
+      ? '<strong>' + (stats.count / avgOverDays).toFixed(1) + '</strong> reply(ies)/day avg — ' +
+        '<strong style="color:#0a7d2c;">' + (stats.positive / avgOverDays).toFixed(1) + ' positive/day avg</strong>, ' +
+        '<strong style="color:#c0392b;">' + (stats.negative / avgOverDays).toFixed(1) + ' negative/day avg</strong>'
+      : '<strong>' + stats.count + '</strong> reply(ies) — ' +
+        '<strong style="color:#0a7d2c;">' + stats.positive + ' positive</strong>, ' +
+        '<strong style="color:#c0392b;">' + stats.negative + ' negative</strong>';
     return (
       '<p style="margin:0 0 4px 0;"><strong style="color:#1a56db;font-size:15px;">' + escapeHtml_(label) + '</strong></p>' +
-      '<p style="margin:0 0 4px 0;"><strong>' + stats.count + '</strong> reply(ies) — ' +
-      '<strong style="color:#0a7d2c;">' + stats.positive + ' positive</strong>, ' +
-      '<strong style="color:#c0392b;">' + stats.negative + ' negative</strong>' +
+      '<p style="margin:0 0 4px 0;">' + counts +
       (pct !== null ? ', <strong>' + (pct * 100).toFixed(0) + '%</strong> of negative leads later turned positive' : '') +
       '</p>' +
       '<p style="margin:0 0 16px 0;color:#555;font-size:13px;">' + bookingLineHtml_(stats.bookingStats) + '</p>'
     );
+  }
+
+  /** <ul><li>Subject — lead — reasoning</li>...</ul> for one sentiment, sorted newest first. */
+  function replyListHtml_(rows, sentiment, color) {
+    var matches = rows.filter(function (r) { return r.sentiment === sentiment; })
+      .sort(function (a, b) { return b.date - a.date; });
+    if (!matches.length) {
+      return '<p style="margin:0 0 12px 0;color:#777;font-size:13px;">(none)</p>';
+    }
+    return '<ul style="margin:0 0 12px 0;padding-left:18px;font-size:13px;">' +
+      matches.map(function (r) {
+        return '<li style="margin-bottom:4px;"><strong>' + escapeHtml_(r.subject || '(no subject)') + '</strong> — ' +
+          escapeHtml_(r.leadEmail || '(lead email not extracted)') + '<br><span style="color:#555;">' +
+          escapeHtml_(r.reasoning || '') + '</span></li>';
+      }).join('') +
+      '</ul>';
   }
 
   return (
@@ -574,8 +635,15 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
     '<p style="font-size:16px;"><strong>Sales Review — Daily Tracker</strong> — ' +
     escapeHtml_(Utilities.formatDate(now, tz, 'dd/MM/yy')) + '</p>' +
     block('Today', periods.day) +
-    block('Rolling 7-day total', periods.week) +
-    block('Rolling 30-day total', periods.month) +
+    '<p style="margin:0 0 2px 0;"><strong style="color:#0a7d2c;">Today — positive</strong></p>' +
+    replyListHtml_(periods.day.rows, 'positive') +
+    '<p style="margin:0 0 2px 0;"><strong style="color:#c0392b;">Today — negative</strong></p>' +
+    replyListHtml_(periods.day.rows, 'negative') +
+    // Real bug (29/08/2026): this used to label a raw rolling TOTAL as an
+    // "average" — stats.count is a sum over the window, never divided by
+    // days. Now actually averaged per day, as the label says.
+    block('Rolling 7-day average', periods.week, 7) +
+    block('Rolling 30-day average', periods.month, 30) +
     (periods.bookingOutcomes ? '' :
       '<p style="color:#666;font-size:12px;">NOTE: booking percentages are not yet wired up — see ' +
       'REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.</p>') +
@@ -599,8 +667,10 @@ function sendReplyMetricsReport_() {
   var now = new Date();
   var body = buildReplyMetricsReportBody_(rows, now, CONFIG.BUSINESS_TIMEZONE);
   var htmlBody = buildReplyMetricsReportHtml_(rows, now, CONFIG.BUSINESS_TIMEZONE);
+  // Joana cc'd (Kris's ask, 29/08/2026) so she can confirm today's positive/negative
+  // classifications look right against her own read of the actual replies.
   var sent = guardedSend_(CONFIG.KRIS_EMAIL, 'Sales Review - Daily Tracker', body,
-    { cc: CONFIG.TOMAS_EMAIL, htmlBody: htmlBody, name: 'Reply Tracker Bot' }, 2);
+    { cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.JOANA_EMAIL, htmlBody: htmlBody, name: 'Reply Tracker Bot' }, 3);
   if (!sent) { log_('SEND FAILED/SKIPPED (quota-short or invalid config) — daily reply tracker report not delivered.'); return; }
   log_('Sent daily reply tracker report.');
 }
