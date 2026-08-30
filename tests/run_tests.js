@@ -2285,6 +2285,13 @@ test('extractLeadEmailFromReplyBody_ takes the email closest to "wrote:", not th
   assert.equal(gas.extractLeadEmailFromReplyBody_(body), 'jborwick@chaseinternational.com');
 });
 
+test('extractLeadEmailFromReplyBody_ does not attribute an unrelated earlier email to the lead when the quote header itself has none (code-review catch, 29/08/2026: a lookback-window-based first pass at the HTML-collapsed-body fix above could still grab a distractor address, e.g. an outreach signature\'s own, if it happened to be the last email inside the window — must require the email to sit DIRECTLY before "wrote:", not just somewhere near it)', () => {
+  const body = 'Hi George, this is Sean from Icons, reach us any time at network@ardorseo.com. ' +
+    'On Wed, Aug 26, 2026 at 3:03 pm Jonathan Borwick wrote: Not interested.';
+  assert.equal(gas.extractLeadEmailFromReplyBody_(body), '',
+    'the quote header has no email of its own (name-only) — must not fall back to the earlier, unrelated signature address');
+});
+
 test('getMessageHeader_ finds a header by name and returns empty string when absent', () => {
   const message = { payload: { headers: [{ name: 'From', value: 'network@ardorseo.com' }, { name: 'Subject', value: 'Fwd: Hi' }] } };
   assert.equal(gas.getMessageHeader_(message, 'From'), 'network@ardorseo.com');

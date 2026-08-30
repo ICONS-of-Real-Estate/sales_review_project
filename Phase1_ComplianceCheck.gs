@@ -209,7 +209,7 @@ function auditConfig_() {
       problems.push(repCfg.name + ' has no spreadsheetId');
     }
   });
-  [CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL, CONFIG.OPS_ALERT_EMAIL].forEach(function (e) {
+  [CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL, CONFIG.JOANA_EMAIL, CONFIG.OPS_ALERT_EMAIL].forEach(function (e) {
     if (!e || e.indexOf('@') === -1) problems.push('ops/manager address invalid: "' + e + '"');
   });
   return { ok: problems.length === 0, problems: problems };

@@ -259,18 +259,22 @@ function getThreadLastMessageFull_(accessToken, threadId) {
  * no text/plain part, common from webmail clients) has NO newlines at all,
  * collapsing the entire preceding body into one "line" and returning the
  * FIRST email address anywhere in it — usually the outreach signature's own
- * address, not the lead's. A bounded lookback window right before "wrote:",
- * taking the LAST email in it, is correct for both a real header line and a
- * collapsed one, since the lead's address always sits immediately before
- * "wrote:" either way.
+ * address, not the lead's.
+ *
+ * Fixed with a regex that requires the email to sit DIRECTLY adjacent to
+ * "wrote:" (only an optional closing '>' and whitespace, which covers both
+ * confirmed real formats, allowed in between) rather than searching a fixed
+ * lookback window — a window is either too wide (a first pass at this fix
+ * briefly re-introduced the same class of bug: a distractor address earlier
+ * in an HTML-collapsed body, e.g. an outreach signature's own, could still
+ * fall inside it and get returned instead of the lead's) or too narrow to
+ * fit a long display name. Adjacency has no such tradeoff, since Gmail's own
+ * quote header always puts the address immediately before "wrote:".
  */
 function extractLeadEmailFromReplyBody_(bodyText) {
   if (!bodyText) return '';
-  var wroteAt = bodyText.search(/\bwrote:/i);
-  if (wroteAt === -1) return '';
-  var headerWindow = bodyText.slice(Math.max(0, wroteAt - 400), wroteAt);
-  var matches = headerWindow.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-  return matches && matches.length ? matches[matches.length - 1].toLowerCase() : '';
+  var match = bodyText.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?\s*wrote:/i);
+  return match ? match[1].toLowerCase() : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -361,8 +365,8 @@ function classifyNewReplies() {
       var msg = getThreadLastMessageFull_(token, id);
       if (!msg) { failed++; return; }
       if (logged[msg.messageId]) { skippedExisting++; return; } // dedupe by message, not thread — see loadLoggedMessageIds_
-      // Real bug (29/08/2026): falling back to extractEmailAddress_(msg.fromRaw)
-      // here put the RELAY address (msg.fromRaw is always REPLY_TRACKER_CONFIG.
+      // Real bug (29/08/2026): falling back to extractEmailAddress_ (Phase4_InboxSLA.gs)
+      // called on msg.fromRaw here put the RELAY address (msg.fromRaw is always REPLY_TRACKER_CONFIG.
       // FORWARD_ADDRESS) into Lead Email whenever extraction failed — every such
       // row then looked like the SAME "lead," silently corrupting both the
       // flip-rate calc and the booking join (which key off Lead Email) rather
@@ -615,7 +619,7 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
   }
 
   /** <ul><li>Subject — lead — reasoning</li>...</ul> for one sentiment, sorted newest first. */
-  function replyListHtml_(rows, sentiment, color) {
+  function replyListHtml_(rows, sentiment) {
     var matches = rows.filter(function (r) { return r.sentiment === sentiment; })
       .sort(function (a, b) { return b.date - a.date; });
     if (!matches.length) {
