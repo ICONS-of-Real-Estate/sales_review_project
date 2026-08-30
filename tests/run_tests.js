@@ -2199,6 +2199,136 @@ test('sampleSalesCallLogRows_ skips rows with a blank Rep rather than crashing o
   }
 });
 
+/**
+ * Fake sheet supporting BOTH calling conventions rescoreAllCalls_ needs:
+ * getRange(1, 1, 1, N) / getRange(2, 1, lastRow-1, N) — bulk 4-arg reads
+ * (header check, then the full data block, same as getValidatedColumnMap_
+ * and rescoreAllCalls_'s own initial read) — and getRange(row, col).setValue(v)
+ * — single-cell writes (writeScoreToRow_'s only calling pattern). Discriminated
+ * by whether numCols is passed, not by row number, since both patterns use
+ * row >= 2.
+ */
+function fakeSalesCallLogSheetForRescore(dataRows) {
+  const headerRow = gas.SALES_CALL_LOG_HEADERS.slice();
+  const cells = {};
+  return {
+    getLastRow: () => dataRows.length + 1,
+    getRange: (row, col, numRows, numCols) => {
+      if (numCols !== undefined) {
+        if (row === 1) return { getValues: () => [headerRow] };
+        return { getValues: () => dataRows };
+      }
+      return { setValue(v) { cells[row + ':' + col] = v; return this; } };
+    },
+    _cells: cells
+  };
+}
+
+test('rescoreAllCalls_ re-scores an already-scored row under the current rubric, skips a row Kris has manually reviewed, and skips a row already at the current Rubric Version (resumability) — 29/08/2026, Kris\'s retroactive-review ask', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Needs Rescore', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Kris Already Judged This', Rep: 'Sean', 'Call Type': 'Sales Call', 'Match Method': 'fallback_heuristic',
+      'Transcript URL': 'https://docs.google.com/document/d/1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB/edit',
+      'Call Quality Score': 4, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': 'Yes'
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Already Current', Rep: 'Bens', 'Call Type': 'QC', 'Match Method': 'fallback_heuristic',
+      'Transcript URL': 'https://docs.google.com/document/d/1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC/edit',
+      'Call Quality Score': 5, 'Rubric Version': gas.RUBRIC_VERSION, 'Kris Manual Review Verdict': ''
+    })
+  ];
+  const sheet = fakeSalesCallLogSheetForRescore(dataRows);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  const originalScoreShared = gas.scoreTranscript_;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+
+    const scoredVariants = [];
+    gas.scoreQcTranscript_ = (ctx) => {
+      scoredVariants.push({ variant: 'qc', prospectName: ctx.prospectName });
+      return {
+        reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+        flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+        primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
+        feedback_summary: 'rescored'
+      };
+    };
+    gas.scoreTranscript_ = (ctx) => {
+      scoredVariants.push({ variant: 'shared', prospectName: ctx.prospectName });
+      throw new Error('should not be called — row 2 has a manual verdict and must be skipped entirely');
+    };
+
+    gas.rescoreAllCalls_(false);
+
+    // dataRows[0] "Needs Rescore" is sheet row 2 (values[r] -> row r+2); "Kris Already
+    // Judged This" is row 3; "Already Current" is row 4.
+    assert.deepEqual(scoredVariants, [{ variant: 'qc', prospectName: 'Needs Rescore' }],
+      'only the row needing a rescore should ever reach a judge function — Kris-reviewed and already-current rows must never call the model');
+    assert.equal(sheet._cells['2:' + col['Rubric Version']], gas.RUBRIC_VERSION);
+    assert.equal(sheet._cells['2:' + col['Call Quality Score']], 4);
+    assert.equal(sheet._cells['2:' + col['Flag: Delivery Effective']], true);
+
+    // Row 3 (Kris-reviewed) and row 4 (already current) must be completely untouched — no cell written for either.
+    assert.equal(Object.keys(sheet._cells).some((k) => k.startsWith('3:')), false, 'the Kris-reviewed row must never be written to');
+    assert.equal(Object.keys(sheet._cells).some((k) => k.startsWith('4:')), false, 'the already-current row must never be written to');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+    gas.scoreTranscript_ = originalScoreShared;
+  }
+});
+
+test('rescoreAllCalls_\'s dry-run preview (previewRescoreAllCalls) calls no judge function and writes nothing', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Would Be Rescored', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    })
+  ];
+  const sheet = fakeSalesCallLogSheetForRescore(dataRows);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.scoreQcTranscript_ = () => { throw new Error('previewRescoreAllCalls must never call a judge function'); };
+
+    gas.previewRescoreAllCalls();
+
+    assert.deepEqual(sheet._cells, {}, 'dry run must write nothing at all');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+  }
+});
+
 test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
   const stageLookup = {
     'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },

@@ -150,6 +150,18 @@ Kris's ask: "I haven't seen feedback on how they deliver the pitch" — a real g
 
 **Rubric version**: bumped to `'2026-08-29-pitch-delivery'`. **Re-run `freezeRegressionSet()` before trusting the next drift check**, per Section 7B.
 
+### 3H. Retroactive re-score — bringing existing history current, for every rep (29/08/2026)
+
+Kris's ask: apply Section 3F/3G to every call already scored before today, for every rep including Tomás, so the dashboard's history reflects the current rubric too — not just calls scored going forward. Every scoring function in this file dedupes by design (skip what's already scored), so a plain re-run of any of them does nothing here; this needed a dedicated function.
+
+**Implemented as `rescoreAllCalls_()`** (wrappers: `previewRescoreAllCalls()` dry run, `rescoreAllCalls()` live), in `Phase2_CallScoring.gs`. Reuses `writeScoreToRow_`/`resolveRubricVariantForRow_`/`scoreTranscriptByVariant_` exactly as the ongoing pipeline does — a re-score is "score this row again, under whichever variant its Rep/Call Type resolve to today," writing back to the same row. Covers every rep in one pass, Tomás included, since his rows live in the same "Sales Call Log" sheet and `resolveRubricVariantForRow_` already resolves his variant regardless of Match Method (Section 3F).
+
+**Two safety rules a first-time scoring pass doesn't need**:
+- **Never touches a row with a non-blank "Kris Manual Review Verdict"** — that verdict is Kris's own calibration judgment made against the OLD score/reasoning (Section 7's ~80%-agreement benchmark). Silently overwriting the score it was judged against would corrupt that history. As of 29/08/2026 this column looked unused in practice (Kris himself wasn't sure he'd ever filled it in — consistent with Section 7 never having been wired to a trigger yet), but the check costs nothing and protects the calibration data if any exists.
+- **Skips a row already scored under the current `RUBRIC_VERSION`** — this is also what makes the function resumable for free, without a stored cursor. Apps Script's 6-minute execution ceiling (same constraint `INBOX_SLA_TIME_BUDGET_MS_` in `Phase4_InboxSLA.gs` documents) means a few hundred real judge calls can't run in one invocation; `rescoreAllCalls_` stops at a 5-minute time budget and reports a partial result, and a simple re-run picks up exactly where it left off, since every row it already touched now carries the current version.
+
+**Rollout, same pattern as every other phase in this file**: `previewRescoreAllCalls()` logs what would change (old score, old Rubric Version, which variant it would move to) and calls no model — run this first. `rescoreAllCalls()` is the live pass; run it repeatedly until its log reports every remaining row was skipped as already-current.
+
 ## 4. Scoring scale — anchored, not impressionistic
 
 `call_quality_score` is 1–5. Each level must be anchored to observable transcript evidence, not adjectives like "good/adequate":

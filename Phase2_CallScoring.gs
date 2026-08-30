@@ -832,6 +832,139 @@ function scoreNewlyLoggedCalls_() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Retroactive re-score — added 29/08/2026 per Kris: apply the Call-Type-aware
+// dispatch (§3F) and pitch-delivery dimension (§3G) to every call already
+// scored under an older rubric, for every rep including Tomás, so the
+// dashboard shows this history too — not just calls scored going forward.
+//
+// Reuses writeScoreToRow_/resolveRubricVariantForRow_/scoreTranscriptByVariant_
+// exactly as scoreNewlyLoggedCalls_ does above — a re-score is just "score
+// this row again, under whichever variant its Rep/Call Type resolve to
+// today," writing back to the SAME row rather than appending a new one.
+//
+// Two safety rules, neither of which scoreNewlyLoggedCalls_ needs (it only
+// ever touches never-scored rows):
+//   1. Never touches a row with a non-blank "Kris Manual Review Verdict" —
+//      that's Kris's own calibration judgment made against the OLD score/
+//      reasoning (SOP §7's ~80%-agreement benchmark). Silently overwriting
+//      the score it was judged against would corrupt that history.
+//   2. Skips any row already scored under the CURRENT RUBRIC_VERSION — this
+//      is what makes the function resumable for free: Apps Script's 6-minute
+//      execution ceiling means a few hundred real LLM calls can't run in one
+//      invocation (same constraint documented on INBOX_SLA_TIME_BUDGET_MS_ in
+//      Phase4_InboxSLA.gs), so this stops at a time budget and reports a
+//      partial result — a simple re-run picks up exactly where it left off,
+//      since every row it already touched this pass now carries the current
+//      version and gets skipped on the next.
+var RESCORE_ALL_TIME_BUDGET_MS_ = 5 * 60 * 1000; // same margin under the 6-minute ceiling as INBOX_SLA_TIME_BUDGET_MS_
+
+function rescoreAllCalls_(dryRun) {
+  RUN_TAG = 'rescoreAllCalls_';
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('rescoreAllCalls_: another scoring run holds the lock, skipping this firing.');
+    return;
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+    var sheet = resolveSheet_(ss, 'Sales Call Log');
+    if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) { log_('No data rows.'); return; }
+
+    var col = getValidatedColumnMap_(sheet);
+    var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+    var runStart = Date.now();
+    var rescored = 0, skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0,
+      skippedNotYetScored = 0, failed = 0, truncated = false;
+
+    for (var r = 0; r < values.length; r++) {
+      if (Date.now() - runStart > RESCORE_ALL_TIME_BUDGET_MS_) {
+        truncated = true;
+        log_('  rescoreAllCalls_: time budget hit at row ' + (r + 2) + ' of ' + (values.length + 1) +
+          ' — reporting a partial result. Re-run to continue; rows already brought current this pass are skipped automatically.');
+        break;
+      }
+
+      var row = values[r];
+      var rowIndex = r + 2;
+      var prospectName = row[col['Prospect Name'] - 1];
+
+      var existingScore = row[col['Call Quality Score'] - 1];
+      if (typeof existingScore !== 'number') { skippedNotYetScored++; continue; } // not this function's job — scoreNewlyLoggedCalls_/the backfills handle first-time scoring
+
+      var rubricVersion = row[col['Rubric Version'] - 1];
+      if (rubricVersion === RUBRIC_VERSION) { skippedCurrent++; continue; } // already scored under today's rubric — this is the resumability check
+
+      var manualVerdict = row[col['Kris Manual Review Verdict'] - 1];
+      if (String(manualVerdict || '').trim() !== '') { skippedManuallyReviewed++; continue; } // never overwrite Kris's own calibration judgment
+
+      var transcriptUrl = row[col['Transcript URL'] - 1];
+      if (!transcriptUrl) { skippedNoTranscript++; continue; }
+
+      try {
+        var fileId = extractDriveFileId_(transcriptUrl);
+        var text = getTranscriptText_(DriveApp.getFileById(fileId));
+        var rep = row[col['Rep'] - 1];
+        var rawCallType = row[col['Call Type'] - 1];
+        var ctx = {
+          rep: rep,
+          prospectName: prospectName,
+          callType: rawCallType || 'QC',
+          source: row[col['Source'] - 1],
+          callDate: row[col['Call Date'] - 1],
+          transcriptText: text
+        };
+        var matchMethod = row[col['Match Method'] - 1];
+        var variant = resolveRubricVariantForRow_(rep, matchMethod, ctx.callType);
+
+        if (dryRun) {
+          log_('  Would re-score row ' + rowIndex + ' (' + prospectName + ', ' + rep + ', ' + ctx.callType +
+            ') under variant "' + variant + '" — old score=' + existingScore + ', old Rubric Version="' +
+            (rubricVersion || '(none)') + '". No model called, nothing written.');
+          rescored++;
+          continue;
+        }
+
+        var result = scoreTranscriptByVariant_(variant, ctx);
+        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
+        rescored++;
+        Utilities.sleep(300);
+      } catch (e) {
+        log_('  Row ' + rowIndex + ' (' + prospectName + ') FAILED: ' + e);
+        failed++;
+      }
+    }
+
+    log_('rescoreAllCalls_ done — ' + (dryRun ? 'WOULD rescore ' : 'rescored ') + rescored +
+      ', already current ' + skippedCurrent + ', skipped (Kris manually reviewed) ' + skippedManuallyReviewed +
+      ', skipped (no transcript) ' + skippedNoTranscript + ', skipped (not yet scored) ' + skippedNotYetScored +
+      ', failed ' + failed + (truncated ? '. TIME BUDGET HIT — re-run to continue.' : '. All rows checked.'));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Dry run — logs what WOULD be re-scored and why, calls no model, writes nothing. Run this first. */
+function previewRescoreAllCalls() {
+  return rescoreAllCalls_(true);
+}
+
+/**
+ * Live re-score — apply the current rubric (Call-Type dispatch + pitch
+ * delivery, as of 29/08/2026) to every already-scored call whose Rubric
+ * Version is out of date, across every rep. May need several runs if the
+ * sheet is large enough to hit the time budget — each run picks up where
+ * the last one stopped; see rescoreAllCalls_'s own comment.
+ */
+function rescoreAllCalls() {
+  return rescoreAllCalls_(false);
+}
+
 function extractDriveFileId_(url) {
   var m = String(url).match(/[-\w]{25,}/);
   if (!m) throw new Error('Could not extract a Drive file ID from "' + url + '"');
