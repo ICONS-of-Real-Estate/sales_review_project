@@ -50,6 +50,12 @@ var FAILURE_MODE_COACHING_TEXT_ = {
   // handling" idea behind objections_missed above, applied one step earlier
   // in the call. See Phase2_CallGradingSOP.md §3D.
   framework_not_explained: 'Walk through the full framework proactively this week — how the podcast helps recruit agents, builds #1-podcast-in-your-city authority, and helps sell more houses. Covering it up front heads off objections before the lead even raises them.',
+  // Added 29/08/2026, per Kris: pitch delivery (pacing, reading the lead's
+  // reactions) is now a fourth scored dimension — see Phase2_CallGradingSOP.md
+  // §3G. Without this entry a call whose sole gap is delivery would fall
+  // through to the generic 'Focus area: delivery_ineffective' fallback below
+  // instead of real coaching text.
+  delivery_ineffective: 'Read the room and pace to it this week — check in on time rather than rushing, and match your depth to how the lead is actually reacting (lean into what they respond to, don\'t keep pitching at the same depth once they\'ve checked out or already said no).',
   both: 'Both the close ask and objection handling need work this week — start with directly asking for the money.',
   weak_discovery: 'Slow down before pitching — ask real discovery questions about production volume, marketing spend, and team structure.',
   no_goal_alignment: 'Get the lead to state their own numeric goal, then explicitly tie the offer back to that number.',

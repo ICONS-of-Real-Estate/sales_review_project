@@ -618,6 +618,17 @@ test('priorityToImprove_ reports the framework-explanation coaching line when th
   assert.equal(gas.priorityToImprove_(stats), gas.FAILURE_MODE_COACHING_TEXT_.framework_not_explained);
 });
 
+test('priorityToImprove_ reports real delivery coaching text, not the generic "Focus area: delivery_ineffective" fallback, when that\'s the week\'s most common failure mode (29/08/2026 — closes the gap left when the delivery dimension shipped without a FAILURE_MODE_COACHING_TEXT_ entry)', () => {
+  const stats = {
+    weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 3 }],
+    weekFailureModes: ['delivery_ineffective', 'delivery_ineffective'],
+    weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }
+  };
+  const result = gas.priorityToImprove_(stats);
+  assert.equal(result, gas.FAILURE_MODE_COACHING_TEXT_.delivery_ineffective);
+  assert.ok(result.indexOf('Focus area:') === -1, 'must be real coaching text, not the generic unrecognized-value fallback');
+});
+
 test('isValidDailyPracticeSchema_ accepts "framework" as a drill_type and requires framework_topic', () => {
   const good = {
     drill_type: 'framework',
