@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-08-25-bens-sales-call-over-qc';
+var RUBRIC_VERSION = '2026-08-29-call-type-dispatch';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -742,8 +742,15 @@ function scoreNewlyLoggedCalls_() {
           callDate: row[col['Call Date'] - 1],
           transcriptText: text
         };
-        var result = scoreTranscript_(ctx);
-        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName);
+        // Call-Type/rep-aware dispatch (29/08/2026) — previously this always
+        // scored through the shared rubric regardless of Call Type or rep,
+        // so a QC/Discovery row was judged on close-ask/objection-handling
+        // criteria that don't structurally apply to a pre-sales-call step,
+        // and Tomás's own live-logged calls never got his own variant. See
+        // resolveRubricVariantForRow_'s own comment for the dispatch order.
+        var variant = resolveRubricVariantForRow_(ctx.rep, 'exact_key', ctx.callType);
+        var result = scoreTranscriptByVariant_(variant, ctx);
+        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
         scored++;
         Utilities.sleep(300);
       } catch (e) {
@@ -770,18 +777,23 @@ function extractDriveFileId_(url) {
 /**
  * Write scored fields onto an existing "Sales Call Log" row. prospectName is
  * optional (only used to label the analytic-score shadow-check log line
- * below) — omit it and the log line falls back to the row index.
+ * below) — omit it and the log line falls back to the row index. variant is
+ * optional too (defaults to 'shared', the only variant this function's one
+ * caller ever used to write before 29/08/2026's Call-Type-aware dispatch) —
+ * selects both the analytic-score deduction table AND, via
+ * buildFeedbackSummaryForVariant_, whether the AI Feedback Summary column
+ * gets the model's bare feedback_summary or a variant's packed extra
+ * dimensions (discovery/booking/framework for 'qc', etc.), same as the
+ * Sean/Bens/Tomás backfill functions already do for their own append paths.
  */
-function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prospectName) {
+function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prospectName, variant) {
+  variant = variant || 'shared';
   var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
   var manualReview = forceManualReview || result.manual_review_recommended;
 
   // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) — logs
-  // a comparison only, never changes what's written below. This is the
-  // ongoing pipeline's only write path (scoreNewlyLoggedCalls_), which always
-  // scores exact_key rows under the shared rubric regardless of rep (see
-  // resolveRubricVariantForRow_), so the variant is always 'shared' here.
-  logAnalyticScoreShadowCheck_(prospectName || ('row ' + rowIndex), 'shared', result);
+  // a comparison only, never changes what's written below.
+  logAnalyticScoreShadowCheck_(prospectName || ('row ' + rowIndex), variant, result);
   // FUTURE (not built — see ANALYTIC_SCORE_CONFIG): if ANALYTIC_SCORE_CONFIG.ENABLED
   // is ever flipped true, this is where the Call Quality Score write below
   // would use the analytic score instead of result.call_quality_score.
@@ -792,7 +804,7 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   sheet.getRange(rowIndex, col['Flag: Objections Handled']).setValue(objectionsHandled);
   sheet.getRange(rowIndex, col['Manual Review Recommended']).setValue(manualReview);
   sheet.getRange(rowIndex, col['Severity']).setValue(result.severity);
-  sheet.getRange(rowIndex, col['AI Feedback Summary']).setValue(result.feedback_summary);
+  sheet.getRange(rowIndex, col['AI Feedback Summary']).setValue(buildFeedbackSummaryForVariant_(variant, result));
   sheet.getRange(rowIndex, col['Queue Age']).setValue(0);
   // Phase 5 (weekly scorecard) input — blank on rows scored before this column
   // existed; those just read as "no signal" rather than breaking anything.
@@ -1083,6 +1095,157 @@ function buildBensFeedbackSummary_(result) {
       : ''),
     'Root cause if no booking: ' + result.root_cause_if_no_booking
   ].filter(function (line) { return line !== ''; }).join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// QC / Discovery rubric — added 29/08/2026 per Kris: a Qualification Call or
+// Discovery call is not a closing call, for ANY rep, the same reason Bens'
+// variant exists — his QC-mode logic (SOP §3C) already modeled this
+// correctly but was gated to only apply when rep === 'Bens'. This is that
+// same logic generalized to apply by CALL TYPE instead, minus the
+// icons_100_interview-only fields (call_role/interview_content_quality_good/
+// next_step_type), which are specific to Bens' own guest-interview format
+// and don't describe a QC run by any other rep. The rep's job on a QC/
+// Discovery call is to qualify the lead and book a Sales Call for someone
+// else on the team (usually Tomás) to close — never to ask for money here.
+// ---------------------------------------------------------------------------
+
+function buildQcJudgeSystemPrompt_() {
+  return [
+    'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a',
+    'Qualification Call (QC) or Discovery call. This is a pre-sales-call step, not a closing call — the rep\'s job',
+    'is to qualify the lead and book a Sales Call for someone else on the team to run (usually Tomás or another',
+    'closer), never to ask for money on this call. Applies the same way regardless of which rep ran it.',
+    '',
+    'This call\'s equivalent of "the close" is explicitly asking to book the Sales Call, at a specific date/time —',
+    'not a vague "I\'ll be in touch" or "someone will reach out." Score that the same way a money-ask is scored',
+    'on a real sales call: a real, explicit ask, not a soft trial-close question.',
+    '',
+    'Be skeptical by default. Every judgment must cite specific transcript evidence.',
+    '',
+    'Answer all of the following, in order, in your reasoning:',
+    '1. Did the rep uncover any objections/hesitations about booking the Sales Call, and address them with',
+    '   something concrete (a case study, a specific benefit, a direct answer) rather than brushing past them?',
+    '2. Did the rep explicitly ask to book the Sales Call, with a specific date/time — not just leave it',
+    '   open-ended?',
+    '3. Did the Sales Call actually get booked? If not, what specifically did the rep fail to do or say that',
+    '   would have gotten it booked?',
+    '4. Did the rep do real discovery — do they demonstrably understand this lead\'s business and situation, not',
+    '   a generic read of the room?',
+    '5. Bottom line: if the Sales Call wasn\'t booked, what is the single root cause? Be specific and causal, not',
+    '   vague.',
+    '',
+    frameworkRubricPrompt_(),
+    '',
+    'Score anchors for call_quality_score (1-5):',
+    '5 = Sales Call booked with a specific date/time, objections handled well, and real discovery shown.',
+    '4 = Sales Call booked, but one of discovery/objection-handling was weak.',
+    '3 = Sales Call booked mainly because the lead pushed for it, not because the rep earned it; or a real ask',
+    '    was made but discovery was clearly missing.',
+    '2 = Sales Call not booked, the lead was a reasonable fit, and the miss is attributable to the rep\'s',
+    '    execution.',
+    '1 = Sales Call not booked AND no real attempt at discovery or an ask.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
+    'through all 5 questions with quoted evidence), then the structured fields, in this exact shape:',
+    '',
+    '{',
+    '  "reasoning": "string",',
+    '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
+    '  "call_quality_score": 1,',
+    '  "flags": {',
+    '    "asked_for_close": true,',
+    '    "objections_uncovered": true,',
+    '    "objections_overcome": true,',
+    '    "booked_next_step": true,',
+    '    "discovery_adequate": true,',
+    '    "understood_leads_business": true',
+    '  },',
+    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | multiple",',
+    '  "root_cause_if_no_booking": "string — the single specific reason the Sales Call wasn\'t booked; \\"N/A\\" if it was",',
+    '  "manual_review_recommended": true,',
+    '  "severity": 1,',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own words',
+    '   from the transcript for the single most important moment before saying anything else. End with ONE',
+    '   specific behavior to change, not a list. Never compare this rep to any other rep by name."',
+    '}'
+  ].join('\n');
+}
+
+function isValidQcJudgeSchema_(obj) {
+  return !!(obj &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
+    obj.flags &&
+    typeof obj.flags.asked_for_close === 'boolean' &&
+    typeof obj.flags.objections_uncovered === 'boolean' &&
+    typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.booked_next_step === 'boolean' &&
+    typeof obj.flags.discovery_adequate === 'boolean' &&
+    typeof obj.flags.understood_leads_business === 'boolean' &&
+    obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
+    typeof obj.framework.number_one_podcast_explained === 'boolean' &&
+    typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    typeof obj.manual_review_recommended === 'boolean' &&
+    isValidScoreRange_(obj.severity) &&
+    typeof obj.root_cause_if_no_booking === 'string');
+}
+
+/** Same retry/manual-review shape as scoreTranscript_/scoreBensTranscript_, against the QC/Discovery rubric. */
+function scoreQcTranscript_(ctx) {
+  var systemPrompt = buildQcJudgeSystemPrompt_();
+  var userPrompt = buildJudgeUserPrompt_(ctx);
+  var lastRaw = null;
+
+  for (var attempt = 0; attempt <= PHASE2_CONFIG.MAX_PARSE_RETRIES; attempt++) {
+    var promptForThisAttempt = attempt === 0
+      ? userPrompt
+      : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
+    try {
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var parsed = stripFencesAndParseJson_(lastRaw);
+      if (!isValidQcJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required QC-rubric fields.');
+      return parsed;
+    } catch (e) {
+      log_('    ↳ scoreQcTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
+    }
+  }
+
+  log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
+    '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  return {
+    reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
+    call_quality_score: 1,
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false,
+      booked_next_step: false, discovery_adequate: false, understood_leads_business: false
+    },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    primary_failure_mode: 'none',
+    root_cause_if_no_booking: 'Unscored — parse failure.',
+    manual_review_recommended: true,
+    severity: 5,
+    feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
+    _parseFailed: true
+  };
+}
+
+/** Packs the extra QC-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
+function buildQcFeedbackSummary_(result) {
+  var frameworkFields = deriveFrameworkFields_(result);
+  return [
+    result.feedback_summary,
+    '',
+    'Booked Sales Call: ' + result.flags.booked_next_step,
+    'Discovery adequate: ' + result.flags.discovery_adequate +
+      ' | Understood their business: ' + result.flags.understood_leads_business,
+    'Framework explained: ' + frameworkFields.explained +
+      (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
+    'Root cause if no booking: ' + result.root_cause_if_no_booking
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -2506,6 +2669,19 @@ function buildTomasJudgeSystemPrompt_() {
     'overcome — but weigh a second_call_closer call primarily on whether it actually closed (money or a firm',
     'commitment), since by this stage discovery/rapport is mostly already done by the first rep.',
     '',
+    'Tomás Playbook.md (built from a close read of 22 of his real calls) identifies two things worth checking',
+    'explicitly, since they are his own most consistent strengths and his own most consistent gap:',
+    '- His strongest calls follow the same four-step shape BEFORE any objection comes up: (1) ask or re-verify',
+    '  the lead\'s actual goal, not "are you interested" — (2) mirror the lead\'s own words back almost verbatim',
+    '  when introducing the offer — (3) map a specific named mechanism to that exact goal, not a generic benefit',
+    '  — (4) back it with something concrete (a named client, a real number, a live demo), not a general',
+    '  reassurance. Note in your reasoning whether this call followed that shape.',
+    '- His single most consistent weak spot across the reviewed batch is accepting an open-ended stall ("I need',
+    '  to check with someone," "let me think about it") passively instead of converting it into a specific',
+    '  date/time before the call ends. If the lead stalls in this call, check whether Tomás locked a firm next',
+    '  step (a specific date/time) rather than leaving it open — if the lead never stalls at all, this is simply',
+    '  not applicable and should be scored true.',
+    '',
     'Because this call is being reviewed to build training material — both "what Tomás does well that other reps',
     'should copy" and "what to coach Tomás on himself" — go beyond the score and pull out BOTH of these,',
     'independent of whether the call closed:',
@@ -2525,6 +2701,8 @@ function buildTomasJudgeSystemPrompt_() {
     '2 = both missing, but lead was otherwise good-to-book (or, for second_call_closer, a real attempt was made',
     '    but fell short).',
     '1 = both missing AND no real attempt at discovery or a close — a call that just went through the motions.',
+    'These anchors are unaffected by followed_goal_mirror_map_proof_process/stalling_converted_to_date below —',
+    'those are tracked independently, same relationship the framework flags already have to this score.',
     '',
     frameworkRubricPrompt_(),
     '',
@@ -2535,7 +2713,14 @@ function buildTomasJudgeSystemPrompt_() {
     '  "call_role": "own_new_lead | second_call_closer | unclear",',
     '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
     '  "call_quality_score": 1,',
-    '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true, "closed_or_committed": true },',
+    '  "flags": {',
+    '    "asked_for_close": true,',
+    '    "objections_uncovered": true,',
+    '    "objections_overcome": true,',
+    '    "closed_or_committed": true,',
+    '    "followed_goal_mirror_map_proof_process": true,',
+    '    "stalling_converted_to_date": true',
+    '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | multiple",',
     '  "teachable_strength": "string",',
@@ -2560,6 +2745,8 @@ function isValidTomasJudgeSchema_(obj) {
     typeof obj.flags.objections_uncovered === 'boolean' &&
     typeof obj.flags.objections_overcome === 'boolean' &&
     typeof obj.flags.closed_or_committed === 'boolean' &&
+    typeof obj.flags.followed_goal_mirror_map_proof_process === 'boolean' &&
+    typeof obj.flags.stalling_converted_to_date === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -2597,7 +2784,10 @@ function scoreTomasTranscript_(ctx) {
     call_role: 'unclear',
     lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
     call_quality_score: 1,
-    flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false, closed_or_committed: false },
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false, closed_or_committed: false,
+      followed_goal_mirror_map_proof_process: false, stalling_converted_to_date: false
+    },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     primary_failure_mode: 'none',
     teachable_strength: 'Unscored — parse failure.',
@@ -2616,6 +2806,8 @@ function buildTomasFeedbackSummary_(result) {
     result.feedback_summary,
     '',
     'Call role: ' + result.call_role + ' | Closed or committed: ' + result.flags.closed_or_committed,
+    'Followed goal/mirror/map/proof process (Tomas_Playbook.md Part 1): ' + result.flags.followed_goal_mirror_map_proof_process,
+    'Stalling converted to a specific date (Playbook Part 2 §6, his most consistent gap): ' + result.flags.stalling_converted_to_date,
     'Framework explained: ' + frameworkFields.explained +
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
     'Teachable strength (pass to other reps): ' + result.teachable_strength,
@@ -3553,12 +3745,21 @@ var REGRESSION_BASELINE_HEADERS = [
  * alone, is what actually determines which prompt produced a given row's
  * score — Joana has no dedicated variant and always scores under the shared
  * rubric either way, exact_key or fallback_heuristic. Pure/no side effects.
+ *
+ * callType added 29/08/2026 per Kris ("there are different calls — QC, sales
+ * call, 2nd sales call — score them!"). Checked FIRST, ahead of rep/
+ * matchMethod: a QC or Discovery call is never a closing call regardless of
+ * who ran it — same reasoning Bens' own variant was already built on (SOP
+ * §3C), just generalized by call type instead of gated to one rep. Only once
+ * a row is confirmed NOT a QC/Discovery does rep/matchMethod decide which
+ * closing-call rubric applies, same as before this change.
  */
-function resolveRubricVariantForRow_(rep, matchMethod) {
+function resolveRubricVariantForRow_(rep, matchMethod, callType) {
+  if (callType === 'QC' || callType === 'Discovery') return 'qc';
+  if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
   if (matchMethod !== 'fallback_heuristic') return 'shared';
   if (rep === 'Sean') return 'sean';
   if (rep === 'Bens') return 'bens';
-  if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
   return 'shared';
 }
 
@@ -3589,7 +3790,19 @@ function scoreTranscriptByVariant_(variant, ctx) {
     case 'sean': return scoreSeanTranscript_(ctx);
     case 'bens': return scoreBensTranscript_(ctx);
     case 'tomas': return scoreTomasTranscript_(ctx);
+    case 'qc': return scoreQcTranscript_(ctx);
     default: return scoreTranscript_(ctx);
+  }
+}
+
+/** Dispatches to the right feedback-summary packer for a rubric variant string (same vocabulary as scoreTranscriptByVariant_). */
+function buildFeedbackSummaryForVariant_(variant, result) {
+  switch (variant) {
+    case 'sean': return buildSeanFeedbackSummary_(result);
+    case 'bens': return buildBensFeedbackSummary_(result);
+    case 'tomas': return buildTomasFeedbackSummary_(result);
+    case 'qc': return buildQcFeedbackSummary_(result);
+    default: return result.feedback_summary;
   }
 }
 
@@ -3694,13 +3907,35 @@ function computeBensAnalyticScore_(result) {
   return clampAnalyticScore_(5 - deduction);
 }
 
-/** Tomás (buildTomasJudgeSystemPrompt_/scoreTomasTranscript_) — same three-deduction shape as the shared rubric. */
+/**
+ * Tomás (buildTomasJudgeSystemPrompt_/scoreTomasTranscript_) — same
+ * three-deduction shape as the shared rubric, plus one more combined bucket
+ * (29/08/2026) for the two Tomas_Playbook.md-grounded flags added the same
+ * day: following the goal/mirror/map/proof process, and converting a stall
+ * into a specific date rather than accepting it open-ended — his own most
+ * consistent gap per the playbook. One combined -1, not two separate
+ * deductions, same "one combined bucket" pattern Sean's discovery/goal-
+ * alignment extras already use.
+ */
 function computeTomasAnalyticScore_(result) {
   var flags = (result && result.flags) || {};
   var deduction = 0;
   if (!flags.asked_for_close) deduction += 2;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!(flags.followed_goal_mirror_map_proof_process && flags.stalling_converted_to_date)) deduction += 1;
+  return clampAnalyticScore_(5 - deduction);
+}
+
+/** QC/Discovery (buildQcJudgeSystemPrompt_/scoreQcTranscript_) — same shape as Bens' variant minus the icons_100_interview-only deduction, since this variant has no interview content to grade. */
+function computeQcAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!flags.asked_for_close) deduction += 2;
+  if (flags.asked_for_close && !flags.booked_next_step) deduction += 1;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!(flags.discovery_adequate && flags.understood_leads_business)) deduction += 1;
   return clampAnalyticScore_(5 - deduction);
 }
 
@@ -3710,6 +3945,7 @@ function computeAnalyticScore_(variant, result) {
     case 'sean': return computeSeanAnalyticScore_(result);
     case 'bens': return computeBensAnalyticScore_(result);
     case 'tomas': return computeTomasAnalyticScore_(result);
+    case 'qc': return computeQcAnalyticScore_(result);
     default: return computeSharedAnalyticScore_(result);
   }
 }
@@ -3884,12 +4120,13 @@ function freezeRegressionSet_() {
 
     var rep = row[col['Rep'] - 1];
     var matchMethod = row[col['Match Method'] - 1];
+    var callType = row[col['Call Type'] - 1];
 
     eligible.push({
       rowIndex: r + 2,
       prospectName: row[col['Prospect Name'] - 1],
       rep: rep,
-      rubricVariant: resolveRubricVariantForRow_(rep, matchMethod),
+      rubricVariant: resolveRubricVariantForRow_(rep, matchMethod, callType),
       callDate: row[col['Call Date'] - 1],
       transcriptUrl: transcriptUrl,
       callQualityScore: Number(row[col['Call Quality Score'] - 1]),

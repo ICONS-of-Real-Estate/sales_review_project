@@ -701,10 +701,10 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
 
 // --- Task: frozen regression set / drift detection (25/08/2026) ---
 
-test('resolveRubricVariantForRow_ maps exact_key rows to the shared rubric regardless of rep', () => {
+test('resolveRubricVariantForRow_ maps exact_key rows to the shared rubric for Sean/Bens, but Tomás always gets his own variant regardless of match method (real gap closed 29/08/2026: his own live-logged calls never got his rubric before this)', () => {
   assert.equal(gas.resolveRubricVariantForRow_('Sean', 'exact_key'), 'shared');
   assert.equal(gas.resolveRubricVariantForRow_('Bens', 'exact_key'), 'shared');
-  assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'exact_key'), 'shared');
+  assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'exact_key'), 'tomas');
 });
 
 test('resolveRubricVariantForRow_ maps fallback_heuristic rows to each rep\'s own variant, and Joana to the shared rubric', () => {
@@ -712,6 +712,13 @@ test('resolveRubricVariantForRow_ maps fallback_heuristic rows to each rep\'s ow
   assert.equal(gas.resolveRubricVariantForRow_('Bens', 'fallback_heuristic'), 'bens');
   assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'fallback_heuristic'), 'tomas');
   assert.equal(gas.resolveRubricVariantForRow_('Joana', 'fallback_heuristic'), 'shared');
+});
+
+test('resolveRubricVariantForRow_ maps a QC or Discovery Call Type to the qc variant regardless of rep or match method (29/08/2026: a QC/Discovery call is never a closing call, same reasoning Bens\' own variant was built on, generalized by call type)', () => {
+  assert.equal(gas.resolveRubricVariantForRow_('Sean', 'exact_key', 'QC'), 'qc');
+  assert.equal(gas.resolveRubricVariantForRow_('Joana', 'fallback_heuristic', 'Discovery'), 'qc');
+  assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'exact_key', 'QC'), 'qc');
+  assert.equal(gas.resolveRubricVariantForRow_('Bens', 'exact_key', 'Sales Call'), 'shared');
 });
 
 // diffRegressionResult_'s array return comes from the vm sandbox's own realm
@@ -797,12 +804,48 @@ test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge
   gas.scoreSeanTranscript_ = (ctx) => { calls.push('sean'); return 'sean-result'; };
   gas.scoreBensTranscript_ = (ctx) => { calls.push('bens'); return 'bens-result'; };
   gas.scoreTomasTranscript_ = (ctx) => { calls.push('tomas'); return 'tomas-result'; };
+  gas.scoreQcTranscript_ = (ctx) => { calls.push('qc'); return 'qc-result'; };
 
   assert.equal(gas.scoreTranscriptByVariant_('sean', {}), 'sean-result');
   assert.equal(gas.scoreTranscriptByVariant_('bens', {}), 'bens-result');
   assert.equal(gas.scoreTranscriptByVariant_('tomas', {}), 'tomas-result');
+  assert.equal(gas.scoreTranscriptByVariant_('qc', {}), 'qc-result');
   assert.equal(gas.scoreTranscriptByVariant_('shared', {}), 'shared-result');
-  assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'shared']);
+  assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'qc', 'shared']);
+});
+
+test('buildFeedbackSummaryForVariant_ dispatches to each variant\'s own packer, and falls back to the model\'s bare feedback_summary for shared/unrecognized (29/08/2026, closing the gap where the ongoing pipeline used to only ever write the bare model summary regardless of variant)', () => {
+  const bareResult = { feedback_summary: 'bare summary' };
+  assert.equal(gas.buildFeedbackSummaryForVariant_('shared', bareResult), 'bare summary');
+  assert.equal(gas.buildFeedbackSummaryForVariant_('nonsense-unknown-variant', bareResult), 'bare summary');
+
+  const qcResult = perfectQcResult_();
+  qcResult.feedback_summary = 'qc summary';
+  qcResult.root_cause_if_no_booking = 'N/A';
+  const packed = gas.buildFeedbackSummaryForVariant_('qc', qcResult);
+  assert.match(packed, /qc summary/);
+  assert.match(packed, /Booked Sales Call: true/);
+});
+
+test('writeScoreToRow_ uses the variant-specific feedback summary packer, not just the model\'s bare feedback_summary, when a variant is passed', () => {
+  const cells = {};
+  const fakeSheet = { getRange(row, col) { return { setValue(v) { cells[row + ':' + col] = v; return this; } }; } };
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const result = perfectQcResult_();
+  result.lead_quality = { verdict: 'good_to_book' };
+  result.manual_review_recommended = false;
+  result.severity = 1;
+  result.feedback_summary = 'bare qc summary';
+  result.primary_failure_mode = 'none';
+  result.root_cause_if_no_booking = 'N/A';
+
+  gas.writeScoreToRow_(fakeSheet, 3, col, result, false, 'Some Prospect', 'qc');
+
+  const written = cells['3:' + col['AI Feedback Summary']];
+  assert.match(written, /bare qc summary/);
+  assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
 // --- Task: analytic (deterministic) score shadow-mode rollup (25/08/2026) ---
@@ -848,7 +891,20 @@ function perfectBensResult_() {
 function perfectTomasResult_() {
   return {
     call_quality_score: 5,
-    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      followed_goal_mirror_map_proof_process: true, stalling_converted_to_date: true
+    },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  };
+}
+function perfectQcResult_() {
+  return {
+    call_quality_score: 5,
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      booked_next_step: true, discovery_adequate: true, understood_leads_business: true
+    },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
   };
 }
@@ -980,10 +1036,47 @@ test('computeTomasAnalyticScore_ scores a perfect call 5, and each single deduct
   assert.equal(gas.computeTomasAnalyticScore_(frameworkMiss), 4);
 });
 
+test('computeTomasAnalyticScore_ deducts 1 for the combined Tomas_Playbook.md bucket (goal/mirror/map/proof process + converting a stall into a specific date), same "one combined bucket" pattern as Sean\'s discovery/goal-alignment extras (29/08/2026)', () => {
+  const processMiss = perfectTomasResult_();
+  processMiss.flags.followed_goal_mirror_map_proof_process = false;
+  assert.equal(gas.computeTomasAnalyticScore_(processMiss), 4);
+
+  const stallMiss = perfectTomasResult_();
+  stallMiss.flags.stalling_converted_to_date = false;
+  assert.equal(gas.computeTomasAnalyticScore_(stallMiss), 4, 'a single missed flag in the bucket still only deducts 1, not 2');
+
+  const bothMiss = perfectTomasResult_();
+  bothMiss.flags.followed_goal_mirror_map_proof_process = false;
+  bothMiss.flags.stalling_converted_to_date = false;
+  assert.equal(gas.computeTomasAnalyticScore_(bothMiss), 4, 'both flags missing is still the same single combined deduction, not two');
+});
+
+test('computeQcAnalyticScore_ scores a perfect QC/Discovery call 5, and mirrors Bens\' deduction weights minus the interview-only one (29/08/2026)', () => {
+  assert.equal(gas.computeQcAnalyticScore_(perfectQcResult_()), 5);
+
+  const closeMiss = perfectQcResult_();
+  closeMiss.flags.asked_for_close = false;
+  assert.equal(gas.computeQcAnalyticScore_(closeMiss), 3, 'a missed close-ask is the #1 mistake, -2, same weight as every other variant');
+
+  const askedButNotBooked = perfectQcResult_();
+  askedButNotBooked.flags.booked_next_step = false;
+  assert.equal(gas.computeQcAnalyticScore_(askedButNotBooked), 4, 'asked but not booked is a separate -1, only when he actually asked');
+
+  const neverAskedNeverBooked = perfectQcResult_();
+  neverAskedNeverBooked.flags.asked_for_close = false;
+  neverAskedNeverBooked.flags.booked_next_step = false;
+  assert.equal(gas.computeQcAnalyticScore_(neverAskedNeverBooked), 3, 'never asking must not be double-penalized on top of its own -2');
+
+  const discoveryMiss = perfectQcResult_();
+  discoveryMiss.flags.understood_leads_business = false;
+  assert.equal(gas.computeQcAnalyticScore_(discoveryMiss), 4);
+});
+
 test('computeAnalyticScore_ dispatches to the matching per-variant function, defaulting unknown variants to shared', () => {
   assert.equal(gas.computeAnalyticScore_('sean', perfectSeanResult_()), 5);
   assert.equal(gas.computeAnalyticScore_('bens', perfectBensResult_()), 5);
   assert.equal(gas.computeAnalyticScore_('tomas', perfectTomasResult_()), 5);
+  assert.equal(gas.computeAnalyticScore_('qc', perfectQcResult_()), 5);
   assert.equal(gas.computeAnalyticScore_('shared', perfectSharedResult_()), 5);
   assert.equal(gas.computeAnalyticScore_('nonsense-unknown-variant', perfectSharedResult_()), 5);
 });
