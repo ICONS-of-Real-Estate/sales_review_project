@@ -1263,10 +1263,20 @@ var SALES_CALL_LOG_HEADERS = [
   // future rubric change never leaves historical rows silently
   // non-comparable to new ones again — see Phase2_CallGradingSOP.md §3E and
   // RUBRIC_VERSION in Phase2_CallScoring.gs. ---
-  'Rubric Version'          // Z  (e.g. "2026-08-25-framework" — blank on rows
+  'Rubric Version',         // Z  (e.g. "2026-08-25-framework" — blank on rows
                             //    scored before this column existed, same
                             //    backward-compatible "no signal" pattern as
                             //    every prior column addition here)
+  // --- 29/08/2026: fourth scored dimension, per Kris — "I haven't seen
+  // feedback on how they deliver the pitch." Grounded in the company's Sales
+  // SOP ("How to Pitch & Close a Lead" §5.2-5.3) and a real audit of 20
+  // Tomás transcripts, not invented — see Phase2_CallGradingSOP.md §3G. ---
+  'Flag: Delivery Effective', // AA (bool — paced appropriately AND read/adapted
+                            //    to the lead's engagement, both covered)
+  'Delivery Gaps'           // AB (comma-joined: which of the 2 pieces were
+                            //    missing/weak, blank if both covered — same
+                            //    "pack real content into a real column" pattern
+                            //    as Framework Gaps before it)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

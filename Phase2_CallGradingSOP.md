@@ -125,7 +125,30 @@ Kris's explicit ask: "there are different calls — QC, sales call, 2nd sales ca
 
 **Rubric version**: bumped to `'2026-08-29-call-type-dispatch'` — per Section 3E's own convention, since this changes scoring logic across variants. **Re-run `freezeRegressionSet()` before trusting the next drift check** (a stale baseline just gets skipped, per Section 7B, but a fresh one is what makes the check meaningful again).
 
-**What this does not yet cover**: "pitch delivery" (clarity/structure, confidence of language, two-way engagement vs. monologue — Kris's other 29/08/2026 ask) is a real, confirmed gap but not implemented as of this section — transcripts are text-only (no tone/pace/energy), and unlike the QC/Discovery and Tomás-playbook additions above, there isn't yet a concrete, examples-grounded definition of what to score. Revisit once that's confirmed.
+**What this does not yet cover**: "pitch delivery" was a real, confirmed gap as of this section (Kris's other 29/08/2026 ask) — see Section 3G, built the same day once a grounded definition existed.
+
+### 3G. Pitch delivery — a fourth, universal dimension, grounded in the real Sales SOP and a real Tomás audit (29/08/2026)
+
+Kris's ask: "I haven't seen feedback on how they deliver the pitch" — a real gap, since every dimension so far (close-ask, objection-handling, framework explanation) scores *content*, never *delivery*. Section 3F's own note left this open because there wasn't yet a concrete, examples-grounded definition to build from, the same discipline every other addition in this file follows. Two things closed that gap:
+
+**Source 1 — the company's actual Sales SOP.** Found in Google Drive: **"How to Pitch & Close a Lead"** (owned by Kris, most recently viewed 21/08/2026) — a real, current sales rep guide, not a stale artifact. Its §5.2 "Adjust Presentation Speed" and §5.3 "Adapt to Client Reactions to Your Presentation" define delivery in terms that ARE observable in a text transcript (no audio needed):
+- Checking in on time, not rushing, compressing to the highest-value points rather than plowing through everything when time is short.
+- Reading the lead's engagement and adjusting — going deeper where they show interest, moving on where they're checked out, matching a data-oriented lead with numbers and a story-oriented lead with examples rather than one fixed pitch regardless of who's listening.
+
+§5.1 "Share Your Screen" (browser-tab hygiene) was deliberately excluded — not observable from a transcript.
+
+**Source 2 — a real audit of 20 Tomás transcripts**, specifically checking those two things against his own calls, per Kris's explicit instruction ("not all his are perfect either" — a real audit, not a highlight reel). 18 were usable (2 pure `[BLANK_AUDIO]` failures, already known from `Tomas_Playbook.md`). Findings, in brief (used to calibrate the prompt guidance, not just as color):
+- **Pacing**: in zero of the 18 transcripts did Tomás unprompted initiate a time check — a real, consistent gap, not a coin flip. But he handles a time constraint well once it surfaces (his own or the lead's) — clean examples: Katie Uei, Thom Tillier, Rob Commodari, Karlene/Curtis Grimes. Real misses — long calls with no time-awareness at all, even reactively: Gary Lanham, Lou Barbee, Bill Gross, Jeff Goodman. **The prompt guidance reflects this directly**: score `paced_appropriately` true for handling a time constraint well once it surfaces, not only for proactively raising it — an honest calibration against real behavior, not an invented ideal.
+- **Reaction-adaptation**: strong, repeated real examples — matching Jason Flesher's and Gary Lanham's own data-driven register with hard numbers, letting Katie Uei's story-driven style shape a custom-fit pitch, live-editing the actual package for Lou Barbee (dropping guest booking, shortening the contract term) in response to what she said. Clearest miss: **Calvin Wong** — continues the same full-depth pitch after the lead has explicitly declined twice, not downshifting to the lead's obvious disengagement (already flagged in `Tomas_Playbook.md` as a Part 1 counter-example; this extends that same finding to delivery pacing specifically).
+- **A third candidate dropped for lack of evidence**: confidence-of-language/hedging was checked against the same 20 transcripts and found to carry almost no signal — hedging language ("sort of," "I guess") was essentially absent from Tomás's side regardless of call quality. Per this file's own "resist adding scored dimensions without real grounding" discipline (Section 3), this was deliberately NOT turned into a scored flag — there was nothing real behind it to score.
+
+**Scored fields**, added to every variant's schema (universal, like framework explanation) — a `delivery` object with two booleans, `paced_appropriately` and `adapted_to_lead_engagement`. Derived in Apps Script (`deriveDeliveryFields_()`, same shape as `deriveFrameworkFields_()`) into two real sheet columns — `Flag: Delivery Effective` (true only if both) and `Delivery Gaps` (comma-joined labels of whichever were missing) — not packed into free text, same "first-class tracked skill" reasoning as framework explanation. `primary_failure_mode` gained a new possible value, `delivery_ineffective`, used when this is the sole failure among the tracked flags (`multiple` covers it combining with any other miss). Deliberately does **not** change `call_quality_score`'s anchors — same independent-flag relationship framework explanation already has.
+
+**§7C analytic score**: every variant's deduction table (`compute*AnalyticScore_`) gained one more `-1` if `!deriveDeliveryFields_(result).effective`, same weight and treatment as the framework deduction.
+
+**Migration**: two more trailing columns on the live "Sales Call Log" sheet — re-run `migrateAddPrimaryFailureModeColumn()` (the general header-catch-up migration) after deploying this. Rows scored before this change read both new columns as blank ("no signal"), same backward-compatible pattern as every prior column addition.
+
+**Rubric version**: bumped to `'2026-08-29-pitch-delivery'`. **Re-run `freezeRegressionSet()` before trusting the next drift check**, per Section 7B.
 
 ## 4. Scoring scale — anchored, not impressionistic
 

@@ -131,12 +131,14 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
     call_quality_score: 4,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2
   };
   assert.equal(gas.isValidJudgeSchema_(good), true);
   assert.equal(gas.isValidJudgeSchema_(Object.assign({}, good, { severity: undefined })), false);
   assert.equal(gas.isValidJudgeSchema_(Object.assign({}, good, { framework: undefined })), false);
+  assert.equal(gas.isValidJudgeSchema_(Object.assign({}, good, { delivery: undefined })), false);
   assert.equal(gas.isValidJudgeSchema_(null), false);
 });
 
@@ -166,6 +168,28 @@ test('deriveFrameworkFields_ — all three explained means no gaps; a missing fr
   const nullResult = gas.deriveFrameworkFields_(null);
   assert.equal(nullResult.explained, false);
   assert.equal(nullResult.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
+});
+
+test('deriveDeliveryFields_ — both covered means no gaps; a missing delivery object means every gap listed, not a throw (29/08/2026, same pattern as deriveFrameworkFields_)', () => {
+  const bothCovered = gas.deriveDeliveryFields_({
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
+  });
+  assert.equal(bothCovered.effective, true);
+  assert.equal(bothCovered.gapsText, '');
+
+  const oneGap = gas.deriveDeliveryFields_({
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: true }
+  });
+  assert.equal(oneGap.effective, false);
+  assert.equal(oneGap.gapsText, 'pacing/time-awareness');
+
+  const missingObject = gas.deriveDeliveryFields_({});
+  assert.equal(missingObject.effective, false);
+  assert.equal(missingObject.gapsText, 'pacing/time-awareness, reading and adapting to the lead\'s engagement');
+
+  const nullResult = gas.deriveDeliveryFields_(null);
+  assert.equal(nullResult.effective, false);
+  assert.equal(nullResult.gapsText, 'pacing/time-awareness, reading and adapting to the lead\'s engagement');
 });
 
 test('findColumn_ matches header names case-insensitively and tries candidates in priority order', () => {
@@ -689,6 +713,7 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
     call_quality_score: 4,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: false },
     manual_review_recommended: false,
     severity: 1,
     feedback_summary: 'string',
@@ -697,6 +722,8 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
   gas.writeScoreToRow_(fakeSheet, 7, col, result, false);
 
   assert.equal(cells['7:' + col['Rubric Version']], gas.RUBRIC_VERSION);
+  assert.equal(cells['7:' + col['Flag: Delivery Effective']], false, '29/08/2026: one delivery gap must fail the overall Flag: Delivery Effective column');
+  assert.equal(cells['7:' + col['Delivery Gaps']], 'reading and adapting to the lead\'s engagement');
 });
 
 // --- Task: frozen regression set / drift detection (25/08/2026) ---
@@ -825,6 +852,7 @@ test('buildFeedbackSummaryForVariant_ dispatches to each variant\'s own packer, 
   const packed = gas.buildFeedbackSummaryForVariant_('qc', qcResult);
   assert.match(packed, /qc summary/);
   assert.match(packed, /Booked Sales Call: true/);
+  assert.match(packed, /Delivery effective: true/, '29/08/2026: the packed summary must include the delivery dimension too, not just framework/booking');
 });
 
 test('writeScoreToRow_ uses the variant-specific feedback summary packer, not just the model\'s bare feedback_summary, when a variant is passed', () => {
@@ -860,7 +888,8 @@ function perfectSharedResult_() {
   return {
     call_quality_score: 5,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
 function perfectSeanResult_() {
@@ -872,7 +901,8 @@ function perfectSeanResult_() {
       captured_leads_goals: true, tied_framework_to_goals: true,
       booked_second_call_with_tomas: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
 function perfectBensResult_() {
@@ -885,7 +915,8 @@ function perfectBensResult_() {
       booked_next_step: true, discovery_adequate: true, understood_leads_business: true,
       interview_content_quality_good: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
 function perfectTomasResult_() {
@@ -895,7 +926,8 @@ function perfectTomasResult_() {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
       followed_goal_mirror_map_proof_process: true, stalling_converted_to_date: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
 function perfectQcResult_() {
@@ -905,7 +937,8 @@ function perfectQcResult_() {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
       booked_next_step: true, discovery_adequate: true, understood_leads_business: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
 
@@ -941,6 +974,12 @@ test('computeSharedAnalyticScore_ framework-not-explained miss alone deducts 1',
   const frameworkMissOnly = perfectSharedResult_();
   frameworkMissOnly.framework.sell_more_houses_explained = false; // any single gap is enough to fail deriveFrameworkFields_'s "explained"
   assert.equal(gas.computeSharedAnalyticScore_(frameworkMissOnly), 4);
+});
+
+test('computeSharedAnalyticScore_ delivery-ineffective miss alone deducts 1, same weight as framework (29/08/2026)', () => {
+  const deliveryMissOnly = perfectSharedResult_();
+  deliveryMissOnly.delivery.adapted_to_lead_engagement = false; // either gap alone is enough to fail deriveDeliveryFields_'s "effective"
+  assert.equal(gas.computeSharedAnalyticScore_(deliveryMissOnly), 4);
 });
 
 test('computeSharedAnalyticScore_ floors at 1 when every deduction fires', () => {
@@ -1563,6 +1602,7 @@ test('isValidJudgeSchema_ rejects a schema-shaped object with an invalid verdict
     call_quality_score: 4,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2
   };

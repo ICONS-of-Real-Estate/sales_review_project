@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-08-29-call-type-dispatch';
+var RUBRIC_VERSION = '2026-08-29-pitch-delivery';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -280,6 +280,8 @@ function isValidJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
     isValidScoreRange_(obj.severity));
 }
@@ -490,6 +492,64 @@ function deriveFrameworkFields_(result) {
   };
 }
 
+/**
+ * Pitch delivery — a fourth, independently-tracked dimension (29/08/2026),
+ * added the same way framework explanation was: universal across every
+ * variant, does not touch call_quality_score's anchors. Kris's ask: "I
+ * haven't seen feedback on how they deliver the pitch." Grounded in two real
+ * sources rather than invented — the company's own Sales SOP ("How to Pitch
+ * & Close a Lead" §5.2 "Adjust Presentation Speed" / §5.3 "Adapt to Client
+ * Reactions to Your Presentation"), and a close read of 20 real Tomás
+ * transcripts checking those two things specifically against his own calls
+ * (per Kris: "not all his are perfect either" — this was a real audit, not a
+ * highlight reel; see Phase2_CallGradingSOP.md §3G for the actual findings).
+ * Two SOP sections turned into two scored flags — a third candidate
+ * (confidence-of-language / hedging) was checked against the same 20
+ * transcripts and dropped: it showed almost no signal (hedging language was
+ * essentially absent regardless of call quality), so it would have been a
+ * scored dimension with nothing real behind it.
+ */
+var DELIVERY_GAP_LABELS_ = {
+  paced_appropriately: 'pacing/time-awareness',
+  adapted_to_lead_engagement: 'reading and adapting to the lead\'s engagement'
+};
+
+function deliveryRubricPrompt_() {
+  return [
+    'A fourth, independently-tracked dimension — separate from the failure mode(s) and framework-explanation',
+    'above, and it must NOT change your call_quality_score anchors. Grounded in the company\'s Sales SOP ("How',
+    'to Pitch & Close a Lead" §5.2-5.3): score how the rep DELIVERED the call, not just what they said. Two',
+    'things, each judged independently:',
+    '  (a) paced_appropriately — did the rep show awareness of time/pacing? Checking in on time, not rushing',
+    '      through material, or — when time was genuinely short — compressing to the highest-value points',
+    '      rather than plowing through everything at the same depth. A real audit of company calls found even',
+    '      strong reps rarely INITIATE a time check unprompted — score true if the rep handles a time',
+    '      constraint well once it surfaces (their own or the lead\'s), not only if they raised it first.',
+    '  (b) adapted_to_lead_engagement — did the rep visibly read the lead\'s engagement and adjust, rather than',
+    '      delivering the same pitch regardless of reaction? Going deeper where the lead shows interest or asks',
+    '      follow-up questions, moving on where they seem checked out or have already declined, matching a',
+    '      data-oriented lead with numbers/specifics and a story-oriented lead with examples/analogies. A rep',
+    '      who keeps walking through the full pitch at the same depth after a lead has clearly disengaged or',
+    '      already said no fails this flag, even if the content itself was accurate.',
+    'Grade generously for substance over a specific script — the SOP does not prescribe exact words, only that',
+    'the rep is reading the room rather than running one fixed presentation regardless of who is listening.'
+  ].join('\n');
+}
+
+/**
+ * Derives the two "Delivery Gaps"/"Flag: Delivery Effective" sheet columns
+ * from any rubric variant's `delivery` object. Same defensive/conservative
+ * treatment of a missing object as deriveFrameworkFields_ above.
+ */
+function deriveDeliveryFields_(result) {
+  var d = (result && result.delivery) || {};
+  var gapKeys = Object.keys(DELIVERY_GAP_LABELS_).filter(function (k) { return !d[k]; });
+  return {
+    effective: gapKeys.length === 0,
+    gapsText: gapKeys.map(function (k) { return DELIVERY_GAP_LABELS_[k]; }).join(', ')
+  };
+}
+
 function buildJudgeSystemPrompt_() {
   var fewShot = FEW_SHOT_ANCHORS.length
     ? '\n\nLabeled examples:\n' + FEW_SHOT_ANCHORS.map(function (ex, i) {
@@ -524,6 +584,8 @@ function buildJudgeSystemPrompt_() {
     '',
     frameworkRubricPrompt_(),
     '',
+    deliveryRubricPrompt_(),
+    '',
     '   Score anchors:',
     '   5 = close asked AND objections surfaced+resolved with concrete proof.',
     '   4 = close asked, minor objection-handling gap (surfaced but weakly resolved).',
@@ -547,7 +609,8 @@ function buildJudgeSystemPrompt_() {
     '  "call_quality_score": 1,',
     '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | multiple",',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | delivery_ineffective | multiple",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
     '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
@@ -604,6 +667,7 @@ function scoreTranscript_(ctx) {
     call_quality_score: 1,
     flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     manual_review_recommended: true,
     severity: 5,
@@ -812,6 +876,9 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   var framework = deriveFrameworkFields_(result);
   sheet.getRange(rowIndex, col['Flag: Framework Explained']).setValue(framework.explained);
   sheet.getRange(rowIndex, col['Framework Gaps']).setValue(framework.gapsText);
+  var delivery = deriveDeliveryFields_(result);
+  sheet.getRange(rowIndex, col['Flag: Delivery Effective']).setValue(delivery.effective);
+  sheet.getRange(rowIndex, col['Delivery Gaps']).setValue(delivery.gapsText);
   // Records which rubric version produced this score — see RUBRIC_VERSION's
   // own comment above for the versioning convention. Blank on rows scored
   // before this column existed, same "no signal" pattern as every column
@@ -966,6 +1033,8 @@ function buildBensJudgeSystemPrompt_() {
     '',
     frameworkRubricPrompt_(),
     '',
+    deliveryRubricPrompt_(),
+    '',
     'Score anchors for call_quality_score (1-5):',
     '5 = next step booked with a specific date/time, objections handled well, and (for an interview) genuinely',
     '    good content. For an icons_100_interview specifically, a directly-booked SALES CALL is the strongest',
@@ -998,8 +1067,9 @@ function buildBensJudgeSystemPrompt_() {
     '    "interview_content_quality_good": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "next_step_type": "QC | Sales Call | none",',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | multiple",',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
     '  "root_cause_if_no_booking": "string — the single specific reason no next step was booked; \\"N/A\\" if one was",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
@@ -1028,6 +1098,8 @@ function isValidBensJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.next_step_type === 'string' &&
     typeof obj.manual_review_recommended === 'boolean' &&
     isValidScoreRange_(obj.severity) &&
@@ -1068,6 +1140,7 @@ function scoreBensTranscript_(ctx) {
       interview_content_quality_good: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     next_step_type: 'none',
     primary_failure_mode: 'none',
     root_cause_if_no_booking: 'Unscored — parse failure.',
@@ -1081,6 +1154,7 @@ function scoreBensTranscript_(ctx) {
 /** Packs the extra Bens-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
 function buildBensFeedbackSummary_(result) {
   var frameworkFields = deriveFrameworkFields_(result);
+  var deliveryFields = deriveDeliveryFields_(result);
   return [
     result.feedback_summary,
     '',
@@ -1090,6 +1164,8 @@ function buildBensFeedbackSummary_(result) {
       ' | Understood their business: ' + result.flags.understood_leads_business,
     'Framework explained: ' + frameworkFields.explained +
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
+    'Delivery effective: ' + deliveryFields.effective +
+      (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     (result.call_role === 'icons_100_interview'
       ? 'Interview content quality: ' + result.flags.interview_content_quality_good
       : ''),
@@ -1137,6 +1213,8 @@ function buildQcJudgeSystemPrompt_() {
     '',
     frameworkRubricPrompt_(),
     '',
+    deliveryRubricPrompt_(),
+    '',
     'Score anchors for call_quality_score (1-5):',
     '5 = Sales Call booked with a specific date/time, objections handled well, and real discovery shown.',
     '4 = Sales Call booked, but one of discovery/objection-handling was weak.',
@@ -1162,7 +1240,8 @@ function buildQcJudgeSystemPrompt_() {
     '    "understood_leads_business": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | multiple",',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
     '  "root_cause_if_no_booking": "string — the single specific reason the Sales Call wasn\'t booked; \\"N/A\\" if it was",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
@@ -1187,6 +1266,8 @@ function isValidQcJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
     isValidScoreRange_(obj.severity) &&
     typeof obj.root_cause_if_no_booking === 'string');
@@ -1224,6 +1305,7 @@ function scoreQcTranscript_(ctx) {
       booked_next_step: false, discovery_adequate: false, understood_leads_business: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     root_cause_if_no_booking: 'Unscored — parse failure.',
     manual_review_recommended: true,
@@ -1236,6 +1318,7 @@ function scoreQcTranscript_(ctx) {
 /** Packs the extra QC-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
 function buildQcFeedbackSummary_(result) {
   var frameworkFields = deriveFrameworkFields_(result);
+  var deliveryFields = deriveDeliveryFields_(result);
   return [
     result.feedback_summary,
     '',
@@ -1244,6 +1327,8 @@ function buildQcFeedbackSummary_(result) {
       ' | Understood their business: ' + result.flags.understood_leads_business,
     'Framework explained: ' + frameworkFields.explained +
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
+    'Delivery effective: ' + deliveryFields.effective +
+      (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     'Root cause if no booking: ' + result.root_cause_if_no_booking
   ].join('\n');
 }
@@ -1757,6 +1842,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         var result = judgeFn(ctx);
         var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
         var frameworkFields = deriveFrameworkFields_(result);
+        var deliveryFields = deriveDeliveryFields_(result);
 
         // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
         // logs a comparison only, never changes what's appended below.
@@ -1791,7 +1877,9 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           result.primary_failure_mode || 'none', // Primary Failure Mode
           frameworkFields.explained,      // Flag: Framework Explained
           frameworkFields.gapsText,       // Framework Gaps
-          RUBRIC_VERSION                  // Rubric Version
+          RUBRIC_VERSION,                 // Rubric Version
+          deliveryFields.effective,       // Flag: Delivery Effective
+          deliveryFields.gapsText         // Delivery Gaps
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -1862,6 +1950,8 @@ function buildSeanJudgeSystemPrompt_() {
     '',
     frameworkRubricPrompt_(),
     '',
+    deliveryRubricPrompt_(),
+    '',
     'Score anchors for call_quality_score (1-5):',
     '5 = money closed OR second call booked, with strong discovery, goal-alignment, and objection handling.',
     '4 = second call booked, but one of discovery / goal-alignment / objection-handling was weak.',
@@ -1890,7 +1980,8 @@ function buildSeanJudgeSystemPrompt_() {
     '    "booked_second_call_with_tomas": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_goal_alignment | no_second_call_booked | framework_not_explained | multiple",',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_goal_alignment | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
     '  "root_cause_if_no_sale": "string — the single specific reason money wasn\'t closed and no second call',
     '   was booked; \\"N/A\\" if a sale closed or a second call was booked",',
     '  "manual_review_recommended": true,',
@@ -1920,6 +2011,8 @@ function isValidSeanJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
     isValidScoreRange_(obj.severity) &&
     typeof obj.root_cause_if_no_sale === 'string');
@@ -1959,6 +2052,7 @@ function scoreSeanTranscript_(ctx) {
       booked_second_call_with_tomas: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     root_cause_if_no_sale: 'Unscored — parse failure.',
     manual_review_recommended: true,
@@ -1971,6 +2065,7 @@ function scoreSeanTranscript_(ctx) {
 /** Packs the extra Sean-only dimensions into the one free-text column the sheet has (AI Feedback Summary) — no schema migration needed to see them. */
 function buildSeanFeedbackSummary_(result) {
   var frameworkFields = deriveFrameworkFields_(result);
+  var deliveryFields = deriveDeliveryFields_(result);
   return [
     result.feedback_summary,
     '',
@@ -1980,6 +2075,8 @@ function buildSeanFeedbackSummary_(result) {
       ' | Tied framework to goals: ' + result.flags.tied_framework_to_goals,
     'Framework explained: ' + frameworkFields.explained +
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
+    'Delivery effective: ' + deliveryFields.effective +
+      (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     'Booked 2nd call w/ Tomás: ' + result.flags.booked_second_call_with_tomas,
     'Root cause if no sale: ' + result.root_cause_if_no_sale
   ].join('\n');
@@ -2265,6 +2362,7 @@ function scoreSeanTranscripts() {
           var result = scoreSeanTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
+          var deliveryFields = deriveDeliveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -2301,7 +2399,9 @@ function scoreSeanTranscripts() {
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,       // Flag: Framework Explained
             frameworkFields.gapsText,        // Framework Gaps
-            RUBRIC_VERSION                   // Rubric Version
+            RUBRIC_VERSION,                  // Rubric Version
+            deliveryFields.effective,        // Flag: Delivery Effective
+            deliveryFields.gapsText          // Delivery Gaps
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -2441,6 +2541,7 @@ function scoreJoanaTranscripts() {
           var result = scoreTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
+          var deliveryFields = deriveDeliveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. Joana
@@ -2476,7 +2577,9 @@ function scoreJoanaTranscripts() {
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,        // Flag: Framework Explained
             frameworkFields.gapsText,         // Framework Gaps
-            RUBRIC_VERSION                    // Rubric Version
+            RUBRIC_VERSION,                   // Rubric Version
+            deliveryFields.effective,         // Flag: Delivery Effective
+            deliveryFields.gapsText           // Delivery Gaps
           ]);
 
           existing[key] = true;
@@ -2706,6 +2809,8 @@ function buildTomasJudgeSystemPrompt_() {
     '',
     frameworkRubricPrompt_(),
     '',
+    deliveryRubricPrompt_(),
+    '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
@@ -2722,7 +2827,8 @@ function buildTomasJudgeSystemPrompt_() {
     '    "stalling_converted_to_date": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | multiple",',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | delivery_ineffective | multiple",',
     '  "teachable_strength": "string",',
     '  "coach_this": "string",',
     '  "manual_review_recommended": true,',
@@ -2750,6 +2856,8 @@ function isValidTomasJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.teachable_strength === 'string' &&
     typeof obj.coach_this === 'string' &&
     typeof obj.manual_review_recommended === 'boolean' &&
@@ -2789,6 +2897,7 @@ function scoreTomasTranscript_(ctx) {
       followed_goal_mirror_map_proof_process: false, stalling_converted_to_date: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     teachable_strength: 'Unscored — parse failure.',
     coach_this: 'Unscored — parse failure.',
@@ -2802,6 +2911,7 @@ function scoreTomasTranscript_(ctx) {
 /** Packs the extra Tomás-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
 function buildTomasFeedbackSummary_(result) {
   var frameworkFields = deriveFrameworkFields_(result);
+  var deliveryFields = deriveDeliveryFields_(result);
   return [
     result.feedback_summary,
     '',
@@ -2810,6 +2920,8 @@ function buildTomasFeedbackSummary_(result) {
     'Stalling converted to a specific date (Playbook Part 2 §6, his most consistent gap): ' + result.flags.stalling_converted_to_date,
     'Framework explained: ' + frameworkFields.explained +
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
+    'Delivery effective: ' + deliveryFields.effective +
+      (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     'Teachable strength (pass to other reps): ' + result.teachable_strength,
     'Coach Tomás on: ' + result.coach_this
   ].join('\n');
@@ -2898,6 +3010,7 @@ function scoreTomasTranscripts() {
           var result = scoreTomasTranscript_(ctx);
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
+          var deliveryFields = deriveDeliveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -2934,7 +3047,9 @@ function scoreTomasTranscripts() {
             result.primary_failure_mode || 'none', // Primary Failure Mode
             frameworkFields.explained,          // Flag: Framework Explained
             frameworkFields.gapsText,           // Framework Gaps
-            RUBRIC_VERSION                       // Rubric Version
+            RUBRIC_VERSION,                      // Rubric Version
+            deliveryFields.effective,           // Flag: Delivery Effective
+            deliveryFields.gapsText             // Delivery Gaps
           ]);
 
           existing[key] = true;
@@ -3857,6 +3972,7 @@ function computeSharedAnalyticScore_(result) {
   if (!flags.asked_for_close) deduction += 2;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
   return clampAnalyticScore_(5 - deduction);
 }
 
@@ -3874,6 +3990,7 @@ function computeSeanAnalyticScore_(result) {
   if (!(flags.asked_for_close || flags.booked_second_call_with_tomas)) deduction += 2;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
   if (!(flags.discovery_adequate && flags.understood_leads_business &&
         flags.captured_leads_goals && flags.tied_framework_to_goals)) deduction += 1;
   return clampAnalyticScore_(5 - deduction);
@@ -3899,6 +4016,7 @@ function computeBensAnalyticScore_(result) {
   if (flags.asked_for_close && !flags.booked_next_step) deduction += 1;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
   var interviewContentOk = result.call_role !== 'icons_100_interview' || flags.interview_content_quality_good;
   if (!(flags.discovery_adequate && flags.understood_leads_business && interviewContentOk)) deduction += 1;
   if (result.call_role === 'icons_100_interview' && flags.booked_next_step && result.next_step_type === 'QC') {
@@ -3923,6 +4041,7 @@ function computeTomasAnalyticScore_(result) {
   if (!flags.asked_for_close) deduction += 2;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
   if (!(flags.followed_goal_mirror_map_proof_process && flags.stalling_converted_to_date)) deduction += 1;
   return clampAnalyticScore_(5 - deduction);
 }
@@ -3935,6 +4054,7 @@ function computeQcAnalyticScore_(result) {
   if (flags.asked_for_close && !flags.booked_next_step) deduction += 1;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveFrameworkFields_(result).explained) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
   if (!(flags.discovery_adequate && flags.understood_leads_business)) deduction += 1;
   return clampAnalyticScore_(5 - deduction);
 }
