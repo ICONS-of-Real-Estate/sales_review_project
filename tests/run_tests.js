@@ -1546,6 +1546,60 @@ test('sendOpsAlert_ does not route through guardedSend_\'s config gate (real bug
   assert.equal(okBefore, gas.auditConfig_().ok, 'sanity: auditConfig_ itself is unaffected by this test');
 });
 
+test('sendOpsAlert_ passes an optional htmlBody through to MailApp, and still works with none (30/08/2026, Kris: "Terribly formatted email. Who wants to read this?")', () => {
+  const originalMailApp = gas.MailApp;
+  const originalOpsEmail = gas.CONFIG.OPS_ALERT_EMAIL;
+  try {
+    const calls = [];
+    gas.MailApp = { sendEmail: (...args) => calls.push(args) };
+    gas.CONFIG.OPS_ALERT_EMAIL = 'kris@iconsofrealestate.com';
+
+    // Compare fields directly, not via assert.deepEqual — the vm sandbox's
+    // plain object literals come from its own realm, so a constructor-
+    // identity check against this file's own {} would fail for realm
+    // reasons, not a real mismatch (same convention used elsewhere in this
+    // file for sandbox-returned arrays/objects).
+    gas.sendOpsAlert_('plain subject', 'plain body');
+    assert.deepEqual(Object.keys(calls[0][3]), [], 'no htmlBody arg must still send cleanly with an empty options object');
+
+    gas.sendOpsAlert_('styled subject', 'styled body', '<p>styled</p>');
+    assert.equal(calls[1][3].htmlBody, '<p>styled</p>');
+  } finally {
+    gas.MailApp = originalMailApp;
+    gas.CONFIG.OPS_ALERT_EMAIL = originalOpsEmail;
+  }
+});
+
+test('buildHeaderDriftAlertHtml_ renders the mismatch list as real HTML with bold/structure, not a wall of plain text', () => {
+  const html = gas.buildHeaderDriftAlertHtml_(['column 27: expected "Flag: Delivery Effective", found ""', 'column 28: expected "Delivery Gaps", found ""']);
+  assert.match(html, /<strong style="color:#c0392b;">Sales Call Log header drift<\/strong>/);
+  assert.match(html, /<code[^>]*>column 27: expected "Flag: Delivery Effective", found ""<\/code>/);
+  assert.match(html, /<strong>setupSalesCallLog\(\)<\/strong>/);
+});
+
+test('alertHeaderDriftOnce_ sends both a plain body and the styled htmlBody', () => {
+  const originalMailApp = gas.MailApp;
+  const originalOpsEmail = gas.CONFIG.OPS_ALERT_EMAIL;
+  const originalProps = gas.PropertiesService;
+  try {
+    const calls = [];
+    gas.MailApp = { sendEmail: (...args) => calls.push(args) };
+    gas.CONFIG.OPS_ALERT_EMAIL = 'kris@iconsofrealestate.com';
+    const store = {};
+    gas.PropertiesService = { getScriptProperties: () => ({ getProperty: (k) => store[k] || null, setProperty: (k, v) => { store[k] = v; } }) };
+
+    gas.alertHeaderDriftOnce_(['column 27: expected "Flag: Delivery Effective", found ""']);
+
+    assert.equal(calls.length, 1);
+    assert.match(calls[0][2], /does not match what the code/, 'plain body must still be a real fallback');
+    assert.match(calls[0][3].htmlBody, /<strong style="color:#c0392b;">Sales Call Log header drift<\/strong>/);
+  } finally {
+    gas.MailApp = originalMailApp;
+    gas.CONFIG.OPS_ALERT_EMAIL = originalOpsEmail;
+    gas.PropertiesService = originalProps;
+  }
+});
+
 test('reconcileComplianceBacklog_ does not let one logged row clear two different backlog entries for the same prospect', () => {
   const backlog = [
     { eventId: '', title: 'QC', prospectGuess: 'Jess Provencher', attendeeEmails: [], callDateLabel: '20/08/2026', firstFlaggedAt: '2026-08-20T22:00:00.000Z' },

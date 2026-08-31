@@ -903,14 +903,21 @@ function sendComplianceEmail_(repCfg, backlog, tz) {
  * meant to report it. Bypasses guardedSend_ entirely and validates only the
  * one address this function actually needs.
  */
-function sendOpsAlert_(subject, body) {
+/**
+ * htmlBody is optional (30/08/2026, Kris: "Terribly formatted email. Who
+ * wants to read this?") — every existing caller passes only (subject, body)
+ * and keeps working exactly as before (plain text, MailApp's default);
+ * a caller that wants a styled version passes htmlBody as a third arg.
+ */
+function sendOpsAlert_(subject, body, htmlBody) {
   try {
     if (!CONFIG.OPS_ALERT_EMAIL || CONFIG.OPS_ALERT_EMAIL.indexOf('@') === -1) {
       log_('FAILED to send ops alert — CONFIG.OPS_ALERT_EMAIL is not a valid address: "' +
         CONFIG.OPS_ALERT_EMAIL + '". Alert was: [' + subject + '] ' + body);
       return false;
     }
-    MailApp.sendEmail(CONFIG.OPS_ALERT_EMAIL, '[Compliance bot] ' + subject, body);
+    var options = htmlBody ? { htmlBody: htmlBody } : {};
+    MailApp.sendEmail(CONFIG.OPS_ALERT_EMAIL, '[Compliance bot] ' + subject, body, options);
     return true;
   } catch (e) {
     log_('FAILED to send ops alert: ' + e);
@@ -933,6 +940,32 @@ var HEADER_DRIFT_ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
  * window, not spam. Uses Script Properties rather than an in-memory flag so
  * the cooldown survives across separate trigger executions.
  */
+/** Styled version of alertHeaderDriftOnce_'s email — Kris, 30/08/2026: "Terribly formatted. Who wants to read this?" */
+function buildHeaderDriftAlertHtml_(mismatches) {
+  var mismatchRows = mismatches.map(function (m) {
+    return '<li style="margin-bottom:4px;"><code style="background:#f3f3f3;padding:1px 4px;border-radius:3px;">' +
+      escapeHtml_(m) + '</code></li>';
+  }).join('');
+  return (
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p style="font-size:16px;margin:0 0 12px 0;"><strong style="color:#c0392b;">Sales Call Log header drift</strong> ' +
+    '— every scoring/compliance function is failing</p>' +
+    '<p style="margin:0 0 8px 0;"><code>getValidatedColumnMap_</code> found the "Sales Call Log" header row (row 1) ' +
+    'does not match what the code expects:</p>' +
+    '<ul style="margin:0 0 12px 0;padding-left:20px;">' + mismatchRows + '</ul>' +
+    '<p style="margin:0 0 12px 0;"><strong>Every function that reads this sheet by column name is failing right ' +
+    'now</strong> until this is fixed.</p>' +
+    '<p style="margin:0 0 8px 0;">If this is just a stray edit to a header cell\'s text (e.g. someone typed into ' +
+    'the wrong box), fix it by hand to match exactly, or run <strong>setupSalesCallLog()</strong> to rewrite row 1 ' +
+    'back to the expected headers.</p>' +
+    '<p style="margin:0 0 12px 0;">If a column was actually supposed to be added and the migration for it just ' +
+    'hasn\'t been run yet, <strong>run that migration instead</strong> — do NOT blindly retype headers in that ' +
+    'case, the underlying data columns won\'t actually be there yet.</p>' +
+    '<p style="margin:0;color:#666;font-size:12px;">(Throttled to at most one alert per hour while this stays broken.)</p>' +
+    '</div>'
+  );
+}
+
 function alertHeaderDriftOnce_(mismatches) {
   var props = PropertiesService.getScriptProperties();
   var key = 'LAST_HEADER_DRIFT_ALERT_AT';
@@ -943,8 +976,7 @@ function alertHeaderDriftOnce_(mismatches) {
   // bypasses guardedSend_'s config gate (see its own comment) so this can
   // really only fail on a genuine MailApp error, but there's no reason to
   // burn the hour-long cooldown on a failed send either way.
-  var sent = sendOpsAlert_('Sales Call Log header drift — every scoring/compliance function is failing',
-    'getValidatedColumnMap_ found the "Sales Call Log" header row (row 1) does not match what the code ' +
+  var plainBody = 'getValidatedColumnMap_ found the "Sales Call Log" header row (row 1) does not match what the code ' +
     'expects:\n\n  ' + mismatches.join('\n  ') +
     '\n\nEvery function that reads this sheet by column name is failing right now until this is fixed.\n\n' +
     'If this is just a stray edit to a header cell\'s text (e.g. someone typed into the wrong box), fix it ' +
@@ -952,7 +984,9 @@ function alertHeaderDriftOnce_(mismatches) {
     'If a column was actually supposed to be added and the migration for it just hasn\'t been run yet, run ' +
     'that migration instead — do NOT blindly retype headers in that case, the underlying data columns won\'t ' +
     'actually be there yet.\n\n' +
-    '(Throttled to at most one alert per hour while this stays broken.)');
+    '(Throttled to at most one alert per hour while this stays broken.)';
+  var sent = sendOpsAlert_('Sales Call Log header drift — every scoring/compliance function is failing',
+    plainBody, buildHeaderDriftAlertHtml_(mismatches));
   if (sent) props.setProperty(key, String(now));
 }
 
