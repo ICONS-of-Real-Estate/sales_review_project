@@ -3036,6 +3036,15 @@ function installAllReadyTriggers_() {
   // Explicitly ensures it's OFF every time, same as every other cleanup
   // this function already does — start a backfill on purpose via
   // installRescoreAllCallsTrigger() directly, not as a side effect of this.
+  //
+  // RUN_TAG reset here on purpose: every install*() call above sets its own
+  // RUN_TAG at its own top (that's how each log_() line above got its own
+  // [installXxx] prefix), which leaves RUN_TAG stuck on whichever ran last
+  // by the time we get here. removeRescoreAllCallsTrigger_() doesn't set its
+  // own RUN_TAG, so without this reset both its log line and the "done"
+  // summary below would carry the wrong (stale) tag — confirmed live
+  // (31/08/2026): both showed up as [installReplyTrackerTriggers].
+  RUN_TAG = 'installAllReadyTriggers_';
   if (typeof removeRescoreAllCallsTrigger_ === 'function') {
     removeRescoreAllCallsTrigger_();
   }

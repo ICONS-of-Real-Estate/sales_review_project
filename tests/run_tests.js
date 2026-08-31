@@ -1619,15 +1619,34 @@ test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill 
     gas.installSeanScoringAutomation = () => {};
     gas.installTomasScoringAutomation = () => {};
     gas.installJoanaScoringAutomation = () => {};
-    gas.installBensScoringAutomation = () => {};
+    // Mimics a real install*() function's side effect: sets its own RUN_TAG.
+    // Needed to actually exercise the RUN_TAG-restore bug below — without this,
+    // RUN_TAG would already read 'installAllReadyTriggers_' by coincidence.
+    gas.installBensScoringAutomation = () => { gas.RUN_TAG = 'installBensScoringAutomation'; };
     configFlags.forEach((name) => { originalEnabled[name] = gas[name].ENABLED; gas[name].ENABLED = false; });
 
     let removeCalled = false;
     gas.removeRescoreAllCallsTrigger_ = () => { removeCalled = true; };
 
-    gas.installAllReadyTriggers_();
+    const originalLog = gas.Logger.log;
+    const lines = [];
+    gas.Logger.log = (msg) => lines.push(msg);
+    try {
+      gas.installAllReadyTriggers_();
+    } finally {
+      gas.Logger.log = originalLog;
+    }
 
     assert.equal(removeCalled, true, 'the master installer must always stop the ad-hoc rescore trigger, not just install standing phases');
+
+    // Real bug found live (31/08/2026): every install*() call above sets its
+    // own RUN_TAG, leaving it stuck on whichever ran last (here,
+    // installBensScoringAutomation) by the time the "done" summary logs —
+    // it showed up live as "[installReplyTrackerTriggers] installAllReadyTriggers_
+    // done." instead of its own tag.
+    const doneLine = lines.find((l) => l.indexOf('installAllReadyTriggers_ done.') !== -1);
+    assert.match(doneLine, /^\[installAllReadyTriggers_\] installAllReadyTriggers_ done\./,
+      'the final summary log must carry installAllReadyTriggers_\'s own RUN_TAG, not a stale one left by an earlier install*() call');
   } finally {
     gas.ScriptApp = originalScriptApp;
     gas.installAutomation = originalInstallAutomation;
