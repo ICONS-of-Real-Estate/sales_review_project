@@ -232,6 +232,18 @@ function log_(msg) {
 function runDailyComplianceCheck() {
   RUN_TAG = 'runDailyComplianceCheck';
 
+  // Kris's ask (30/08/2026): weekday-only — the trigger itself
+  // (installDailyTriggerCore_) fires every single day via everyDays(1),
+  // since Apps Script's ClockTriggerBuilder has no built-in "weekdays only"
+  // option; a Saturday/Sunday nag about "missing" outcomes reps aren't
+  // expected to log until Monday is just noise. Checked in BUSINESS
+  // timezone, not the script's own, same convention businessDayStart_ uses.
+  var todayName = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'EEE');
+  if (todayName === 'Sat' || todayName === 'Sun') {
+    log_('runDailyComplianceCheck: ' + todayName + ' — weekday-only check (Mon-Fri), skipping.');
+    return;
+  }
+
   // Every Phase 2 sheet-writing entry point (scoreNewlyLoggedCalls_,
   // scoreSeanTranscripts, syncRiversideTranscripts_) takes this same script
   // lock specifically so overlapping firings can't double-act — this one

@@ -198,6 +198,29 @@ test('findColumn_ matches header names case-insensitively and tries candidates i
   assert.equal(gas.findColumn_(header, ['Nonexistent']), -1);
 });
 
+test('runDailyComplianceCheck skips entirely on a weekend (business timezone) rather than just suppressing sends (real bug, 30/08/2026: the daily trigger fires every day via everyDays(1) — Apps Script has no weekday-only trigger option — so a real compliance nag went out on a Sunday)', () => {
+  const originalUtilities = gas.Utilities;
+  const originalLockService = gas.LockService;
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  try {
+    gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'EEE' ? 'Sun' : realFormatDate(d, tz, pattern)) };
+    // LockService is the very next thing touched after the weekday check —
+    // making it throw proves the function exits before any real work
+    // starts, not just before sending.
+    gas.LockService = { getScriptLock: () => { throw new Error('must not attempt to acquire the lock on a weekend'); } };
+    gas.Logger.log = (msg) => lines.push(msg);
+
+    gas.runDailyComplianceCheck();
+
+    assert.match(lines.join('\n'), /Sun — weekday-only check \(Mon-Fri\), skipping\./);
+  } finally {
+    gas.Utilities = originalUtilities;
+    gas.LockService = originalLockService;
+    gas.Logger.log = originalLog;
+  }
+});
+
 test('isTruthyOutcome_ recognizes the documented truthy spellings and rejects blank/false', () => {
   ['TRUE', 'yes', 'y', 'x', '✓', 'done', '1'].forEach((v) => {
     assert.equal(gas.isTruthyOutcome_(v), true, 'expected "' + v + '" to be truthy');
