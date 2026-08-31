@@ -2707,6 +2707,26 @@ test('runRescoreAllCallsViaTrigger_ removes the recurring trigger once a pass fi
   }
 });
 
+test('listAllTriggers logs the total against the 20-trigger project cap and flags any handler with more than one copy installed (real bug, 31/08/2026: installRescoreAllCallsTrigger threw "This script has too many triggers" — this diagnostic is how Kris finds out what to remove instead of guessing)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['runDailyComplianceCheck', 'runAllLegacyBackfills_', 'runAllLegacyBackfills_', 'runWeeklyScorecard']);
+    gas.Logger.log = (msg) => lines.push(msg);
+
+    gas.listAllTriggers();
+
+    const joined = lines.join('\n');
+    assert.match(joined, /4 of the 20-trigger project limit in use/, 'must report the real count against the real cap');
+    assert.match(joined, /2x {2}runAllLegacyBackfills_ {2}<-- more than one copy, likely safe to dedupe/, 'must flag the handler with more than one trigger installed');
+    assert.ok(joined.indexOf('1x  runDailyComplianceCheck') !== -1 && joined.indexOf('runDailyComplianceCheck  <--') === -1, 'a handler with exactly one trigger must not be flagged');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.Logger.log = originalLog;
+  }
+});
+
 test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
   const stageLookup = {
     'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },

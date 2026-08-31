@@ -1035,6 +1035,35 @@ function installRescoreAllCallsTrigger() {
     'log for progress; call removeRescoreAllCallsTrigger_() to stop it early if needed.');
 }
 
+/**
+ * Real bug found live (31/08/2026): installRescoreAllCallsTrigger() threw
+ * "This script has too many triggers" — Apps Script caps a project at 20
+ * installable triggers total, and with ~15 phases each installing their own
+ * (some more than one, e.g. installDailySelfPracticeTriggers's 3-4), the
+ * project had quietly filled up. Every install*Trigger() function in this
+ * codebase is individually idempotent (deletes its own handler's copy
+ * before creating a new one), so duplicates aren't the usual cause — a
+ * stale trigger left behind by a completed ONE-TIME job (see
+ * installLegacyBackfillTrigger()'s own comment: "run
+ * removeLegacyBackfillTrigger() once done" — easy to forget) is the likely
+ * culprit. Run this from the editor to see exactly what's installed and
+ * decide what's safe to remove with ScriptApp.deleteTrigger(), rather than
+ * guessing.
+ */
+function listAllTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var byHandler = {};
+  triggers.forEach(function (t) {
+    var name = t.getHandlerFunction();
+    byHandler[name] = (byHandler[name] || 0) + 1;
+  });
+  log_('listAllTriggers: ' + triggers.length + ' of the 20-trigger project limit in use.');
+  Object.keys(byHandler).sort().forEach(function (name) {
+    log_('  ' + byHandler[name] + 'x  ' + name +
+      (byHandler[name] > 1 ? '  <-- more than one copy, likely safe to dedupe' : ''));
+  });
+}
+
 /** Run this to stop the recurring rescore trigger early — it also removes itself automatically once done. */
 function removeRescoreAllCallsTrigger_() {
   var removed = 0;
