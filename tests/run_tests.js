@@ -910,6 +910,52 @@ test('writeScoreToRow_ uses the variant-specific feedback summary packer, not ju
   assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
+test('QC/Discovery calls are not scored on framework explanation — that is the Sales Call\'s job, not a pre-sales qualification call\'s (Kris, 31/08/2026)', () => {
+  // buildQcJudgeSystemPrompt_ must not ask the model for a framework object
+  // or offer framework_not_explained as a primary_failure_mode — both would
+  // encourage the model to invent/penalize something this call type was
+  // never meant to cover.
+  const prompt = gas.buildQcJudgeSystemPrompt_();
+  assert.doesNotMatch(prompt, /"framework":/, 'the QC judge schema must not ask for a framework object');
+  assert.doesNotMatch(prompt, /framework_not_explained/, 'framework_not_explained must not be offered as a QC primary_failure_mode');
+
+  // A real (post-fix) QC judge result has no `framework` key at all — the
+  // schema validator must accept that, not require one.
+  const qcResultNoFramework = perfectQcResult_();
+  delete qcResultNoFramework.framework;
+  qcResultNoFramework.lead_quality = { verdict: 'good_to_book', justification: 'ok' };
+  qcResultNoFramework.root_cause_if_no_booking = 'N/A';
+  qcResultNoFramework.manual_review_recommended = false;
+  qcResultNoFramework.severity = 1;
+  assert.equal(gas.isValidQcJudgeSchema_(qcResultNoFramework), true);
+
+  // writeScoreToRow_ must leave Flag: Framework Explained / Framework Gaps
+  // untouched (blank/"no signal") for a qc-variant row, never derive a
+  // fabricated "explained: false, gaps: all three" from the missing object.
+  const cells = {};
+  const fakeSheet = { getRange(row, col) { return { setValue(v) { cells[row + ':' + col] = v; return this; } }; } };
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const result = qcResultNoFramework;
+  result.manual_review_recommended = false;
+  result.severity = 1;
+  result.feedback_summary = 'qc no-framework summary';
+  result.primary_failure_mode = 'none';
+  gas.writeScoreToRow_(fakeSheet, 4, col, result, false, 'Some Prospect', 'qc');
+  assert.equal(cells['4:' + col['Flag: Framework Explained']], undefined,
+    'writeScoreToRow_ must not write a Flag: Framework Explained value for the qc variant');
+  assert.equal(cells['4:' + col['Framework Gaps']], undefined,
+    'writeScoreToRow_ must not write a Framework Gaps value for the qc variant');
+
+  // The shadow-mode analytic score must not deduct for a missing framework
+  // object either — computeQcAnalyticScore_ used to call
+  // deriveFrameworkFields_(result), which treats an absent `framework` key
+  // as "nothing explained" and silently docked a point from every real QC
+  // call once the judge stopped returning that field.
+  assert.equal(gas.computeQcAnalyticScore_(qcResultNoFramework), 5,
+    'a QC result with no framework object must score a perfect 5, not be docked for a dimension it is not scored on');
+});
+
 // --- Task: analytic (deterministic) score shadow-mode rollup (25/08/2026) ---
 // QA_COACHING_RESEARCH_REPORT.md §1.4 — computes a second, deterministic
 // call_quality_score from the boolean flags/framework the model already

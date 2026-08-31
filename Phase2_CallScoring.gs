@@ -1120,9 +1120,16 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   // Phase 5 (weekly scorecard) input — blank on rows scored before this column
   // existed; those just read as "no signal" rather than breaking anything.
   sheet.getRange(rowIndex, col['Primary Failure Mode']).setValue(result.primary_failure_mode || 'none');
-  var framework = deriveFrameworkFields_(result);
-  sheet.getRange(rowIndex, col['Flag: Framework Explained']).setValue(framework.explained);
-  sheet.getRange(rowIndex, col['Framework Gaps']).setValue(framework.gapsText);
+  // QC/Discovery calls are explicitly not scored on framework explanation (buildQcJudgeSystemPrompt_'s
+  // header comment) — result.framework doesn't exist for that variant. Leaving these two columns blank
+  // reads as "no signal" (the same convention already used for columns added after older rows were
+  // scored), not as "explained: false" with three fabricated gaps deriveFrameworkFields_ would otherwise
+  // produce from a missing object.
+  if (variant !== 'qc') {
+    var framework = deriveFrameworkFields_(result);
+    sheet.getRange(rowIndex, col['Flag: Framework Explained']).setValue(framework.explained);
+    sheet.getRange(rowIndex, col['Framework Gaps']).setValue(framework.gapsText);
+  }
   var delivery = deriveDeliveryFields_(result);
   sheet.getRange(rowIndex, col['Flag: Delivery Effective']).setValue(delivery.effective);
   sheet.getRange(rowIndex, col['Delivery Gaps']).setValue(delivery.gapsText);
@@ -1446,6 +1453,11 @@ function buildQcJudgeSystemPrompt_() {
     '',
     'Be skeptical by default. Every judgment must cite specific transcript evidence.',
     '',
+    'This is a qualification step, not the sales pitch — it is NOT this rep\'s job to explain the framework (how',
+    'the podcast helps recruit agents / builds #1-podcast-in-your-city authority / helps sell more houses). That',
+    'is explained on the Sales Call this call is meant to book, by whoever runs it. Do NOT score or penalize this',
+    'call for not covering the framework.',
+    '',
     'Answer all of the following, in order, in your reasoning:',
     '1. Did the rep uncover any objections/hesitations about booking the Sales Call, and address them with',
     '   something concrete (a case study, a specific benefit, a direct answer) rather than brushing past them?',
@@ -1457,8 +1469,6 @@ function buildQcJudgeSystemPrompt_() {
     '   a generic read of the room?',
     '5. Bottom line: if the Sales Call wasn\'t booked, what is the single root cause? Be specific and causal, not',
     '   vague.',
-    '',
-    frameworkRubricPrompt_(),
     '',
     deliveryRubricPrompt_(),
     '',
@@ -1486,9 +1496,8 @@ function buildQcJudgeSystemPrompt_() {
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true',
     '  },',
-    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | delivery_ineffective | multiple",',
     '  "root_cause_if_no_booking": "string — the single specific reason the Sales Call wasn\'t booked; \\"N/A\\" if it was",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
@@ -1510,9 +1519,6 @@ function isValidQcJudgeSchema_(obj) {
     typeof obj.flags.booked_next_step === 'boolean' &&
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
-    obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
-    typeof obj.framework.number_one_podcast_explained === 'boolean' &&
-    typeof obj.framework.sell_more_houses_explained === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
@@ -1551,7 +1557,6 @@ function scoreQcTranscript_(ctx) {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
       booked_next_step: false, discovery_adequate: false, understood_leads_business: false
     },
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     root_cause_if_no_booking: 'Unscored — parse failure.',
@@ -1562,9 +1567,10 @@ function scoreQcTranscript_(ctx) {
   };
 }
 
-/** Packs the extra QC-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
+/** Packs the extra QC-only dimensions into the one free-text column the sheet has (AI Feedback Summary).
+ * No framework line — QC/Discovery calls are explicitly not scored on framework explanation, see
+ * buildQcJudgeSystemPrompt_'s header comment: that's the Sales Call's job, not this one's. */
 function buildQcFeedbackSummary_(result) {
-  var frameworkFields = deriveFrameworkFields_(result);
   var deliveryFields = deriveDeliveryFields_(result);
   return [
     result.feedback_summary,
@@ -1572,8 +1578,6 @@ function buildQcFeedbackSummary_(result) {
     'Booked Sales Call: ' + result.flags.booked_next_step,
     'Discovery adequate: ' + result.flags.discovery_adequate +
       ' | Understood their business: ' + result.flags.understood_leads_business,
-    'Framework explained: ' + frameworkFields.explained +
-      (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
     'Delivery effective: ' + deliveryFields.effective +
       (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     'Root cause if no booking: ' + result.root_cause_if_no_booking
@@ -4293,14 +4297,17 @@ function computeTomasAnalyticScore_(result) {
   return clampAnalyticScore_(5 - deduction);
 }
 
-/** QC/Discovery (buildQcJudgeSystemPrompt_/scoreQcTranscript_) — same shape as Bens' variant minus the icons_100_interview-only deduction, since this variant has no interview content to grade. */
+/** QC/Discovery (buildQcJudgeSystemPrompt_/scoreQcTranscript_) — same shape as Bens' variant minus the
+ * icons_100_interview-only deduction (no interview content to grade) AND minus the framework deduction:
+ * this variant is explicitly not scored on framework explanation (buildQcJudgeSystemPrompt_'s header
+ * comment — that's the Sales Call's job), so result.framework doesn't exist here and must not be
+ * deducted for. */
 function computeQcAnalyticScore_(result) {
   var flags = (result && result.flags) || {};
   var deduction = 0;
   if (!flags.asked_for_close) deduction += 2;
   if (flags.asked_for_close && !flags.booked_next_step) deduction += 1;
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
-  if (!deriveFrameworkFields_(result).explained) deduction += 1;
   if (!deriveDeliveryFields_(result).effective) deduction += 1;
   if (!(flags.discovery_adequate && flags.understood_leads_business)) deduction += 1;
   return clampAnalyticScore_(5 - deduction);

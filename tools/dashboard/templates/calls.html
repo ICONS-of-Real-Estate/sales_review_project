@@ -87,7 +87,13 @@
       <td>{% if c.call_quality_score is not none %}{{ c.call_quality_score }}/5{% else %}—{% endif %}</td>
       <td>{% if c.outcome_disposition %}{{ c.outcome_disposition }}{% else %}<span class="muted" title="Reps hand-log this on the Sales Call Log sheet after the fact — most calls don't have one logged yet.">not logged</span>{% endif %}</td>
       <td>{{ c.primary_failure_mode or "—" }}</td>
-      <td>{% if c.flag_framework_explained %}<span title="All three covered">✓</span>{% elif c.framework_gaps %}<span class="clamp-text" style="max-width:200px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>{% else %}—{% endif %}</td>
+      <td>
+        {% if c.call_type in ("QC", "Discovery") %}
+        <span class="muted" title="QC/Discovery calls are qualification calls, not the sales pitch — the AI judge does not score framework explanation on this call type.">N/A</span>
+        {% elif c.flag_framework_explained %}<span title="All three covered">✓</span>
+        {% elif c.framework_gaps %}<span class="clamp-text" style="max-width:200px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>
+        {% else %}—{% endif %}
+      </td>
       <td style="max-width: 360px;">
         {% if c.full_feedback %}
         <button type="button" class="feedback-open" data-feedback="{{ c.full_feedback }}"
