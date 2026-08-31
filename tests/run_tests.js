@@ -1600,6 +1600,47 @@ test('alertHeaderDriftOnce_ sends both a plain body and the styled htmlBody', ()
   }
 });
 
+test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill trigger, since it is not part of standing automation (real bug, 31/08/2026: Kris installed installRescoreAllCallsTrigger() directly to run the retroactive rescore, but the backfill was meant to wait on Tomás\'s calibration sign-off — a one-off trigger like this must never be left running just because the master installer got re-run for an unrelated phase)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalInstallAutomation = gas.installAutomation;
+  const originalInstallPhase2Trigger = gas.installPhase2Trigger;
+  const originalInstallSean = gas.installSeanScoringAutomation;
+  const originalInstallTomas = gas.installTomasScoringAutomation;
+  const originalInstallJoana = gas.installJoanaScoringAutomation;
+  const originalInstallBens = gas.installBensScoringAutomation;
+  const originalRemoveRescore = gas.removeRescoreAllCallsTrigger_;
+  const configFlags = ['HANDOFF_CONFIG', 'INBOX_SLA_CONFIG', 'WEEKLY_SCORECARD_CONFIG', 'TRAINING_REVIEW_CONFIG',
+    'TOMAS_TRANSCRIPT_REMINDER_CONFIG', 'DAILY_PRACTICE_CONFIG', 'RANDOM_CALIBRATION_CONFIG', 'REPLY_TRACKER_CONFIG'];
+  const originalEnabled = {};
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_([]);
+    gas.installAutomation = () => {};
+    gas.installPhase2Trigger = () => {};
+    gas.installSeanScoringAutomation = () => {};
+    gas.installTomasScoringAutomation = () => {};
+    gas.installJoanaScoringAutomation = () => {};
+    gas.installBensScoringAutomation = () => {};
+    configFlags.forEach((name) => { originalEnabled[name] = gas[name].ENABLED; gas[name].ENABLED = false; });
+
+    let removeCalled = false;
+    gas.removeRescoreAllCallsTrigger_ = () => { removeCalled = true; };
+
+    gas.installAllReadyTriggers_();
+
+    assert.equal(removeCalled, true, 'the master installer must always stop the ad-hoc rescore trigger, not just install standing phases');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.installAutomation = originalInstallAutomation;
+    gas.installPhase2Trigger = originalInstallPhase2Trigger;
+    gas.installSeanScoringAutomation = originalInstallSean;
+    gas.installTomasScoringAutomation = originalInstallTomas;
+    gas.installJoanaScoringAutomation = originalInstallJoana;
+    gas.installBensScoringAutomation = originalInstallBens;
+    gas.removeRescoreAllCallsTrigger_ = originalRemoveRescore;
+    configFlags.forEach((name) => { gas[name].ENABLED = originalEnabled[name]; });
+  }
+});
+
 test('reconcileComplianceBacklog_ does not let one logged row clear two different backlog entries for the same prospect', () => {
   const backlog = [
     { eventId: '', title: 'QC', prospectGuess: 'Jess Provencher', attendeeEmails: [], callDateLabel: '20/08/2026', firstFlaggedAt: '2026-08-20T22:00:00.000Z' },

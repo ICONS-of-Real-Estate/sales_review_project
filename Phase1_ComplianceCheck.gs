@@ -3028,6 +3028,21 @@ function installAllReadyTriggers_() {
       'previewReplyClassification() + previewReplyMetricsReport() first, then flip ENABLED and re-run this.');
   }
 
+  // Real bug found live (31/08/2026): installRescoreAllCallsTrigger() (see
+  // Phase2_CallScoring.gs) is an AD-HOC one-off backfill trigger, not a
+  // standing phase — it must never be part of the "everything's on" state
+  // this function otherwise sets up, and it must never be left running
+  // silently just because this function was re-run for an unrelated reason.
+  // Explicitly ensures it's OFF every time, same as every other cleanup
+  // this function already does — start a backfill on purpose via
+  // installRescoreAllCallsTrigger() directly, not as a side effect of this.
+  if (typeof removeRescoreAllCallsTrigger_ === 'function') {
+    removeRescoreAllCallsTrigger_();
+  }
+  installed.push('Ad-hoc: rescoreAllCalls backfill trigger explicitly stopped if it was running — ' +
+    'it is NOT part of standing automation. Start one on purpose with installRescoreAllCallsTrigger() ' +
+    'in Phase2_CallScoring.gs when actually running a backfill.');
+
   log_('installAllReadyTriggers_ done.\nInstalled:\n  ' + installed.join('\n  ') +
     '\nSkipped:\n  ' + skipped.join('\n  '));
 }
