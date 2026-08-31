@@ -486,6 +486,71 @@ class TestFilteredCallsFrameworkFilter:
         assert all("flag_framework_explained" in c and "framework_gaps" in c for c in calls)
 
 
+class TestCallTypeDisplaySplit:
+    """The Sales Call Log's own Call Type dropdown is only QC/Sales Call/
+    Discovery — there's no distinct value for a closing/2nd sales call, but
+    the scoring pipeline (resolveRubricVariantForRow_ in
+    Phase2_CallScoring.gs) already treats any Sales Call scored under Tomás
+    as his closing-call rubric, since Tomás only ever runs those. The
+    dashboard's Type column/filter mirrors that same rule for display."""
+
+    def test_display_call_type_splits_sales_call_by_rep(self):
+        assert app_module._display_call_type("Sales Call", "Tomás") == "2nd Sales Call (Closing)"
+        assert app_module._display_call_type("Sales Call", "Tomas") == "2nd Sales Call (Closing)"
+        assert app_module._display_call_type("Sales Call", "Bens") == "Sales Call (1st)"
+
+    def test_display_call_type_leaves_qc_and_discovery_untouched(self):
+        assert app_module._display_call_type("QC", "Bens") == "QC"
+        assert app_module._display_call_type("Discovery", "Joana") == "Discovery"
+
+    def test_filtered_calls_annotates_call_type_display(self, db_path, conn):
+        insert_call(conn, prospect_name="Closer", rep="Tomás", call_type="Sales Call")
+        insert_call(conn, prospect_name="First Call", rep="Bens", call_type="Sales Call")
+        insert_call(conn, prospect_name="Quals", rep="Bens", call_type="QC")
+        conn.commit()
+        calls = {c["prospect_name"]: c["call_type_display"] for c in app_module.filtered_calls()}
+        assert calls["Closer"] == "2nd Sales Call (Closing)"
+        assert calls["First Call"] == "Sales Call (1st)"
+        assert calls["Quals"] == "QC"
+
+    def test_call_type_display_filter_narrows_to_closing_calls_only(self, db_path, conn):
+        insert_call(conn, prospect_name="Closer", rep="Tomás", call_type="Sales Call")
+        insert_call(conn, prospect_name="First Call", rep="Bens", call_type="Sales Call")
+        conn.commit()
+        calls = app_module.filtered_calls(call_type_display="2nd Sales Call (Closing)")
+        assert [c["prospect_name"] for c in calls] == ["Closer"]
+
+    def test_call_type_display_filter_narrows_to_first_sales_calls_only(self, db_path, conn):
+        insert_call(conn, prospect_name="Closer", rep="Tomás", call_type="Sales Call")
+        insert_call(conn, prospect_name="First Call", rep="Bens", call_type="Sales Call")
+        conn.commit()
+        calls = app_module.filtered_calls(call_type_display="Sales Call (1st)")
+        assert [c["prospect_name"] for c in calls] == ["First Call"]
+
+    def test_call_type_display_filter_passes_through_qc_and_discovery(self, db_path, conn):
+        insert_call(conn, prospect_name="Quals", rep="Bens", call_type="QC")
+        insert_call(conn, prospect_name="Disc", rep="Bens", call_type="Discovery")
+        conn.commit()
+        calls = app_module.filtered_calls(call_type_display="QC")
+        assert [c["prospect_name"] for c in calls] == ["Quals"]
+
+
+class TestFilteredCallsFullFeedback:
+    def test_full_feedback_present_without_search(self, db_path, conn):
+        insert_call(conn, prospect_name="Full Text", ai_feedback_summary="Long coaching note here.")
+        conn.commit()
+        calls = app_module.filtered_calls()
+        assert calls[0]["full_feedback"] == "Long coaching note here."
+
+    def test_full_feedback_present_with_search_even_though_snippet_is_truncated(self, seeded_db):
+        # The FTS snippet() column is deliberately clipped for the table
+        # view; full_feedback must still carry the whole ai_feedback_summary
+        # so the click-to-expand modal has something to show.
+        calls = app_module.filtered_calls(q="discovery")
+        assert calls
+        assert all(c.get("full_feedback") for c in calls)
+
+
 class TestTrainingAssignmentsFrameworkDrill:
     def test_extracts_and_labels_framework_drill(self, db_path, conn):
         conn.execute(

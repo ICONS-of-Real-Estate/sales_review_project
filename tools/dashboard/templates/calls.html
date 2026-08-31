@@ -54,6 +54,13 @@
     </select>
   </div>
   <div>
+    <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Type</label>
+    <select name="call_type_display" style="padding: 0.5rem 0.6rem; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
+      <option value="">All</option>
+      {% for t in all_call_types %}<option value="{{ t }}" {{ "selected" if filters.call_type_display == t else "" }}>{{ t }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
     <label class="muted" style="display:block; font-size:0.75rem; margin-bottom:0.25rem;">Framework explained</label>
     <select name="framework_explained" style="padding: 0.5rem 0.6rem; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4;">
       <option value="">All</option>
@@ -75,17 +82,53 @@
       <td>{% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
       <td><a href="/reps/{{ c.rep }}">{{ c.rep }}</a></td>
       <td>{{ c.call_date }}</td>
-      <td>{{ c.call_type or "—" }}</td>
+      <td>{{ c.call_type_display or "—" }}</td>
       <td>{{ c.lead_quality_verdict or "—" }}</td>
-      <td>{{ c.call_quality_score if c.call_quality_score is not none else "—" }}</td>
-      <td>{{ c.outcome_disposition or "—" }}</td>
+      <td>{% if c.call_quality_score is not none %}{{ c.call_quality_score }}/5{% else %}—{% endif %}</td>
+      <td>{% if c.outcome_disposition %}{{ c.outcome_disposition }}{% else %}<span class="muted" title="Reps hand-log this on the Sales Call Log sheet after the fact — most calls don't have one logged yet.">not logged</span>{% endif %}</td>
       <td>{{ c.primary_failure_mode or "—" }}</td>
       <td>{% if c.flag_framework_explained %}<span title="All three covered">✓</span>{% elif c.framework_gaps %}<span class="clamp-text" style="max-width:200px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>{% else %}—{% endif %}</td>
-      <td style="max-width: 360px;"><span class="clamp-text" title="{{ c.snippet or '' }}">{{ c.snippet | safe if filters.q else (c.snippet or "—") }}</span></td>
+      <td style="max-width: 360px;">
+        {% if c.full_feedback %}
+        <button type="button" class="feedback-open" data-feedback="{{ c.full_feedback }}"
+          data-title="{{ c.prospect_name or '(unnamed)' }} — {{ c.rep }} — {{ c.call_date }}"
+          style="all: unset; cursor: pointer; display: block;">
+          <span class="clamp-text" title="Click to view full feedback">{{ c.snippet | safe if filters.q else c.snippet }}</span>
+        </button>
+        {% else %}—{% endif %}
+      </td>
     </tr>
     {% else %}
     <tr><td colspan="10" class="muted">No calls match these filters.</td></tr>
     {% endfor %}
   </tbody>
 </table>
+
+<dialog id="feedback-dialog" style="max-width: 560px; width: 90%; border-radius: 10px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4; padding: 1.25rem 1.5rem;">
+  <div style="display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.75rem;">
+    <strong id="feedback-dialog-title" style="font-size: 0.95rem;"></strong>
+    <button type="button" id="feedback-dialog-close" style="all: unset; cursor: pointer; color: #9aa4bb; font-size: 1.1rem; line-height: 1;">✕</button>
+  </div>
+  <div id="feedback-dialog-body" style="white-space: pre-wrap; line-height: 1.5;"></div>
+</dialog>
+<script>
+  (function () {
+    var dialog = document.getElementById('feedback-dialog');
+    var title = document.getElementById('feedback-dialog-title');
+    var body = document.getElementById('feedback-dialog-body');
+    document.querySelectorAll('.feedback-open').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        title.textContent = btn.dataset.title || '';
+        body.textContent = btn.dataset.feedback || '';
+        dialog.showModal();
+      });
+    });
+    document.getElementById('feedback-dialog-close').addEventListener('click', function () {
+      dialog.close();
+    });
+    dialog.addEventListener('click', function (e) {
+      if (e.target === dialog) dialog.close();
+    });
+  })();
+</script>
 {% endblock %}

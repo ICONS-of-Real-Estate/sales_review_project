@@ -860,10 +860,28 @@ def sanitize_fts5_query(q):
     return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
+# call_type in the Sales Call Log's own dropdown is only QC/Sales Call/
+# Discovery (Phase1_ComplianceCheck.gs setupSalesCallLog_) — there is no
+# distinct "2nd sales call / closing call" option to log against, but the
+# scoring pipeline already needs that distinction to pick a rubric (see
+# resolveRubricVariantForRow_ in Phase2_CallScoring.gs: a Sales Call scored
+# under Tomás is always his closing-call rubric, since Tomás only ever runs
+# follow-up/closing calls per buildTomasJudgeSystemPrompt_'s own header
+# comment). Mirrors that exact rule here for display only — no new column,
+# nothing written back to the sheet — so "Type" in the browser reads the
+# same way the AI judge already treats the call.
+def _display_call_type(call_type, rep):
+    if call_type == "Sales Call" and rep in ("Tomás", "Tomas"):
+        return "2nd Sales Call (Closing)"
+    if call_type == "Sales Call":
+        return "Sales Call (1st)"
+    return call_type
+
+
 def filtered_calls(
     rep="", verdict="", failure_mode="", min_score=None, max_score=None,
     asked_for_close="", objections_handled="", match_method="", outcome_disposition="",
-    framework_explained="", q="", limit=200,
+    framework_explained="", q="", call_type_display="", limit=200,
 ):
     """Backs the /calls browser. With `q` set, searches call_search (FTS5
     over every call's AI Feedback Summary — sync.py rebuilds this index
@@ -883,7 +901,12 @@ def filtered_calls(
                 # \x01/\x02 (not real HTML) mark the highlight boundaries so they
                 # survive html.escape() below untouched — see the escaping step
                 # after the query runs for why (M-05).
-                "snippet(call_search, 4, '\x01', '\x02', '…', 20) AS snippet "
+                "snippet(call_search, 4, '\x01', '\x02', '…', 20) AS snippet, "
+                # Full, un-truncated text for the click-to-expand feedback modal —
+                # the FTS snippet() above is deliberately clipped to ~20 tokens
+                # around the match, which isn't enough to read the whole
+                # feedback_summary the AI judge wrote.
+                "s.ai_feedback_summary AS full_feedback "
                 "FROM call_search cs JOIN sales_call_log s ON s.id = cs.call_id "
                 "WHERE call_search MATCH ?"
             )
@@ -893,7 +916,7 @@ def filtered_calls(
                 "SELECT id, prospect_name, rep, call_date, call_type, lead_quality_verdict, "
                 "call_quality_score, primary_failure_mode, transcript_url, outcome_disposition, "
                 "flag_framework_explained, framework_gaps, "
-                "ai_feedback_summary AS snippet "
+                "ai_feedback_summary AS snippet, ai_feedback_summary AS full_feedback "
                 "FROM sales_call_log s WHERE 1=1"
             )
             params = []
@@ -937,6 +960,14 @@ def filtered_calls(
             sql += f" AND LOWER(TRIM({prefix}outcome_disposition)) = ?"
             params.append(outcome_disposition.strip().lower())
 
+        if call_type_display == "2nd Sales Call (Closing)":
+            sql += f" AND {prefix}call_type = 'Sales Call' AND {prefix}rep IN ('Tomás', 'Tomas')"
+        elif call_type_display == "Sales Call (1st)":
+            sql += f" AND {prefix}call_type = 'Sales Call' AND {prefix}rep NOT IN ('Tomás', 'Tomas')"
+        elif call_type_display:
+            sql += f" AND {prefix}call_type = ?"
+            params.append(call_type_display)
+
         if q:
             sql += " ORDER BY rank LIMIT ?"
         else:
@@ -967,6 +998,8 @@ def filtered_calls(
                 )
     else:
         calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
+    for c in calls:
+        c["call_type_display"] = _display_call_type(c.get("call_type"), c.get("rep"))
     return calls
 
 
@@ -999,6 +1032,7 @@ def calls_page(
     match_method: str = "",
     outcome_disposition: str = "",
     framework_explained: str = "",
+    call_type_display: str = "",
     q: str = "",
 ):
     min_score = _int_or_none(min_score)
@@ -1013,7 +1047,7 @@ def calls_page(
             "calls": filtered_calls(
                 rep, verdict, failure_mode, min_score, max_score,
                 asked_for_close, objections_handled, match_method,
-                outcome_disposition, framework_explained, q,
+                outcome_disposition, framework_explained, call_type_display, q,
             ),
             "filters": {
                 "rep": rep, "verdict": verdict, "failure_mode": failure_mode,
@@ -1022,9 +1056,11 @@ def calls_page(
                 "match_method": match_method,
                 "outcome_disposition": outcome_disposition,
                 "framework_explained": framework_explained,
+                "call_type_display": call_type_display,
             },
             "outcome_missing_key": OUTCOME_MISSING,
             "all_outcomes": [d["disposition"] for d in outcome_breakdown()["distribution"]],
+            "all_call_types": ["QC", "Discovery", "Sales Call (1st)", "2nd Sales Call (Closing)"],
         },
     )
 
