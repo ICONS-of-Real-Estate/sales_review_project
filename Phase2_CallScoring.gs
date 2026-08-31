@@ -864,16 +864,16 @@ function rescoreAllCalls_(dryRun) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
     log_('rescoreAllCalls_: another scoring run holds the lock, skipping this firing.');
-    return;
+    return true; // unknown state — assume there's still work so a recurring trigger keeps retrying.
   }
 
   try {
     var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
     var sheet = resolveSheet_(ss, 'Sales Call Log');
-    if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+    if (!sheet) { log_('No Sales Call Log tab found.'); return false; }
 
     var lastRow = sheet.getLastRow();
-    if (lastRow < 2) { log_('No data rows.'); return; }
+    if (lastRow < 2) { log_('No data rows.'); return false; }
 
     var col = getValidatedColumnMap_(sheet);
     var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
@@ -981,6 +981,13 @@ function rescoreAllCalls_(dryRun) {
       ', already current ' + skippedCurrent + ', skipped (Kris manually reviewed) ' + skippedManuallyReviewed +
       ', skipped (no transcript) ' + skippedNoTranscript + ', skipped (not yet scored) ' + skippedNotYetScored +
       ', failed ' + failed + (truncated ? '. TIME BUDGET HIT — re-run to continue.' : '. All rows checked.'));
+
+    // Consumed by runRescoreAllCallsViaTrigger_ to know whether to keep the
+    // recurring trigger alive. "More work" means this pass found eligible
+    // rows at all — even a fully-completed pass (truncated=false) can still
+    // leave permanently-failing rows eligible forever (see that function's
+    // own comment), which is accepted, pre-existing behavior, not new here.
+    return eligible.length > 0;
   } finally {
     lock.releaseLock();
   }
@@ -1000,6 +1007,47 @@ function previewRescoreAllCalls() {
  */
 function rescoreAllCalls() {
   return rescoreAllCalls_(false);
+}
+
+/**
+ * Real cadence found live (31/08/2026): each Kimi call is taking ~2.5
+ * minutes (Moonshot-side latency, not a bug here — no retries logged), so
+ * the 5-minute time budget only clears ~2 of the 461 eligible rows per
+ * manual run — hundreds of manual re-runs to finish. Same idempotent
+ * install/remove-trigger pattern as installLegacyBackfillTrigger() above:
+ * fires rescoreAllCalls_(false) every 10 minutes and removes its own
+ * trigger once a pass finds nothing left eligible, so this can run
+ * unattended overnight/over a few days instead of needing Kris to keep
+ * clicking Run.
+ */
+function runRescoreAllCallsViaTrigger_() {
+  var moreWork = rescoreAllCalls_(false);
+  if (!moreWork) removeRescoreAllCallsTrigger_();
+}
+
+function installRescoreAllCallsTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRescoreAllCallsViaTrigger_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runRescoreAllCallsViaTrigger_').timeBased().everyMinutes(10).create();
+  log_('Installed 10-minute rescoreAllCalls_ trigger (any prior copy removed first) — it keeps firing ' +
+    'until a pass finds no rows left eligible, then removes itself automatically. Watch the execution ' +
+    'log for progress; call removeRescoreAllCallsTrigger_() to stop it early if needed.');
+}
+
+/** Run this to stop the recurring rescore trigger early — it also removes itself automatically once done. */
+function removeRescoreAllCallsTrigger_() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRescoreAllCallsViaTrigger_') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  if (removed) {
+    log_('runRescoreAllCallsViaTrigger_: removed ' + removed + ' recurring trigger(s) — ' +
+      'either rescoreAllCalls is fully done, or it was stopped early.');
+  }
 }
 
 function extractDriveFileId_(url) {

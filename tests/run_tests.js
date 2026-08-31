@@ -2606,6 +2606,107 @@ test('rescoreAllCalls_ groups eligible rows by rubric variant before scoring, no
   }
 });
 
+test('rescoreAllCalls_ returns true when this pass found eligible rows, and false once nothing is left eligible (real cadence bug, 31/08/2026: Kimi calls run ~2.5min each so a manual 5-minute-budget run only clears ~2 of 461 rows — this return value is what lets a recurring trigger know whether to keep firing)', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  try {
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.scoreQcTranscript_ = () => ({
+      reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+      flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
+      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+      delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+      primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
+      feedback_summary: 'rescored'
+    });
+
+    const eligibleRow = [fakeSalesCallLogRow({
+      'Prospect Name': 'Still Eligible', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    })];
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheetForRescore(eligibleRow) }) };
+    assert.equal(gas.rescoreAllCalls_(false), true, 'a pass that found eligible rows must report there was work');
+
+    const noneEligibleRow = [fakeSalesCallLogRow({
+      'Prospect Name': 'Already Current', Rep: 'Bens', 'Call Type': 'QC', 'Match Method': 'fallback_heuristic',
+      'Transcript URL': 'https://docs.google.com/document/d/1KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK/edit',
+      'Call Quality Score': 5, 'Rubric Version': gas.RUBRIC_VERSION, 'Kris Manual Review Verdict': ''
+    })];
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheetForRescore(noneEligibleRow) }) };
+    assert.equal(gas.rescoreAllCalls_(false), false, 'a pass that found nothing eligible must report there was no more work');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+  }
+});
+
+function fakeScriptAppTriggers_(initialHandlerNames) {
+  const triggers = initialHandlerNames.map((name) => ({ getHandlerFunction: () => name }));
+  return {
+    getProjectTriggers: () => triggers.slice(),
+    deleteTrigger: (t) => { const idx = triggers.indexOf(t); if (idx !== -1) triggers.splice(idx, 1); },
+    newTrigger: (fnName) => ({
+      timeBased: () => ({
+        everyMinutes: () => ({
+          create: () => { const t = { getHandlerFunction: () => fnName }; triggers.push(t); return t; }
+        })
+      })
+    }),
+    _triggers: triggers
+  };
+}
+
+test('installRescoreAllCallsTrigger removes any prior copy of its own trigger before installing a fresh one (idempotent, same pattern as installLegacyBackfillTrigger — a second accidental install must not stack duplicate 10-minute triggers)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['runRescoreAllCallsViaTrigger_', 'someOtherHandler_']);
+    gas.installRescoreAllCallsTrigger();
+    const handlerNames = gas.ScriptApp._triggers.map((t) => t.getHandlerFunction());
+    assert.equal(handlerNames.filter((h) => h === 'runRescoreAllCallsViaTrigger_').length, 1, 'must never have more than one of its own trigger installed');
+    assert.ok(handlerNames.indexOf('someOtherHandler_') !== -1, 'must not touch unrelated triggers');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('removeRescoreAllCallsTrigger_ removes only its own handler\'s trigger(s), leaving unrelated triggers alone', () => {
+  const originalScriptApp = gas.ScriptApp;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['runRescoreAllCallsViaTrigger_', 'someOtherHandler_']);
+    gas.removeRescoreAllCallsTrigger_();
+    const handlerNames = gas.ScriptApp._triggers.map((t) => t.getHandlerFunction());
+    assert.deepEqual(handlerNames, ['someOtherHandler_']);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('runRescoreAllCallsViaTrigger_ removes the recurring trigger once a pass finds nothing left eligible, and leaves it running while there\'s still work (so it can run unattended across the ~461-row backfill instead of Kris manually re-running it hundreds of times)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalRescoreAllCalls_ = gas.rescoreAllCalls_;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['runRescoreAllCallsViaTrigger_']);
+    gas.rescoreAllCalls_ = () => true; // still more work
+    gas.runRescoreAllCallsViaTrigger_();
+    assert.equal(gas.ScriptApp._triggers.length, 1, 'trigger must stay installed while there is still more work');
+
+    gas.rescoreAllCalls_ = () => false; // done
+    gas.runRescoreAllCallsViaTrigger_();
+    assert.equal(gas.ScriptApp._triggers.length, 0, 'trigger must be removed once a pass finds nothing left eligible');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.rescoreAllCalls_ = originalRescoreAllCalls_;
+  }
+});
+
 test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
   const stageLookup = {
     'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },
