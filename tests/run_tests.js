@@ -2398,6 +2398,73 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
   }
 });
 
+test('rescoreAllCalls_ groups eligible rows by rubric variant before scoring, not raw sheet order (real cost bug, 30/08/2026: Moonshot\'s Kimi API caches on a shared prompt PREFIX across consecutive calls — sheet order interleaves reps/Call Types, so almost every call was a full-price cache miss even though many rows share the same system prompt)', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  // Sheet order deliberately interleaves variants: qc, sean, qc, sean — a
+  // cache-hostile order if processed as-is.
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'QC One', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Sean One', Rep: 'Sean', 'Call Type': 'Sales Call', 'Match Method': 'fallback_heuristic',
+      'Transcript URL': 'https://docs.google.com/document/d/1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'QC Two', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Sean Two', Rep: 'Sean', 'Call Type': 'Sales Call', 'Match Method': 'fallback_heuristic',
+      'Transcript URL': 'https://docs.google.com/document/d/1IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    })
+  ];
+  const sheet = fakeSalesCallLogSheetForRescore(dataRows);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  const originalScoreSean = gas.scoreSeanTranscript_;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+
+    const order = [];
+    const fakeResult = (variantLabel) => {
+      order.push(variantLabel);
+      return {
+        reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+        flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true, captured_leads_goals: true, tied_framework_to_goals: true, booked_second_call_with_tomas: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+        primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', root_cause_if_no_sale: 'N/A',
+        manual_review_recommended: false, severity: 1, feedback_summary: 'rescored'
+      };
+    };
+    gas.scoreQcTranscript_ = () => fakeResult('qc');
+    gas.scoreSeanTranscript_ = () => fakeResult('sean');
+
+    gas.rescoreAllCalls_(false);
+
+    assert.deepEqual(order, ['qc', 'qc', 'sean', 'sean'],
+      'both qc calls must run back-to-back, then both sean calls — not interleaved as they appear in the sheet');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+    gas.scoreSeanTranscript_ = originalScoreSean;
+  }
+});
+
 test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
   const stageLookup = {
     'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },

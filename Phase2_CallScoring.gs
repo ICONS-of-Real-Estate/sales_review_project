@@ -884,80 +884,95 @@ function rescoreAllCalls_(dryRun) {
     // one real model call per row, a few minutes of total silence looked
     // indistinguishable from a hang. Log the real scope up front, then one line
     // per row as it's actually rescored.
-    var needingRescore = 0;
+    //
+    // Real cost bug found live (30/08/2026, per Kris): Moonshot's Kimi API
+    // auto-caches on a shared PROMPT PREFIX across consecutive requests (a
+    // cache hit is ~10x cheaper on input tokens than a miss — see
+    // callKimiJudge_'s own comment). Our system prompt (the rubric text,
+    // identical across every row scored under the same variant) is already
+    // first in callKimiJudge_'s messages array, which is exactly what the
+    // cache needs — but this function used to walk rows in raw SHEET order,
+    // which interleaves reps/Call Types essentially at random. Two
+    // consecutive calls almost never shared the same variant, so almost
+    // every single call was a full-price cache MISS regardless. Fixed by
+    // collecting every row that actually needs a rescore first, then sorting
+    // that list by variant before making any model call — consecutive calls
+    // now share the same system-prompt prefix, letting the cache actually work.
+    var eligible = [];
+    var skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0, skippedNotYetScored = 0;
     for (var i = 0; i < values.length; i++) {
       var scanRow = values[i];
-      if (typeof scanRow[col['Call Quality Score'] - 1] !== 'number') continue;
-      if (scanRow[col['Rubric Version'] - 1] === RUBRIC_VERSION) continue;
-      if (String(scanRow[col['Kris Manual Review Verdict'] - 1] || '').trim() !== '') continue;
-      if (!scanRow[col['Transcript URL'] - 1]) continue;
-      needingRescore++;
+      var scanExistingScore = scanRow[col['Call Quality Score'] - 1];
+      if (typeof scanExistingScore !== 'number') { skippedNotYetScored++; continue; }
+      var scanRubricVersion = scanRow[col['Rubric Version'] - 1];
+      if (scanRubricVersion === RUBRIC_VERSION) { skippedCurrent++; continue; }
+      if (String(scanRow[col['Kris Manual Review Verdict'] - 1] || '').trim() !== '') { skippedManuallyReviewed++; continue; }
+      var scanTranscriptUrl = scanRow[col['Transcript URL'] - 1];
+      if (!scanTranscriptUrl) { skippedNoTranscript++; continue; }
+
+      var scanRep = scanRow[col['Rep'] - 1];
+      var scanCallType = scanRow[col['Call Type'] - 1] || 'QC';
+      var scanMatchMethod = scanRow[col['Match Method'] - 1];
+      eligible.push({
+        rowIndex: i + 2,
+        row: scanRow,
+        rep: scanRep,
+        callType: scanCallType,
+        transcriptUrl: scanTranscriptUrl,
+        existingScore: scanExistingScore,
+        rubricVersion: scanRubricVersion,
+        variant: resolveRubricVariantForRow_(scanRep, scanMatchMethod, scanCallType)
+      });
     }
-    log_((dryRun ? 'previewRescoreAllCalls' : 'rescoreAllCalls') + ': ' + needingRescore +
-      ' row(s) out of ' + values.length + ' need a rescore this pass' +
+    eligible.sort(function (a, b) { return a.variant < b.variant ? -1 : (a.variant > b.variant ? 1 : 0); });
+
+    log_((dryRun ? 'previewRescoreAllCalls' : 'rescoreAllCalls') + ': ' + eligible.length +
+      ' row(s) out of ' + values.length + ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
       (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row; logging each as it completes.'));
 
     var runStart = Date.now();
-    var rescored = 0, skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0,
-      skippedNotYetScored = 0, failed = 0, truncated = false;
+    var rescored = 0, failed = 0, truncated = false;
 
-    for (var r = 0; r < values.length; r++) {
+    for (var e = 0; e < eligible.length; e++) {
       if (Date.now() - runStart > RESCORE_ALL_TIME_BUDGET_MS_) {
         truncated = true;
-        log_('  rescoreAllCalls_: time budget hit at row ' + (r + 2) + ' of ' + (values.length + 1) +
-          ' — reporting a partial result. Re-run to continue; rows already brought current this pass are skipped automatically.');
+        log_('  rescoreAllCalls_: time budget hit after ' + rescored + ' of ' + eligible.length +
+          ' eligible row(s) — reporting a partial result. Re-run to continue; rows already brought current this pass are skipped automatically.');
         break;
       }
 
-      var row = values[r];
-      var rowIndex = r + 2;
-      var prospectName = row[col['Prospect Name'] - 1];
-
-      var existingScore = row[col['Call Quality Score'] - 1];
-      if (typeof existingScore !== 'number') { skippedNotYetScored++; continue; } // not this function's job — scoreNewlyLoggedCalls_/the backfills handle first-time scoring
-
-      var rubricVersion = row[col['Rubric Version'] - 1];
-      if (rubricVersion === RUBRIC_VERSION) { skippedCurrent++; continue; } // already scored under today's rubric — this is the resumability check
-
-      var manualVerdict = row[col['Kris Manual Review Verdict'] - 1];
-      if (String(manualVerdict || '').trim() !== '') { skippedManuallyReviewed++; continue; } // never overwrite Kris's own calibration judgment
-
-      var transcriptUrl = row[col['Transcript URL'] - 1];
-      if (!transcriptUrl) { skippedNoTranscript++; continue; }
+      var item = eligible[e];
+      var prospectName = item.row[col['Prospect Name'] - 1];
 
       try {
-        var fileId = extractDriveFileId_(transcriptUrl);
+        var fileId = extractDriveFileId_(item.transcriptUrl);
         var text = getTranscriptText_(DriveApp.getFileById(fileId));
-        var rep = row[col['Rep'] - 1];
-        var rawCallType = row[col['Call Type'] - 1];
         var ctx = {
-          rep: rep,
+          rep: item.rep,
           prospectName: prospectName,
-          callType: rawCallType || 'QC',
-          source: row[col['Source'] - 1],
-          callDate: row[col['Call Date'] - 1],
+          callType: item.callType,
+          source: item.row[col['Source'] - 1],
+          callDate: item.row[col['Call Date'] - 1],
           transcriptText: text
         };
-        var matchMethod = row[col['Match Method'] - 1];
-        var variant = resolveRubricVariantForRow_(rep, matchMethod, ctx.callType);
 
         if (dryRun) {
-          log_('  Would re-score row ' + rowIndex + ' (' + prospectName + ', ' + rep + ', ' + ctx.callType +
-            ') under variant "' + variant + '" — old score=' + existingScore + ', old Rubric Version="' +
-            (rubricVersion || '(none)') + '". No model called, nothing written.');
+          log_('  Would re-score row ' + item.rowIndex + ' (' + prospectName + ', ' + item.rep + ', ' + item.callType +
+            ') under variant "' + item.variant + '" — old score=' + item.existingScore + ', old Rubric Version="' +
+            (item.rubricVersion || '(none)') + '". No model called, nothing written.');
           rescored++;
           continue;
         }
 
-        var result = scoreTranscriptByVariant_(variant, ctx);
-        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
+        var result = scoreTranscriptByVariant_(item.variant, ctx);
+        writeScoreToRow_(sheet, item.rowIndex, col, result, /*forceManualReview=*/false, prospectName, item.variant);
         rescored++;
-        log_('  [' + rescored + '/' + needingRescore + '] Rescored row ' + rowIndex + ' (' + prospectName + ', ' +
-          rep + ', ' + ctx.callType + ') under "' + variant + '" — score ' + existingScore + ' -> ' +
+        log_('  [' + rescored + '/' + eligible.length + '] Rescored row ' + item.rowIndex + ' (' + prospectName + ', ' +
+          item.rep + ', ' + item.callType + ') under "' + item.variant + '" — score ' + item.existingScore + ' -> ' +
           result.call_quality_score + '.');
         Utilities.sleep(300);
-      } catch (e) {
-        log_('  Row ' + rowIndex + ' (' + prospectName + ') FAILED: ' + e);
+      } catch (e2) {
+        log_('  Row ' + item.rowIndex + ' (' + prospectName + ') FAILED: ' + e2);
         failed++;
       }
     }
