@@ -39,8 +39,11 @@
  * Tomás replying-all on it with "cancel" or "stop" — the check looks for
  * that in every message from either of them before deciding whether to nag
  * again. This replaces the old one-shot "alert Kris/Tomás about yesterday"
- * behavior; it runs via two triggers 12h apart (runDailyPracticeCompliance,
- * COMPLIANCE_CHECK_HOUR and COMPLIANCE_CHECK_HOUR_PM).
+ * behavior; it runs twice daily, 12h apart, at COMPLIANCE_CHECK_HOUR (its
+ * own dedicated runDailyPracticeCompliance trigger) and
+ * COMPLIANCE_CHECK_HOUR_PM (folded into runDailyPracticeGrading's trigger,
+ * which already fires at that same hour — see that function's own comment
+ * for why, added 31/08/2026 to stay under Apps Script's 20-trigger cap).
  *
  * Once the correctly-named file lands AND its transcript is ready, the
  * grading itself also lands as a reply-all on that same tracked thread
@@ -489,9 +492,24 @@ function previewDailyPracticeGrading_() {
 }
 
 /** Trigger target. */
+/**
+ * Also runs the PM compliance pass (checkDailyPracticeCompliance_) before
+ * grading — real bug found live (31/08/2026): a dedicated PM
+ * runDailyPracticeCompliance trigger at COMPLIANCE_CHECK_HOUR_PM used to
+ * exist alongside this one, but that pushed the project over Apps Script's
+ * hard 20-installable-trigger cap. GRADING_HOUR and
+ * COMPLIANCE_CHECK_HOUR_PM were already both 20 (8pm) — same hour, same
+ * timezone — so folding the PM compliance pass into this already-scheduled
+ * firing is behaviorally identical to the old dedicated trigger (same exact
+ * time, same day-of-week cadence) and frees a trigger slot permanently.
+ * checkDailyPracticeCompliance_ isn't lock-guarded itself (see
+ * runDailyPracticeCompliance's own wrapper, which has none either), so it's
+ * safe to call before acquiring the grading lock below.
+ */
 function runDailyPracticeGrading() {
   RUN_TAG = 'runDailyPracticeGrading';
   if (!DAILY_PRACTICE_CONFIG.ENABLED) { log_('DAILY_PRACTICE_CONFIG.ENABLED is false — skipping.'); return; }
+  checkDailyPracticeCompliance_(/*dryRun=*/false);
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
     log_('runDailyPracticeGrading: another run holds the lock, skipping this firing.');
@@ -786,10 +804,12 @@ function dailyPracticeThreadHasStopRequest_(thread) {
  *                      (buildAndMaybeGradeDailyPractice_'s nightly pass does
  *                      the same lookup, so whichever runs first delivers it).
  *
- * Runs twice daily (COMPLIANCE_CHECK_HOUR and COMPLIANCE_CHECK_HOUR_PM, 12h
- * apart, per Kris's ask 21/08/2026) — a thread's last-nag timestamp (not just
- * date) gates re-nagging so the two firings actually land ~12h apart instead
- * of collapsing to once a day.
+ * Runs twice daily, 12h apart (per Kris's ask 21/08/2026) — once via its own
+ * trigger at COMPLIANCE_CHECK_HOUR, once folded into runDailyPracticeGrading
+ * at COMPLIANCE_CHECK_HOUR_PM (31/08/2026, to stay under Apps Script's
+ * 20-trigger cap — see that function's own comment). A thread's last-nag
+ * timestamp (not just date) gates re-nagging so the two firings actually
+ * land ~12h apart instead of collapsing to once a day.
  */
 /**
  * Sorts same-file claimant rows (same rep, same matchedFile — can only exist
@@ -1155,21 +1175,24 @@ function installDailySelfPracticeTriggers_() {
     });
   });
 
-  // Two compliance-check firings, 12h apart, so an outstanding assignment gets
-  // nagged every 12h rather than once a day (checkDailyPracticeCompliance_'s
-  // own NAG_INTERVAL_HOURS gate is what actually enforces the spacing; two
-  // triggers just makes sure a check happens often enough to catch each window).
+  // AM compliance-check firing, an hour before REMINDER_HOUR (see
+  // COMPLIANCE_CHECK_HOUR's own comment). The PM pass, 12h later, used to be
+  // a second dedicated trigger at COMPLIANCE_CHECK_HOUR_PM — that pushed the
+  // project over Apps Script's 20-installable-trigger cap (real bug, live
+  // 31/08/2026), so it's now folded into runDailyPracticeGrading (see that
+  // function's own comment), which already fires at the same hour
+  // (GRADING_HOUR === COMPLIANCE_CHECK_HOUR_PM === 20). Net effect on the
+  // actual schedule: none. checkDailyPracticeCompliance_'s own
+  // NAG_INTERVAL_HOURS gate is what actually enforces the ~12h nag spacing.
   ScriptApp.newTrigger('runDailyPracticeCompliance')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
-  ScriptApp.newTrigger('runDailyPracticeCompliance')
-    .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR_PM).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('sendDailyPracticeReminders_')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.REMINDER_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
   ScriptApp.newTrigger('runDailyPracticeGrading')
     .timeBased().everyDays(1).atHour(DAILY_PRACTICE_CONFIG.GRADING_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
 
-  log_('Daily self-practice triggers installed: compliance checks at ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR +
-    ':00 and ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR_PM + ':00 (nag every ' +
-    DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS + 'h), reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR +
-    ':00, grading at ' + DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
+  log_('Daily self-practice triggers installed: compliance check at ' + DAILY_PRACTICE_CONFIG.COMPLIANCE_CHECK_HOUR +
+    ':00, reminders at ' + DAILY_PRACTICE_CONFIG.REMINDER_HOUR + ':00, grading + 2nd compliance pass at ' +
+    DAILY_PRACTICE_CONFIG.GRADING_HOUR + ':00 (nag every ' + DAILY_PRACTICE_CONFIG.NAG_INTERVAL_HOURS +
+    'h, ' + CONFIG.BUSINESS_TIMEZONE + ') — one fewer trigger than before, same effective schedule.');
 }

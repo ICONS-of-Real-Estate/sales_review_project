@@ -2650,16 +2650,23 @@ test('rescoreAllCalls_ returns true when this pass found eligible rows, and fals
 
 function fakeScriptAppTriggers_(initialHandlerNames) {
   const triggers = initialHandlerNames.map((name) => ({ getHandlerFunction: () => name }));
+  // Chainable builder supporting both calling conventions used in this codebase:
+  // .timeBased().everyMinutes(n).create() (rescore/legacy-backfill triggers) and
+  // .timeBased().everyDays(1).atHour(h).inTimezone(tz).create() (Phase 1/7 daily triggers).
+  const makeBuilder = (fnName) => {
+    const builder = {
+      everyMinutes: () => builder,
+      everyDays: () => builder,
+      atHour: () => builder,
+      inTimezone: () => builder,
+      create: () => { const t = { getHandlerFunction: () => fnName }; triggers.push(t); return t; }
+    };
+    return builder;
+  };
   return {
     getProjectTriggers: () => triggers.slice(),
     deleteTrigger: (t) => { const idx = triggers.indexOf(t); if (idx !== -1) triggers.splice(idx, 1); },
-    newTrigger: (fnName) => ({
-      timeBased: () => ({
-        everyMinutes: () => ({
-          create: () => { const t = { getHandlerFunction: () => fnName }; triggers.push(t); return t; }
-        })
-      })
-    }),
+    newTrigger: (fnName) => ({ timeBased: () => makeBuilder(fnName) }),
     _triggers: triggers
   };
 }
@@ -3310,6 +3317,47 @@ test('checkDailyPracticeCompliance_ end-to-end: a file claimed by a row that has
   } finally {
     gas.SpreadsheetApp = originalSpreadsheetApp;
     gas.DriveApp = originalDriveApp;
+  }
+});
+
+test('installDailySelfPracticeTriggers_ installs exactly 3 triggers, not 4 (real bug, 31/08/2026: a dedicated PM runDailyPracticeCompliance trigger used to exist alongside the AM one and pushed the whole Apps Script project over its hard 20-installable-trigger cap — the PM pass is now folded into runDailyPracticeGrading instead, which already fires at the same hour)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalCONFIG = gas.CONFIG;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_([]);
+    gas.CONFIG = Object.assign({}, gas.CONFIG, { BUSINESS_TIMEZONE: 'America/New_York' });
+
+    gas.installDailySelfPracticeTriggers_();
+
+    const handlerNames = gas.ScriptApp._triggers.map((t) => t.getHandlerFunction()).sort();
+    assert.deepEqual(handlerNames, ['runDailyPracticeCompliance', 'runDailyPracticeGrading', 'sendDailyPracticeReminders_'],
+      'must install exactly one trigger per handler — no dedicated PM compliance trigger, and no duplicates');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.CONFIG = originalCONFIG;
+  }
+});
+
+test('runDailyPracticeGrading also runs the PM compliance pass (checkDailyPracticeCompliance_) before grading, since it now covers the PM slot the old dedicated trigger used to (folded in 31/08/2026 to stay under Apps Script\'s trigger cap — GRADING_HOUR and COMPLIANCE_CHECK_HOUR_PM are the same hour, so the effective schedule is unchanged)', () => {
+  const originalEnabled = gas.DAILY_PRACTICE_CONFIG.ENABLED;
+  const originalCheckCompliance = gas.checkDailyPracticeCompliance_;
+  const originalBuildAndGrade = gas.buildAndMaybeGradeDailyPractice_;
+  const originalLockService = gas.LockService;
+  const calls = [];
+  try {
+    gas.DAILY_PRACTICE_CONFIG.ENABLED = true;
+    gas.checkDailyPracticeCompliance_ = () => calls.push('compliance');
+    gas.buildAndMaybeGradeDailyPractice_ = () => calls.push('grading');
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+
+    gas.runDailyPracticeGrading();
+
+    assert.deepEqual(calls, ['compliance', 'grading'], 'the PM compliance pass must run before grading, both on every firing');
+  } finally {
+    gas.DAILY_PRACTICE_CONFIG.ENABLED = originalEnabled;
+    gas.checkDailyPracticeCompliance_ = originalCheckCompliance;
+    gas.buildAndMaybeGradeDailyPractice_ = originalBuildAndGrade;
+    gas.LockService = originalLockService;
   }
 });
 
