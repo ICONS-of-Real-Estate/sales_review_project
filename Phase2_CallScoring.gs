@@ -878,6 +878,25 @@ function rescoreAllCalls_(dryRun) {
     var col = getValidatedColumnMap_(sheet);
     var values = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
+    // Real bug found live (29/08/2026, same UX complaint as computeGhlSyncFixes_'s
+    // "needs better logging" fix in Phase9_GhlSync.gs): a live (non-dryRun) pass
+    // used to log NOTHING for a successfully-scored row, only on failure — with
+    // one real model call per row, a few minutes of total silence looked
+    // indistinguishable from a hang. Log the real scope up front, then one line
+    // per row as it's actually rescored.
+    var needingRescore = 0;
+    for (var i = 0; i < values.length; i++) {
+      var scanRow = values[i];
+      if (typeof scanRow[col['Call Quality Score'] - 1] !== 'number') continue;
+      if (scanRow[col['Rubric Version'] - 1] === RUBRIC_VERSION) continue;
+      if (String(scanRow[col['Kris Manual Review Verdict'] - 1] || '').trim() !== '') continue;
+      if (!scanRow[col['Transcript URL'] - 1]) continue;
+      needingRescore++;
+    }
+    log_((dryRun ? 'previewRescoreAllCalls' : 'rescoreAllCalls') + ': ' + needingRescore +
+      ' row(s) out of ' + values.length + ' need a rescore this pass' +
+      (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row; logging each as it completes.'));
+
     var runStart = Date.now();
     var rescored = 0, skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0,
       skippedNotYetScored = 0, failed = 0, truncated = false;
@@ -933,6 +952,9 @@ function rescoreAllCalls_(dryRun) {
         var result = scoreTranscriptByVariant_(variant, ctx);
         writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
         rescored++;
+        log_('  [' + rescored + '/' + needingRescore + '] Rescored row ' + rowIndex + ' (' + prospectName + ', ' +
+          rep + ', ' + ctx.callType + ') under "' + variant + '" — score ' + existingScore + ' -> ' +
+          result.call_quality_score + '.');
         Utilities.sleep(300);
       } catch (e) {
         log_('  Row ' + rowIndex + ' (' + prospectName + ') FAILED: ' + e);

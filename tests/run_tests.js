@@ -2329,6 +2329,52 @@ test('rescoreAllCalls_\'s dry-run preview (previewRescoreAllCalls) calls no judg
   }
 });
 
+test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per-row progress line, not just failures (real bug, 29/08/2026: Kris reported "running 2 minutes with nothing written" — a live pass logged NOTHING for a successfully-scored row, indistinguishable from a hang)', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Logged Live', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    })
+  ];
+  const sheet = fakeSalesCallLogSheetForRescore(dataRows);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.Logger.log = (msg) => lines.push(msg);
+    gas.scoreQcTranscript_ = () => ({
+      reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+      flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
+      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+      delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+      primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
+      feedback_summary: 'rescored'
+    });
+
+    gas.rescoreAllCalls_(false);
+
+    const joined = lines.join('\n');
+    assert.match(joined, /1 row\(s\) out of 1 need a rescore this pass/, 'must log the real scope up front, before any model call');
+    assert.match(joined, /\[1\/1\] Rescored row 2 \(Logged Live,.*score 3 -> 4/, 'must log each row as it completes, not stay silent until the end');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+    gas.Logger.log = originalLog;
+  }
+});
+
 test('resolveBestDispositionForOpportunities_ returns the single disposition implied across a contact\'s opportunities, real example: Meriam Hansen\'s 3 opportunities (28/08/2026 live run) all imply nothing yet, not a conflict', () => {
   const stageLookup = {
     'podcast-booked': { pipelineName: 'ICONS Podcast', stageName: 'Podcast Booked On Calendar', disposition: null },
