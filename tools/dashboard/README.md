@@ -90,6 +90,10 @@ journalctl -u sales-dashboard-sync.service -f
 
 Then, from any device on the tailnet: `http://<tailscale-ip>:8000/`.
 
+**Live URL (this VPS)**: https://vps-b3e68291.tail9f0adb.ts.net/ — the
+Tailscale MagicDNS HTTPS name, not the raw IP:8000 above. Still tailnet-only
+(no public exposure) — you need to be on the same tailnet to reach it.
+
 ## Redeploying after a code change
 
 ```bash
