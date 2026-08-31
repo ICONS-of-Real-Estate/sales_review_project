@@ -2032,13 +2032,70 @@ test('buildReplyMetricsReportBody_ reports the 7-day and 30-day figures as a tru
   gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
   try {
     const periods = gas.computeReplyMetricsPeriods_(rows, now, 'America/New_York');
-    const expectedWeekAvg = (periods.week.count / 7).toFixed(1);
-    const expectedMonthAvg = (periods.month.count / 30).toFixed(1);
+    // Divided by actualDays, not a flat 7/30 (real bug fixed 30/08/2026) — this
+    // test's own data only spans 14 days back, so actualDays legitimately
+    // differs from the nominal window size for both periods.
+    const expectedWeekAvg = (periods.week.count / periods.week.actualDays).toFixed(1);
+    const expectedMonthAvg = (periods.month.count / periods.month.actualDays).toFixed(1);
     const body = gas.buildReplyMetricsReportBody_(rows, now, 'America/New_York');
     assert.match(body, new RegExp('Rolling 7-day average: ' + expectedWeekAvg + ' reply\\(ies\\)/day avg'));
     assert.match(body, new RegExp('Rolling 30-day average: ' + expectedMonthAvg + ' reply\\(ies\\)/day avg'));
     assert.ok(body.indexOf('Rolling 7-day total') === -1, 'must not still say "total" anywhere');
     assert.ok(body.indexOf('Rolling 30-day total') === -1, 'must not still say "total" anywhere');
+  } finally {
+    gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('actualDaysCovered_ clamps to the earliest logged reply date, not the nominal window size (real bug, 30/08/2026: a 30-day window computed before the tracker had 30 days of history divided by a flat 30 and understated the average)', () => {
+  const windowStart = new Date('2026-08-01T00:00:00Z');
+  const windowEnd = new Date('2026-08-31T00:00:00Z'); // nominal 30-day window
+  // Tracker only started logging 20/08/2026 — earliestRowDate is inside the window.
+  const earliestRowDate = new Date('2026-08-20T00:00:00Z');
+  const days = gas.actualDaysCovered_(windowStart, windowEnd, earliestRowDate);
+  assert.equal(days, 11, 'should count only from the earliest logged reply, not the full nominal 30-day window');
+});
+
+test('actualDaysCovered_ falls back to the nominal window size once the tracker has run longer than the window (earliestRowDate before windowStart)', () => {
+  const windowStart = new Date('2026-08-01T00:00:00Z');
+  const windowEnd = new Date('2026-08-31T00:00:00Z');
+  const earliestRowDate = new Date('2026-01-01T00:00:00Z'); // long before the window
+  const days = gas.actualDaysCovered_(windowStart, windowEnd, earliestRowDate);
+  assert.equal(days, 30, 'earliestRowDate before the window should not shrink or extend the nominal window');
+});
+
+test('actualDaysCovered_ clamps to a minimum of 1 day so a same-day-old tracker never divides by zero', () => {
+  const windowStart = new Date('2026-08-30T00:00:00Z');
+  const windowEnd = new Date('2026-08-31T00:00:00Z');
+  const earliestRowDate = new Date('2026-08-30T12:00:00Z'); // first reply logged mid-window, close to windowEnd
+  const days = gas.actualDaysCovered_(windowStart, windowEnd, earliestRowDate);
+  assert.ok(days >= 1, 'must never return less than 1 day');
+});
+
+test('buildReplyMetricsReportBody_ and buildReplyMetricsReportHtml_ cap the rolling-period example replies at REPLY_EXAMPLE_LIMIT_ and note how many more are not shown (Kris\'s ask 30/08/2026: "need to show at least examples so there is some action to take")', () => {
+  const now = new Date('2026-08-29T21:00:00Z');
+  const rows = [];
+  // 5 positive replies within the last 7 days — more than REPLY_EXAMPLE_LIMIT_ (3).
+  for (let i = 0; i < 5; i++) {
+    rows.push({ date: new Date(now.getTime() - i * 3600 * 1000), leadEmail: 'pos' + i + '@example.com', sentiment: 'positive', subject: 'Positive reply ' + i, reasoning: 'r' + i });
+  }
+  const originalBookingTabs = gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS;
+  const originalUtilities = gas.Utilities;
+  gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = [];
+  gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
+  try {
+    const body = gas.buildReplyMetricsReportBody_(rows, now, 'America/New_York');
+    const weekExamplesSection = body.split('Examples — positive:')[1];
+    const shownInBody = (weekExamplesSection.match(/Positive reply \d/g) || []).length;
+    assert.equal(shownInBody, gas.REPLY_EXAMPLE_LIMIT_, 'plain-text examples section must cap at REPLY_EXAMPLE_LIMIT_');
+    assert.match(body, /\(\+2 more not shown\)/, 'must say how many additional replies were not shown');
+
+    const html = gas.buildReplyMetricsReportHtml_(rows, now, 'America/New_York');
+    const weekHtmlSection = html.split('Rolling 7-day average')[1].split('Rolling 30-day average')[0];
+    const shownInHtml = (weekHtmlSection.match(/Positive reply \d/g) || []).length;
+    assert.equal(shownInHtml, gas.REPLY_EXAMPLE_LIMIT_, 'HTML examples section must cap at REPLY_EXAMPLE_LIMIT_');
+    assert.match(weekHtmlSection, /\(\+2 more not shown\)/, 'HTML must also say how many additional replies were not shown');
   } finally {
     gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
     gas.Utilities = originalUtilities;
