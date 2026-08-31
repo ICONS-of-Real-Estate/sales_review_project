@@ -665,6 +665,18 @@ function previewReplyMetricsReport() {
 
 function sendReplyMetricsReport_() {
   RUN_TAG = 'sendReplyMetricsReport_';
+
+  // Kris's ask (30/08/2026), same as runDailyComplianceCheck_ (Phase1_ComplianceCheck.gs):
+  // weekday-only. classifyNewReplies() (the 4-hourly classification pass) keeps
+  // running every day so Monday's rolling stats stay accurate — only the digest
+  // EMAIL is Mon-Fri. Checked in business timezone, same convention as every
+  // other weekday/business-day check in this codebase.
+  var todayName = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'EEE');
+  if (todayName === 'Sat' || todayName === 'Sun') {
+    log_('sendReplyMetricsReport_: ' + todayName + ' — weekday-only report (Mon-Fri), skipping.');
+    return;
+  }
+
   if (!REPLY_TRACKER_CONFIG.ENABLED) { log_('REPLY_TRACKER_CONFIG.ENABLED is false — skipping send.'); return; }
   var sheet = getOrCreateReplyTrackerSheet_();
   var rows = loadAllLoggedReplies_(sheet);

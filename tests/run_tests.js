@@ -2081,7 +2081,14 @@ test('sendReplyMetricsReport_ cc\'s Joana on the daily digest, alongside Tomás 
   try {
     gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = [];
     gas.REPLY_TRACKER_CONFIG.ENABLED = true;
-    gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
+    // 'EEE' pinned to a real weekday — sendReplyMetricsReport_ now checks this
+    // (30/08/2026 weekday-only fix) before anything else, so leaving it to fall
+    // through to realFormatDate would make this test's pass/fail depend on
+    // whatever day it happens to run, which is exactly the flakiness a fixed
+    // stub avoids.
+    gas.Utilities = {
+      formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : pattern === 'EEE' ? 'Wed' : realFormatDate(d, tz, pattern))
+    };
     const fakeSheet = { getLastRow: () => 1, getRange: () => ({ getValues: () => [] }) };
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
     let captured = null;
@@ -2096,6 +2103,29 @@ test('sendReplyMetricsReport_ cc\'s Joana on the daily digest, alongside Tomás 
     gas.SpreadsheetApp = originalSpreadsheetApp;
     gas.guardedSend_ = originalGuardedSend;
     gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
+    gas.REPLY_TRACKER_CONFIG.ENABLED = originalEnabled;
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('sendReplyMetricsReport_ skips entirely on a weekend (business timezone), even when ENABLED is true (real bug, 30/08/2026: the "Sales Review - Daily Tracker" email went out on a Sunday)', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalEnabled = gas.REPLY_TRACKER_CONFIG.ENABLED;
+  const originalUtilities = gas.Utilities;
+  try {
+    gas.REPLY_TRACKER_CONFIG.ENABLED = true;
+    gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'EEE' ? 'Sun' : realFormatDate(d, tz, pattern)) };
+    // Making SpreadsheetApp throw proves the function exits before touching
+    // the sheet at all, not just before sending.
+    gas.SpreadsheetApp = { openById: () => { throw new Error('must not even open the sheet on a weekend'); } };
+    gas.guardedSend_ = () => { throw new Error('must not send on a weekend'); };
+
+    gas.sendReplyMetricsReport_(); // must not throw
+    assert.ok(true, 'returned cleanly without touching the sheet or sending');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.guardedSend_ = originalGuardedSend;
     gas.REPLY_TRACKER_CONFIG.ENABLED = originalEnabled;
     gas.Utilities = originalUtilities;
   }
