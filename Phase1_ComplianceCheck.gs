@@ -801,10 +801,30 @@ function daysAgoLabel_(dateLabelDdMmYyyy, now, tz) {
   return days + ' days ago';
 }
 
-/** Pure email-content builder — {subject, body, htmlBody} — kept separate from guardedSend_ so it's testable without a real MailApp. */
-function buildComplianceEmail_(repCfg, backlog, tz) {
+/**
+ * Real bug found live (01/09/2026, Joana): every rep's spreadsheetId points
+ * at the SAME shared multi-tab workbook (Sales Call Log lives alongside
+ * unrelated tabs like Bens' own Icons 100 podcast tracker) — a bare
+ * `/edit` URL with no tab specified opens whatever tab last happened to be
+ * active for that spreadsheet, not necessarily "Sales Call Log". Joana's
+ * compliance email landed her on Bens' tracker tab instead. Resolves the
+ * REAL sheetId for repCfg.sheetName so the link can carry `#gid=<id>` and
+ * deep-link to the right tab every time, same pattern salesCallLogRowLink_
+ * (Phase2_CallScoring.gs) already uses for row-level links.
+ */
+function resolveRepTrackerGid_(repCfg) {
+  var ss = SpreadsheetApp.openById(repCfg.spreadsheetId);
+  var sheet = resolveSheet_(ss, repCfg.sheetName);
+  return sheet ? sheet.getSheetId() : null;
+}
+
+/** Pure email-content builder — {subject, body, htmlBody} — kept separate from guardedSend_/resolveRepTrackerGid_
+ * so it's testable without a real MailApp or SpreadsheetApp. sheetGid is optional — falls back to a bare
+ * spreadsheet link (the pre-fix behavior) when not given, e.g. if resolveRepTrackerGid_ itself failed. */
+function buildComplianceEmail_(repCfg, backlog, tz, sheetGid) {
   var n = backlog.length;
-  var trackerUrl = 'https://docs.google.com/spreadsheets/d/' + repCfg.spreadsheetId + '/edit';
+  var trackerUrl = 'https://docs.google.com/spreadsheets/d/' + repCfg.spreadsheetId + '/edit' +
+    (sheetGid !== undefined && sheetGid !== null ? '#gid=' + sheetGid : '');
   var now = new Date();
 
   // Oldest-first BY THE CALL'S OWN DATE — not by firstFlaggedAt, which is
@@ -883,7 +903,15 @@ function buildComplianceEmail_(repCfg, backlog, tz) {
 }
 
 function sendComplianceEmail_(repCfg, backlog, tz) {
-  var email = buildComplianceEmail_(repCfg, backlog, tz);
+  var sheetGid = null;
+  try {
+    sheetGid = resolveRepTrackerGid_(repCfg);
+  } catch (e) {
+    // A failed gid lookup must not block the whole nag — buildComplianceEmail_
+    // falls back to a bare (pre-fix) spreadsheet link when sheetGid is null.
+    log_('  resolveRepTrackerGid_ failed for ' + repCfg.name + ', tracker link will open the last-active tab: ' + e);
+  }
+  var email = buildComplianceEmail_(repCfg, backlog, tz, sheetGid);
   var recipientsNeeded = 3; // rep + Kris + Tomás (CC counts against recipient quota)
   var sent = guardedSend_(repCfg.email, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,

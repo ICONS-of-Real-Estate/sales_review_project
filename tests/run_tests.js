@@ -1419,6 +1419,40 @@ test('buildComplianceEmail_ lists every outstanding item oldest-first, each with
   assert.ok(email.body.indexOf('does not reset') !== -1, 'body should say this list carries forward, not a one-day snapshot');
 });
 
+test('buildComplianceEmail_ deep-links the tracker to the right TAB via #gid= when given one, not a bare spreadsheet link (real bug: Joana\'s compliance email opened Bens\' tracker tab because every rep\'s spreadsheetId points at the same shared multi-tab workbook and a bare /edit URL opens whatever tab was last active)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
+  const backlog = [
+    { eventId: 'evt-1', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', callDateLabel: '20/08/2026', time: '09:00', firstFlaggedAt: '2026-08-20T22:00:00.000Z' }
+  ];
+
+  const withGid = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE, 987654321);
+  assert.ok(withGid.body.indexOf('https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=987654321') !== -1,
+    'the tracker link must carry the real tab\'s gid, not just the bare spreadsheet URL');
+
+  // sheetGid omitted (e.g. resolveRepTrackerGid_ itself failed) must degrade
+  // to the old bare link rather than breaking the email.
+  const withoutGid = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.ok(withoutGid.body.indexOf('https://docs.google.com/spreadsheets/d/SHEET_ID/edit\n') !== -1,
+    'no gid given must fall back to a bare spreadsheet link, not throw or print "undefined"');
+});
+
+test('resolveRepTrackerGid_ resolves the REAL sheetId for repCfg.sheetName, not just the spreadsheet\'s default/first tab', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  try {
+    const fakeSheet = { getSheetId: () => 555222111 };
+    const fakeSs = {
+      getSheetByName: (name) => (name === 'Sales Call Log' ? fakeSheet : null),
+      getSheets: () => [{ getSheetId: () => -1 }] // a wrong-tab fallback that must NOT be what gets returned
+    };
+    gas.SpreadsheetApp = { openById: (id) => { assert.equal(id, 'SHEET_ID'); return fakeSs; } };
+    const gid = gas.resolveRepTrackerGid_({ spreadsheetId: 'SHEET_ID', sheetName: 'Sales Call Log' });
+    assert.equal(gid, 555222111);
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Training call review: flat-file transcript matching (26/08/2026 incident).
 // Tomás started dropping the FULL Zoom bundle (video + .vtt) flat into a
