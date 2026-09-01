@@ -2111,6 +2111,110 @@ test('findUnansweredThreadsForRep_ does NOT flag a thread the rep answered from 
   }
 });
 
+test('extractEmailAddresses_ pulls every address out of a comma-separated To/Cc header', () => {
+  // Individual-field assertions, not assert.deepEqual on the whole array --
+  // the array is built inside the vm sandbox's own realm (see gas_env.js's
+  // Date comment) and deepEqual's constructor-identity check fails against
+  // this file's plain array literals for realm reasons, not a real mismatch.
+  const bracketed = gas.extractEmailAddresses_('Sean Church <sean@iconsofrealestate.com>, Kris Reid <kris@iconsofrealestate.com>');
+  assert.equal(bracketed.length, 2);
+  assert.equal(bracketed[0], 'sean@iconsofrealestate.com');
+  assert.equal(bracketed[1], 'kris@iconsofrealestate.com');
+
+  // No angle-bracket form at all -- bare comma-separated addresses.
+  const bare = gas.extractEmailAddresses_('sean@iconsofrealestate.com, kris@iconsofrealestate.com');
+  assert.equal(bare.length, 2);
+  assert.equal(bare[0], 'sean@iconsofrealestate.com');
+  assert.equal(bare[1], 'kris@iconsofrealestate.com');
+
+  assert.equal(gas.extractEmailAddresses_('').length, 0);
+  assert.equal(gas.extractEmailAddresses_(undefined).length, 0);
+});
+
+test('repIsToRecipient_ checks the rep\'s own addresses (including aliases) against the To list, not Cc', () => {
+  const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com', aliases: ['bens@ardorseo.com'] };
+  assert.equal(gas.repIsToRecipient_(repCfg, ['bens@iconsofrealestate.com']), true);
+  assert.equal(gas.repIsToRecipient_(repCfg, ['bens@ardorseo.com']), true, 'an alias address counts too');
+  assert.equal(gas.repIsToRecipient_(repCfg, ['joana@iconsofrealestate.com']), false);
+  assert.equal(gas.repIsToRecipient_(repCfg, []), false);
+});
+
+test('findUnansweredThreadsForRep_ does NOT flag a thread where the rep is only CC\'d, never actually addressed (real complaint from Bens, 31/08/2026: flagged for threads he had no reason to reply to — someone else\'s outreach conversation he was just CC\'d on)', () => {
+  const repCfg = { name: 'Sean', email: 'sean@iconsofrealestate.com', aliases: [] };
+  const oldGmailApiGet = gas.gmailApiGet_;
+  const oldGetToken = gas.getGmailAccessTokenForUser_;
+  gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+  gas.gmailApiGet_ = (token, path) => {
+    if (path.indexOf('/threads?q=') === 0) return { threads: [{ id: 'thread-cc-only' }] };
+    // Joana's own outreach thread -- addressed TO the lead, Sean only CC'd.
+    return {
+      messages: [{
+        internalDate: String(Date.now() - 48 * 3600000),
+        payload: {
+          headers: [
+            { name: 'From', value: 'Eileen Decelle <eileen.findyourhome@gmail.com>' },
+            { name: 'Subject', value: 'Re: Missed Call' },
+            { name: 'To', value: 'Joana Peixe <joana@iconsofrealestate.com>' },
+            { name: 'Cc', value: 'Sean Church <sean@iconsofrealestate.com>, Tomás Fonseca <tomas@iconsofrealestate.com>' }
+          ]
+        }
+      }]
+    };
+  };
+  try {
+    const unanswered = gas.findUnansweredThreadsForRep_(repCfg);
+    assert.equal(unanswered.length, 0, 'a thread addressed to someone else, with the rep only CC\'d, must not be flagged as the rep\'s to answer');
+  } finally {
+    gas.gmailApiGet_ = oldGmailApiGet;
+    gas.getGmailAccessTokenForUser_ = oldGetToken;
+  }
+});
+
+test('findUnansweredThreadsForRep_ still flags a thread where the rep IS a To recipient, and stays conservative (still flags) when To is empty/unparseable', () => {
+  const repCfg = { name: 'Sean', email: 'sean@iconsofrealestate.com', aliases: [] };
+  const oldGmailApiGet = gas.gmailApiGet_;
+  const oldGetToken = gas.getGmailAccessTokenForUser_;
+  gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+
+  gas.gmailApiGet_ = (token, path) => {
+    if (path.indexOf('/threads?q=') === 0) return { threads: [{ id: 'thread-to-sean' }] };
+    return {
+      messages: [{
+        internalDate: String(Date.now() - 48 * 3600000),
+        payload: {
+          headers: [
+            { name: 'From', value: 'A Lead <lead@example.com>' },
+            { name: 'Subject', value: 'Question about pricing' },
+            { name: 'To', value: 'Sean Church <sean@iconsofrealestate.com>' }
+          ]
+        }
+      }]
+    };
+  };
+  try {
+    assert.equal(gas.findUnansweredThreadsForRep_(repCfg).length, 1, 'a thread genuinely addressed to the rep must still be flagged');
+  } finally {
+    gas.gmailApiGet_ = oldGmailApiGet;
+  }
+
+  // No To header at all (unparseable/missing) -- must NOT silently suppress a real nag.
+  gas.gmailApiGet_ = (token, path) => {
+    if (path.indexOf('/threads?q=') === 0) return { threads: [{ id: 'thread-no-to' }] };
+    return {
+      messages: [{
+        internalDate: String(Date.now() - 48 * 3600000),
+        payload: { headers: [{ name: 'From', value: 'A Lead <lead@example.com>' }, { name: 'Subject', value: 'No To header' }] }
+      }]
+    };
+  };
+  try {
+    assert.equal(gas.findUnansweredThreadsForRep_(repCfg).length, 1, 'an empty/unparseable To must stay conservative, not suppress the nag');
+  } finally {
+    gas.gmailApiGet_ = oldGmailApiGet;
+    gas.getGmailAccessTokenForUser_ = oldGetToken;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Phase5_WeeklyScorecard.gs fixes (26/08/2026 silent-failure audit)
 // ---------------------------------------------------------------------------

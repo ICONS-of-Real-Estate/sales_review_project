@@ -364,6 +364,22 @@ function extractEmailAddress_(headerValue) {
 }
 
 /**
+ * Every address in a To/Cc header, lowercased — a header can list several
+ * "Name <email>" entries comma-separated. Falls back to splitting on comma
+ * for a header with no angle-bracket form at all (bare addresses), same
+ * "good enough for real Gmail headers, not a full RFC 5322 parser" spirit
+ * as extractEmailAddress_ above.
+ */
+function extractEmailAddresses_(headerValue) {
+  var raw = String(headerValue || '');
+  var bracketed = raw.match(/<([^>]+)>/g);
+  if (bracketed) {
+    return bracketed.map(function (m) { return m.slice(1, -1).trim().toLowerCase(); });
+  }
+  return raw.split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+}
+
+/**
  * format=metadata (never the full message body) keeps this to header data
  * only. Returns the LAST message in the thread — whether it's from the rep
  * (answered) or an external sender (potentially overdue) is exactly what
@@ -371,7 +387,8 @@ function extractEmailAddress_(headerValue) {
  */
 function getThreadLastMessageInfo_(accessToken, threadId) {
   var thread = gmailApiGet_(accessToken,
-    '/threads/' + threadId + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject');
+    '/threads/' + threadId + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject' +
+    '&metadataHeaders=To&metadataHeaders=Cc');
   var messages = thread.messages || [];
   if (!messages.length) {
     log_('  thread ' + threadId + ' returned no messages — skipped.');
@@ -395,8 +412,25 @@ function getThreadLastMessageInfo_(accessToken, threadId) {
     fromEmail: extractEmailAddress_(headers['from']),
     fromRaw: headers['from'] || '(unknown sender)',
     subject: headers['subject'] || '(no subject)',
+    toAddresses: extractEmailAddresses_(headers['to']),
+    ccAddresses: extractEmailAddresses_(headers['cc']),
     internalDateMs: internalDateMs
   };
+}
+
+/**
+ * True only if the rep (any of their own addresses — repOwnEmails_) is
+ * actually addressed in the To field of the message, not just CC'd. Real
+ * complaint from Bens (31/08/2026): the nag flagged threads he'd already
+ * read and had no reason to reply to — a lot of that volume turned out to
+ * be threads where he's only ever CC'd on someone ELSE's outreach/booking
+ * conversation (e.g. Joana's own lead emails), never the one actually being
+ * asked to respond. Being CC'd on someone else's conversation is not "an
+ * email you need to answer."
+ */
+function repIsToRecipient_(repCfg, toAddresses) {
+  var repEmails = repOwnEmails_(repCfg);
+  return (toAddresses || []).some(function (a) { return repEmails.indexOf(a) !== -1; });
 }
 
 /**
@@ -456,6 +490,14 @@ function findUnansweredThreadsForRep_(repCfg) {
       if (!info) continue;
       if (repEmails.indexOf(info.fromEmail) !== -1) continue; // rep sent the last message (from any of their own addresses) -- answered
       if (subjectLooksExcluded_(info.subject)) continue; // real substring check — see EXCLUDE_SUBJECT_CONTAINS's comment
+      // Real complaint from Bens (31/08/2026): flagged for threads he's only
+      // ever CC'd on, never actually addressed — someone else's outreach/
+      // booking conversation he has no reason to reply to. Only suppress
+      // when the To header actually parsed to something (info.toAddresses.length)
+      // — an empty/unparseable To must NOT silently suppress a real nag, so
+      // this stays conservative on uncertainty, same policy as the rest of
+      // this file.
+      if (info.toAddresses.length && !repIsToRecipient_(repCfg, info.toAddresses)) continue;
       var ageMs = now - info.internalDateMs;
       if (ageMs > slaMs) {
         unanswered.push({
