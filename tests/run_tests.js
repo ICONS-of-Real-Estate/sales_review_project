@@ -1316,6 +1316,38 @@ test('sendDailyPracticeReminders_\'s lane rotation: day 1 (Wed) lands on lane in
   assert.equal(dayToLane(4), 'close_ask');
 });
 
+test('repHasPracticeToday_ enforces per-rep practice-day cadence (Kris\'s ask 01/09/2026, after Joana said the daily cadence was hard to sustain alongside calls/emails/trackers/follow-ups/briefings)', () => {
+  const original = gas.DAILY_PRACTICE_CONFIG.PRACTICE_DAYS;
+  try {
+    gas.DAILY_PRACTICE_CONFIG.PRACTICE_DAYS = {
+      Joana: ['Tuesday', 'Thursday'],
+      Bens: ['Monday', 'Wednesday', 'Thursday'],
+      Sean: ['Monday', 'Wednesday', 'Thursday']
+    };
+    assert.equal(gas.repHasPracticeToday_('Joana', 'Tuesday'), true);
+    assert.equal(gas.repHasPracticeToday_('Joana', 'Thursday'), true);
+    assert.equal(gas.repHasPracticeToday_('Joana', 'Monday'), false);
+    assert.equal(gas.repHasPracticeToday_('Joana', 'Wednesday'), false);
+    assert.equal(gas.repHasPracticeToday_('Joana', 'Friday'), false);
+
+    assert.equal(gas.repHasPracticeToday_('Bens', 'Monday'), true);
+    assert.equal(gas.repHasPracticeToday_('Bens', 'Wednesday'), true);
+    assert.equal(gas.repHasPracticeToday_('Bens', 'Thursday'), true);
+    assert.equal(gas.repHasPracticeToday_('Bens', 'Tuesday'), false);
+    assert.equal(gas.repHasPracticeToday_('Bens', 'Friday'), false);
+
+    assert.equal(gas.repHasPracticeToday_('Sean', 'Monday'), true);
+    assert.equal(gas.repHasPracticeToday_('Sean', 'Tuesday'), false);
+
+    // A rep with no PRACTICE_DAYS entry at all must default to every
+    // weekday — the original behavior, unchanged for anyone not opted in.
+    assert.equal(gas.repHasPracticeToday_('SomeNewRep', 'Monday'), true);
+    assert.equal(gas.repHasPracticeToday_('SomeNewRep', 'Sunday'), true);
+  } finally {
+    gas.DAILY_PRACTICE_CONFIG.PRACTICE_DAYS = original;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Compliance backlog (26/08/2026): checkRep_ used to only ever compare
 // TODAY's calendar events against TODAY's tracker rows — an item flagged one

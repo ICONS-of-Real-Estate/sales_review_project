@@ -89,7 +89,22 @@ var DAILY_PRACTICE_CONFIG = {
   // Escalate (cc Kris + Tomás) when a graded rep falls at or below this — same
   // "manual review" spirit as Phase 2's severity flag, applied to a rep's own
   // practice quality rather than a real lead's call.
-  ESCALATE_AT_OR_BELOW: 2
+  ESCALATE_AT_OR_BELOW: 2,
+
+  // Kris's ask (01/09/2026), after Joana said the daily cadence was hard to
+  // sustain alongside calls/emails/trackers/follow-ups/briefings: cut back
+  // per rep instead of dropping the program. A rep not listed here (or
+  // whose array doesn't include today's weekday) simply gets no assignment
+  // that day — checkDailyPracticeCompliance_ only ever nags a row
+  // sendDailyPracticeReminders_ actually created, so skipping the creation
+  // is enough; no separate change needed there. A rep with no entry at all
+  // defaults to every weekday (unchanged behavior), so adding a new rep
+  // here is opt-in, not required.
+  PRACTICE_DAYS: {
+    Joana: ['Tuesday', 'Thursday'],
+    Bens: ['Monday', 'Wednesday', 'Thursday'],
+    Sean: ['Monday', 'Wednesday', 'Thursday']
+  }
 };
 
 function buildDailyPracticeSystemPrompt_() {
@@ -523,12 +538,25 @@ function runDailyPracticeGrading() {
 }
 
 /**
+ * True unless the rep has a DAILY_PRACTICE_CONFIG.PRACTICE_DAYS entry that
+ * excludes today's weekday. A rep with no entry at all gets every weekday
+ * (the original behavior, before per-rep cadence existed).
+ */
+function repHasPracticeToday_(rep, weekday) {
+  var practiceDays = DAILY_PRACTICE_CONFIG.PRACTICE_DAYS[rep];
+  if (!practiceDays) return true;
+  return practiceDays.indexOf(weekday) !== -1;
+}
+
+/**
  * Daily assignment pass — for each rep, on a training-cycle weekday (Wed-Tue,
- * skips weekends), sends that day's objection-drill assignment: the specific
- * objections stored from their last training call (Phase 6's
- * TRAINING_OBJECTIONS_<rep> property) plus the delivery folder link. Falls
- * back to a generic "record something" nudge if no training has landed yet
- * for that rep (e.g. before their first Tuesday session).
+ * skips weekends) that's also one of THEIR OWN practice days
+ * (DAILY_PRACTICE_CONFIG.PRACTICE_DAYS, per-rep cadence added 01/09/2026),
+ * sends that day's objection-drill assignment: the specific objections
+ * stored from their last training call (Phase 6's TRAINING_OBJECTIONS_<rep>
+ * property) plus the delivery folder link. Falls back to a generic "record
+ * something" nudge if no training has landed yet for that rep (e.g. before
+ * their first Tuesday session).
  */
 function sendDailyPracticeReminders_() {
   RUN_TAG = 'sendDailyPracticeReminders_';
@@ -541,10 +569,16 @@ function sendDailyPracticeReminders_() {
     ' (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
   var namingLineHtml = 'Name the file starting with today\'s date, <b>' + dateStr +
     '</b> (e.g. "' + dateStr + '_objection_practice.mp4") — Zoom\'s own auto-recording name does not count, rename it.';
+  var todayWeekday = Utilities.formatDate(now, tz, 'EEEE');
 
   Object.keys(DAILY_PRACTICE_CONFIG.FOLDERS).forEach(function (rep) {
     var repCfg = CONFIG.REPS.filter(function (r) { return r.name === rep; })[0];
     if (!repCfg) { log_('No CONFIG.REPS entry for "' + rep + '" — skipping assignment.'); return; }
+
+    if (!repHasPracticeToday_(rep, todayWeekday)) {
+      log_('[' + rep + '] Not one of their practice days (' + todayWeekday + ') — skipping assignment.');
+      return;
+    }
 
     var folderId = DAILY_PRACTICE_CONFIG.FOLDERS[rep];
     var folderLink = 'https://drive.google.com/drive/folders/' + folderId;
