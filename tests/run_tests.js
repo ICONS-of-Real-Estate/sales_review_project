@@ -704,6 +704,59 @@ test('buildWeeklyScorecardEmail_ clearly flags a manual-review call instead of l
   assert.match(email.htmlBody, /no transcript on file/);
 });
 
+// --- Task: Weekly Training Summary docs (01/09/2026) ---
+// Kris's real complaint: Tomás had nothing but a week-old Training Call Plan
+// doc to walk into a Tuesday session with, because the Weekly Scorecard
+// review of the week's real sales calls only ever existed as an email, never
+// a persisted, shareable, nicely-formatted doc the way Training Call Plan is.
+
+test('findQuoteRanges_ finds every "..." quoted excerpt as inclusive-end character offsets, matching DocumentApp.Text.setItalic\'s own convention', () => {
+  const text = 'He said "not interested at this point," then later "I have been severely burned in the past."';
+  const ranges = gas.findQuoteRanges_(text);
+  assert.equal(ranges.length, 2);
+  assert.equal(text.slice(ranges[0].start, ranges[0].end + 1), '"not interested at this point,"');
+  assert.equal(text.slice(ranges[1].start, ranges[1].end + 1), '"I have been severely burned in the past."');
+
+  assert.equal(gas.findQuoteRanges_('no quotes here at all').length, 0);
+  assert.equal(gas.findQuoteRanges_('').length, 0);
+});
+
+test('buildWeeklyTrainingSummaryContent_ carries the manual-review flag and transcript link through, same as buildWeeklyScorecardEmail_\'s own stats', () => {
+  const stats = {
+    weekCalls: [{ name: 'April Stephens', score: 1 }, { name: 'Dave Gove', score: 4 }],
+    weeklyAvg: 2.5, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    rolling4WeekAvg: 3, rolling4WeekCount: 5,
+    worstCall: {
+      name: 'April Stephens', score: 1,
+      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]" repeated for the entire call.',
+      transcriptUrl: 'https://docs.google.com/document/d/abc/edit',
+      manualReviewRecommended: true
+    },
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 2
+  };
+  const content = gas.buildWeeklyTrainingSummaryContent_('Joana', stats, '24/08–30/08/2026');
+  assert.equal(content.repName, 'Joana');
+  assert.equal(content.hasCalls, true);
+  assert.equal(content.worstCall.name, 'April Stephens');
+  assert.equal(content.worstCall.manualReviewRecommended, true);
+  assert.equal(content.worstCall.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
+  assert.equal(content.weekCalls.length, 2);
+  assert.equal(content.weekMissingOutcomeDisposition, 2);
+  assert.ok(content.priority, 'expected a priority string, even a fallback one');
+});
+
+test('buildWeeklyTrainingSummaryContent_ handles no calls this week and no worst call gracefully, without throwing', () => {
+  const stats = {
+    weekCalls: [], weeklyAvg: null, historicAvg: null, historicAvgBeforeThisWeek: null, historicCount: 0,
+    rolling4WeekAvg: null, rolling4WeekCount: 0, worstCall: null,
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0
+  };
+  const content = gas.buildWeeklyTrainingSummaryContent_('Sean', stats, '24/08–30/08/2026');
+  assert.equal(content.hasCalls, false);
+  assert.equal(content.worstCall, null);
+  assert.equal(content.trendVsPrior, null);
+});
+
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {
   const stats = {
     weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 2 }],

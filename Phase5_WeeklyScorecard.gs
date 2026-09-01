@@ -585,3 +585,276 @@ function installWeeklyScorecardTrigger() {
   log_('Weekly scorecard trigger installed: Mondays ' + WEEKLY_SCORECARD_CONFIG.TRIGGER_HOUR +
     ':00 (' + CONFIG.BUSINESS_TIMEZONE + ').');
 }
+
+// ---------------------------------------------------------------------------
+// Weekly Training Summary docs — Kris's ask (01/09/2026), after having to
+// hand-build three formatted Google Docs at the last minute because Tomás
+// had nothing but last week's (already one-cycle-behind) Training Call Plan
+// docs to walk into a Tuesday session with. The Weekly Scorecard EMAIL above
+// already reviews the week's real sales calls and rates them — this persists
+// that same review as a properly formatted Doc (bold/color, same as the
+// email's htmlBody, not a plain-text dump) and shares + emails it to Tomás
+// automatically, every Tuesday morning, well before the session.
+// ---------------------------------------------------------------------------
+
+var WEEKLY_TRAINING_SUMMARY_CONFIG = {
+  // Same confirm-before-trusting-new-automation pattern as every other phase
+  // — run previewWeeklyTrainingSummaries() and check the log before flipping
+  // this true. Nothing is created/shared/sent while false.
+  ENABLED: false,
+  TRIGGER_HOUR: 8, // 8am — Tomás's own time, so it's ready well before the Tuesday session.
+  TIMEZONE: 'Europe/Lisbon' // Tomás is in Portugal.
+};
+
+/**
+ * Every "..." quoted excerpt in text, as {start, end} character offsets —
+ * end is inclusive, matching DocumentApp.Text.setItalic(start, end, true)'s
+ * own inclusive-end convention. Pure and testable on its own, separate from
+ * italicizeQuotesInDocParagraph_ below (which actually calls DocumentApp).
+ */
+function findQuoteRanges_(text) {
+  var ranges = [];
+  var re = /"([^"]+)"/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    ranges.push({ start: m.index, end: m.index + m[0].length - 1 });
+  }
+  return ranges;
+}
+
+/** Applies findQuoteRanges_'s ranges as italic runs on a real DocumentApp paragraph. */
+function italicizeQuotesInDocParagraph_(paragraph, text) {
+  if (!text) return;
+  var textElem = paragraph.editAsText();
+  findQuoteRanges_(text).forEach(function (r) {
+    textElem.setItalic(r.start, r.end, true);
+  });
+}
+
+/**
+ * Pure content builder — testable without DocumentApp, same "build the data,
+ * render it separately" split already used for every *Email_ builder in this
+ * file. Shaped for renderWeeklyTrainingSummaryDoc_ below; carries the exact
+ * same underlying stats as buildWeeklyScorecardEmail_ so the doc and the
+ * email can never quietly drift apart on the numbers.
+ */
+function buildWeeklyTrainingSummaryContent_(repName, stats, weekLabel) {
+  var worstCall = stats.worstCall;
+  var trendVsPrior = (stats.weeklyAvg !== null && stats.historicAvgBeforeThisWeek !== null)
+    ? stats.weeklyAvg - stats.historicAvgBeforeThisWeek
+    : null;
+  return {
+    repName: repName,
+    weekLabel: weekLabel,
+    hasCalls: stats.weekCalls.length > 0,
+    worstCall: worstCall ? {
+      name: worstCall.name,
+      score: worstCall.score,
+      feedbackSummary: worstCall.feedbackSummary || '',
+      transcriptUrl: worstCall.transcriptUrl || '',
+      manualReviewRecommended: !!worstCall.manualReviewRecommended
+    } : null,
+    priority: priorityToImprove_(stats),
+    weekCalls: stats.weekCalls.map(function (c) { return { name: c.name, score: c.score }; }),
+    weeklyAvg: stats.weeklyAvg,
+    trendVsPrior: trendVsPrior,
+    rolling4WeekAvg: stats.rolling4WeekAvg,
+    rolling4WeekCount: stats.rolling4WeekCount,
+    historicAvg: stats.historicAvg,
+    historicCount: stats.historicCount,
+    weekMissingOutcomeDisposition: stats.weekMissingOutcomeDisposition
+  };
+}
+
+/**
+ * Walks DocumentApp to actually build the doc from buildWeeklyTrainingSummaryContent_'s
+ * output — same visual language as buildWeeklyScorecardEmail_'s htmlBody (bold section
+ * labels, a colored callout for a manual-review-flagged worst call, a scored-calls table,
+ * italicized quoted transcript excerpts) but via DocumentApp's rich-text API instead of
+ * HTML, since this is a persisted Doc, not an email. Not unit tested (DocumentApp itself
+ * isn't stubbed anywhere in this codebase — see the untested playbook-doc builders in
+ * Phase1_ComplianceCheck.gs for the same convention); previewWeeklyTrainingSummaries()
+ * is the real check before this goes live.
+ */
+function renderWeeklyTrainingSummaryDoc_(doc, content) {
+  var body = doc.getBody();
+  body.appendParagraph(content.repName + ' — Weekly Training Summary').setHeading(DocumentApp.ParagraphHeading.TITLE);
+  body.appendParagraph('Week of ' + content.weekLabel + ' — for Tomás, Tuesday review call').setItalic(true);
+
+  if (!content.hasCalls) {
+    body.appendParagraph('No calls were scored this week.');
+    return;
+  }
+
+  if (content.worstCall) {
+    var wc = content.worstCall;
+    body.appendParagraph('Worst call this week — ' + wc.name + ' (' + wc.score + '/5)')
+      .setHeading(DocumentApp.ParagraphHeading.HEADING2);
+
+    if (wc.manualReviewRecommended) {
+      var flagPara = body.appendParagraph('⚠️ Flagged for manual review — do NOT hold this against ' +
+        content.repName + '. The AI could not reliably grade this call (see the notes below for why, e.g. a ' +
+        'blank/failed recording).');
+      flagPara.setBackgroundColor('#fff4e5');
+      flagPara.editAsText().setForegroundColor('#7a5b00').setBold(true);
+    }
+
+    var feedbackPara = body.appendParagraph(wc.feedbackSummary);
+    italicizeQuotesInDocParagraph_(feedbackPara, wc.feedbackSummary);
+
+    var transcriptText = 'Transcript: ' + (wc.transcriptUrl || '(no transcript on file)');
+    var transcriptPara = body.appendParagraph(transcriptText);
+    if (wc.transcriptUrl) {
+      transcriptPara.editAsText().setLinkUrl('Transcript: '.length, transcriptText.length - 1, wc.transcriptUrl);
+    }
+  } else {
+    body.appendParagraph('No individual call feedback available this week.');
+  }
+
+  body.appendParagraph('One thing to work on this week').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  var priorityText = content.priority || 'Not enough scored calls this week to identify a pattern.';
+  var priorityPara = body.appendParagraph(priorityText);
+  priorityPara.setBackgroundColor('#e6f4ea');
+  priorityPara.editAsText().setForegroundColor('#0b8043').setBold(true);
+
+  body.appendParagraph('For the record').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  var tableRows = [['Prospect', 'Score']].concat(
+    content.weekCalls.map(function (c) { return [c.name, c.score + '/5']; }));
+  var table = body.appendTable(tableRows);
+  var headerRow = table.getRow(0);
+  headerRow.editAsText().setBold(true).setForegroundColor('#ffffff');
+  for (var col = 0; col < headerRow.getNumCells(); col++) headerRow.getCell(col).setBackgroundColor('#1a4d8f');
+  content.weekCalls.forEach(function (c, i) {
+    var scoreCell = table.getRow(i + 1).getCell(1);
+    if (c.score <= 2) scoreCell.editAsText().setForegroundColor('#c0392b').setBold(true);
+    else if (c.score >= 5) scoreCell.editAsText().setForegroundColor('#0b8043').setBold(true);
+  });
+
+  var trendText = content.trendVsPrior !== null
+    ? ' (' + (content.trendVsPrior >= 0 ? '▲ +' : '▼ ') + content.trendVsPrior.toFixed(1) + ' vs prior average)'
+    : '';
+  body.appendParagraph(
+    content.weekCalls.length + ' call(s) scored, average ' + content.weeklyAvg.toFixed(1) + '/5' + trendText + '   |   ' +
+    'Rolling 4-week average: ' + (content.rolling4WeekAvg !== null
+      ? content.rolling4WeekAvg.toFixed(1) + '/5 across ' + content.rolling4WeekCount + ' call(s)'
+      : 'not enough data yet') + '   |   ' +
+    'All-time average: ' + (content.historicAvg !== null
+      ? content.historicAvg.toFixed(1) + '/5 across ' + content.historicCount + ' call(s)'
+      : 'not enough data yet'));
+
+  if (content.weekMissingOutcomeDisposition) {
+    var outcomePara = body.appendParagraph(content.weekMissingOutcomeDisposition +
+      ' of this week\'s call(s) still need an Outcome Disposition logged on the Sales Call Log.');
+    outcomePara.setBackgroundColor('#fce8e6');
+    outcomePara.editAsText().setForegroundColor('#c0392b');
+  }
+}
+
+/** Shared by preview and live paths so they can never drift apart, same pattern as buildAndMaybeSendScorecards_. */
+function buildAndSendWeeklyTrainingSummaries_(dryRun) {
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var week = getWeekBounds_(new Date(), tz);
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
+  var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var weekLabel = Utilities.formatDate(week.start, tz, 'dd/MM') + '–' +
+    Utilities.formatDate(new Date(week.end.getTime() - 1), tz, 'dd/MM/yyyy');
+
+  var links = [];
+  CONFIG.REPS.forEach(function (repCfg) {
+    var stats = computeRepWeeklyStats_(rows, col, repCfg.name, week.start, week.end, tz);
+    var content = buildWeeklyTrainingSummaryContent_(repCfg.name, stats, weekLabel);
+    var docTitle = repCfg.name + ' — Weekly Training Summary (' + weekLabel + ')';
+
+    if (dryRun) {
+      log_('(preview) Would create + share "' + docTitle + '" with Tomás — ' +
+        (content.hasCalls
+          ? content.weekCalls.length + ' call(s), worst: ' + (content.worstCall ? content.worstCall.name +
+            ' (' + content.worstCall.score + '/5)' : 'n/a')
+          : 'no calls scored this week'));
+      return;
+    }
+
+    var doc = DocumentApp.create(docTitle);
+    renderWeeklyTrainingSummaryDoc_(doc, content);
+    doc.saveAndClose();
+    // Kris's ask (01/09/2026): "make sure the documents are OPEN for Thomas"
+    // — explicit share, not just relying on him being CC'd on the email below.
+    var file = DriveApp.getFileById(doc.getId());
+    file.addCommenter(CONFIG.TOMAS_EMAIL);
+    links.push({ rep: repCfg.name, url: 'https://docs.google.com/document/d/' + doc.getId() + '/edit' });
+  });
+
+  if (dryRun) return;
+  if (!links.length) { log_('No weekly training summary docs created (no data rows for any rep this week).'); return; }
+
+  var subject = "This week's Training Summaries — ready for today's session";
+  var lines = links.map(function (l) { return l.rep + ': ' + l.url; }).join('\n');
+  var body = 'Hi Tomás,\n\n' +
+    "This week's training summaries are ready — reviews + priorities from every real sales call scored " +
+    'this week, one doc per rep:\n\n' + lines +
+    '\n\n— Automated weekly report. Reply to Kris with any issues.';
+  var sent = guardedSend_(CONFIG.TOMAS_EMAIL, subject, body, { cc: CONFIG.KRIS_EMAIL, name: 'Weekly Training Summary Bot' }, 2);
+  log_((sent ? 'Sent' : 'SEND FAILED/SKIPPED for') + ' weekly training summary doc links to Tomás (' +
+    links.length + ' rep doc(s) created' + (sent ? '' : ' but not emailed') + ').');
+}
+
+/** Run this FIRST from the editor. Logs what would be created/shared/sent — creates nothing, sends nothing. */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewWeeklyTrainingSummaries() {
+  return previewWeeklyTrainingSummaries_();
+}
+
+function previewWeeklyTrainingSummaries_() {
+  RUN_TAG = 'previewWeeklyTrainingSummaries_';
+  log_('PREVIEW MODE — building this week\'s training summary docs, nothing will be created/shared/sent.');
+  buildAndSendWeeklyTrainingSummaries_(/*dryRun=*/true);
+}
+
+/** Trigger target. Gated by WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED as a second safety net. */
+function runWeeklyTrainingSummaries() {
+  RUN_TAG = 'runWeeklyTrainingSummaries';
+  if (!WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED) {
+    log_('WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED is false — skipping (run previewWeeklyTrainingSummaries() instead).');
+    return;
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runWeeklyTrainingSummaries: another run holds the lock, skipping this firing.');
+    return;
+  }
+  try {
+    buildAndSendWeeklyTrainingSummaries_(/*dryRun=*/false);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * NOTE (01/09/2026): Apps Script projects cap out at 20 installable triggers
+ * total (see listAllTriggers() in Phase2_CallScoring.gs) — check that before
+ * running this. Tuesday 8am Europe/Lisbon is deliberately BEFORE
+ * TOMAS_TRANSCRIPT_REMINDER_CONFIG's own Tuesday-midday-Lisbon reminder
+ * (Phase6_TrainingCallReview.gs), so the summary docs are already in his
+ * inbox before that later nudge about uploading the recording.
+ */
+function installWeeklyTrainingSummaryTrigger() {
+  RUN_TAG = 'installWeeklyTrainingSummaryTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runWeeklyTrainingSummaries') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runWeeklyTrainingSummaries')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .atHour(WEEKLY_TRAINING_SUMMARY_CONFIG.TRIGGER_HOUR)
+    .inTimezone(WEEKLY_TRAINING_SUMMARY_CONFIG.TIMEZONE)
+    .create();
+  log_('Weekly training summary trigger installed: Tuesdays ' + WEEKLY_TRAINING_SUMMARY_CONFIG.TRIGGER_HOUR +
+    ':00 (' + WEEKLY_TRAINING_SUMMARY_CONFIG.TIMEZONE + ').');
+}
