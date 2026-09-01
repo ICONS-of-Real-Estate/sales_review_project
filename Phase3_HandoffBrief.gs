@@ -331,6 +331,159 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Prospect social/website link lookup — Kris's ask (01/09/2026): the model
+// only ever reports links the LEAD said verbatim on the call (by design —
+// buildHandoffBriefSystemPrompt_'s "never guess, infer, or construct a URL"),
+// which is why "Not mentioned on this call" was the common case. This adds a
+// real web search on top of that, clearly labeled as unconfirmed rather than
+// blended into what the model grounded in the transcript, using the Google
+// Programmable Search Engine Kris already set up.
+//
+// SETUP (one-time, in the Apps Script editor — NOT in this repo):
+//   Project Settings -> Script Properties -> Add:
+//     GOOGLE_CSE_API_KEY = the API key from Google Cloud Console -> Credentials
+//     GOOGLE_CSE_ID      = the Search Engine ID (cx) from the Programmable
+//                          Search Engine control panel
+//   Same "Script Properties are runtime storage, clasp push doesn't touch
+//   them" note as GHL_API_KEY/GHL_LOCATION_ID in Phase9_GhlSync.gs.
+//
+// Same "preview before enabling" discipline as every other phase in this
+// codebase (CLAUDE.md) — run previewProspectLinksLookup() against a few real
+// names and judge match quality before flipping
+// PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED.
+// ---------------------------------------------------------------------------
+
+var PROSPECT_LINKS_LOOKUP_CONFIG = {
+  ENABLED: false,
+  API_KEY_PROPERTY: 'GOOGLE_CSE_API_KEY',
+  CX_PROPERTY: 'GOOGLE_CSE_ID',
+  MAX_RESULTS: 5
+};
+
+/** Raw GET against the Google Custom Search JSON API. Same best-effort/
+ * self-diagnosing shape as ghlApiGet_ (Phase9_GhlSync.gs) — never throws,
+ * callers check status/json themselves. */
+function googleCseSearch_(query) {
+  var apiKey = getScriptSecret_(PROSPECT_LINKS_LOOKUP_CONFIG.API_KEY_PROPERTY);
+  var cx = getScriptSecret_(PROSPECT_LINKS_LOOKUP_CONFIG.CX_PROPERTY);
+  var url = 'https://www.googleapis.com/customsearch/v1?key=' + encodeURIComponent(apiKey) +
+    '&cx=' + encodeURIComponent(cx) + '&num=' + PROSPECT_LINKS_LOOKUP_CONFIG.MAX_RESULTS +
+    '&q=' + encodeURIComponent(query);
+  var resp = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  var status = resp.getResponseCode();
+  var body = resp.getContentText();
+  var json = null;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    // leave json null — caller logs the raw body when the response isn't JSON
+  }
+  return { status: status, json: json, body: body };
+}
+
+/** Pulls {title, link, snippet} out of a raw CSE response — [] on anything not shaped as expected
+ * (a quota error, a malformed response) rather than throwing. */
+function parseCseResults_(json) {
+  if (!json || !Array.isArray(json.items)) return [];
+  return json.items
+    .map(function (item) {
+      return { title: item.title || '', link: item.link || '', snippet: item.snippet || '' };
+    })
+    .filter(function (r) { return r.link; });
+}
+
+/**
+ * True only if the result's title/snippet actually shares a real name token
+ * (>= 3 letters, so short filler can't count) with the prospect's name —
+ * same defensive filter, for the same reason, as contactNameLooksLikeQuery_
+ * (Phase9_GhlSync.gs): a search engine returning something with zero
+ * relation to the name queried must read as "no match," never a false
+ * confident one. Reuses normalizeNameTokens_ (also Phase9_GhlSync.gs).
+ */
+function cseResultLooksLikeProspect_(result, prospectName) {
+  var nameTokens = normalizeNameTokens_(prospectName);
+  var resultTokens = normalizeNameTokens_((result.title || '') + ' ' + (result.snippet || ''));
+  if (!nameTokens.length || !resultTokens.length) return false;
+  return nameTokens.some(function (t) {
+    return t.length >= 3 && resultTokens.indexOf(t) !== -1;
+  });
+}
+
+/**
+ * Searches for the prospect's own website/LinkedIn/social presence and
+ * returns only the links that plausibly belong to them. Never throws — a
+ * lookup failure (missing credentials, quota, network) degrades to "found
+ * nothing," never blocks brief generation over a link that was always a
+ * nice-to-have, not the point of the email.
+ */
+function findProspectSocialLinks_(prospectName) {
+  try {
+    var res = googleCseSearch_('"' + prospectName + '" LinkedIn OR website OR real estate agent');
+    if (res.status !== 200) {
+      log_('  findProspectSocialLinks_: CSE lookup failed for "' + prospectName + '" — status ' +
+        res.status + '. ' + String(res.body).slice(0, 300));
+      return [];
+    }
+    return parseCseResults_(res.json)
+      .filter(function (r) { return cseResultLooksLikeProspect_(r, prospectName); })
+      .map(function (r) { return r.link; });
+  } catch (e) {
+    log_('  findProspectSocialLinks_ threw for "' + prospectName + '": ' + e);
+    return [];
+  }
+}
+
+/**
+ * Appends web-found links to brief.prospect_links, clearly labeled as
+ * unconfirmed — never blended into or presented as something the lead
+ * actually said, preserving buildHandoffBriefSystemPrompt_'s "never guess,
+ * infer, or construct a URL" guarantee for the model's own half of this
+ * field. Gated by PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED; a no-op (returns the
+ * brief unchanged) while false — same "log/preview before it can touch a
+ * real send" discipline as HANDOFF_CONFIG itself.
+ */
+function enrichProspectLinksWithWebSearch_(brief, prospectName) {
+  if (!PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED) return brief;
+  var found = findProspectSocialLinks_(prospectName);
+  if (!found.length) return brief;
+  var suffix = 'Found via web search, unconfirmed — verify before use:\n' + found.join('\n');
+  brief.prospect_links = (brief.prospect_links && brief.prospect_links !== 'Not mentioned on this call')
+    ? brief.prospect_links + '\n\n' + suffix
+    : suffix;
+  return brief;
+}
+
+/**
+ * Read-only: tests findProspectSocialLinks_ against a handful of real
+ * prospect names from the Sales Call Log so Kris/Tomás can judge match
+ * quality before flipping PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED. Calls the
+ * CSE API but writes nothing and sends nothing.
+ */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewProspectLinksLookup() {
+  return previewProspectLinksLookup_();
+}
+
+function previewProspectLinksLookup_() {
+  RUN_TAG = 'previewProspectLinksLookup_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
+  var sampleSize = Math.min(10, lastRow - 1);
+  var values = sheet.getRange(2, 1, sampleSize, SALES_CALL_LOG_HEADERS.length).getValues();
+  values.forEach(function (row) {
+    var name = row[col['Prospect Name'] - 1];
+    if (!name) return;
+    var links = findProspectSocialLinks_(name);
+    log_('  "' + name + '" → ' + (links.length ? links.join(', ') : '(no plausible match found)'));
+  });
+  log_('previewProspectLinksLookup_ done.');
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -458,6 +611,7 @@ function sendUpcomingHandoffBriefs_() {
             failed++;
             return;
           }
+          brief = enrichProspectLinksWithWebSearch_(brief, ev.prospectGuess);
 
           var emailCtx = {
             nextRepFirstName: String(repCfg.name).split(' ')[0],

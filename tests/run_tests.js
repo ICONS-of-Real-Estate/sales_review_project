@@ -3531,6 +3531,126 @@ test('buildHandoffBriefEmailHtml_ does not linkify a plain "Not mentioned on thi
   assert.ok(html.indexOf('Not mentioned on this call') !== -1);
 });
 
+// --- Task: prospect social/website link lookup via Google CSE (01/09/2026) ---
+// Kris's ask: the model only ever reports a link the lead said verbatim on
+// the call, so "Not mentioned on this call" was the common case — find real
+// social/website links via a web search instead, clearly labeled unconfirmed.
+
+test('parseCseResults_ extracts {title, link, snippet} from a real CSE response shape, and returns [] for anything malformed', () => {
+  const real = {
+    items: [
+      { title: 'Jane Doe Realty', link: 'https://janedoerealty.com', snippet: 'Top agent in...' },
+      { title: 'Jane Doe | LinkedIn', link: 'https://linkedin.com/in/janedoe' } // no snippet key at all
+    ]
+  };
+  // Compare fields directly, not via assert.deepEqual — parsed[0] is a plain
+  // object built by object-literal syntax executing inside the vm sandbox,
+  // so it fails deepEqual's cross-realm prototype-identity check against a
+  // literal built in this file (same pattern noted throughout this suite,
+  // e.g. the repOwnEmails_ tests above).
+  const parsed = gas.parseCseResults_(real);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].title, 'Jane Doe Realty');
+  assert.equal(parsed[0].link, 'https://janedoerealty.com');
+  assert.equal(parsed[0].snippet, 'Top agent in...');
+  assert.equal(parsed[1].snippet, '', 'a missing snippet key must default to empty string, not throw');
+
+  assert.equal(gas.parseCseResults_(null).length, 0);
+  assert.equal(gas.parseCseResults_({}).length, 0, 'no items array at all (e.g. a quota-error response) must not throw');
+  assert.equal(gas.parseCseResults_({ items: 'not-an-array' }).length, 0);
+  assert.equal(gas.parseCseResults_({ items: [{ title: 'no link here' }] }).length, 0,
+    'a result with no link is useless and must be filtered out');
+});
+
+test('cseResultLooksLikeProspect_ only accepts a result that actually shares a real name token with the prospect', () => {
+  const match = { title: 'Jane Doe Realty | Homes for Sale', snippet: 'Jane Doe has sold...' };
+  assert.equal(gas.cseResultLooksLikeProspect_(match, 'Jane Doe'), true);
+
+  const unrelated = { title: 'Best Pizza in Austin', snippet: 'Top 10 pizza joints' };
+  assert.equal(gas.cseResultLooksLikeProspect_(unrelated, 'Jane Doe'), false,
+    'a search engine returning something with zero relation to the queried name must read as no-match, same as contactNameLooksLikeQuery_ for GHL');
+
+  const partial = { title: 'Doe Family Reunion 2026', snippet: 'Join the Doe family...' };
+  assert.equal(gas.cseResultLooksLikeProspect_(partial, 'Jane Doe'), true,
+    'sharing just one real (>=3 letter) name token is enough, same threshold as the GHL contact matcher');
+});
+
+test('findProspectSocialLinks_ filters out non-matching results and returns only plausible links', () => {
+  const originalSearch = gas.googleCseSearch_;
+  try {
+    gas.googleCseSearch_ = (query) => ({
+      status: 200,
+      json: {
+        items: [
+          { title: 'Jane Doe Realty', link: 'https://janedoerealty.com', snippet: 'Jane Doe, agent' },
+          { title: 'Completely Unrelated Business', link: 'https://someotherbiz.com', snippet: 'nothing to do with her' }
+        ]
+      }
+    });
+    const links = gas.findProspectSocialLinks_('Jane Doe');
+    assert.deepEqual(links, ['https://janedoerealty.com']);
+  } finally {
+    gas.googleCseSearch_ = originalSearch;
+  }
+});
+
+test('findProspectSocialLinks_ degrades to an empty list, never throws, on a non-200 status or a thrown error', () => {
+  const originalSearch = gas.googleCseSearch_;
+  try {
+    gas.googleCseSearch_ = () => ({ status: 403, json: null, body: 'quota exceeded' });
+    // .length, not assert.deepEqual against [] — the empty array is a literal
+    // returned from inside the vm sandbox's own findProspectSocialLinks_ body,
+    // so it fails deepEqual's cross-realm prototype-identity check.
+    assert.equal(gas.findProspectSocialLinks_('Jane Doe').length, 0);
+
+    gas.googleCseSearch_ = () => { throw new Error('network error'); };
+    assert.equal(gas.findProspectSocialLinks_('Jane Doe').length, 0,
+      'a lookup failure (missing credentials, quota, network) must never block brief generation over a nice-to-have link');
+  } finally {
+    gas.googleCseSearch_ = originalSearch;
+  }
+});
+
+test('enrichProspectLinksWithWebSearch_ is a no-op while PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED is false', () => {
+  const original = gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED;
+  const originalFind = gas.findProspectSocialLinks_;
+  try {
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = false;
+    gas.findProspectSocialLinks_ = () => { throw new Error('must not be called while disabled'); };
+    const brief = { prospect_links: 'Not mentioned on this call' };
+    const result = gas.enrichProspectLinksWithWebSearch_(brief, 'Jane Doe');
+    assert.equal(result.prospect_links, 'Not mentioned on this call');
+  } finally {
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = original;
+    gas.findProspectSocialLinks_ = originalFind;
+  }
+});
+
+test('enrichProspectLinksWithWebSearch_ appends found links labeled unconfirmed, never blended into what the model reported the lead saying', () => {
+  const original = gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED;
+  const originalFind = gas.findProspectSocialLinks_;
+  try {
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = true;
+
+    gas.findProspectSocialLinks_ = () => ['https://janedoerealty.com'];
+    const notMentioned = gas.enrichProspectLinksWithWebSearch_({ prospect_links: 'Not mentioned on this call' }, 'Jane Doe');
+    assert.match(notMentioned.prospect_links, /unconfirmed/);
+    assert.match(notMentioned.prospect_links, /https:\/\/janedoerealty\.com/);
+
+    const alreadyHadOne = gas.enrichProspectLinksWithWebSearch_(
+      { prospect_links: 'https://acmerealty.com' }, 'Jane Doe');
+    assert.match(alreadyHadOne.prospect_links, /https:\/\/acmerealty\.com/, 'must keep what the model actually grounded in the transcript');
+    assert.match(alreadyHadOne.prospect_links, /unconfirmed/, 'and append the web-found link as a clearly separate, unconfirmed addition');
+
+    gas.findProspectSocialLinks_ = () => [];
+    const noneFound = gas.enrichProspectLinksWithWebSearch_({ prospect_links: 'Not mentioned on this call' }, 'Jane Doe');
+    assert.equal(noneFound.prospect_links, 'Not mentioned on this call', 'no plausible match found must leave the field untouched, not print an empty unconfirmed block');
+  } finally {
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = original;
+    gas.findProspectSocialLinks_ = originalFind;
+  }
+});
+
 test('guessCallTypeFromTitle_ falls back to "upcoming" (not "call") when no known call type keyword is in the title — fixed 29/08/2026, was "call", which combined with the subject template\'s trailing " call" produced "your call call in ~24 hrs"', () => {
   assert.equal(gas.guessCallTypeFromTitle_('Crystal Gargiulo / ICONS of Real Estate'), 'upcoming');
   assert.equal(gas.guessCallTypeFromTitle_('Podcast Qualification Call / Tom Wood'), 'QC');
