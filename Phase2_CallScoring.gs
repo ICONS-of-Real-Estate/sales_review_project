@@ -616,7 +616,10 @@ function buildJudgeSystemPrompt_() {
     '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
     '    words from the transcript for the single most important moment (a real line they actually said,',
     '    in quotation marks) before saying anything else — a specific moment lands, a bare evaluation does',
-    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name."',
+    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name. If',
+    '    this covers more than one distinct idea (the quoted moment, then a separate observation, then what',
+    '    to change), put each on its own line separated by a literal \\n — never chain them into one dense',
+    '    run-on paragraph."',
     '}'
   ].join('\n');
 }
@@ -1331,7 +1334,9 @@ function buildBensJudgeSystemPrompt_() {
     '   asked to book a next step, whether it got booked, discovery quality, and (for interviews) content quality.',
     '   MUST open by quoting his own words from the transcript for the single most important moment before',
     '   saying anything else. End with ONE specific behavior to change, not a list. Never compare him to any',
-    '   other rep by name."',
+    '   other rep by name. Put each distinct idea on its own line separated by a literal \\n (the quoted moment,',
+    '   then each separate observation, then the one behavior to change) — never chain them into one dense',
+    '   run-on paragraph."',
     '}'
   ].join('\n');
 }
@@ -1503,7 +1508,9 @@ function buildQcJudgeSystemPrompt_() {
     '  "severity": 1,',
     '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own words',
     '   from the transcript for the single most important moment before saying anything else. End with ONE',
-    '   specific behavior to change, not a list. Never compare this rep to any other rep by name."',
+    '   specific behavior to change, not a list. Never compare this rep to any other rep by name. Put each',
+    '   distinct idea on its own line separated by a literal \\n — never chain them into one dense run-on',
+    '   paragraph."',
     '}'
   ].join('\n');
 }
@@ -2241,7 +2248,10 @@ function buildSeanJudgeSystemPrompt_() {
     '   handling, whether he asked for the money, why a second call with Tomás was/wasn\'t booked, discovery',
     '   quality, goal-alignment, and the root cause if nothing closed. MUST open by quoting his own words',
     '   from the transcript for the single most important moment before saying anything else. End with ONE',
-    '   specific behavior to change, not a list. Never compare him to any other rep by name."',
+    '   specific behavior to change, not a list. Never compare him to any other rep by name. Put each distinct',
+    '   idea on its own line separated by a literal \\n (the quoted moment, then each separate observation,',
+    '   then the root cause, then the one behavior to change) — never chain them into one dense run-on',
+    '   paragraph."',
     '}'
   ].join('\n');
 }
@@ -3087,7 +3097,10 @@ function buildTomasJudgeSystemPrompt_() {
     '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
     '    words from the transcript for the single most important moment (a real line they actually said,',
     '    in quotation marks) before saying anything else — a specific moment lands, a bare evaluation does',
-    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name."',
+    '    not. Name ONE behavior to change, not a list. Never compare this rep to any other rep by name. If',
+    '    this covers more than one distinct idea (the quoted moment, then a separate observation, then what',
+    '    to change), put each on its own line separated by a literal \\n — never chain them into one dense',
+    '    run-on paragraph."',
     '}'
   ].join('\n');
 }

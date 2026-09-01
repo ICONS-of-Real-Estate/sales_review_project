@@ -189,7 +189,14 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
       weekCalls.push({
         name: row[col['Prospect Name'] - 1] || '(unnamed)',
         score: score,
-        feedbackSummary: String(row[col['AI Feedback Summary'] - 1] || '').trim()
+        feedbackSummary: String(row[col['AI Feedback Summary'] - 1] || '').trim(),
+        // Kris's ask (01/09/2026): the worst-call section had no link to the
+        // actual transcript, and a manual-review-flagged call (e.g. a
+        // [BLANK_AUDIO] recording failure) only ever surfaced as prose
+        // buried inside the AI's own feedback paragraph — easy to miss and
+        // confusing to read as if it were real coaching feedback.
+        transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim(),
+        manualReviewRecommended: row[col['Manual Review Recommended'] - 1] === true
       });
       // Real bug found live (26/08/2026 silent-failure audit): 'none' was
       // compared case-sensitively — a model-returned "None" (no enum
@@ -284,9 +291,23 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var subject = repCfg.name + ' — Your Weekly Call Scorecard — week of ' + weekLabel;
 
   var priority = priorityToImprove_(stats);
+  var worstCall = stats.worstCall;
+  // Kris's ask (01/09/2026): a manual-review-flagged call (e.g. a
+  // [BLANK_AUDIO] recording failure) used to only ever surface as prose
+  // buried inside the AI's own feedback paragraph — confusing to read as if
+  // it were real coaching feedback about something the rep actually did.
+  // Say it plainly, up front, instead.
+  var reviewFlagLine = worstCall && worstCall.manualReviewRecommended
+    ? '⚠️ Flagged for manual review — the AI could not reliably grade this call (see its own notes below for ' +
+      'why, e.g. a blank/failed recording). This should NOT be read as real coaching feedback until a human ' +
+      'has checked it.\n\n'
+    : '';
+  var transcriptLine = worstCall
+    ? 'Transcript: ' + (worstCall.transcriptUrl || '(no transcript on file)') + '\n\n'
+    : '';
 
-  var taskLevelSection = stats.worstCall && stats.worstCall.feedbackSummary
-    ? 'From ' + stats.worstCall.name + ' this week:\n' + stats.worstCall.feedbackSummary + '\n\n'
+  var taskLevelSection = worstCall && worstCall.feedbackSummary
+    ? 'From ' + worstCall.name + ' this week:\n' + reviewFlagLine + worstCall.feedbackSummary + '\n\n' + transcriptLine
     : (stats.weekCalls.length
       ? ''
       : 'No calls were scored this week.\n\n');
@@ -339,7 +360,67 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     '— This is an automated weekly report. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
 
-  return { subject: subject, body: body };
+  // Kris's ask (01/09/2026): this email had NO styled htmlBody at all —
+  // every other automated email in this codebase (Handoff Brief, Daily
+  // Practice Feedback, Compliance nudge, Random Calibration Digest) already
+  // got the bold-labels/bullet-list/italic-quote treatment; this one was
+  // still plain unstyled text, which is what made it read as "poorly
+  // formatted and confusing." escapeHtml_ (Phase4_InboxSLA.gs) guards every
+  // AI-generated/dynamic field since this is raw HTML, not Jinja.
+  var quotedFeedback = worstCall && worstCall.feedbackSummary
+    ? escapeHtml_(worstCall.feedbackSummary).replace(/\n/g, '<br>').replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>')
+    : '';
+  var taskLevelHtml = worstCall && worstCall.feedbackSummary
+    ? '<p><strong>From ' + escapeHtml_(worstCall.name) + ' this week:</strong></p>' +
+      (worstCall.manualReviewRecommended
+        ? '<p style="background:#fff4e5;border-left:4px solid #e0a200;padding:8px 12px;margin:0 0 8px 0;">' +
+          '⚠️ <strong>Flagged for manual review</strong> — the AI could not reliably grade this call (see its ' +
+          'own notes below for why, e.g. a blank/failed recording). This should NOT be read as real coaching ' +
+          'feedback until a human has checked it.</p>'
+        : '') +
+      '<p>' + quotedFeedback + '</p>' +
+      '<p>' + (worstCall.transcriptUrl
+        ? '<strong>Transcript:</strong> <a href="' + escapeHtml_(worstCall.transcriptUrl) + '">' +
+          escapeHtml_(worstCall.transcriptUrl) + '</a>'
+        : '<strong>Transcript:</strong> <i>(no transcript on file)</i>') + '</p>'
+    : (stats.weekCalls.length ? '' : '<p>No calls were scored this week.</p>');
+
+  var thisWeekHtml = stats.weekCalls.length
+    ? '<p>' + stats.weekCalls.length + ' call(s) scored, average <strong>' + stats.weeklyAvg.toFixed(1) + '/5</strong>' +
+      escapeHtml_(trendLine) + '</p>' +
+      '<ul style="margin:0 0 12px 0;padding-left:20px;">' +
+      stats.weekCalls.map(function (c) { return '<li>' + escapeHtml_(c.name) + ' — ' + c.score + '/5</li>'; }).join('') +
+      '</ul>'
+    : '';
+
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Hi ' + escapeHtml_(repCfg.name) + ',</p>' +
+    '<p>Weekly call scorecard for ' + escapeHtml_(weekLabel) + ':</p>' +
+    taskLevelHtml +
+    '<p><strong>One thing to work on this week:</strong> ' +
+    escapeHtml_(priority || 'Not enough scored calls this week to identify a pattern.') + '</p>' +
+    '<p>Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.</p>' +
+    '<p style="margin:16px 0 4px 0;"><strong style="color:#1a56db;">FOR THE RECORD</strong></p>' +
+    thisWeekHtml +
+    '<ul style="margin:0 0 12px 0;padding-left:20px;">' +
+    '<li><strong>Rolling 4-week average:</strong> ' + (stats.rolling4WeekAvg !== null
+      ? stats.rolling4WeekAvg.toFixed(1) + '/5 across ' + stats.rolling4WeekCount + ' call(s)'
+      : 'not enough data yet') + '</li>' +
+    '<li><strong>All-time average:</strong> ' + (stats.historicAvg !== null
+      ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
+      : 'not enough data yet') + '</li>' +
+    '</ul>' +
+    (stats.weekMissingOutcomeDisposition
+      ? '<p>' + stats.weekMissingOutcomeDisposition + ' of this week\'s call(s) still need an <strong>Outcome ' +
+        'Disposition</strong> (Sold/Not Sold/Follow-up/No-show) logged on the Sales Call Log — when you get a ' +
+        'chance.</p>'
+      : '') +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated weekly report. This email ' +
+    'was drafted by AI and sent automatically; reply to Kris or Tomás with any issues.</i></p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
 /** Shared by preview and live paths so they can never drift apart. forcePreview=true never sends, regardless of ENABLED. */
@@ -373,7 +454,8 @@ function buildAndMaybeSendScorecards_(forcePreview) {
     // the exact opposite: it CERTIFIED deliveries that didn't happen.
     var sent = guardedSend_(repCfg.email, email.subject, email.body, {
       cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL,
-      name: 'Weekly Call Scorecard Bot'
+      name: 'Weekly Call Scorecard Bot',
+      htmlBody: email.htmlBody
     }, 3); // rep + Kris + Tomás
     if (!sent) {
       log_('Weekly scorecard NOT sent to ' + repCfg.email + ' (guardedSend_ refused) -- no history row appended.');

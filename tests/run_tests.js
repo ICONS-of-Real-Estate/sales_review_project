@@ -468,11 +468,11 @@ test('mostFrequent_ picks the most common value, alphabetical tie-break for dete
 const SCORECARD_COL = {
   'Rep': 1, 'Prospect Name': 2, 'Call Date': 3, 'Call Quality Score': 4,
   'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7,
-  'AI Feedback Summary': 8, 'Outcome Disposition': 9
+  'AI Feedback Summary': 8, 'Outcome Disposition': 9, 'Transcript URL': 10, 'Manual Review Recommended': 11
 };
 
-function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary, outcomeDisposition }) {
-  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || ''];
+function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary, outcomeDisposition, transcriptUrl, manualReviewRecommended }) {
+  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || '', transcriptUrl || '', manualReviewRecommended === true];
 }
 
 // computeRepWeeklyStats_ now derives its rolling-4-week window via
@@ -549,6 +549,31 @@ test('computeRepWeeklyStats_ identifies the week\'s lowest-scoring call as worst
   assert.ok(stats.worstCall.feedbackSummary.indexOf('isolating') !== -1);
 });
 
+test('computeRepWeeklyStats_ carries transcriptUrl and manualReviewRecommended into each week call (Kris\'s ask 01/09/2026: no way to check the actual transcript, and a manual-review-flagged call read as if it were real coaching feedback)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const rows = [
+    scorecardRow(gas, {
+      rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4,
+      feedbackSummary: 'Fine call.', transcriptUrl: 'https://docs.google.com/document/d/abc/edit',
+      manualReviewRecommended: false
+    }),
+    scorecardRow(gas, {
+      rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 8, 12), score: 1,
+      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]".', transcriptUrl: 'https://docs.google.com/document/d/xyz/edit',
+      manualReviewRecommended: true
+    })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(stats.worstCall.name, 'B');
+  assert.equal(stats.worstCall.transcriptUrl, 'https://docs.google.com/document/d/xyz/edit');
+  assert.equal(stats.worstCall.manualReviewRecommended, true);
+  const callA = stats.weekCalls.filter((c) => c.name === 'A')[0];
+  assert.equal(callA.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
+  assert.equal(callA.manualReviewRecommended, false);
+});
+
 test('computeRepWeeklyStats_ counts this week\'s calls missing an Outcome Disposition', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const weekStart = bizDate(gas, 2026, 8, 10);
@@ -608,6 +633,75 @@ test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushe
   assert.ok(scoreIdx > forTheRecordIdx, 'score should appear after the "For the record" marker, not before it');
   assert.ok(email.body.indexOf('Outcome Disposition') > forTheRecordIdx,
     'the outcome-disposition nudge should be a data-hygiene note below the fold, not the lead coaching point');
+});
+
+test('buildWeeklyScorecardEmail_ now includes a styled htmlBody with bold labels and a bulleted "For the record" (Kris\'s ask 01/09/2026: this email had no htmlBody at all, unlike every other automated email in this codebase, which is why it read as "poorly formatted and confusing")', () => {
+  const stats = {
+    weekCalls: [{ name: 'Dave Gove', score: 4 }, { name: 'Jane Doe', score: 2 }],
+    weeklyAvg: 3,
+    historicAvg: 3,
+    historicAvgBeforeThisWeek: 3.2,
+    historicCount: 10,
+    rolling4WeekAvg: 2.8,
+    rolling4WeekCount: 6,
+    worstCall: {
+      name: 'Jane Doe', score: 2,
+      feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.',
+      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit',
+      manualReviewRecommended: false
+    },
+    weekFailureModes: ['objections_missed'],
+    weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
+    weekMissingOutcomeDisposition: 1
+  };
+  const repCfg = { name: 'Sean', email: 'sean@example.com' };
+  gas.Utilities = {
+    formatDate: (d, tz, fmt) => {
+      const pad = (n) => String(n).padStart(2, '0');
+      if (fmt === 'dd/MM') return pad(d.getDate()) + '/' + pad(d.getMonth() + 1);
+      return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+    }
+  };
+  const email = gas.buildWeeklyScorecardEmail_(repCfg, stats, new gas.Date(2026, 7, 10), new gas.Date(2026, 7, 17), 'UTC');
+
+  assert.ok(email.htmlBody, 'expected an htmlBody to be present');
+  assert.ok(email.htmlBody.indexOf('<i>&quot;I guess we could talk price&quot;</i>') !== -1,
+    'the worst call\'s quoted transcript excerpt must be italicized');
+  assert.ok(email.htmlBody.indexOf('<ul') !== -1 && email.htmlBody.indexOf('<li>') !== -1,
+    '"For the record" must render as a real bulleted list, not <br>-separated lines');
+  assert.ok(email.htmlBody.indexOf('<a href="https://docs.google.com/document/d/abc123/edit"') !== -1,
+    'the worst call\'s transcript must be a clickable link');
+  assert.ok(email.htmlBody.indexOf('Dave Gove') !== -1 && email.htmlBody.indexOf('Jane Doe') !== -1,
+    'every this-week call must be listed, not just the worst one');
+});
+
+test('buildWeeklyScorecardEmail_ clearly flags a manual-review call instead of letting it read as real coaching feedback (Kris\'s real complaint: a [BLANK_AUDIO] recording failure was buried in prose with no indication the AI couldn\'t actually grade it)', () => {
+  const stats = {
+    weekCalls: [{ name: 'April Stephens', score: 1 }],
+    weeklyAvg: 1, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    rolling4WeekAvg: 3, rolling4WeekCount: 5,
+    worstCall: {
+      name: 'April Stephens', score: 1,
+      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]" repeated for the entire call.',
+      transcriptUrl: '',
+      manualReviewRecommended: true
+    },
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0
+  };
+  const repCfg = { name: 'Joana', email: 'joana@example.com' };
+  gas.Utilities = {
+    formatDate: (d, tz, fmt) => {
+      const pad = (n) => String(n).padStart(2, '0');
+      if (fmt === 'dd/MM') return pad(d.getDate()) + '/' + pad(d.getMonth() + 1);
+      return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear();
+    }
+  };
+  const email = gas.buildWeeklyScorecardEmail_(repCfg, stats, new gas.Date(2026, 7, 24), new gas.Date(2026, 7, 31), 'UTC');
+
+  assert.match(email.body, /Flagged for manual review/, 'plain-text body must say clearly that the AI could not grade this, not bury it in the feedback prose');
+  assert.match(email.htmlBody, /Flagged for manual review/, 'htmlBody must say the same thing clearly');
+  assert.match(email.body, /no transcript on file/, 'a missing transcript must be stated plainly, not silently omitted');
+  assert.match(email.htmlBody, /no transcript on file/);
 });
 
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {
@@ -954,6 +1048,20 @@ test('QC/Discovery calls are not scored on framework explanation — that is the
   // call once the judge stopped returning that field.
   assert.equal(gas.computeQcAnalyticScore_(qcResultNoFramework), 5,
     'a QC result with no framework object must score a perfect 5, not be docked for a dimension it is not scored on');
+});
+
+test('every judge system prompt asks the model to \\n-separate distinct ideas within feedback_summary, not chain them into one dense paragraph (Kris\'s real complaint 31/08/2026 on Sean\'s weekly scorecard: a wall of text with no line breaks at all)', () => {
+  var prompts = [
+    gas.buildJudgeSystemPrompt_(),
+    gas.buildBensJudgeSystemPrompt_(),
+    gas.buildQcJudgeSystemPrompt_(),
+    gas.buildSeanJudgeSystemPrompt_(),
+    gas.buildTomasJudgeSystemPrompt_()
+  ];
+  prompts.forEach(function (p, i) {
+    assert.match(p, /separated by a literal \\n/,
+      'judge prompt #' + i + ' must instruct the model to \\n-separate multi-idea feedback_summary text');
+  });
 });
 
 // --- Task: analytic (deterministic) score shadow-mode rollup (25/08/2026) ---
