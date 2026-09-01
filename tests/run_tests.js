@@ -1885,6 +1885,14 @@ test('subjectLooksExcluded_ matches the full accented phrases now that they are 
   assert.equal(gas.subjectLooksExcluded_('Novo início de sessão detectado'), true);
 });
 
+test('subjectLooksExcluded_ excludes [Handoff Brief] threads — real complaint from Bens (31/08/2026): flagged "unanswered" for a briefing about someone ELSE\'s call he was only CC\'d on as the prior rep, which never asks for a reply, unlike the tracker/scorecard nags', () => {
+  assert.equal(gas.subjectLooksExcluded_('Joana — [Handoff Brief] Crystal Gargiulo — your call in ~24 hrs'), true);
+  assert.equal(gas.subjectLooksExcluded_('Re: Joana — [Handoff Brief] Crystal Gargiulo — your call in ~24 hrs'), true,
+    'a reply-prefixed subject on the same thread must still match');
+  // A tracker nudge DOES explicitly ask the rep to reply once done — must stay flagged, not get swept up by an over-broad fix.
+  assert.equal(gas.subjectLooksExcluded_('Bens — [Action needed] Update your sales tracker — Joey Lamielle (4 call(s) still outstanding)'), false);
+});
+
 test('escapeHtml_ neutralizes a raw "Name <addr>" From header and stray angle brackets (real bug: unescaped fromRaw/subject broke HTML rendering in the nudge email)', () => {
   assert.equal(gas.escapeHtml_('Margaret Chen <margaret@bhhsrealty.com>'), 'Margaret Chen &lt;margaret@bhhsrealty.com&gt;');
   assert.equal(gas.escapeHtml_('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');

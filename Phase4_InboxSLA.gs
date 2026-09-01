@@ -191,7 +191,17 @@ var INBOX_SLA_CONFIG = {
     'ingressou na sua Sala Pessoal de Reunião',
     'has joined your Personal Meeting Room',
     'Zoom sign-in',
-    'Novo início de sessão'
+    'Novo início de sessão',
+    // Real complaint from Bens (31/08/2026): flagged as "unanswered" for a
+    // [Handoff Brief] thread where he was only CC'd as the PRIOR rep on a
+    // briefing about someone ELSE's upcoming call (Phase3_HandoffBrief.gs) —
+    // it's FYI context for the next rep, never a request Bens himself needs
+    // to act on or reply to. Unlike the tracker/scorecard nags, which
+    // explicitly ask for a reply to confirm completion, this one never does
+    // — safe to exclude outright rather than trying to detect "CC'd, not
+    // To'd" (which would also need to hold for the next rep, who IS the
+    // "to" and still doesn't owe a reply to a briefing).
+    '[Handoff Brief]'
   ],
 
   // Business time, reusing CONFIG.BUSINESS_TIMEZONE (Phase1_ComplianceCheck.gs)
