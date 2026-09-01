@@ -3794,6 +3794,59 @@ test('buildDailyPracticeFeedbackEmail_ includes a styled htmlBody with bold labe
   assert.ok(email.htmlBody.indexOf('3/5') !== -1);
 });
 
+test('buildDailyPracticeFeedbackEmail_ italicizes quoted transcript excerpts and renders "For the record" as a real bulleted list (Kris\'s ask 31/08/2026)', () => {
+  const result = {
+    drill_type: 'objection',
+    objection_type: 'budget',
+    technique_used: true,
+    technique_description: 'Agreed with the premise, then deflected instead of isolating.',
+    delivery_quality: 'hesitant',
+    overall_score: 3,
+    sharpen_next: 'Isolate the objection before pivoting.',
+    feedback_summary: '"That\'s a very great question" — a genuinely well-done Agree step, but you skipped Isolate entirely.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Bens', '260820_objection_practice.mp4', result);
+
+  assert.ok(email.htmlBody.indexOf('<i>&quot;That\'s a very great question&quot;</i>') !== -1,
+    'the quoted transcript excerpt must be wrapped in <i>, not plain text');
+  assert.ok(email.htmlBody.indexOf('<ul') !== -1 && email.htmlBody.indexOf('<li>') !== -1,
+    '"For the record" must render as a real <ul>/<li> list, not <br>-separated lines');
+  assert.equal((email.htmlBody.match(/<li>/g) || []).length, 4,
+    'expected 4 bullets: focus line, technique used, delivery, score');
+});
+
+test('deliverDailyPracticeGrading_ CCs Kris and Tomás on every standalone feedback email, not just escalations (Kris\'s ask 01/09/2026 — a score-3 email had gone out to Bens with no CC at all)', () => {
+  const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com' };
+  const result = { overall_score: 3 }; // above ESCALATE_AT_OR_BELOW (2) — must still be CC'd
+  const email = { subject: 'Practice Drill Feedback — x', body: 'body text', htmlBody: '<p>body</p>' };
+
+  let captured = null;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalDocumentApp = gas.DocumentApp;
+  const originalDriveApp = gas.DriveApp;
+  gas.guardedSend_ = (to, subject, body, options, recipientsNeeded) => {
+    captured = { to, options, recipientsNeeded };
+    return true;
+  };
+  const fakeDoc = { getBody: () => ({ setText: () => {} }), saveAndClose: () => {}, getId: () => 'doc-id' };
+  gas.DocumentApp = { create: () => fakeDoc };
+  gas.DriveApp = { getFileById: () => ({ moveTo: () => {} }) };
+  try {
+    const delivered = gas.deliverDailyPracticeGrading_(
+      'Bens', repCfg, { name: () => 'folder' }, 'x.mp4', result, email,
+      /*escalate=*/false, /*dryRun=*/false, /*replyThreadId=*/null);
+    assert.equal(delivered, true);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+    gas.DocumentApp = originalDocumentApp;
+    gas.DriveApp = originalDriveApp;
+  }
+  assert.ok(captured, 'expected guardedSend_ to be called');
+  assert.ok(captured.options.cc.indexOf(gas.CONFIG.KRIS_EMAIL) !== -1, 'Kris must be CC\'d even without an escalation');
+  assert.ok(captured.options.cc.indexOf(gas.CONFIG.TOMAS_EMAIL) !== -1, 'Tomás must be CC\'d even without an escalation');
+  assert.equal(captured.recipientsNeeded, 3, 'quota check must count rep + 2 CCs, not just the rep');
+});
+
 test('salesCallLogRowLink_ builds a deep link to the exact Sales Call Log row', () => {
   const fakeSheet = { getSheetId: () => 987654321 };
   const link = gas.salesCallLogRowLink_(fakeSheet, 252);

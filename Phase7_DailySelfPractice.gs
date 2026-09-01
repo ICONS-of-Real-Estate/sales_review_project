@@ -182,7 +182,9 @@ function buildDailyPracticeSystemPrompt_() {
     '    open by quoting their own words from the transcript for the single most important moment (a real',
     '    line they actually said, in quotation marks) before saying anything else — task-level feedback',
     '    tied to a specific moment lands, a bare evaluation of the person does not. Never compare this rep',
-    '    to any other rep by name."',
+    '    to any other rep by name. If this covers more than one distinct idea (the quoted moment, then a',
+    '    separate observation, then what to change), put each on its own line separated by a literal \\n —',
+    '    never chain them into one dense run-on paragraph."',
     '}'
   ].join('\n');
 }
@@ -283,18 +285,29 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
   // treatment already given to the Handoff Brief and Weekly Scorecard
   // emails. escapeHtml_ (Phase4_InboxSLA.gs) guards every AI-generated/
   // dynamic field since this is raw HTML, not Jinja.
+  //
+  // Kris's follow-up ask (31/08/2026): italicize quoted transcript excerpts
+  // (a real line the rep actually said, in quotation marks — always present
+  // per feedback_summary's own schema requirement above) so they read as
+  // quotes rather than plain narration, and render "For the record" as a
+  // real bulleted list instead of <br>-separated lines.
+  var quoted = escapeHtml_(result.feedback_summary)
+    .replace(/\n/g, '<br>')
+    .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
   var htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
     '<p>Hi ' + escapeHtml_(rep) + ',</p>' +
     '<p>On today\'s practice drill (<i>"' + escapeHtml_(fileName) + '"</i>):</p>' +
-    '<p>' + escapeHtml_(result.feedback_summary).replace(/\n/g, '<br>') + '</p>' +
+    '<p>' + quoted + '</p>' +
     '<p><strong>One thing to sharpen next:</strong> ' + escapeHtml_(result.sharpen_next) + '</p>' +
     '<p style="margin:16px 0 4px 0;"><strong style="color:#1a56db;">FOR THE RECORD</strong></p>' +
-    '<p style="margin:0;">' + escapeHtml_(focusLine) + '<br>' +
-    '<strong>Technique used:</strong> ' + escapeHtml_(techniqueLine) + '<br>' +
-    '<strong>Delivery:</strong> ' + escapeHtml_(result.delivery_quality) + '<br>' +
-    '<strong>Score:</strong> <strong style="color:' + dailyPracticeScoreColor_(result.overall_score) + ';">' +
-    escapeHtml_(String(result.overall_score)) + '/5</strong></p>' +
+    '<ul style="margin:0;padding-left:20px;">' +
+    '<li>' + escapeHtml_(focusLine) + '</li>' +
+    '<li><strong>Technique used:</strong> ' + escapeHtml_(techniqueLine) + '</li>' +
+    '<li><strong>Delivery:</strong> ' + escapeHtml_(result.delivery_quality) + '</li>' +
+    '<li><strong>Score:</strong> <strong style="color:' + dailyPracticeScoreColor_(result.overall_score) + ';">' +
+    escapeHtml_(String(result.overall_score)) + '/5</strong></li>' +
+    '</ul>' +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated review of your practice ' +
     'drill. Drafted by AI; reply to Kris or Tomás with any issues.</i></p>' +
     '</div>';
@@ -371,8 +384,8 @@ function dailyPracticeAlreadyGraded_(folder, fileName) {
 function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId) {
   if (dryRun) {
     log_('(preview) ' + (replyThreadId ? 'reply-all on tracked thread ' + replyThreadId : repCfg.email) +
-      ' <- ' + email.subject +
-      (escalate ? ' [would CC Kris+Tomás — score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ']' : '') +
+      ' <- ' + email.subject + ' [CC Kris+Tomás]' +
+      (escalate ? ' [score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ' — escalation]' : '') +
       '\n' + email.body + '\n');
     return true;
   }
@@ -395,19 +408,23 @@ function deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, 
     }
   }
   if (!replyThreadId) {
-    var sendOptions = { name: 'Daily Practice Feedback Bot', htmlBody: email.htmlBody };
-    var recipientsNeeded = 1;
-    if (escalate) {
-      sendOptions.cc = CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL;
-      recipientsNeeded = 3;
-    }
+    // Kris's ask (01/09/2026): CC Kris/Tomás on every practice feedback
+    // email, not just escalations — same as the reply-all path above
+    // already does unconditionally. escalate no longer changes who's CC'd,
+    // only the log line below.
+    var sendOptions = {
+      name: 'Daily Practice Feedback Bot',
+      htmlBody: email.htmlBody,
+      cc: CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL
+    };
+    var recipientsNeeded = 3;
     sent = guardedSend_(repCfg.email, email.subject, email.body, sendOptions, recipientsNeeded);
     if (!sent) {
       log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5) but SEND FAILED/SKIPPED — feedback doc not written.');
       return false;
     }
-    log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5)' +
-      (escalate ? ' — escalated to Kris/Tomás.' : '.'));
+    log_('  [' + rep + '] Graded "' + name + '" (' + result.overall_score + '/5), CC\'d Kris/Tomás' +
+      (escalate ? ' (score <= ' + DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW + ' — escalation).' : '.'));
   }
 
   var doc = DocumentApp.create(dailyPracticeFeedbackDocName_(name));
