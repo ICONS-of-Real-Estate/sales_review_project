@@ -601,7 +601,10 @@ var WEEKLY_TRAINING_SUMMARY_CONFIG = {
   // Same confirm-before-trusting-new-automation pattern as every other phase
   // — run previewWeeklyTrainingSummaries() and check the log before flipping
   // this true. Nothing is created/shared/sent while false.
-  ENABLED: false,
+  // Flipped true 02/09/2026 after previewWeeklyTrainingSummaries_() ran
+  // clean (per-rep sharing + Tomás coaching feedback + week-number subjects
+  // all confirmed) and listAllTriggers() confirmed a free slot (19/20).
+  ENABLED: true,
   TRIGGER_HOUR: 8, // 8am — Tomás's own time, so it's ready well before the Tuesday session.
   TIMEZONE: 'Europe/Lisbon' // Tomás is in Portugal.
 };
