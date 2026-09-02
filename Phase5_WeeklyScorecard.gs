@@ -632,6 +632,24 @@ function italicizeQuotesInDocParagraph_(paragraph, text) {
 }
 
 /**
+ * Kris's ask (02/09/2026): email subjects should carry the week number, same
+ * as Phase 6's trainingCallPlanWeekLabel_ does for the Training Call Plan
+ * emails. This runs the same Tuesday morning as that training call, so it
+ * mirrors trainingCallPlanWeekLabel_'s own logic exactly: the Tuesday
+ * session kicks off the FOLLOWING week's cycle, so read the cycle label one
+ * day after `now` (landing on the Wednesday that starts that new week),
+ * rather than off the just-completed Mon–Sun window this summary reviews —
+ * which straddles two different cycle weeks and has no single right answer.
+ * Returns null (falls back to the raw date-range weekLabel) if the cycle
+ * can't be computed for that day (e.g. run manually on a weekend).
+ */
+function weeklyTrainingCycleWeekLabel_(now, tz) {
+  var nextDay = new Date(now.getTime() + 24 * 3600 * 1000);
+  var cycle = computeTrainingCycleLabel_(nextDay, tz);
+  return cycle ? 'Week ' + cycle.week : null;
+}
+
+/**
  * Pure content builder — testable without DocumentApp, same "build the data,
  * render it separately" split already used for every *Email_ builder in this
  * file. Shaped for renderWeeklyTrainingSummaryDoc_ below; carries the exact
@@ -753,7 +771,8 @@ function renderWeeklyTrainingSummaryDoc_(doc, content) {
 /** Shared by preview and live paths so they can never drift apart, same pattern as buildAndMaybeSendScorecards_. */
 function buildAndSendWeeklyTrainingSummaries_(dryRun) {
   var tz = CONFIG.BUSINESS_TIMEZONE;
-  var week = getWeekBounds_(new Date(), tz);
+  var now = new Date();
+  var week = getWeekBounds_(now, tz);
 
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
@@ -765,6 +784,8 @@ function buildAndSendWeeklyTrainingSummaries_(dryRun) {
 
   var weekLabel = Utilities.formatDate(week.start, tz, 'dd/MM') + '–' +
     Utilities.formatDate(new Date(week.end.getTime() - 1), tz, 'dd/MM/yyyy');
+  var cycleWeekLabel = weeklyTrainingCycleWeekLabel_(now, tz);
+  var subjectWeekPart = cycleWeekLabel ? cycleWeekLabel + ' — ' + weekLabel : weekLabel;
 
   var links = [];
   CONFIG.REPS.forEach(function (repCfg) {
@@ -773,7 +794,7 @@ function buildAndSendWeeklyTrainingSummaries_(dryRun) {
     var docTitle = repCfg.name + ' — Weekly Training Summary (' + weekLabel + ')';
 
     if (dryRun) {
-      log_('(preview) Would create + share "' + docTitle + '" with Tomás — ' +
+      log_('(preview) Would create + share "' + docTitle + '" with Tomás and ' + repCfg.email + ' — ' +
         (content.hasCalls
           ? content.weekCalls.length + ' call(s), worst: ' + (content.worstCall ? content.worstCall.name +
             ' (' + content.worstCall.score + '/5)' : 'n/a')
@@ -784,21 +805,33 @@ function buildAndSendWeeklyTrainingSummaries_(dryRun) {
     var doc = DocumentApp.create(docTitle);
     renderWeeklyTrainingSummaryDoc_(doc, content);
     doc.saveAndClose();
+    var docUrl = 'https://docs.google.com/document/d/' + doc.getId() + '/edit';
     // Kris's ask (01/09/2026): "make sure the documents are OPEN for Thomas"
     // — explicit share, not just relying on him being CC'd on the email below.
+    // Kris's ask (02/09/2026): the rep themselves needs to see their own
+    // training plan too, not just Tomás.
     var file = DriveApp.getFileById(doc.getId());
     file.addCommenter(CONFIG.TOMAS_EMAIL);
-    links.push({ rep: repCfg.name, url: 'https://docs.google.com/document/d/' + doc.getId() + '/edit' });
+    file.addCommenter(repCfg.email);
+    links.push({ rep: repCfg.name, email: repCfg.email, url: docUrl });
+
+    var repSubject = repCfg.name + ' — Your Weekly Training Summary — ' + subjectWeekPart;
+    var repBody = 'Hi ' + repCfg.name + ',\n\n' +
+      "This week's training summary is ready ahead of today's session with Tomás:\n\n" + docUrl +
+      '\n\n— Automated weekly report. Reply to Kris with any issues.';
+    var repSent = guardedSend_(repCfg.email, repSubject, repBody,
+      { cc: CONFIG.TOMAS_EMAIL + ',' + CONFIG.KRIS_EMAIL, name: 'Weekly Training Summary Bot' }, 3);
+    log_((repSent ? 'Sent' : 'SEND FAILED/SKIPPED for') + ' weekly training summary to ' + repCfg.name + '.');
   });
 
   if (dryRun) return;
   if (!links.length) { log_('No weekly training summary docs created (no data rows for any rep this week).'); return; }
 
-  var subject = "This week's Training Summaries — ready for today's session";
+  var subject = "This week's Training Summaries — " + subjectWeekPart + ' — ready for today\'s session';
   var lines = links.map(function (l) { return l.rep + ': ' + l.url; }).join('\n');
   var body = 'Hi Tomás,\n\n' +
     "This week's training summaries are ready — reviews + priorities from every real sales call scored " +
-    'this week, one doc per rep:\n\n' + lines +
+    'this week, one doc per rep (each rep has also received their own):\n\n' + lines +
     '\n\n— Automated weekly report. Reply to Kris with any issues.';
   var sent = guardedSend_(CONFIG.TOMAS_EMAIL, subject, body, { cc: CONFIG.KRIS_EMAIL, name: 'Weekly Training Summary Bot' }, 2);
   log_((sent ? 'Sent' : 'SEND FAILED/SKIPPED for') + ' weekly training summary doc links to Tomás (' +

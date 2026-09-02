@@ -757,6 +757,22 @@ test('buildWeeklyTrainingSummaryContent_ handles no calls this week and no worst
   assert.equal(content.trendVsPrior, null);
 });
 
+test('weeklyTrainingCycleWeekLabel_ reads the week the Tuesday training call kicks off (day after "now"), same as Phase 6\'s trainingCallPlanWeekLabel_', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Tue 25 Aug 2026, same date trainingCallPlanWeekLabel_'s own test uses — must agree: Week 2.
+  const now = gas.dateAtMidnightInBusinessTimezone_(2026, 8, 25);
+  assert.equal(gas.weeklyTrainingCycleWeekLabel_(now, tz), 'Week 2');
+});
+
+test('weeklyTrainingCycleWeekLabel_ returns null when the cycle can\'t be computed (e.g. run manually over a weekend)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  // Fri 28 Aug 2026 + 1 day = Saturday — no training-cycle day.
+  const now = gas.dateAtMidnightInBusinessTimezone_(2026, 8, 28);
+  assert.equal(gas.weeklyTrainingCycleWeekLabel_(now, tz), null);
+});
+
 test('priorityToImprove_ reports the week\'s most common Primary Failure Mode as a coaching line', () => {
   const stats = {
     weekCalls: [{ name: 'A', score: 4 }, { name: 'B', score: 2 }],
@@ -1665,7 +1681,12 @@ test('isValidTrainingReviewSchema_ accepts a clean call with zero objections dri
     team_notes: '',
     objections_to_drill: [],
     close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
-    framework_gaps_to_drill: []
+    framework_gaps_to_drill: [],
+    tomas_coaching: {
+      grounded_in_real_data: true,
+      gave_concrete_next_focus: true,
+      coaching_feedback_summary: 'Grounded in a real objection from this call.'
+    }
   };
   assert.equal(gas.isValidTrainingReviewSchema_(base), true);
 
@@ -1788,6 +1809,80 @@ test('buildTrainingReviewEmail_ subject carries the week number, not the raw cal
   };
   const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
   assert.equal(email.subject, 'Training Call Plan — Sean — Week 2');
+});
+
+// ---------------------------------------------------------------------------
+// Tomás's own coaching feedback (02/09/2026, per Kris: "shouldn't he receive
+// feedback on his training") — a separate email judged on facilitation
+// quality, not the rep's performance.
+// ---------------------------------------------------------------------------
+
+test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coaching', () => {
+  const base = {
+    attended: true, practiced_objections: false, practiced_close_ask: true, practiced_framework: true,
+    coaching_notes: 'Solid call.', next_focus: 'Keep it up.', team_notes: '',
+    objections_to_drill: [], close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
+    framework_gaps_to_drill: [],
+    tomas_coaching: {
+      grounded_in_real_data: true,
+      gave_concrete_next_focus: true,
+      coaching_feedback_summary: 'Grounded the session in a real objection from this week.'
+    }
+  };
+  assert.equal(gas.isValidTrainingReviewSchema_(base), true);
+
+  const missing = Object.assign({}, base);
+  delete missing.tomas_coaching;
+  assert.equal(gas.isValidTrainingReviewSchema_(missing), false, 'missing tomas_coaching must fail validation');
+
+  const malformed = Object.assign({}, base, {
+    tomas_coaching: { grounded_in_real_data: 'yes', gave_concrete_next_focus: true, coaching_feedback_summary: 'ok' }
+  });
+  assert.equal(gas.isValidTrainingReviewSchema_(malformed), false, 'non-boolean grounded_in_real_data must fail validation');
+});
+
+test('reviewTrainingCallTranscript_\'s parse-failure fallback carries a tomas_coaching stub, so buildTomasCoachingFeedbackEmail_ never sees an undefined field', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
+  gas.callKimiJudge_ = () => 'not json';
+  const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
+  assert.ok(result.tomas_coaching, 'fallback must include a tomas_coaching object');
+  assert.equal(result.tomas_coaching.grounded_in_real_data, false);
+  assert.equal(result.tomas_coaching.gave_concrete_next_focus, false);
+  assert.equal(typeof result.tomas_coaching.coaching_feedback_summary, 'string');
+});
+
+test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judge\'s own practiced_* fields rather than asking a second question, and skips framework for Bens', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const coaching = { grounded_in_real_data: true, gave_concrete_next_focus: false, coaching_feedback_summary: 'Leaned on generic advice instead of Bens\' real calls.' };
+
+  // Bens: no objection/close practice this call, but framework doesn't count for him anyway.
+  const bensResult = {
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: true,
+    tomas_coaching: coaching
+  };
+  const bensEmail = gas.buildTomasCoachingFeedbackEmail_('Bens', '260825', bensResult);
+  assert.ok(bensEmail.body.indexOf('got to practice out loud: No') !== -1,
+    'Bens practiced neither objections nor the close-ask, and framework never counts for him');
+
+  // Sean: didn't practice objections/close, but DID drill framework — should count as having practiced.
+  const seanResult = {
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: true,
+    tomas_coaching: coaching
+  };
+  const seanEmail = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', seanResult);
+  assert.ok(seanEmail.body.indexOf('got to practice out loud: Yes') !== -1,
+    'Sean\'s framework drill should count toward practice since his role covers it');
+});
+
+test('buildTomasCoachingFeedbackEmail_ subject carries the week number and stays distinct from the rep\'s own Training Call Plan subject', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'Good session.' }
+  };
+  const email = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', result);
+  assert.equal(email.subject, 'Your Training Call Coaching Feedback — Sean — Week 2');
 });
 
 // ---------------------------------------------------------------------------

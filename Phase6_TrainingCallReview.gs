@@ -201,7 +201,16 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    { "topic": "recruit_agents | number_one_podcast | sell_more_houses",',
     '      "note": "string — one short clause on what to say differently" }',
     '  ],',
-    '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\""',
+    '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\"",',
+    '  "tomas_coaching": {',
+    '    "grounded_in_real_data": true,',
+    '    "gave_concrete_next_focus": true,',
+    '    "coaching_feedback_summary": "string — 2-3 sentences of feedback on TOMÁS\'s OWN facilitation this ' +
+      'call (not ' + rep + '\'s performance): did he ground the session in ' + rep + '\'s specific real ' +
+      'calls/objections rather than generic advice, and did he close with a genuinely concrete, specific ' +
+      'next-focus rather than something vague? Quote a real moment (strong or weak). Constructive, not ' +
+      'just a compliment or just a criticism."',
+    '  }',
     '}'
   ]).join('\n');
 }
@@ -238,7 +247,11 @@ function isValidTrainingReviewSchema_(obj) {
     Array.isArray(obj.framework_gaps_to_drill) &&
     obj.framework_gaps_to_drill.every(function (f) {
       return f && typeof f.topic === 'string' && typeof f.note === 'string';
-    }));
+    }) &&
+    obj.tomas_coaching &&
+    typeof obj.tomas_coaching.grounded_in_real_data === 'boolean' &&
+    typeof obj.tomas_coaching.gave_concrete_next_focus === 'boolean' &&
+    typeof obj.tomas_coaching.coaching_feedback_summary === 'string');
 }
 
 /** Strips WebVTT cue numbers + timestamp lines, leaving just "Speaker: text" lines for the judge. */
@@ -285,7 +298,12 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     objections_to_drill: [],
     close_ask_drill: null,
     framework_gaps_to_drill: [],
-    team_notes: 'none'
+    team_notes: 'none',
+    tomas_coaching: {
+      grounded_in_real_data: false,
+      gave_concrete_next_focus: false,
+      coaching_feedback_summary: 'Unscored — parse failure after retries.'
+    }
   };
 }
 
@@ -409,6 +427,51 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     frameworkHtml +
     (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', result.team_notes) : '') +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+/**
+ * Kris's ask (02/09/2026): Tomás runs these training calls but never got any
+ * feedback on his OWN facilitation — only the rep's plan. This builds his
+ * separate email, judged on facilitation quality: did he ground the session
+ * in the rep's actual calls (not generic advice), did the rep actually get
+ * to practice out loud, and did he close with a genuinely concrete next
+ * focus. `rep_got_to_practice` is derived here from the judge's own
+ * practiced_* fields rather than asked as a second, easily-inconsistent
+ * question — same "derive, don't re-ask" principle as frameworkStatLinePlain
+ * above skipping the question entirely for a rep whose role doesn't cover it.
+ */
+function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
+  var role = trainingReviewRoleFor_(rep);
+  var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
+  var subject = 'Your Training Call Coaching Feedback — ' + rep + ' — ' + (weekLabel || dateLabel);
+  var coaching = result.tomas_coaching || {
+    grounded_in_real_data: false,
+    gave_concrete_next_focus: false,
+    coaching_feedback_summary: 'No coaching feedback available for this call.'
+  };
+  var repGotToPractice = !!(result.practiced_objections || result.practiced_close_ask ||
+    (role.drillsFramework && result.practiced_framework));
+
+  var body = 'Feedback on your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+    'Grounded in ' + rep + '\'s real calls (not generic advice): ' + (coaching.grounded_in_real_data ? 'Yes' : 'No') +
+    ' | ' + rep + ' got to practice out loud: ' + (repGotToPractice ? 'Yes' : 'No') +
+    ' | Closed with a concrete next focus: ' + (coaching.gave_concrete_next_focus ? 'Yes' : 'No') + '\n\n' +
+    coaching.coaching_feedback_summary + '\n\n' +
+    '— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.';
+
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
+    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Feedback on your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<div style="margin-bottom:14px;">' +
+    trainingReviewStatBadge_('Grounded in ' + rep + '\'s real calls', coaching.grounded_in_real_data) +
+    trainingReviewStatBadge_(rep + ' got to practice out loud', repGotToPractice) +
+    trainingReviewStatBadge_('Concrete next focus set', coaching.gave_concrete_next_focus) +
+    '</div>' +
+    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Facilitation feedback', coaching.coaching_feedback_summary) +
+    '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.</p>' +
     '</div>';
 
   return { subject: subject, body: body, htmlBody: htmlBody };
@@ -578,10 +641,13 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
   var cleanText = stripVttMarkup_(getTranscriptText_(transcriptFile));
   var result = reviewTrainingCallTranscript_(rep, cleanText, dateLabel);
   var email = buildTrainingReviewEmail_(rep, dateLabel, result);
+  var tomasPreviewEmail = buildTomasCoachingFeedbackEmail_(rep, dateLabel, result);
 
   if (dryRun) {
     log_('(preview) ' + repCfg.email + ' (cc ' + CONFIG.TOMAS_EMAIL + ', ' + CONFIG.KRIS_EMAIL +
       ') <- ' + email.subject + '\n' + email.body + '\n');
+    log_('(preview) ' + CONFIG.TOMAS_EMAIL + ' (cc ' + CONFIG.KRIS_EMAIL +
+      ') <- ' + tomasPreviewEmail.subject + '\n' + tomasPreviewEmail.body + '\n');
     return false;
   }
 
@@ -611,6 +677,16 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
       '" doc, but SEND FAILED/SKIPPED (quota-short or invalid config) — assignment properties left untouched.');
     return true;
   }
+
+  // Tomás's own facilitation feedback — a separate, standalone email (not
+  // just a cc on the rep's plan), so it reads as feedback FOR him rather
+  // than as a copy of feedback for the rep.
+  var tomasEmail = buildTomasCoachingFeedbackEmail_(rep, dateLabel, result);
+  guardedSend_(CONFIG.TOMAS_EMAIL, tomasEmail.subject, tomasEmail.body, {
+    cc: CONFIG.KRIS_EMAIL,
+    htmlBody: tomasEmail.htmlBody,
+    name: 'Training Call Review Bot'
+  }, 2); // Tomás + Kris
 
   // Persisted for Phase 7's daily assignment emails to read. Only overwrite on a
   // real, non-empty result — a parse-failure fallback (empty array) must NOT wipe
