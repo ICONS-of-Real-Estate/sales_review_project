@@ -1588,6 +1588,25 @@ test('appendNewBacklogEntries_ carries the ORIGINAL call date, and never double-
   assert.equal(joseph.callDateLabel, '26/08/2026', 'a genuinely new item is dated today');
 });
 
+test('buildPlaybookReviewNewMaterialEmail_ produces a styled htmlBody — bold prospect/score, colored score, italicized quotes, no raw wall of text (Kris\'s ask 02/09/2026: "No colour, no bold, no italic, big blocks of text")', () => {
+  const repCfg = { name: 'Sean' };
+  const flagged = [
+    { prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'Sean said "when would you have 45 minutes" and locked the meeting.' },
+    { prospectName: 'Andrew Coppens', callDate: '28/08/2026', score: 2, feedback: 'Andrew said "not interested at this point" and Sean never countered it.' }
+  ];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
+
+  assert.ok(email.htmlBody, 'must include an htmlBody, not plain text only');
+  assert.ok(email.htmlBody.indexOf('<strong>1. Bruce Henson</strong>') !== -1, 'prospect name should be bold');
+  assert.ok(email.htmlBody.indexOf('<strong style="color:' + gas.dailyPracticeScoreColor_(4) + ';">4</strong>') !== -1,
+    'score 4 should use the shared score-color rubric, not a new one');
+  assert.ok(email.htmlBody.indexOf('<strong style="color:' + gas.dailyPracticeScoreColor_(2) + ';">2</strong>') !== -1,
+    'score 2 should be colored differently than score 4 (dailyPracticeScoreColor_ reused, not reinvented)');
+  assert.ok(email.htmlBody.indexOf('<i>&quot;when would you have 45 minutes&quot;</i>') !== -1,
+    'quoted transcript excerpts should be italicized, same as the Practice Drill Feedback email');
+  assert.ok(email.htmlBody.indexOf('<div') !== -1, 'each call should render as its own visually distinct block, not one dense paragraph');
+});
+
 test('buildComplianceEmail_ lists every outstanding item oldest-first, each with its own date/age, and the subject names the oldest', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };

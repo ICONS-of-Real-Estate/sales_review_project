@@ -2768,7 +2768,21 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
   });
 }
 
-function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
+/**
+ * Pure content builder — testable without guardedSend_/GAS, same "build the
+ * data, send it separately" split already used for the Daily Practice/
+ * Weekly Scorecard/Training Review emails elsewhere in this project.
+ *
+ * Kris's ask (02/09/2026): "No colour, no bold, no italic, big blocks of
+ * text" — same "for the record, styled" treatment already given to the
+ * Handoff Brief, Weekly Scorecard, and Practice Drill Feedback emails.
+ * escapeHtml_ (Phase4_InboxSLA.gs) guards every dynamic field since this is
+ * raw HTML, not Jinja. dailyPracticeScoreColor_ (Phase7_DailySelfPractice.gs)
+ * reused so a score is colored the same way everywhere in the system,
+ * rather than inventing a second color rubric here.
+ */
+function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
+  var subject = repCfg.name + ' — last week\'s calls to review (' + windowLabel + ')';
   var body =
     'Tomás,\n\n' +
     repCfg.name + '\'s objection-handling material for last week (' + windowLabel + ') — ' +
@@ -2780,8 +2794,37 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
     }).join('\n\n') +
     '\n\n— Sent automatically ahead of this week\'s session.';
 
-  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — last week\'s calls to review (' + windowLabel + ')', body, {
+  var callsHtml = flagged.map(function (c, i) {
+    var feedbackHtml = escapeHtml_(c.feedback || '(no AI feedback summary on file)')
+      .replace(/\n/g, '<br>')
+      .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
+    return '<div style="border-left:4px solid #1a56db;background:#f4f7fb;padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
+      '<p style="margin:0 0 6px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
+      '</strong> (' + escapeHtml_(c.callDate) + '), score ' +
+      '<strong style="color:' + dailyPracticeScoreColor_(c.score) + ';">' + escapeHtml_(String(c.score)) + '</strong></p>' +
+      '<p style="margin:0;">' + feedbackHtml + '</p>' +
+      '</div>';
+  }).join('');
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Tomás,</p>' +
+    '<p><strong>' + escapeHtml_(repCfg.name) + '\'s objection-handling material for last week (' +
+    escapeHtml_(windowLabel) + ')</strong> — ' + flagged.length + ' flagged call(s). Raw data, not a ' +
+    'finished playbook — this week\'s session should focus on just these, not older material already ' +
+    'covered.</p>' +
+    callsHtml +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +
+    'session.</i></p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
+  var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel);
+  return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL,
+    htmlBody: email.htmlBody,
     name: 'Training Prep Bot'
   }, 2);
 }
