@@ -2684,6 +2684,16 @@ function isObjectionFlaggedRow_(row, col) {
     ((mode === '' || mode === 'none') && objectionsHandled === false);
 }
 
+/**
+ * Strips every "/yyyy" year suffix out of a "dd/MM/yyyy - dd/MM/yyyy"-style
+ * label, for a subject line where the year is redundant noise (per Kris,
+ * 02/09/2026). Pure/testable; leaves anything that doesn't look like a
+ * 4-digit year alone rather than mangling an unexpected label shape.
+ */
+function stripYearFromDateRangeLabel_(label) {
+  return String(label).replace(/\/\d{4}\b/g, '');
+}
+
 /** Run this FIRST from the editor. Builds this week's review and only logs it — sends nothing. */
 function previewWeeklyPlaybookReview() {
   return previewWeeklyPlaybookReview_();
@@ -2736,16 +2746,22 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
 
   CONFIG.REPS.forEach(function (repCfg) {
     var flagged = [];
-    rows.forEach(function (row) {
+    rows.forEach(function (row, i) {
       if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repCfg.name.toLowerCase()) return;
       var callDate = row[col['Call Date'] - 1];
       if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
       if (!isObjectionFlaggedRow_(row, col)) return;
+      // Kris's ask (02/09/2026), same as sendRandomCalibrationDigest_'s own
+      // fix (29/08/2026): "if you want calls reviewed, add the links" —
+      // straight to the call's Transcript URL (the thing being judged) and
+      // its Sales Call Log row (where Tomás's session notes get typed in).
       flagged.push({
         prospectName: row[col['Prospect Name'] - 1],
         callDate: Utilities.formatDate(callDate, tz, 'dd/MM/yyyy'),
         score: row[col['Call Quality Score'] - 1],
-        feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim()
+        feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim(),
+        transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim(),
+        rowLink: salesCallLogRowLink_(logSheet, i + 2)
       });
     });
 
@@ -2782,15 +2798,24 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
  * rather than inventing a second color rubric here.
  */
 function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
-  var subject = repCfg.name + ' — last week\'s calls to review (' + windowLabel + ')';
+  // Kris's ask (02/09/2026): "don't need the year in the subject — we know
+  // what year it is." Only the subject drops it; the body keeps the full
+  // dd/MM/yyyy dates, same as every other email in this system.
+  var subject = repCfg.name + ' — last week\'s calls to review (' + stripYearFromDateRangeLabel_(windowLabel) + ')';
   var body =
     'Tomás,\n\n' +
     repCfg.name + '\'s objection-handling material for last week (' + windowLabel + ') — ' +
     flagged.length + ' flagged call(s). Raw data, not a finished playbook — this week\'s session should focus ' +
     'on just these, not older material already covered.\n\n' +
     flagged.map(function (c, i) {
+      // Kris's ask (02/09/2026): "if you want calls reviewed, add the
+      // links" — straight to the transcript and to the Sales Call Log row.
+      var links = [];
+      if (c.transcriptUrl) links.push('Transcript: ' + c.transcriptUrl);
+      if (c.rowLink) links.push('Sheet row: ' + c.rowLink);
       return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
-        (c.feedback || '(no AI feedback summary on file)');
+        (c.feedback || '(no AI feedback summary on file)') +
+        (links.length ? '\n   ' + links.join(' | ') : '');
     }).join('\n\n') +
     '\n\n— Sent automatically ahead of this week\'s session.';
 
@@ -2798,11 +2823,15 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
     var feedbackHtml = escapeHtml_(c.feedback || '(no AI feedback summary on file)')
       .replace(/\n/g, '<br>')
       .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
+    var linksHtml = [];
+    if (c.transcriptUrl) linksHtml.push('<a href="' + escapeHtml_(c.transcriptUrl) + '">Transcript</a>');
+    if (c.rowLink) linksHtml.push('<a href="' + escapeHtml_(c.rowLink) + '">Sheet row</a>');
     return '<div style="border-left:4px solid #1a56db;background:#f4f7fb;padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
       '<p style="margin:0 0 6px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
       '</strong> (' + escapeHtml_(c.callDate) + '), score ' +
       '<strong style="color:' + dailyPracticeScoreColor_(c.score) + ';">' + escapeHtml_(String(c.score)) + '</strong></p>' +
       '<p style="margin:0;">' + feedbackHtml + '</p>' +
+      (linksHtml.length ? '<p style="margin:6px 0 0;font-size:12px;">' + linksHtml.join(' &nbsp;|&nbsp; ') + '</p>' : '') +
       '</div>';
   }).join('');
   var htmlBody =

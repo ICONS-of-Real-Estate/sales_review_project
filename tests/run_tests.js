@@ -1607,6 +1607,44 @@ test('buildPlaybookReviewNewMaterialEmail_ produces a styled htmlBody — bold p
   assert.ok(email.htmlBody.indexOf('<div') !== -1, 'each call should render as its own visually distinct block, not one dense paragraph');
 });
 
+test('buildPlaybookReviewNewMaterialEmail_ subject drops the year (Kris\'s ask 02/09/2026: "we know what year it is"), but the body keeps full dates', () => {
+  const repCfg = { name: 'Sean' };
+  const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
+
+  assert.equal(email.subject, 'Sean — last week\'s calls to review (24/08 - 30/08)');
+  assert.ok(email.body.indexOf('24/08/2026 - 30/08/2026') !== -1, 'body should keep the full year, unlike the subject');
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ links each flagged call to its transcript and Sales Call Log row (Kris\'s ask 02/09/2026: "if you want calls reviewed, add the links")', () => {
+  const repCfg = { name: 'Sean' };
+  const flagged = [{
+    prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok',
+    transcriptUrl: 'https://docs.google.com/document/d/abc123/edit',
+    rowLink: 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=999&range=A5'
+  }];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
+
+  assert.ok(email.body.indexOf('https://docs.google.com/document/d/abc123/edit') !== -1, 'plain body should include the transcript link');
+  assert.ok(email.body.indexOf('range=A5') !== -1, 'plain body should include the sheet row link');
+  assert.ok(email.htmlBody.indexOf('href="https://docs.google.com/document/d/abc123/edit"') !== -1, 'htmlBody should link the transcript');
+  assert.ok(email.htmlBody.indexOf('range=A5') !== -1, 'htmlBody should link the sheet row');
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ handles a flagged call with no transcript/row link without breaking (e.g. an older row scored before those columns existed)', () => {
+  const repCfg = { name: 'Sean' };
+  const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
+  assert.equal(email.body.indexOf('undefined'), -1);
+  assert.equal(email.htmlBody.indexOf('undefined'), -1);
+});
+
+test('stripYearFromDateRangeLabel_ strips every /yyyy year suffix out of a date-range label', () => {
+  assert.equal(gas.stripYearFromDateRangeLabel_('24/08/2026 - 30/08/2026'), '24/08 - 30/08');
+  assert.equal(gas.stripYearFromDateRangeLabel_('01/09/2026'), '01/09');
+  assert.equal(gas.stripYearFromDateRangeLabel_('no dates here'), 'no dates here');
+});
+
 test('buildComplianceEmail_ lists every outstanding item oldest-first, each with its own date/age, and the subject names the oldest', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
