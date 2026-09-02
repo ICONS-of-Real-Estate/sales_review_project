@@ -412,8 +412,34 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
 }
 
 /**
+ * True when a calendar event's guest list proves it's an internal-only
+ * meeting, not a real prospect call — i.e. it has at least one invited
+ * guest and NONE of them are external (all in INTERNAL_EMAILS). Pure/
+ * testable on its own; getRepCallEvents_ below is the only caller.
+ *
+ * Real bug found live (02/09/2026, Bens): a recurring internal 1-1 with
+ * Joana, titled plain "QC", matched CALL_TITLE_INCLUDE's 'qc' keyword and
+ * got treated as a real sales/QC call needing a logged Outcome Disposition
+ * — Bens got nagged for it daily, and it showed up as "(name not parsed
+ * from calendar title) — QC" since there was never a prospect name to
+ * parse. A genuine sales/QC call always has at least one external guest;
+ * an event whose guest list is non-empty but entirely internal isn't a
+ * prospect call at all, whatever its title says.
+ *
+ * Deliberately NOT applied to an event with an EMPTY guest list — that's
+ * the separate, already-known "prospect never added as a Calendar guest"
+ * case (see getAllTrackerRows_ above), which still needs a human to
+ * reconcile rather than being silently filtered out here.
+ */
+function eventLooksInternalOnly_(rawGuestEmails) {
+  if (!rawGuestEmails.length) return false;
+  return rawGuestEmails.every(function (e) { return INTERNAL_EMAILS.indexOf(e) !== -1; });
+}
+
+/**
  * Pull the rep's calendar events for [dayStart, dayEnd) and keep only those
- * that look like sales/QC calls (title keyword match).
+ * that look like sales/QC calls (title keyword match, and not an
+ * internal-only meeting that happens to match on title alone).
  */
 function getRepCallEvents_(repCfg, dayStart, dayEnd) {
   var cal = repCfg.calendarId === 'primary'
@@ -429,6 +455,9 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
       return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
     })
     .map(function (ev) {
+      var rawGuestEmails = ev.getGuestList()
+        .map(function (g) { return (g.getEmail() || '').toLowerCase().trim(); })
+        .filter(Boolean);
       return {
         id: ev.getId(),
         title: ev.getTitle() || '(untitled)',
@@ -436,12 +465,23 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
         prospectGuess: guessProspectFromTitle_(ev.getTitle() || ''),
         // Prospect emails only: strip the rep's own address and other internal
         // guests so an internal placeholder block can never match a tracker row.
-        attendeeEmails: ev.getGuestList()
-          .map(function (g) { return (g.getEmail() || '').toLowerCase().trim(); })
-          .filter(function (e) {
-            return e && INTERNAL_EMAILS.indexOf(e) === -1;
-          })
+        attendeeEmails: rawGuestEmails.filter(function (e) {
+          return INTERNAL_EMAILS.indexOf(e) === -1;
+        }),
+        internalOnly: eventLooksInternalOnly_(rawGuestEmails)
       };
+    })
+    .filter(function (e) {
+      if (e.internalOnly) {
+        log_('  ' + repCfg.name + ': skipping "' + e.title + '" — matched a call keyword but every ' +
+          'guest is internal, so this is a team meeting, not a real prospect call.');
+      }
+      return !e.internalOnly;
+    })
+    .map(function (e) {
+      // internalOnly only existed to drive the filter above -- drop it so
+      // this function's return shape is unchanged for every other caller.
+      return { id: e.id, title: e.title, start: e.start, prospectGuess: e.prospectGuess, attendeeEmails: e.attendeeEmails };
     });
   log_('  events+attendees ' + repCfg.name + ': ' + mapped.map(function (e) {
     return '"' + e.title + '"→[' + e.attendeeEmails.join(',') + ']';

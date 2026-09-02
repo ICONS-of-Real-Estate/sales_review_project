@@ -112,6 +112,17 @@ test('guessProspectFromTitle_ extracts the prospect name from the real calendar 
   assert.equal(gas.guessProspectFromTitle_('Real Estate Podcast: Andrea Brunson'), 'Andrea Brunson');
 });
 
+test('eventLooksInternalOnly_ flags a guest list that is non-empty but entirely internal, leaves an empty list alone (real bug 02/09/2026: Bens\' internal "QC" 1-1 with Joana got nagged as a real sales/QC call)', () => {
+  assert.equal(gas.eventLooksInternalOnly_(['joana@iconsofrealestate.com']), true,
+    'Bens+Joana internal 1-1, titled plain "QC" — must be recognized as internal-only');
+  assert.equal(gas.eventLooksInternalOnly_(['bens@iconsofrealestate.com', 'joana@iconsofrealestate.com']), true);
+  assert.equal(gas.eventLooksInternalOnly_(['tom.wood@example.com']), false, 'a real external prospect guest');
+  assert.equal(gas.eventLooksInternalOnly_(['joana@iconsofrealestate.com', 'tom.wood@example.com']), false,
+    'internal + external mix is a real call, not internal-only');
+  assert.equal(gas.eventLooksInternalOnly_([]), false,
+    'no guests at all is the separate "prospect never added as a Calendar guest" case — must NOT be filtered here');
+});
+
 test('stripFencesAndParseJson_ strips markdown code fences before parsing', () => {
   const parsed = gas.stripFencesAndParseJson_('```json\n{"a": 1}\n```');
   // parsed.a's JSON.parse ran inside the vm sandbox's own realm, so
