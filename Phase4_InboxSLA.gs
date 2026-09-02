@@ -344,6 +344,18 @@ function escapeHtml_(s) {
     .replace(/>/g, '&gt;');
 }
 
+/**
+ * Kris's ask (02/09/2026): "Once over 48 hours, hours geta bit crazy — better
+ * to round to days over 48 hours." A thread sitting for a week read as
+ * "169h old", which nobody reads at a glance as "just over a week" — round
+ * to whole days once it crosses 48h, keep raw hours below that (where a
+ * day-granularity number would be too coarse to be useful).
+ */
+function formatEmailAgeLabel_(hoursOld) {
+  if (hoursOld < 48) return hoursOld + 'h old';
+  return Math.round(hoursOld / 24) + 'd old';
+}
+
 function listInboxThreadIds_(accessToken) {
   var ids = [];
   var pageToken = null;
@@ -540,7 +552,7 @@ function previewInboxSlaCheck_() {
       log_(repCfg.name + ': ' + unanswered.length + ' inbox thread(s) over ' +
         INBOX_SLA_CONFIG.SLA_HOURS + 'h unanswered');
       unanswered.forEach(function (u) {
-        log_('  ' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — "' + u.subject + '"');
+        log_('  ' + formatEmailAgeLabel_(u.hoursOld) + ' — from ' + u.fromRaw + ' — "' + u.subject + '"');
       });
     } catch (e) {
       log_('ERROR checking ' + repCfg.name + ': ' + e);
@@ -579,10 +591,10 @@ function runInboxSlaCheck() {
         var subject = repCfg.name + ' — [Action needed] ' + unanswered.length + ' email(s) in your inbox over ' +
           INBOX_SLA_CONFIG.SLA_HOURS + 'h old';
         var lines = unanswered.map(function (u) {
-          return '• ' + u.hoursOld + 'h old — from ' + u.fromRaw + ' — "' + u.subject + '"';
+          return '• ' + formatEmailAgeLabel_(u.hoursOld) + ' — from ' + u.fromRaw + ' — "' + u.subject + '"';
         });
         var htmlLines = unanswered.map(function (u) {
-          return '<li>' + u.hoursOld + 'h old — from ' + escapeHtml_(u.fromRaw) + ' — &quot;' + escapeHtml_(u.subject) + '&quot;</li>';
+          return '<li>' + formatEmailAgeLabel_(u.hoursOld) + ' — from ' + escapeHtml_(u.fromRaw) + ' — &quot;' + escapeHtml_(u.subject) + '&quot;</li>';
         });
         var body =
           'Hi ' + repCfg.name + ',\n\n' +

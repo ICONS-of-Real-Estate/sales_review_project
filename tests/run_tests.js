@@ -2279,6 +2279,15 @@ test('extractEmailAddresses_ pulls every address out of a comma-separated To/Cc 
   assert.equal(gas.extractEmailAddresses_(undefined).length, 0);
 });
 
+test('formatEmailAgeLabel_ stays in hours under 48h, switches to rounded days at/over 48h (Kris\'s ask 02/09/2026: "hours get a bit crazy" past 48h)', () => {
+  assert.equal(gas.formatEmailAgeLabel_(0), '0h old');
+  assert.equal(gas.formatEmailAgeLabel_(24), '24h old');
+  assert.equal(gas.formatEmailAgeLabel_(47), '47h old');
+  assert.equal(gas.formatEmailAgeLabel_(48), '2d old');
+  assert.equal(gas.formatEmailAgeLabel_(169), '7d old');
+  assert.equal(gas.formatEmailAgeLabel_(656), '27d old');
+});
+
 test('repIsToRecipient_ checks the rep\'s own addresses (including aliases) against the To list, not Cc', () => {
   const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com', aliases: ['bens@ardorseo.com'] };
   assert.equal(gas.repIsToRecipient_(repCfg, ['bens@iconsofrealestate.com']), true);
