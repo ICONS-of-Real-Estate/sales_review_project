@@ -57,7 +57,10 @@ The `transcribe_joana_calls*.py` scripts are the same three engines pointed
 at Joana's recordings instead of Sean's. `transcribe_tomas_calls.py` /
 `transcribe_tomas_calls_whisper.py` are the Gemini and Whisper engines
 pointed at Tomás's own sales calls (there's no Qwen variant for him yet —
-add one the same way if needed).
+add one the same way if needed). `transcribe_discovery_calls.py` is the
+Gemini engine pointed at the shared **Discovery Call Recordings** folder
+(Kris copied every AM's old Discovery calls in there 03/09/2026) — see its
+own section below, it has one extra wrinkle the others don't.
 
 **Only run one engine per person per batch** — running two against the same
 folder just wastes money/time re-transcribing calls that already have a doc
@@ -116,6 +119,27 @@ Same model download note as Sean's Whisper variant above. If this machine
 already ran Sean's Whisper backlog, everything needed is already installed —
 just point it at this script instead.
 
+### Discovery calls — Gemini (all AMs, shared folder; produces speaker labels)
+```powershell
+$env:GEMINI_API_KEY = "<your key from aistudio.google.com/apikey>"
+python transcribe_discovery_calls.py
+```
+Points at the shared **Discovery Call Recordings** Drive folder
+(`1arDFT1Mt0yT99J_QqDeyQAyMGc8rqGtm`), not a per-person folder — every AM's
+old Discovery calls got copied in there 03/09/2026, and new ones going
+forward should land there too. Two things make this one different from the
+others:
+- Some items in that folder are Drive **shortcuts** to a recording that
+  actually lives elsewhere (wherever Meet auto-filed it) rather than a real
+  copy of the video — this script resolves those to the real file
+  automatically, no manual fixing needed.
+- Many of these already have a **"Notes by Gemini"** doc sitting next to
+  them (Google Meet's own auto-generated meeting notes). That's an AI
+  *summary*, not a verbatim transcript, and does **not** count as
+  already-transcribed — this script only skips a video once a real
+  `"<title> — Transcript"` doc exists for it, so it will still transcribe
+  videos that already have Notes-by-Gemini next to them.
+
 ### Smoke-testing before a full run
 Each engine has a one-file sanity check that grabs a single video, transcribes
 it, and writes the result back — useful for confirming quality (especially
@@ -159,6 +183,7 @@ Everything lands back in the same Drive folder(s) each script reads from:
 - **Sean — Sales Calls**: `1gFb7YnXbnGAowAJgnLE2KNp5iKOCfnYH`
 - **Sean — Qualification Calls**: `15YMEMseEvUQakgDF00BtQg3QK6fiTsjX`
 - **Tomás — Sales Calls**: `1QjmKqmTQpg6yePI55L_tqtoEvIf0Lbf_`
+- **Discovery Call Recordings** (shared, all AMs): `1arDFT1Mt0yT99J_QqDeyQAyMGc8rqGtm`
 
 Each new video gets a matching `"<name> — Transcript"` Google Doc next to it.
 Tomás's video filenames carry their `.mp4` extension in the Drive name itself
