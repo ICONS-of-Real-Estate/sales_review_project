@@ -329,12 +329,22 @@ function matchEventsForRep_(repName, events, allRows, loggedRows, writeBack) {
       log_('  [' + repName + '] match? event="' + ev.title + '" → LOGGED (row ' + hit.rowIndex + ', via ' + hit.via + ')');
       if (writeBack) stampMatch_(hit);
     } else {
-      log_('  [' + repName + '] match? event="' + ev.title + '" → NOT LOGGED');
-      missing.push(ev);
       // Still try to enrich an UNLOGGED row with the event ID: it makes
       // tomorrow's match exact-key and builds the Phase 0 join data.
       var availableAll = allRows.filter(function (r) { return !claimedRowIndexes[r.rowIndex]; });
       var anyHit = findMatch_(ev, availableAll);
+      // Kris's ask (03/09/2026, Sean): "if there's QCs on his calendar, and
+      // we don't get a recording, we need to know that" — a row only ever
+      // exists once a transcript has been received and scored (Phase 2), so
+      // NO row matching this event at all (not even an unlogged one) means
+      // no recording ever arrived, not just "forgot to fill in the outcome."
+      // Those are different problems needing different wording/action —
+      // tag it here so buildComplianceEmail_ and the escalation alert can
+      // tell them apart instead of both reading as a generic tracker nag.
+      ev.recordingMissing = !anyHit;
+      log_('  [' + repName + '] match? event="' + ev.title + '" → NOT LOGGED' +
+        (anyHit ? '' : ' (no row at all — recording never received)'));
+      missing.push(ev);
       if (anyHit) {
         claimedRowIndexes[anyHit.rowIndex] = true;
         if (!anyHit.logged) {
@@ -403,14 +413,28 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
   // the daily check).
   var split = splitStaleBacklogEntries_(backlog, new Date(), tz);
   if (split.escalate.length) {
+    var escalateLine = function (e) { return '- ' + e.prospectGuess + ' (' + e.callDateLabel + ' ' + e.time + ') — "' + e.title + '"'; };
+    var escalateMissingRecording = split.escalate.filter(function (e) { return e.recordingMissing; });
+    var escalateUnlogged = split.escalate.filter(function (e) { return !e.recordingMissing; });
+    var escalateBody = '';
+    // Kris's ask (03/09/2026, Sean): "where's the recording?" needs to reach
+    // a human as its own distinct problem, not get buried in the generic
+    // "could not be matched" explanation that used to cover both cases.
+    if (escalateMissingRecording.length) {
+      escalateBody += escalateMissingRecording.length + ' call(s) on ' + repCfg.name + '\'s calendar with NO ' +
+        'recording ever received — nothing to log, the recording itself needs tracking down:\n' +
+        escalateMissingRecording.map(escalateLine).join('\n') + '\n\n';
+    }
+    if (escalateUnlogged.length) {
+      escalateBody += escalateUnlogged.length + ' call(s) matched to no logged row (often a bare-title ' +
+        'calendar event with no attendee to match by):\n' +
+        escalateUnlogged.map(escalateLine).join('\n') + '\n\n';
+    }
     sendOpsAlert_(repCfg.name + ' — ' + split.escalate.length + ' call(s) unresolved for ' +
       COMPLIANCE_BACKLOG_MAX_AGE_DAYS_ + '+ days, needs a human',
-      split.escalate.map(function (e) {
-        return '- ' + e.prospectGuess + ' (' + e.callDateLabel + ' ' + e.time + ') — "' + e.title + '"';
-      }).join('\n') +
-      '\n\nThese have been outstanding since first flagged and could not be automatically matched to a ' +
-      'logged row (often a bare-title calendar event with no attendee to match by). They\'ve been removed ' +
-      'from ' + repCfg.name + '\'s daily nag — check the tracker by hand.');
+      escalateBody +
+      'These have been outstanding since first flagged. They\'ve been removed from ' + repCfg.name + '\'s ' +
+      'daily nag — check by hand.');
     backlog = split.keep;
     saveComplianceBacklog_(repCfg.name, backlog);
   }
@@ -919,7 +943,8 @@ function appendNewBacklogEntries_(backlog, missingToday, priorDay, tz, nowIso) {
       attendeeEmails: ev.attendeeEmails,
       callDateLabel: priorDay,
       time: time,
-      firstFlaggedAt: nowIso
+      firstFlaggedAt: nowIso,
+      recordingMissing: !!ev.recordingMissing
     });
   });
   return backlog;
@@ -1005,24 +1030,57 @@ function buildComplianceEmail_(repCfg, backlog, tz, sheetGid) {
       daysAgo: daysAgoLabel_(e.callDateLabel, now, tz),
       time: e.time || '',
       who: nameParsed ? e.prospectGuess : '(name not parsed from calendar title)',
-      callType: callTypeFromTitle_(e.title)
+      callType: callTypeFromTitle_(e.title),
+      recordingMissing: !!e.recordingMissing
     };
   });
+  // Kris's ask (03/09/2026, Sean): a call with NO row at all (the recording
+  // never arrived) needs different wording/action from a call whose row
+  // exists but just has no Outcome Disposition yet — the rep can't "add the
+  // outcome" for a call that was never transcribed in the first place.
+  var unloggedEntries = entries.filter(function (e) { return !e.recordingMissing; });
+  var missingRecordingEntries = entries.filter(function (e) { return e.recordingMissing; });
 
-  var plainLines = entries.map(function (e) {
-    return '  • ' + e.dateLabel + (e.time ? ' ' + e.time : '') + ' (' + e.daysAgo + ') — ' + e.who + ' — ' + e.callType;
-  });
-  var htmlLines = entries.map(function (e) {
+  var lineText = function (e) {
+    return e.dateLabel + (e.time ? ' ' + e.time : '') + ' (' + e.daysAgo + ') — ' + e.who + ' — ' + e.callType;
+  };
+  var lineHtml = function (e) {
     return '<li>' + e.dateLabel + (e.time ? ' ' + e.time : '') + ' <i>(' + e.daysAgo + ')</i> — <b>' + e.who + '</b> — ' + e.callType + '</li>';
-  });
+  };
+
+  var plainSections = [];
+  var htmlSections = [];
+  if (unloggedEntries.length) {
+    plainSections.push(
+      unloggedEntries.length + ' call(s) with no outcome logged yet:\n\n' +
+      unloggedEntries.map(function (e) { return '  • ' + lineText(e); }).join('\n') + '\n\n' +
+      'Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for EACH of these.'
+    );
+    htmlSections.push(
+      '<p>' + unloggedEntries.length + ' call(s) with no outcome logged yet:</p>' +
+      '<ul>' + unloggedEntries.map(lineHtml).join('') + '</ul>' +
+      '<p>Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for <b>each</b> of these.</p>'
+    );
+  }
+  if (missingRecordingEntries.length) {
+    plainSections.push(
+      missingRecordingEntries.length + ' call(s) on your calendar with NO recording received at all — ' +
+      'nothing to log yet, these need the actual recording tracked down:\n\n' +
+      missingRecordingEntries.map(function (e) { return '  • ' + lineText(e); }).join('\n')
+    );
+    htmlSections.push(
+      '<p><b>' + missingRecordingEntries.length + ' call(s) on your calendar with NO recording received at all</b> — ' +
+      'nothing to log yet, these need the actual recording tracked down:</p>' +
+      '<ul>' + missingRecordingEntries.map(lineHtml).join('') + '</ul>'
+    );
+  }
 
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
-    'These ' + n + ' sales/QC call(s) still have no matching outcome in your tracker — each one shows the ' +
-    'date it actually happened, so you can see how long it\'s been sitting:\n\n' +
-    plainLines.join('\n') + '\n\n' +
-    'Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for EACH of these — ' +
-    'this list carries over every day until an item is logged, it does not reset.\n\n' +
+    'These ' + n + ' sales/QC call(s) still need attention in your tracker — each one shows the date it ' +
+    'actually happened, so you can see how long it\'s been sitting:\n\n' +
+    plainSections.join('\n\n') + '\n\n' +
+    'This list carries over every day until each item is resolved, it does not reset.\n\n' +
     'Tracker: ' + trackerUrl + '\n\n' +
     'Reply to this email once you\'ve updated the tracker, so Kris/Tomás know it\'s done.\n\n' +
     '— This is an automated check. This email was drafted by AI and sent automatically; ' +
@@ -1030,11 +1088,10 @@ function buildComplianceEmail_(repCfg, backlog, tz, sheetGid) {
 
   var htmlBody =
     '<p>Hi ' + repCfg.name + ',</p>' +
-    '<p>These ' + n + ' sales/QC call(s) still have no matching outcome in your tracker — each one shows the ' +
-    'date it actually happened, so you can see how long it\'s been sitting:</p>' +
-    '<ul>' + htmlLines.join('') + '</ul>' +
-    '<p>Please add the outcome (Sold / Not Sold / Follow-up / No-show) and any notes for <b>each</b> of these — ' +
-    'this list carries over every day until an item is logged, it does not reset.</p>' +
+    '<p>These ' + n + ' sales/QC call(s) still need attention in your tracker — each one shows the date it ' +
+    'actually happened, so you can see how long it\'s been sitting:</p>' +
+    htmlSections.join('') +
+    '<p>This list carries over every day until each item is resolved, it does not reset.</p>' +
     '<p><b>Tracker:</b> <a href="' + trackerUrl + '">' + trackerUrl + '</a></p>' +
     '<p><b>Reply to this email once you\'ve updated the tracker</b>, so Kris/Tomás know it\'s done.</p>' +
     '<p><i>— This is an automated check. This email was drafted by AI and sent automatically; ' +

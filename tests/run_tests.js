@@ -1965,6 +1965,23 @@ test('stripYearFromDateRangeLabel_ strips every /yyyy year suffix out of a date-
   assert.equal(gas.stripYearFromDateRangeLabel_('no dates here'), 'no dates here');
 });
 
+test('matchEventsForRep_ tags a miss as recordingMissing only when NO row at all exists for it (not even unlogged) — a row only ever exists once a transcript has been scored, so this is the "recording never arrived" signal Kris asked for (03/09/2026, Sean)', () => {
+  const events = [
+    { id: 'evt-has-unlogged-row', title: 'QC / Has Row', prospectGuess: 'Has Row', attendeeEmails: [], start: new Date('2026-09-01T14:00:00Z') },
+    { id: 'evt-no-row-anywhere', title: 'Qualification Call / No Row', prospectGuess: 'No Row', attendeeEmails: [], start: new Date('2026-09-01T15:00:00Z') }
+  ];
+  const allRows = [
+    { rowIndex: 5, sheet: null, eventIdCol: -1, matchMethodCol: -1, logged: false, prospect: 'has row', email: '', eventId: '', callType: 'QC' }
+  ];
+  const missing = gas.matchEventsForRep_('Sean', events, allRows, [], /*writeBack=*/false);
+
+  assert.equal(missing.length, 2);
+  const hasRowMiss = missing.filter((e) => e.id === 'evt-has-unlogged-row')[0];
+  const noRowMiss = missing.filter((e) => e.id === 'evt-no-row-anywhere')[0];
+  assert.equal(hasRowMiss.recordingMissing, false, 'an unlogged row still exists — this is "forgot to log the outcome," not a missing recording');
+  assert.equal(noRowMiss.recordingMissing, true, 'no row anywhere for this event — the recording itself never arrived');
+});
+
 test('buildComplianceEmail_ lists every outstanding item oldest-first, each with its own date/age, and the subject names the oldest', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
@@ -1982,6 +1999,24 @@ test('buildComplianceEmail_ lists every outstanding item oldest-first, each with
   assert.ok(email.body.indexOf('20/08/2026') !== -1 && email.body.indexOf('25/08/2026') !== -1,
     'body should show each item\'s own original date, not just today\'s');
   assert.ok(email.body.indexOf('does not reset') !== -1, 'body should say this list carries forward, not a one-day snapshot');
+});
+
+test('buildComplianceEmail_ splits recording-missing items into their own section with different wording — "add the outcome" makes no sense for a call that was never transcribed (Kris\'s ask 03/09/2026, Sean)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const repCfg = { name: 'Sean', email: 'sean@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
+  const backlog = [
+    { eventId: 'evt-unlogged', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', callDateLabel: '20/08/2026', time: '09:00', firstFlaggedAt: '2026-08-20T22:00:00.000Z', recordingMissing: false },
+    { eventId: 'evt-no-recording', title: 'Qualification Call / Sabiha Razzak', prospectGuess: 'Sabiha Razzak', callDateLabel: '25/08/2026', time: '10:00', firstFlaggedAt: '2026-08-25T22:00:00.000Z', recordingMissing: true }
+  ];
+  const email = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE);
+
+  assert.ok(email.body.indexOf('NO recording received at all') !== -1, 'recording-missing items must get their own distinct wording');
+  assert.ok(email.body.indexOf('Sabiha Razzak') !== -1 && email.body.indexOf('Nicole Freed') !== -1, 'both items still listed');
+  const noRecordingSectionIdx = email.body.indexOf('NO recording received at all');
+  const sabihaIdx = email.body.indexOf('Sabiha Razzak');
+  const nicoleIdx = email.body.indexOf('Nicole Freed');
+  assert.ok(nicoleIdx < noRecordingSectionIdx, 'the plain unlogged item must not be pulled into the recording-missing section');
+  assert.ok(sabihaIdx > noRecordingSectionIdx, 'the recording-missing item must appear inside its own section');
 });
 
 test('buildComplianceEmail_ deep-links the tracker to the right TAB via #gid= when given one, not a bare spreadsheet link (real bug: Joana\'s compliance email opened Bens\' tracker tab because every rep\'s spreadsheetId points at the same shared multi-tab workbook and a bare /edit URL opens whatever tab was last active)', () => {
