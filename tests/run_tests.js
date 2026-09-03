@@ -4650,6 +4650,38 @@ test('buildHandoffBriefEmailHtml_ does not linkify a plain "Not mentioned on thi
   assert.ok(html.indexOf('Not mentioned on this call') !== -1);
 });
 
+// --- Task: lead-confirmation reminder for Discovery calls (03/09/2026) ---
+// Kris's ask: "he's not confirming [with the lead] that the lead will be
+// there. Sometimes disco calls are booked a long way in advance. They need
+// to be called the day before to ensure the lead will be there."
+
+test('buildLeadConfirmationReminderEmail_ tells the rep to call the LEAD to confirm attendance, names the prospect and call time, and falls back honestly when the name could not be parsed', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const repCfg = { name: 'Sean', email: 'sean@iconsofrealestate.com' };
+  const ev = {
+    title: 'Discovery / Sabiha Razzak',
+    prospectGuess: 'Sabiha Razzak',
+    start: new gas.Date('2026-09-04T14:00:00Z')
+  };
+  const email = gas.buildLeadConfirmationReminderEmail_(repCfg, ev);
+  assert.ok(email.subject.indexOf('Sabiha Razzak') !== -1, 'subject must name the prospect');
+  assert.ok(email.subject.indexOf('Discovery') !== -1);
+  assert.ok(email.body.indexOf('Sabiha Razzak') !== -1);
+  assert.ok(email.body.toLowerCase().indexOf('call them today') !== -1,
+    'the whole point — this must tell the rep to call the LEAD, not just remind them of the call');
+
+  const evBareTitle = { title: 'Discovery', prospectGuess: 'Discovery', start: new gas.Date('2026-09-04T14:00:00Z') };
+  const emailBare = gas.buildLeadConfirmationReminderEmail_(repCfg, evBareTitle);
+  assert.ok(emailBare.body.indexOf('name not parsed') !== -1,
+    'must say so honestly rather than printing the raw title as if it were a real name');
+});
+
+test('findUpcomingDiscoveryCallsForRep_/sendUpcomingLeadConfirmationReminders_ are wired into STANDING_AUTOMATION_HANDLERS_/installAllReadyTriggers_, same "no silent gap" discipline as every other phase (03/09/2026)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('sendUpcomingLeadConfirmationReminders_') !== -1);
+  assert.equal(typeof gas.LEAD_CONFIRMATION_CONFIG, 'object');
+  assert.equal(gas.LEAD_CONFIRMATION_CONFIG.ENABLED, false, 'must start disabled — preview before enabling, same as every other phase');
+});
+
 // --- Task: prospect social/website link lookup via Google CSE (01/09/2026) ---
 // Kris's ask: the model only ever reports a link the lead said verbatim on
 // the call, so "Not mentioned on this call" was the common case — find real

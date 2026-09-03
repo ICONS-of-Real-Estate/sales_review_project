@@ -3433,7 +3433,7 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runWeeklyPlaybookReview',                                               // Phase 1 — Playbook Review
   'scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreTomasTranscripts', // Phase 2
   'scoreJoanaTranscripts', 'scoreBensLegacyTranscripts', 'runRandomCalibrationSample',
-  'sendUpcomingHandoffBriefs_',                                            // Phase 3
+  'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck',                                                      // Phase 4
   'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
@@ -3504,6 +3504,14 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 3 (handoff briefs) — HANDOFF_CONFIG.ENABLED is false. Run ' +
       'previewUpcomingHandoffBriefs(), confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof LEAD_CONFIRMATION_CONFIG !== 'undefined' && LEAD_CONFIRMATION_CONFIG.ENABLED) {
+    installLeadConfirmationReminderTrigger();
+    installed.push('Phase 3: Discovery-call lead confirmation reminders');
+  } else {
+    skipped.push('Phase 3 (lead confirmation reminders) — LEAD_CONFIRMATION_CONFIG.ENABLED is false. Run ' +
+      'previewUpcomingLeadConfirmationReminders(), confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   if (typeof INBOX_SLA_CONFIG !== 'undefined' && INBOX_SLA_CONFIG.ENABLED) {

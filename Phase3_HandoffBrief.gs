@@ -740,3 +740,182 @@ function installHandoffBriefTrigger() {
       ? 'HANDOFF_CONFIG.ENABLED is true — real briefs will be emailed to reps as upcoming calls are found.'
       : 'HANDOFF_CONFIG.ENABLED is still false — it will only log, not send, until you flip that.'));
 }
+
+// ---------------------------------------------------------------------------
+// Lead-confirmation reminder for Discovery calls — Kris's ask (03/09/2026):
+// "One issue Sean's had... he's not confirming [with the lead] that the
+// lead will be there. Sometimes disco calls are booked a long way in
+// advance. They need to be called the day before to ensure the lead will
+// be there." Distinct from the handoff brief above — this isn't context
+// FOR the rep about the lead, it's a reminder for the rep to proactively
+// call the LEAD and confirm they'll actually show up tomorrow. Reuses the
+// same ~24hr-lookahead/hourly-trigger/dedup-tab pattern as the handoff
+// brief, filtered to Discovery-type events only.
+// ---------------------------------------------------------------------------
+
+var LEAD_CONFIRMATION_CONFIG = {
+  // Same "preview before enabling" discipline as every other phase — see
+  // CLAUDE.md. False = previewUpcomingLeadConfirmationReminders_ and
+  // sendUpcomingLeadConfirmationReminders_ both log instead of sending.
+  ENABLED: false,
+
+  // Same window/reasoning as HANDOFF_CONFIG's own LOOKAHEAD_MIN/MAX_HOURS —
+  // see that config's comment for why 22-26 (not a tighter window) survives
+  // a skipped hourly firing without missing an event's window entirely.
+  LOOKAHEAD_MIN_HOURS: 22,
+  LOOKAHEAD_MAX_HOURS: 26,
+
+  TRACKING_SHEET_NAME: 'Lead Confirmation Reminders Sent'
+};
+
+/** Discovery-only slice of getRepCallEvents_ — reuses guessCallTypeFromTitle_, the same call-type
+ * classifier the handoff brief subject line already uses, so this can't disagree with it about
+ * which events are Discovery calls. */
+function findUpcomingDiscoveryCallsForRep_(repCfg, windowStart, windowEnd) {
+  return getRepCallEvents_(repCfg, windowStart, windowEnd)
+    .filter(function (ev) { return guessCallTypeFromTitle_(ev.title) === 'Discovery'; });
+}
+
+/** Pure email-content builder — {subject, body, htmlBody} — kept separate from guardedSend_/CalendarApp
+ * so it's testable without a real MailApp or Calendar event. */
+function buildLeadConfirmationReminderEmail_(repCfg, ev) {
+  var nameParsed = ev.prospectGuess.trim().toLowerCase() !== ev.title.trim().toLowerCase();
+  var prospectLabel = nameParsed ? ev.prospectGuess : '(name not parsed from calendar title — check the invite)';
+  var callDateStr = Utilities.formatDate(ev.start, CONFIG.BUSINESS_TIMEZONE, 'EEEE') + ' ' +
+    Utilities.formatDate(ev.start, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + ' at ' +
+    Utilities.formatDate(ev.start, CONFIG.BUSINESS_TIMEZONE, 'HH:mm');
+
+  var subject = repCfg.name + ' — [Action needed] Confirm ' + prospectLabel + ' will be on tomorrow\'s Discovery call';
+
+  var body = [
+    'Hi ' + repCfg.name + ',',
+    '',
+    'You have a Discovery call with ' + prospectLabel + ' on ' + callDateStr + ' — about 24 hours from now.',
+    '',
+    'This is your reminder to call them TODAY and confirm they\'ll actually be there. Discovery calls are ' +
+      'sometimes booked a long way in advance, so a quick call now heads off a no-show tomorrow.',
+    '',
+    '— This is an automated reminder. This email was drafted by AI and sent automatically; reply to Kris or ' +
+      'Tomás with any issues.'
+  ].join('\n');
+
+  var htmlBody =
+    '<p>Hi ' + repCfg.name + ',</p>' +
+    '<p>You have a Discovery call with <b>' + escapeHtml_(prospectLabel) + '</b> on ' + escapeHtml_(callDateStr) +
+    ' — about 24 hours from now.</p>' +
+    '<p><b>This is your reminder to call them TODAY and confirm they\'ll actually be there.</b> Discovery calls ' +
+    'are sometimes booked a long way in advance, so a quick call now heads off a no-show tomorrow.</p>' +
+    '<p><i>— This is an automated reminder. This email was drafted by AI and sent automatically; reply to Kris ' +
+    'or Tomás with any issues.</i></p>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+function getLeadConfirmationTrackingSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(LEAD_CONFIRMATION_CONFIG.TRACKING_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(LEAD_CONFIRMATION_CONFIG.TRACKING_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 2).setValues([['Calendar Event ID', 'Sent At']]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function hasLeadConfirmationReminderBeenSent_(eventId) {
+  var sheet = getLeadConfirmationTrackingSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  return ids.some(function (row) { return String(row[0]) === String(eventId); });
+}
+
+function markLeadConfirmationReminderSent_(eventId) {
+  getLeadConfirmationTrackingSheet_().appendRow([eventId, new Date()]);
+}
+
+/** Dry run: logs what previewUpcomingLeadConfirmationReminders_ would send — no MailApp calls, no writes. */
+function previewUpcomingLeadConfirmationReminders() {
+  RUN_TAG = 'previewUpcomingLeadConfirmationReminders';
+  previewUpcomingLeadConfirmationReminders_();
+}
+
+function previewUpcomingLeadConfirmationReminders_() {
+  log_('[previewUpcomingLeadConfirmationReminders_] PREVIEW MODE — read-only. Nothing will be sent.');
+  var now = new Date();
+  var windowStart = new Date(now.getTime() + LEAD_CONFIRMATION_CONFIG.LOOKAHEAD_MIN_HOURS * 3600000);
+  var windowEnd = new Date(now.getTime() + LEAD_CONFIRMATION_CONFIG.LOOKAHEAD_MAX_HOURS * 3600000);
+
+  CONFIG.REPS.forEach(function (repCfg) {
+    var events = findUpcomingDiscoveryCallsForRep_(repCfg, windowStart, windowEnd);
+    if (!events.length) {
+      log_('[previewUpcomingLeadConfirmationReminders_] ' + repCfg.name + ': no upcoming Discovery call in window.');
+      return;
+    }
+    events.forEach(function (ev) {
+      var already = hasLeadConfirmationReminderBeenSent_(ev.id);
+      var email = buildLeadConfirmationReminderEmail_(repCfg, ev);
+      log_('[previewUpcomingLeadConfirmationReminders_] ' + repCfg.name + ' — "' + email.subject + '"' +
+        (already ? '  [already sent]' : '  [would send]'));
+    });
+  });
+}
+
+/** Live run: same matching as the preview, but actually sends and marks sent. Gated by
+ * LEAD_CONFIRMATION_CONFIG.ENABLED — logs the would-be reminder instead of sending while false.
+ * Idempotent via the "Lead Confirmation Reminders Sent" tracking tab; safe to run hourly. */
+function sendUpcomingLeadConfirmationReminders_() {
+  RUN_TAG = 'sendUpcomingLeadConfirmationReminders_';
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('sendUpcomingLeadConfirmationReminders_: another run holds the lock, skipping this firing.');
+    return;
+  }
+
+  try {
+    var now = new Date();
+    var windowStart = new Date(now.getTime() + LEAD_CONFIRMATION_CONFIG.LOOKAHEAD_MIN_HOURS * 3600000);
+    var windowEnd = new Date(now.getTime() + LEAD_CONFIRMATION_CONFIG.LOOKAHEAD_MAX_HOURS * 3600000);
+    var sent = 0, skippedAlready = 0;
+
+    CONFIG.REPS.forEach(function (repCfg) {
+      var events = findUpcomingDiscoveryCallsForRep_(repCfg, windowStart, windowEnd);
+      events.forEach(function (ev) {
+        if (hasLeadConfirmationReminderBeenSent_(ev.id)) {
+          skippedAlready++;
+          return;
+        }
+        var email = buildLeadConfirmationReminderEmail_(repCfg, ev);
+        if (!LEAD_CONFIRMATION_CONFIG.ENABLED) {
+          log_('  (LEAD_CONFIRMATION_CONFIG.ENABLED is false — logging instead of sending, NOT marking sent) ' +
+            repCfg.name + ' — "' + email.subject + '"');
+          return;
+        }
+        var didSend = guardedSend_(repCfg.email, email.subject, email.body,
+          { htmlBody: email.htmlBody, name: 'Lead Confirmation Reminder Bot' }, 1);
+        if (didSend) {
+          markLeadConfirmationReminderSent_(ev.id);
+          sent++;
+        }
+      });
+    });
+
+    log_('sendUpcomingLeadConfirmationReminders_ done — sent ' + sent + ', already sent ' + skippedAlready + '.');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * ONE-TIME setup, run manually — ideally only after previewUpcomingLeadConfirmationReminders()
+ * has been checked against real data. Same idempotent reinstallHourlyTrigger_ helper as the
+ * handoff brief trigger above.
+ */
+function installLeadConfirmationReminderTrigger() {
+  RUN_TAG = 'installLeadConfirmationReminderTrigger';
+  reinstallHourlyTrigger_('sendUpcomingLeadConfirmationReminders_', 1);
+  log_('Lead confirmation reminder check installed: sendUpcomingLeadConfirmationReminders_() now runs every hour. ' +
+    (LEAD_CONFIRMATION_CONFIG.ENABLED
+      ? 'LEAD_CONFIRMATION_CONFIG.ENABLED is true — real reminders will be emailed to reps as upcoming Discovery calls are found.'
+      : 'LEAD_CONFIRMATION_CONFIG.ENABLED is still false — it will only log, not send, until you flip that.'));
+}
