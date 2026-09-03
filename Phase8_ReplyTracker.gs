@@ -559,31 +559,16 @@ function bookingLineText_(bookingStats) {
     '% (of ' + bookingStats.repliedLeadCount + ' lead(s) who replied this period)';
 }
 
-/**
- * One "- Subject — lead — reasoning" line per reply of the given sentiment,
- * sorted newest first. limit is optional (used for the week/month "examples"
- * sections, where listing every one of dozens/hundreds of replies would bury
- * the point — Kris's ask 30/08/2026: "need to show at least examples so
- * there is some action to take") — omit it for Today's full list.
- */
-function replyListLinesText_(rows, sentiment, limit) {
+/** One "- Subject — lead — reasoning" line per reply of the given sentiment, sorted newest first — Today's full list only; the rolling 7/30-day sections show just the averages (Kris's ask 02/09/2026: examples there aren't needed, "that is just to show the averages"). */
+function replyListLinesText_(rows, sentiment) {
   var matches = rows.filter(function (r) { return r.sentiment === sentiment; })
     .sort(function (a, b) { return b.date - a.date; });
   if (!matches.length) return '  (none)';
-  var shown = limit ? matches.slice(0, limit) : matches;
-  var lines = shown.map(function (r) {
+  return matches.map(function (r) {
     return '  - ' + (r.subject || '(no subject)') + ' — ' + (r.leadEmail || '(lead email not extracted)') +
       ' — ' + (r.reasoning || '');
-  });
-  if (matches.length > shown.length) lines.push('  (+' + (matches.length - shown.length) + ' more not shown)');
-  return lines.join('\n');
+  }).join('\n');
 }
-
-// How many example replies to show per sentiment under a rolling period —
-// enough to actually act on without turning the digest into a full dump of
-// dozens/hundreds of replies. Today's own list stays uncapped (Kris's
-// 29/08/2026 ask to see every one of today's).
-var REPLY_EXAMPLE_LIMIT_ = 3;
 
 function buildReplyMetricsReportBody_(rows, now, tz) {
   var periods = computeReplyMetricsPeriods_(rows, now, tz);
@@ -616,16 +601,8 @@ function buildReplyMetricsReportBody_(rows, now, tz) {
     // regardless of how long the tracker's actually been running — see
     // actualDaysCovered_'s own comment. Both now fixed.
     line('Rolling 7-day average', periods.week),
-    'Examples — positive:',
-    replyListLinesText_(periods.week.rows, 'positive', REPLY_EXAMPLE_LIMIT_),
-    'Examples — negative:',
-    replyListLinesText_(periods.week.rows, 'negative', REPLY_EXAMPLE_LIMIT_),
     '',
     line('Rolling 30-day average', periods.month),
-    'Examples — positive:',
-    replyListLinesText_(periods.month.rows, 'positive', REPLY_EXAMPLE_LIMIT_),
-    'Examples — negative:',
-    replyListLinesText_(periods.month.rows, 'negative', REPLY_EXAMPLE_LIMIT_),
     '',
     periods.bookingOutcomes ? '' : 'NOTE: booking percentages are not yet wired up — see REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.'
   ].join('\n');
@@ -667,35 +644,19 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
     );
   }
 
-  /**
-   * <ul><li>Subject — lead — reasoning</li>...</ul> for one sentiment, sorted
-   * newest first. limit is optional (the week/month "examples" sections —
-   * Kris's ask 30/08/2026 — omit it for Today's full list).
-   */
-  function replyListHtml_(rows, sentiment, limit) {
+  /** <ul><li>Subject — lead — reasoning</li>...</ul> for one sentiment, sorted newest first — Today's full list only; the rolling 7/30-day sections show just the averages (Kris's ask 02/09/2026). */
+  function replyListHtml_(rows, sentiment) {
     var matches = rows.filter(function (r) { return r.sentiment === sentiment; })
       .sort(function (a, b) { return b.date - a.date; });
     if (!matches.length) {
       return '<p style="margin:0 0 12px 0;color:#777;font-size:13px;">(none)</p>';
     }
-    var shown = limit ? matches.slice(0, limit) : matches;
-    var items = shown.map(function (r) {
+    var items = matches.map(function (r) {
       return '<li style="margin-bottom:4px;"><strong>' + escapeHtml_(r.subject || '(no subject)') + '</strong> — ' +
         escapeHtml_(r.leadEmail || '(lead email not extracted)') + '<br><span style="color:#555;">' +
         escapeHtml_(r.reasoning || '') + '</span></li>';
     }).join('');
-    var more = matches.length > shown.length
-      ? '<li style="color:#888;list-style:none;margin-left:-18px;">(+' + (matches.length - shown.length) + ' more not shown)</li>'
-      : '';
-    return '<ul style="margin:0 0 12px 0;padding-left:18px;font-size:13px;">' + items + more + '</ul>';
-  }
-
-  /** One period's "examples" sub-section — a small positive/negative sample, not the full list. */
-  function examplesHtml_(stats) {
-    return '<p style="margin:0 0 2px 0;font-size:13px;"><strong style="color:#0a7d2c;">Examples — positive</strong></p>' +
-      replyListHtml_(stats.rows, 'positive', REPLY_EXAMPLE_LIMIT_) +
-      '<p style="margin:0 0 2px 0;font-size:13px;"><strong style="color:#c0392b;">Examples — negative</strong></p>' +
-      replyListHtml_(stats.rows, 'negative', REPLY_EXAMPLE_LIMIT_);
+    return '<ul style="margin:0 0 12px 0;padding-left:18px;font-size:13px;">' + items + '</ul>';
   }
 
   return (
@@ -713,9 +674,7 @@ function buildReplyMetricsReportHtml_(rows, now, tz) {
     // regardless of how long the tracker's actually been running — see
     // actualDaysCovered_'s own comment. Both now fixed.
     block('Rolling 7-day average', periods.week) +
-    examplesHtml_(periods.week) +
     block('Rolling 30-day average', periods.month) +
-    examplesHtml_(periods.month) +
     (periods.bookingOutcomes ? '' :
       '<p style="color:#666;font-size:12px;">NOTE: booking percentages are not yet wired up — see ' +
       'REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS in Phase8_ReplyTracker.gs.</p>') +

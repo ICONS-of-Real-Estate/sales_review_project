@@ -2743,10 +2743,9 @@ test('actualDaysCovered_ clamps to a minimum of 1 day so a same-day-old tracker 
   assert.ok(days >= 1, 'must never return less than 1 day');
 });
 
-test('buildReplyMetricsReportBody_ and buildReplyMetricsReportHtml_ cap the rolling-period example replies at REPLY_EXAMPLE_LIMIT_ and note how many more are not shown (Kris\'s ask 30/08/2026: "need to show at least examples so there is some action to take")', () => {
+test('buildReplyMetricsReportBody_ and buildReplyMetricsReportHtml_ show only the averages for the rolling 7/30-day periods, with no example replies listed (Kris\'s ask 02/09/2026: "don\'t need examples on the 7 days / 30 days, that is just to show the averages" — reverses the earlier 30/08/2026 ask)', () => {
   const now = new Date('2026-08-29T21:00:00Z');
   const rows = [];
-  // 5 positive replies within the last 7 days — more than REPLY_EXAMPLE_LIMIT_ (3).
   for (let i = 0; i < 5; i++) {
     rows.push({ date: new Date(now.getTime() - i * 3600 * 1000), leadEmail: 'pos' + i + '@example.com', sentiment: 'positive', subject: 'Positive reply ' + i, reasoning: 'r' + i });
   }
@@ -2756,16 +2755,14 @@ test('buildReplyMetricsReportBody_ and buildReplyMetricsReportHtml_ cap the roll
   gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'dd/MM/yy' ? '29/08/26' : realFormatDate(d, tz, pattern)) };
   try {
     const body = gas.buildReplyMetricsReportBody_(rows, now, 'America/New_York');
-    const weekExamplesSection = body.split('Examples — positive:')[1];
-    const shownInBody = (weekExamplesSection.match(/Positive reply \d/g) || []).length;
-    assert.equal(shownInBody, gas.REPLY_EXAMPLE_LIMIT_, 'plain-text examples section must cap at REPLY_EXAMPLE_LIMIT_');
-    assert.match(body, /\(\+2 more not shown\)/, 'must say how many additional replies were not shown');
+    assert.ok(body.indexOf('Examples —') === -1, 'plain-text body must not show any "Examples —" section at all');
+    const bodyAfterWeek = body.split('Rolling 7-day average')[1];
+    assert.ok(bodyAfterWeek.indexOf('Positive reply') === -1, 'individual replies must not be listed under the rolling averages');
 
     const html = gas.buildReplyMetricsReportHtml_(rows, now, 'America/New_York');
-    const weekHtmlSection = html.split('Rolling 7-day average')[1].split('Rolling 30-day average')[0];
-    const shownInHtml = (weekHtmlSection.match(/Positive reply \d/g) || []).length;
-    assert.equal(shownInHtml, gas.REPLY_EXAMPLE_LIMIT_, 'HTML examples section must cap at REPLY_EXAMPLE_LIMIT_');
-    assert.match(weekHtmlSection, /\(\+2 more not shown\)/, 'HTML must also say how many additional replies were not shown');
+    assert.ok(html.indexOf('Examples —') === -1, 'HTML body must not show any "Examples —" section at all');
+    const htmlAfterWeek = html.split('Rolling 7-day average')[1];
+    assert.ok(htmlAfterWeek.indexOf('Positive reply') === -1, 'individual replies must not be listed under the rolling averages');
   } finally {
     gas.REPLY_TRACKER_CONFIG.BOOKING_TRACKER_TABS = originalBookingTabs;
     gas.Utilities = originalUtilities;
