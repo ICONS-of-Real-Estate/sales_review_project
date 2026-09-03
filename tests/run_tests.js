@@ -1940,6 +1940,39 @@ test('reviewTrainingCallTranscript_\'s parse-failure fallback carries a tomas_co
   assert.equal(typeof result.tomas_coaching.coaching_feedback_summary, 'string');
 });
 
+test('reviewTrainingCallTranscript_\'s parse-failure fallback carries manual_review_recommended: true, so callers can tell it apart from a real score', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
+  gas.callKimiJudge_ = () => 'not json';
+  const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
+  assert.equal(result.manual_review_recommended, true);
+});
+
+test('buildTomasCoachingFeedbackEmail_ shows a "review unavailable" notice instead of misleading red badges when the judge never actually scored the call (real bug 02/09/2026, Tomás: parse failure rendered as "Grounded in real calls: No" / "Concrete next focus set: No", reading as genuine negative feedback on his facilitation)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    manual_review_recommended: true,
+    tomas_coaching: { grounded_in_real_data: false, gave_concrete_next_focus: false, coaching_feedback_summary: 'Unscored — parse failure after retries.' }
+  };
+  const email = gas.buildTomasCoachingFeedbackEmail_('Joana', '260901', result);
+  assert.ok(email.body.indexOf('Grounded in') === -1, 'must not render the misleading Yes/No badge line at all');
+  assert.ok(email.htmlBody.indexOf('Grounded in') === -1, 'must not render the misleading Yes/No badge in HTML either');
+  assert.ok(email.body.toLowerCase().indexOf('review unavailable') !== -1 || email.body.toLowerCase().indexOf("couldn't parse") !== -1,
+    'must clearly say the review failed');
+  assert.ok(email.body.toLowerCase().indexOf('not') !== -1 && email.body.toLowerCase().indexOf('feedback') !== -1,
+    'must explicitly say this is not real feedback');
+});
+
+test('buildTrainingReviewEmail_ shows a "review unavailable" notice instead of a misleading "Attended: No" badge when the judge never actually scored the call', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = { manual_review_recommended: true, attended: true, coaching_notes: 'Automated review failed to parse twice — read the transcript manually.' };
+  const email = gas.buildTrainingReviewEmail_('Sean', '260901', result);
+  assert.ok(email.body.indexOf('Attended:') === -1, 'must not render the misleading Attended badge line at all');
+  assert.ok(email.htmlBody.indexOf('Attended:') === -1, 'must not render the misleading Attended badge in HTML either');
+  assert.ok(email.body.toLowerCase().indexOf("couldn't parse") !== -1 || email.body.toLowerCase().indexOf('review unavailable') !== -1,
+    'must clearly say the review failed');
+});
+
 test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judge\'s own practiced_* fields rather than asking a second question, and skips framework for Bens', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const coaching = { grounded_in_real_data: true, gave_concrete_next_focus: false, coaching_feedback_summary: 'Leaned on generic advice instead of Bens\' real calls.' };

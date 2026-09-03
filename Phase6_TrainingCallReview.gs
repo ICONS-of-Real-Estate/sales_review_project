@@ -288,6 +288,7 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     }
   }
   return {
+    manual_review_recommended: true,
     reasoning: 'Unscored — parse failure after retries.',
     attended: true,
     practiced_objections: false,
@@ -355,6 +356,28 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var closeAskLabelCap = role.closeAskSkillLabel.charAt(0).toUpperCase() + role.closeAskSkillLabel.slice(1);
   var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
   var subject = 'Training Call Plan — ' + rep + ' — ' + (weekLabel || dateLabel);
+
+  // Same parse-failure-sentinel bug as buildTomasCoachingFeedbackEmail_ above
+  // — the fallback fills attended/practiced_* with placeholder booleans just
+  // to have something to return, which used to render as a real "Attended:
+  // No" badge to the rep even though they were on the call; the judge simply
+  // never scored it.
+  if (result.manual_review_recommended) {
+    var failBody = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+      'The automated review couldn\'t parse this call\'s transcript after retrying, so no plan could be ' +
+      'generated — read the transcript manually.\n\n' +
+      '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
+    var failHtmlBody =
+      '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
+      '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+      trainingReviewCallout_('#f9ab00', '#fef7e0', 'Review unavailable',
+        'The automated review couldn\'t parse this call\'s transcript after retrying, so no plan could be ' +
+        'generated — read the transcript manually.') +
+      '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
+      '</div>';
+    return { subject: subject, body: failBody, htmlBody: failHtmlBody };
+  }
+
   var objections = result.objections_to_drill || [];
   var closeAsk = result.close_ask_drill || null;
   var frameworkGaps = role.drillsFramework ? (result.framework_gaps_to_drill || []) : [];
@@ -447,6 +470,31 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
   var role = trainingReviewRoleFor_(rep);
   var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
   var subject = 'Your Training Call Coaching Feedback — ' + rep + ' — ' + (weekLabel || dateLabel);
+
+  // Real bug found live (02/09/2026, Tomás): the parse-failure sentinel
+  // below (reviewTrainingCallTranscript_) fills grounded_in_real_data/
+  // gave_concrete_next_focus with `false` just to have SOME boolean to
+  // return — this used to render as three red "No" badges, reading exactly
+  // like genuine negative feedback on Tomás's facilitation ("Grounded in
+  // real calls: No", etc) when the judge never actually evaluated the call
+  // at all. Show a clearly-labeled "review failed" notice instead whenever
+  // this was the unscored fallback, not real scoring.
+  if (result.manual_review_recommended) {
+    var failBody = 'Feedback on your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+      'The automated review couldn\'t parse this call\'s transcript after retrying — this is NOT feedback ' +
+      'on your facilitation, the review itself failed. No action needed from you.\n\n' +
+      '— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.';
+    var failHtmlBody =
+      '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
+      '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Feedback on your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+      trainingReviewCallout_('#f9ab00', '#fef7e0', 'Review unavailable',
+        'The automated review couldn\'t parse this call\'s transcript after retrying — this is <b>not</b> ' +
+        'feedback on your facilitation, the review itself failed. No action needed from you.') +
+      '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.</p>' +
+      '</div>';
+    return { subject: subject, body: failBody, htmlBody: failHtmlBody };
+  }
+
   var coaching = result.tomas_coaching || {
     grounded_in_real_data: false,
     gave_concrete_next_focus: false,
