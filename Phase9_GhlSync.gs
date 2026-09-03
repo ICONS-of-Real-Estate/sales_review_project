@@ -760,3 +760,393 @@ function installGhlSyncTrigger() {
       ? 'GHL_CONFIG.ENABLED is true — Prospect Email / Outcome Disposition will be backfilled from GHL automatically.'
       : 'GHL_CONFIG.ENABLED is still false — nothing will actually sync until you flip that.'));
 }
+
+// ---------------------------------------------------------------------------
+// CRM hygiene checks — CRM Hygiene Automation doc (Tomás's approval + inline
+// comments, 01/09/2026). Only Rules 2 and 3 plus Tomás's own unprompted 5th
+// rule (a comment on the doc, not one of the numbered proposals) are built
+// here. Rule 1 (stage-based staleness) is explicitly on hold per his own
+// comment — "wait for redesign, PLEASE" — it depends on today's 6 fragmented
+// pipelines, which the one-pipeline redesign is going to replace, so building
+// against them now risks a rebuild the moment that lands. Rules 2/3/5 don't
+// have that problem — none of them depend on pipeline shape.
+//
+// SCOPE NOTE: every check below only ever looks at a GHL contact already
+// reachable from a Sales Call Log row — same per-row name-match
+// computeGhlSyncFixes_ above already does — not a scan of every GHL contact.
+// A lead GHL knows about that never had a Sales Call Log row at all (e.g.
+// one that fell through the cracks before any call was ever logged) is
+// invisible to this. Rule 3's own description in the doc ("the exact
+// failure mode behind the lost 2024/Hubspot-transfer leads") is really about
+// that wider case — a true full-GHL-contacts scan is a separate, bigger job
+// (no existing per-contact enumeration in this file, and no natural
+// stopping point the way a bounded Sales Call Log scan has). Flagged here
+// rather than silently narrowing the doc's own rule without saying so.
+//
+// Recipient, per Tomás's own comment on the doc ("rep only, can't have any
+// more alarms"): the rep only, never CC'd to Tomás or Kris — different from
+// every other nag bot in this codebase (see checkRep_ and
+// runNoShowFollowUpCheck for the usual CC pattern).
+// ---------------------------------------------------------------------------
+
+var GHL_HYGIENE_CONFIG = {
+  ENABLED: false,
+  // Days after a call before its GHL contact/opportunity not having been
+  // touched counts as a real gap rather than "just hasn't happened yet".
+  // Tomás's own comment said N should vary by pipeline/stage once the
+  // redesign lands — until then this one flat number applies everywhere.
+  CALL_REFLECTION_GRACE_DAYS: 3,
+  // Rule 5 (Tomás's own addition) looks this many days into a rep's calendar
+  // for a future event matching the prospect before concluding "no real
+  // future appointment" — long enough to cover a call booked a couple weeks
+  // out, short enough that a placeholder months away doesn't count as cover.
+  FUTURE_APPOINTMENT_LOOKAHEAD_DAYS: 21,
+  // Bounds how far back this scans the Sales Call Log — same reasoning as
+  // NO_SHOW_FOLLOWUP_CONFIG.LOOKBACK_DAYS (Phase4_InboxSLA.gs): a rep can
+  // only actually act on recent rows, and it keeps GHL call volume (2+ calls
+  // per matched row) bounded on a full run.
+  LOOKBACK_DAYS: 30
+};
+
+/**
+ * True for a GHL stage name that represents a booked-but-not-yet-happened
+ * appointment (e.g. "Sales Call Booked", "Discovery Call Booked") — Tomás's
+ * own rule (comment on the CRM Hygiene Automation doc): a lead sitting in
+ * one of these should have a real future appointment, or it shouldn't be
+ * there. Matches on the word "booked" rather than an exact stage list —
+ * GHL_PIPELINE_MAP.md shows this naming pattern repeated across pipelines,
+ * and a substring match survives a stage getting renamed slightly better
+ * than a hardcoded list would.
+ */
+function ghlStageLooksBooked_(stageName) {
+  return /\bbooked\b/i.test(String(stageName || ''));
+}
+
+/**
+ * Rule 2 — "call not reflected in GHL". True when the call happened long
+ * enough ago (graceDays) that someone should have touched the matching GHL
+ * opportunity by now, but none of the contact's opportunities show any
+ * activity on or after the call date. Returns null — not applicable, not a
+ * real finding — rather than false when the call is too recent to judge, or
+ * when no opportunity carries a usable timestamp at all (a GHL response-
+ * shape gap, not evidence of neglect) — same never-guess-on-missing-signal
+ * policy as ghlStageToOutcomeDisposition_ returning null on an unmapped
+ * stage above.
+ */
+function ghlCallReflectionGap_(callDate, opportunities, nowMs, graceDays) {
+  if (!callDate || isNaN(callDate.getTime())) return null;
+  var graceMs = graceDays * 24 * 3600000;
+  if (nowMs - callDate.getTime() < graceMs) return null;
+
+  var latestUpdateMs = null;
+  (opportunities || []).forEach(function (o) {
+    // Best-effort field names — GHL v2's docs are unreachable from the dev
+    // sandbox (see this file's header) — checks every plausible key rather
+    // than picking one and silently missing real activity under another.
+    var raw = o.updatedAt || o.dateUpdated || o.lastStatusChangeAt || o.lastStageChangeAt;
+    if (!raw) return;
+    var ms = new Date(raw).getTime();
+    if (!isNaN(ms) && (latestUpdateMs === null || ms > latestUpdateMs)) latestUpdateMs = ms;
+  });
+
+  if (latestUpdateMs === null) return null; // no usable timestamp anywhere — can't judge, not a finding
+  return latestUpdateMs < callDate.getTime();
+}
+
+/** Rule 3 (scoped — see this section's header comment). True when a matched
+ * GHL contact has zero opportunities in any pipeline at all. */
+function ghlContactIsUnpipelined_(opportunities) {
+  return !opportunities || opportunities.length === 0;
+}
+
+/**
+ * Rule 5 (Tomás's own addition). Returns null when nothing is in a Booked
+ * stage — nothing to check, not a finding. Otherwise { flag, bookedStages },
+ * where flag is true only when hasFutureEvent is definitively false —
+ * hasFutureEvent === null (no way to check, e.g. Tomás's calls aren't
+ * calendar-scanned) reports unverifiable: true rather than guessing a flag.
+ */
+function ghlBookedWithoutFutureAppointmentGap_(opportunities, stageLookup, hasFutureEvent) {
+  var bookedStages = [];
+  (opportunities || []).forEach(function (o) {
+    var stageId = o.pipelineStageId || o.stageId;
+    var info = stageLookup[stageId];
+    var stageName = info ? info.stageName : null;
+    if (stageName && ghlStageLooksBooked_(stageName)) bookedStages.push(stageName);
+  });
+  if (!bookedStages.length) return null;
+  if (hasFutureEvent === null) return { flag: false, bookedStages: bookedStages, unverifiable: true };
+  return { flag: !hasFutureEvent, bookedStages: bookedStages };
+}
+
+/**
+ * One Sales Call Log row's hygiene findings, combining all three checks.
+ * Pure given its inputs (`ctx.opportunities`/`ctx.hasFutureEvent` are
+ * already-resolved data, not live calls) — computeGhlHygieneFindings_ below
+ * is what actually talks to GHL/CalendarApp and hands this the results.
+ * Returns null when nothing is wrong.
+ */
+function classifyGhlHygieneRow_(ctx) {
+  var reflectionGap = ghlCallReflectionGap_(ctx.callDate, ctx.opportunities, ctx.nowMs,
+    GHL_HYGIENE_CONFIG.CALL_REFLECTION_GRACE_DAYS);
+  var unpipelined = ghlContactIsUnpipelined_(ctx.opportunities);
+  var bookedGap = ghlBookedWithoutFutureAppointmentGap_(ctx.opportunities, ctx.stageLookup, ctx.hasFutureEvent);
+
+  var issues = [];
+  if (reflectionGap) issues.push('call_not_reflected_in_ghl');
+  if (unpipelined) issues.push('unpipelined_lead');
+  if (bookedGap && bookedGap.flag) issues.push('booked_without_future_appointment');
+  if (!issues.length) return null;
+
+  return {
+    prospectName: ctx.prospectName, rep: ctx.rep, callDateLabel: ctx.callDateLabel,
+    issues: issues, bookedStages: bookedGap ? bookedGap.bookedStages : []
+  };
+}
+
+/** repEmailByName_ (Phase3_HandoffBrief.gs) only covers CONFIG.REPS, keyed by
+ * email — this needs the full rep config (calendarId included) for
+ * ghlHasFutureCalendarEvent_ below, so it's a separate lookup rather than a
+ * reuse of that one. Case/whitespace-insensitive, same as repEmailByName_. */
+function repConfigByName_(repName) {
+  var normalized = String(repName || '').trim().toLowerCase();
+  var found = null;
+  CONFIG.REPS.forEach(function (r) {
+    if (String(r.name || '').trim().toLowerCase() === normalized) found = r;
+  });
+  return found;
+}
+
+/**
+ * True if `repName` has a real future calendar event that looks like it's
+ * for `prospectName` within GHL_HYGIENE_CONFIG.FUTURE_APPOINTMENT_LOOKAHEAD_DAYS
+ * days. Returns null (unverifiable) for a rep with no calendar-scan config
+ * (Tomás isn't in CONFIG.REPS — see repEmailForFollowUpCheck_'s own comment,
+ * Phase4_InboxSLA.gs) or on a calendar API failure — never guesses "no
+ * appointment" from the absence of a way to check.
+ */
+function ghlHasFutureCalendarEvent_(repName, prospectName, nowDate) {
+  var repCfg = repConfigByName_(repName);
+  if (!repCfg) return null;
+  var dayEnd = new Date(nowDate.getTime() + GHL_HYGIENE_CONFIG.FUTURE_APPOINTMENT_LOOKAHEAD_DAYS * 24 * 3600000);
+  var events;
+  try {
+    events = getRepCallEvents_(repCfg, nowDate, dayEnd);
+  } catch (e) {
+    log_('ghlHasFutureCalendarEvent_: calendar lookup failed for ' + repName + ': ' + e);
+    return null;
+  }
+  var queryTokens = normalizeNameTokens_(prospectName);
+  return events.some(function (ev) {
+    var evTokens = normalizeNameTokens_(ev.prospectGuess || '');
+    return queryTokens.some(function (qt) { return qt.length >= 3 && evTokens.indexOf(qt) !== -1; });
+  });
+}
+
+/**
+ * Shared scan — used by both previewGhlHygieneCheck_ and runGhlHygieneCheck_
+ * so they can't disagree, same pattern as computeGhlSyncFixes_ and
+ * computeNoShowFollowUpResults_ (Phase4_InboxSLA.gs) above/elsewhere. Costs
+ * up to 3 GHL calls plus one calendar read per matched row, so it's bounded
+ * to the last GHL_HYGIENE_CONFIG.LOOKBACK_DAYS rather than the whole sheet.
+ */
+function computeGhlHygieneFindings_(locationId, stageLookup) {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return []; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+
+  var cutoff = new Date(Date.now() - GHL_HYGIENE_CONFIG.LOOKBACK_DAYS * 24 * 3600000);
+  var now = new Date();
+  var findings = [];
+
+  rows.forEach(function (row) {
+    var prospectName = String(row[col['Prospect Name'] - 1] || '').trim();
+    var rep = String(row[col['Rep'] - 1] || '').trim();
+    var callDateLabel = String(row[col['Call Date'] - 1] || '').trim();
+    if (!prospectName || !rep) return;
+
+    var parts = callDateLabel.split('/'); // ['dd', 'MM', 'yyyy'] — same layout findRecentNoShowRows_ parses
+    if (parts.length !== 3) return;
+    var callDate = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
+    if (isNaN(callDate.getTime()) || callDate < cutoff) return;
+
+    var search = ghlSearchContactByName_(locationId, prospectName);
+    if (!search.ok || !search.contacts.length) return; // no GHL contact at all — nothing to check yet
+    var candidates = search.contacts.filter(function (c) { return contactNameLooksLikeQuery_(c, prospectName); });
+    if (candidates.length !== 1) return; // no confident match, or ambiguous — same conservative policy as the sync above
+
+    var contact = candidates[0];
+    var oppsRes = ghlListOpportunitiesForContact_(locationId, contact.id);
+    if (!oppsRes.ok) return;
+
+    var hasFutureEvent = ghlHasFutureCalendarEvent_(rep, prospectName, now);
+    var issue = classifyGhlHygieneRow_({
+      prospectName: prospectName, rep: rep, callDateLabel: callDateLabel, callDate: callDate,
+      opportunities: oppsRes.opportunities, stageLookup: stageLookup,
+      hasFutureEvent: hasFutureEvent, nowMs: now.getTime()
+    });
+    if (issue) findings.push(issue);
+
+    Utilities.sleep(250); // polite pacing — up to 3 GHL calls per matched row here
+  });
+
+  return findings;
+}
+
+/** Groups computeGhlHygieneFindings_'s flat list by rep, since the send step
+ * emails each rep only their own findings (Tomás's "rep only" instruction). */
+function groupGhlHygieneFindingsByRep_(findings) {
+  var byRep = {};
+  findings.forEach(function (f) {
+    byRep[f.rep] = byRep[f.rep] || [];
+    byRep[f.rep].push(f);
+  });
+  return byRep;
+}
+
+/** Pure report builder for one rep's own findings — {subject, body, htmlBody}
+ * — kept separate from MailApp so it's testable without it, same split as
+ * buildNoShowFollowUpReport_ (Phase4_InboxSLA.gs). */
+function buildGhlHygieneReportForRep_(findings) {
+  var subject = 'GHL hygiene check — ' + findings.length + ' item(s) need a look';
+  var labelFor = {
+    call_not_reflected_in_ghl: 'GHL was never updated after this call',
+    unpipelined_lead: 'GHL contact has no pipeline at all',
+    booked_without_future_appointment: 'GHL shows a booked stage with no real future appointment on the calendar'
+  };
+  var lineText = function (f) {
+    return '  • ' + f.prospectName + ' (' + f.callDateLabel + '): ' +
+      f.issues.map(function (i) { return labelFor[i]; }).join('; ');
+  };
+  var lineHtml = function (f) {
+    return '<li>' + escapeHtml_(f.prospectName) + ' (' + f.callDateLabel + '): ' +
+      f.issues.map(function (i) { return escapeHtml_(labelFor[i]); }).join('; ') + '</li>';
+  };
+
+  var body = [
+    'GHL hygiene check — ' + findings.length + ' contact(s)/opportunity(s) need a look:',
+    '',
+    findings.map(lineText).join('\n'),
+    '',
+    'Each item above is checked against your own real calendar and GHL pipeline data, not guessed. ' +
+      'See the CRM Hygiene Automation doc for what each check means.'
+  ].join('\n');
+
+  var htmlBody =
+    '<p>GHL hygiene check — ' + findings.length + ' contact(s)/opportunity(s) need a look:</p>' +
+    '<ul>' + findings.map(lineHtml).join('') + '</ul>' +
+    '<p><i>Each item above is checked against your own real calendar and GHL pipeline data, not guessed.</i></p>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewGhlHygieneCheck() {
+  return previewGhlHygieneCheck_();
+}
+
+/**
+ * Read-only. Full-sheet-within-lookback scan reporting every hygiene finding
+ * and exactly what would be emailed to each rep, per-rep, if this were live.
+ * Writes/sends nothing.
+ */
+function previewGhlHygieneCheck_() {
+  RUN_TAG = 'previewGhlHygieneCheck_';
+  log_('PREVIEW MODE — read-only GHL hygiene probe (CRM Hygiene Automation doc, Rules 2/3 + Tomás\'s ' +
+    'booked-without-appointment rule). Nothing will be sent.');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
+  var stageLookup = buildGhlStageLookup_(pipelines);
+
+  var findings = computeGhlHygieneFindings_(locationId, stageLookup);
+  log_(findings.length + ' row(s) with a hygiene issue found.');
+
+  var byRep = groupGhlHygieneFindingsByRep_(findings);
+  Object.keys(byRep).forEach(function (rep) {
+    var report = buildGhlHygieneReportForRep_(byRep[rep]);
+    log_('');
+    log_('Would send to ' + rep + ' ONLY (no CC, per Tomás\'s comment on the source doc): "' + report.subject + '"');
+    log_(report.body);
+  });
+
+  log_('');
+  log_('Paste this whole log back to Claude before running the real check.');
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function runGhlHygieneCheck() {
+  return runGhlHygieneCheck_();
+}
+
+/**
+ * LIVE SEND. Gated by GHL_HYGIENE_CONFIG.ENABLED — run previewGhlHygieneCheck()
+ * first and confirm the output looks right before flipping that to true.
+ * Emails each rep ONLY their own findings, no CC — Tomás's own instruction
+ * on the source doc ("rep only, can't have any more alarms"), different from
+ * every other nag bot in this codebase.
+ */
+function runGhlHygieneCheck_() {
+  RUN_TAG = 'runGhlHygieneCheck_';
+  if (!GHL_HYGIENE_CONFIG.ENABLED) {
+    log_('GHL_HYGIENE_CONFIG.ENABLED is false — run previewGhlHygieneCheck() first, confirm the output ' +
+      'looks right, then flip GHL_HYGIENE_CONFIG.ENABLED to true in Phase9_GhlSync.gs.');
+    return;
+  }
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var pipelines = fetchGhlPipelines_(locationId);
+  if (!pipelines) return; // fetchGhlPipelines_ already logged why
+  var stageLookup = buildGhlStageLookup_(pipelines);
+
+  var findings = computeGhlHygieneFindings_(locationId, stageLookup);
+  if (!findings.length) { log_('No GHL hygiene issues found.'); return; }
+
+  var byRep = groupGhlHygieneFindingsByRep_(findings);
+  Object.keys(byRep).forEach(function (rep) {
+    var repEmail = repEmailForFollowUpCheck_(rep);
+    if (!repEmail) {
+      log_('No email on file for ' + rep + ' — skipping ' + byRep[rep].length + ' finding(s).');
+      return;
+    }
+    var report = buildGhlHygieneReportForRep_(byRep[rep]);
+    var sent = guardedSend_(repEmail, report.subject, report.body,
+      { htmlBody: report.htmlBody, name: 'GHL Hygiene Check' }, 1);
+    log_((sent ? 'Sent' : 'SEND FAILED/SKIPPED for') + ' GHL hygiene email to ' + repEmail + ' (' +
+      byRep[rep].length + ' finding(s)).');
+  });
+}
+
+/**
+ * ONE-TIME setup, run manually — ideally only after previewGhlHygieneCheck()
+ * has been reviewed and GHL_HYGIENE_CONFIG.ENABLED flipped to true. Daily,
+ * not hourly — same reasoning as installGhlSyncTrigger above (GHL/calendar
+ * state doesn't need sub-day latency, and this costs 3+ GHL calls per row).
+ */
+function installGhlHygieneCheckTrigger() {
+  RUN_TAG = 'installGhlHygieneCheckTrigger';
+  reinstallHourlyTrigger_('runGhlHygieneCheck_', 24);
+  log_('GHL hygiene check installed: runGhlHygieneCheck_() now runs once a day. ' +
+    (GHL_HYGIENE_CONFIG.ENABLED
+      ? 'GHL_HYGIENE_CONFIG.ENABLED is true — reps will be emailed their own findings automatically.'
+      : 'GHL_HYGIENE_CONFIG.ENABLED is still false — nothing will actually send until you flip that.'));
+}

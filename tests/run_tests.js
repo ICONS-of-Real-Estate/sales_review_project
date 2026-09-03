@@ -4222,6 +4222,203 @@ test('computeGhlSyncFixes_ stops at the time budget and reports a partial scan, 
 });
 
 // ---------------------------------------------------------------------------
+// CRM hygiene checks (Phase9_GhlSync.gs) — Rules 2/3 + Tomás's own
+// booked-without-appointment rule from the CRM Hygiene Automation doc.
+// ---------------------------------------------------------------------------
+
+test('ghlStageLooksBooked_ matches any "...Booked" stage name across pipelines, not an exact list (GHL_PIPELINE_MAP.md shows this pattern repeated)', () => {
+  assert.equal(gas.ghlStageLooksBooked_('Sales Call - Booked'), true);
+  assert.equal(gas.ghlStageLooksBooked_('Discovery Call Booked'), true);
+  assert.equal(gas.ghlStageLooksBooked_('Qualification Call Booked'), true);
+  assert.equal(gas.ghlStageLooksBooked_('Podcast Booked On Calendar'), true);
+  assert.equal(gas.ghlStageLooksBooked_('Closed Won'), false);
+  assert.equal(gas.ghlStageLooksBooked_(''), false);
+  assert.equal(gas.ghlStageLooksBooked_(null), false);
+});
+
+test('ghlCallReflectionGap_ returns null (not a finding) when the call is too recent to judge yet', () => {
+  const now = new Date('2026-09-03T12:00:00Z').getTime();
+  const callDate = new Date('2026-09-02T12:00:00Z'); // 1 day ago, grace is 3
+  assert.equal(gas.ghlCallReflectionGap_(callDate, [], now, 3), null);
+});
+
+test('ghlCallReflectionGap_ returns null when no opportunity carries a usable timestamp (a response-shape gap, not evidence of neglect)', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const callDate = new Date('2026-09-01T12:00:00Z');
+  assert.equal(gas.ghlCallReflectionGap_(callDate, [{ pipelineStageId: 'x' }], now, 3), null);
+});
+
+test('ghlCallReflectionGap_ flags true when the call is old enough and no opportunity was touched on/after it', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const callDate = new Date('2026-09-01T12:00:00Z');
+  const opportunities = [{ pipelineStageId: 'x', updatedAt: '2026-08-20T00:00:00Z' }];
+  assert.equal(gas.ghlCallReflectionGap_(callDate, opportunities, now, 3), true);
+});
+
+test('ghlCallReflectionGap_ flags false when an opportunity WAS touched on/after the call date, checking every plausible GHL field name', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const callDate = new Date('2026-09-01T12:00:00Z');
+  assert.equal(gas.ghlCallReflectionGap_(callDate, [{ dateUpdated: '2026-09-02T00:00:00Z' }], now, 3), false);
+  assert.equal(gas.ghlCallReflectionGap_(callDate, [{ lastStatusChangeAt: '2026-09-05T00:00:00Z' }], now, 3), false);
+  assert.equal(gas.ghlCallReflectionGap_(callDate, [{ lastStageChangeAt: '2026-09-05T00:00:00Z' }], now, 3), false);
+});
+
+test('ghlContactIsUnpipelined_ is true only for zero opportunities', () => {
+  assert.equal(gas.ghlContactIsUnpipelined_([]), true);
+  assert.equal(gas.ghlContactIsUnpipelined_(null), true);
+  assert.equal(gas.ghlContactIsUnpipelined_([{ pipelineStageId: 'x' }]), false);
+});
+
+test('ghlBookedWithoutFutureAppointmentGap_ returns null when nothing is in a Booked stage — nothing to check, not a finding', () => {
+  const stageLookup = { 'closed-won': { stageName: 'Closed Won' } };
+  assert.equal(gas.ghlBookedWithoutFutureAppointmentGap_([{ pipelineStageId: 'closed-won' }], stageLookup, false), null);
+});
+
+test('ghlBookedWithoutFutureAppointmentGap_ reports unverifiable rather than guessing a flag when hasFutureEvent is null (e.g. Tomás, whose calls aren\'t calendar-scanned)', () => {
+  const stageLookup = { 'sc-booked': { stageName: 'Sales Call - Booked' } };
+  const result = gas.ghlBookedWithoutFutureAppointmentGap_([{ pipelineStageId: 'sc-booked' }], stageLookup, null);
+  assert.equal(result.flag, false);
+  assert.equal(result.unverifiable, true);
+});
+
+test('ghlBookedWithoutFutureAppointmentGap_ flags true only when a Booked stage exists AND there is definitively no future appointment', () => {
+  const stageLookup = { 'sc-booked': { stageName: 'Sales Call - Booked' } };
+  const flagged = gas.ghlBookedWithoutFutureAppointmentGap_([{ pipelineStageId: 'sc-booked' }], stageLookup, false);
+  assert.equal(flagged.flag, true);
+  assert.deepEqual(Array.prototype.slice.call(flagged.bookedStages), ['Sales Call - Booked']);
+  const clear = gas.ghlBookedWithoutFutureAppointmentGap_([{ pipelineStageId: 'sc-booked' }], stageLookup, true);
+  assert.equal(clear.flag, false);
+});
+
+test('classifyGhlHygieneRow_ combines all three checks and returns null when nothing is wrong', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const result = gas.classifyGhlHygieneRow_({
+    prospectName: 'Clean Contact', rep: 'Sean', callDateLabel: '01/09/2026',
+    callDate: new Date('2026-09-01T12:00:00Z'),
+    opportunities: [{ pipelineStageId: 'closed-won', updatedAt: '2026-09-02T00:00:00Z' }],
+    stageLookup: { 'closed-won': { stageName: 'Closed Won' } },
+    hasFutureEvent: null, nowMs: now
+  });
+  assert.equal(result, null);
+});
+
+test('classifyGhlHygieneRow_ reports every issue that applies, real combined case: an old opportunity untouched since long before the call, plus a Booked stage with no future appointment', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const result = gas.classifyGhlHygieneRow_({
+    prospectName: 'Neglected Contact', rep: 'Bens', callDateLabel: '01/09/2026',
+    callDate: new Date('2026-09-01T12:00:00Z'),
+    opportunities: [{ pipelineStageId: 'sc-booked', updatedAt: '2026-08-01T00:00:00Z' }],
+    stageLookup: { 'sc-booked': { stageName: 'Sales Call - Booked' } },
+    hasFutureEvent: false, nowMs: now
+  });
+  assert.deepEqual(Array.prototype.slice.call(result.issues),
+    ['call_not_reflected_in_ghl', 'booked_without_future_appointment']);
+});
+
+test('classifyGhlHygieneRow_ reports unpipelined_lead alone for a zero-opportunity contact — no timestamp to judge a reflection gap against, so that check stays silent rather than double-counting the same gap two ways', () => {
+  const now = new Date('2026-09-10T12:00:00Z').getTime();
+  const result = gas.classifyGhlHygieneRow_({
+    prospectName: 'Unpipelined Contact', rep: 'Bens', callDateLabel: '01/09/2026',
+    callDate: new Date('2026-09-01T12:00:00Z'),
+    opportunities: [], stageLookup: {}, hasFutureEvent: null, nowMs: now
+  });
+  assert.deepEqual(Array.prototype.slice.call(result.issues), ['unpipelined_lead']);
+});
+
+test('repConfigByName_ finds a real CONFIG.REPS entry case/whitespace-insensitively, and returns null for a rep not calendar-scanned (Tomás)', () => {
+  const sean = gas.repConfigByName_('  sean ');
+  assert.ok(sean, 'expected a match for Sean');
+  assert.equal(sean.name, 'Sean');
+  assert.equal(gas.repConfigByName_('Tomás'), null);
+  assert.equal(gas.repConfigByName_('Nobody'), null);
+});
+
+test('ghlHasFutureCalendarEvent_ returns null (unverifiable) for a rep with no calendar-scan config, never guessing false', () => {
+  assert.equal(gas.ghlHasFutureCalendarEvent_('Tomás', 'Some Prospect', new Date('2026-09-10T12:00:00Z')), null);
+});
+
+test('ghlHasFutureCalendarEvent_ matches a future event by shared name token with the prospect, using the rep\'s real calendar lookup', () => {
+  const originalGetEvents = gas.getRepCallEvents_;
+  let capturedRepCfg = null;
+  gas.getRepCallEvents_ = (repCfg) => {
+    capturedRepCfg = repCfg;
+    return [{ prospectGuess: 'Anthony Camperi' }];
+  };
+  try {
+    assert.equal(gas.ghlHasFutureCalendarEvent_('Sean', 'Anthony Camperi - 2nd', new Date('2026-09-10T12:00:00Z')), true);
+    assert.equal(capturedRepCfg.name, 'Sean');
+    assert.equal(gas.ghlHasFutureCalendarEvent_('Sean', 'Unrelated Person', new Date('2026-09-10T12:00:00Z')), false);
+  } finally {
+    gas.getRepCallEvents_ = originalGetEvents;
+  }
+});
+
+test('ghlHasFutureCalendarEvent_ returns null, not throws, when the calendar lookup itself fails', () => {
+  const originalGetEvents = gas.getRepCallEvents_;
+  gas.getRepCallEvents_ = () => { throw new Error('Calendar API down'); };
+  try {
+    assert.equal(gas.ghlHasFutureCalendarEvent_('Sean', 'Anyone', new Date('2026-09-10T12:00:00Z')), null);
+  } finally {
+    gas.getRepCallEvents_ = originalGetEvents;
+  }
+});
+
+test('groupGhlHygieneFindingsByRep_ buckets findings by rep, preserving each rep\'s own list', () => {
+  const findings = [
+    { prospectName: 'A', rep: 'Sean', issues: ['unpipelined_lead'] },
+    { prospectName: 'B', rep: 'Bens', issues: ['unpipelined_lead'] },
+    { prospectName: 'C', rep: 'Sean', issues: ['call_not_reflected_in_ghl'] }
+  ];
+  const byRep = gas.groupGhlHygieneFindingsByRep_(findings);
+  assert.equal(byRep.Sean.length, 2);
+  assert.equal(byRep.Bens.length, 1);
+});
+
+test('buildGhlHygieneReportForRep_ lists every finding with a human-readable label, in both plain text and HTML', () => {
+  const report = gas.buildGhlHygieneReportForRep_([
+    { prospectName: 'Jane Doe', callDateLabel: '01/09/2026', issues: ['unpipelined_lead', 'booked_without_future_appointment'] }
+  ]);
+  assert.ok(report.subject.indexOf('1 item') !== -1);
+  assert.ok(report.body.indexOf('Jane Doe') !== -1);
+  assert.ok(report.body.indexOf('GHL contact has no pipeline at all') !== -1);
+  assert.ok(report.htmlBody.indexOf('<li>Jane Doe') !== -1);
+  assert.ok(report.htmlBody.indexOf('no real future appointment') !== -1);
+});
+
+test('computeGhlHygieneFindings_ skips a row with no confident GHL match (no contact, or ambiguous), same conservative policy as the email/disposition sync', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'No Match', Rep: 'Sean', 'Call Date': '01/07/2026' })
+  ];
+  const originalDateFn = gas.dateAtMidnightInBusinessTimezone_;
+  gas.dateAtMidnightInBusinessTimezone_ = () => new Date('2026-07-01T12:00:00Z'); // well within LOOKBACK_DAYS-independent fixed "old" date
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [] })
+  }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
+  gas.dateAtMidnightInBusinessTimezone_ = originalDateFn;
+  assert.equal(result.length, 0);
+});
+
+test('computeGhlHygieneFindings_ finds a real hygiene issue end to end: a confidently-matched, unpipelined contact', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Anthony Camperi', Rep: 'Sean', 'Call Date': '01/07/2026' })
+  ];
+  const originalDateFn = gas.dateAtMidnightInBusinessTimezone_;
+  const originalGetEvents = gas.getRepCallEvents_;
+  gas.dateAtMidnightInBusinessTimezone_ = () => new Date(Date.now() - 20 * 24 * 3600000);
+  gas.getRepCallEvents_ = () => [];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Anthony Camperi' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [] })
+  }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
+  gas.dateAtMidnightInBusinessTimezone_ = originalDateFn;
+  gas.getRepCallEvents_ = originalGetEvents;
+  assert.equal(result.length, 1);
+  assert.ok(result[0].issues.indexOf('unpipelined_lead') !== -1);
+});
+
+// ---------------------------------------------------------------------------
 // cleanProspectNameForSheet_ (Phase2_CallScoring.gs) — real values pulled
 // straight from a live GHL contact-matching preview (28/08/2026): every one
 // of these was already sitting in the Sales Call Log's Prospect Name column
