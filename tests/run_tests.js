@@ -2212,6 +2212,46 @@ test('buildTrainingReviewEmail_ shows a "review unavailable" notice instead of a
     'must clearly say the review failed');
 });
 
+test('trainingReviewFormatText_ escapes, then turns \\n into <br>, then italicizes quoted substrings — same transform buildDailyPracticeFeedbackEmail_ already uses (Kris 03/09/2026: "BLOCKS of text are too long without whitespace, bolding, italic" on the Notes callout, which never got the 31/08 Daily Practice fix applied to it)', () => {
+  const out = gas.trainingReviewFormatText_('Sean said "that\'s not an objection" here.\nThen a second point.\n<b>ignored</b>');
+  assert.ok(out.indexOf('<br>') !== -1, 'newlines must become <br>');
+  assert.ok(out.indexOf('<i>&quot;that&#39;s not an objection&quot;</i>') !== -1 || out.indexOf('<i>&quot;that') !== -1,
+    'a quoted moment must be italicized');
+  assert.ok(out.indexOf('<b>ignored</b>') === -1, 'raw HTML in the AI text must be escaped, not rendered');
+});
+
+test('buildTrainingReviewEmail_ formats coaching_notes and team_notes with line breaks and italicized quotes in the HTML body, not as one raw dense block (real bug 03/09/2026: these two callouts never got the 31/08 Daily Practice / 02/09 Playbook Review formatting fix applied)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    coaching_notes: 'First point about the budget role-play.\nSecond point: Sean said "I\'ll fight the machine" here.',
+    next_focus: 'focus', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
+    team_notes: 'Applies to everyone: "seek the cause" before restating value.\nAlso: don\'t pitch launchpad-only first.'
+  };
+  const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
+  assert.ok(email.htmlBody.indexOf('First point about the budget role-play.<br>Second point') !== -1,
+    'coaching_notes newlines must render as <br>, not run together as one paragraph');
+  assert.ok(email.htmlBody.indexOf('<i>&quot;I') !== -1, 'a quoted line in coaching_notes must be italicized');
+  assert.ok(email.htmlBody.indexOf('Applies to everyone:') !== -1 && email.htmlBody.indexOf('<br>Also:') !== -1,
+    'team_notes must get the same line-break treatment as coaching_notes');
+});
+
+test('buildTomasCoachingFeedbackEmail_ formats coaching_feedback_summary with line breaks and italicized quotes in the HTML body', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    tomas_coaching: {
+      grounded_in_real_data: true, gave_concrete_next_focus: true,
+      coaching_feedback_summary: 'Grounded the session in Sean\'s real calls.\nClosed with "practice this exact line" — concrete.'
+    }
+  };
+  const email = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', result);
+  assert.ok(email.htmlBody.indexOf('Grounded the session in Sean\'s real calls.<br>Closed with') !== -1,
+    'coaching_feedback_summary newlines must render as <br>');
+  assert.ok(email.htmlBody.indexOf('<i>&quot;practice this exact line&quot;</i>') !== -1,
+    'a quoted line must be italicized');
+});
+
 test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judge\'s own practiced_* fields rather than asking a second question, and skips framework for Bens', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const coaching = { grounded_in_real_data: true, gave_concrete_next_focus: false, coaching_feedback_summary: 'Leaned on generic advice instead of Bens\' real calls.' };

@@ -189,7 +189,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  "practiced_objections": true,',
     '  "practiced_close_ask": true,',
     '  "practiced_framework": true,',
-    '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote",',
+    '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote. If this ' +
+      'covers more than one distinct idea (a quoted moment, a separate observation, a role-play correction, ' +
+      'etc.), put each on its own line separated by a literal \\n — never chain them into one dense ' +
+      'run-on paragraph.",',
     '  "next_focus": "string — one concrete, specific self-practice focus for this coming week",',
     '  "objections_to_drill": [',
     '    { "label": "string — the specific objection, short, e.g. \\"I\'m too busy right now\\"",',
@@ -209,7 +212,8 @@ function buildTrainingReviewSystemPrompt_(rep) {
       'call (not ' + rep + '\'s performance): did he ground the session in ' + rep + '\'s specific real ' +
       'calls/objections rather than generic advice, and did he close with a genuinely concrete, specific ' +
       'next-focus rather than something vague? Quote a real moment (strong or weak). Constructive, not ' +
-      'just a compliment or just a criticism."',
+      'just a compliment or just a criticism. If this covers more than one distinct idea, put each on its ' +
+      'own line separated by a literal \\n — never chain them into one dense run-on paragraph."',
     '  }',
     '}'
   ]).join('\n');
@@ -322,6 +326,24 @@ function trainingReviewCallout_(accentColor, bgColor, label, text) {
   return '<div style="border-left:4px solid ' + accentColor + ';background:' + bgColor + ';' +
     'padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
     '<b style="color:' + accentColor + ';">' + label + '</b><br>' + text + '</div>';
+}
+
+/**
+ * Kris's ask (03/09/2026, on the Notes callout specifically — same "wall of
+ * text" complaint already fixed for Daily Practice 31/08 and the Playbook
+ * Review 02/09, just never applied here): every raw AI-generated text this
+ * file puts into trainingReviewCallout_ (coaching_notes, team_notes,
+ * coaching_feedback_summary) was going straight in unescaped, with no line
+ * breaks and no emphasis, however many distinct ideas the model actually
+ * separated with \n. Same transform as buildDailyPracticeFeedbackEmail_'s
+ * (Phase7_DailySelfPractice.gs) — escape first (raw AI text, not Jinja),
+ * then \n -> <br>, then italicize quoted substrings so a real line someone
+ * said reads as a quote, not plain narration.
+ */
+function trainingReviewFormatText_(text) {
+  return escapeHtml_(text)
+    .replace(/\n/g, '<br>')
+    .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
 }
 
 var FRAMEWORK_TOPIC_LABELS_ = {
@@ -443,12 +465,12 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     trainingReviewStatBadge_(closeAskLabelCap + ' practiced', result.practiced_close_ask) +
     frameworkStatBadgeHtml +
     '</div>' +
-    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', result.coaching_notes) +
+    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', trainingReviewFormatText_(result.coaching_notes)) +
     '<h3 style="color:#0b8043;font-size:14px;margin:0 0 6px;">This week\'s objections to drill (Agree → Isolate → Repeat)</h3>' +
     objectionsHtml +
     closeAskHtml +
     frameworkHtml +
-    (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', result.team_notes) : '') +
+    (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', trainingReviewFormatText_(result.team_notes)) : '') +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
     '</div>';
 
@@ -518,7 +540,7 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
     trainingReviewStatBadge_(rep + ' got to practice out loud', repGotToPractice) +
     trainingReviewStatBadge_('Concrete next focus set', coaching.gave_concrete_next_focus) +
     '</div>' +
-    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Facilitation feedback', coaching.coaching_feedback_summary) +
+    trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Facilitation feedback', trainingReviewFormatText_(coaching.coaching_feedback_summary)) +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.</p>' +
     '</div>';
 
