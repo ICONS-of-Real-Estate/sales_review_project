@@ -1703,12 +1703,90 @@ test('buildPlaybookReviewNewMaterialEmail_ produces a styled htmlBody — bold p
   assert.ok(email.htmlBody.indexOf('<div') !== -1, 'each call should render as its own visually distinct block, not one dense paragraph');
 });
 
+test('rankTrainingPriorities_ ranks the four elements by how many calls failed each, so a recurring gap outranks one bad call (Kris 03/09/2026: "All 4 need to be graded and the highest priority trained each week")', () => {
+  const call = (score, flags) => ({ score: score, flags: flags });
+  // Discovery fails 3 of 4; objections fail 1; the ask fails 2.
+  const calls = [
+    call(2, { discovery: false, framework: true, ask: false, objections: true }),
+    call(3, { discovery: false, framework: true, ask: true, objections: true }),
+    call(2, { discovery: false, framework: true, ask: false, objections: false }),
+    call(5, { discovery: true, framework: true, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  assert.equal(ranking[0].key, 'discovery', 'the element failed by the most calls is the week\'s focus');
+  assert.equal(ranking[0].failed, 3);
+  assert.equal(ranking[0].scored, 4);
+  assert.equal(ranking[0].failedCalls.length, 3, 'the focus carries its own failing calls for the email to list');
+  assert.equal(ranking[1].key, 'ask');
+  assert.equal(ranking[3].key, 'framework', 'an element nothing failed sorts last');
+  assert.equal(ranking[3].failed, 0);
+});
+
+test('rankTrainingPriorities_ treats a blank flag as "no signal" — never as a failure — so a QC call (framework not scored) and rows predating a column cannot manufacture a training focus nobody was graded on', () => {
+  const calls = [
+    // Two QC calls: framework legitimately never scored on these.
+    { score: 4, flags: { discovery: true, framework: null, ask: true, objections: true } },
+    { score: 4, flags: { discovery: true, framework: null, ask: true, objections: false } }
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const framework = ranking.filter((r) => r.key === 'framework')[0];
+  assert.equal(framework.failed, 0, 'an ungraded element must never count as failed');
+  assert.equal(framework.scored, 0, 'and must not inflate the denominator either');
+  assert.equal(ranking[0].key, 'objections', 'the only real failure is the focus');
+  assert.equal(ranking[0].scored, 2, 'objections were graded on both calls');
+});
+
+test('rankTrainingPriorities_ breaks a tie toward the element whose failing calls scored worse', () => {
+  const calls = [
+    // discovery and objections each fail exactly 2 calls, but discovery's fail at 1-2 and objections' at 4-5.
+    { score: 1, flags: { discovery: false, framework: true, ask: true, objections: true } },
+    { score: 2, flags: { discovery: false, framework: true, ask: true, objections: true } },
+    { score: 4, flags: { discovery: true, framework: true, ask: true, objections: false } },
+    { score: 5, flags: { discovery: true, framework: true, ask: true, objections: false } }
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  assert.equal(ranking[0].failed, ranking[1].failed, 'precondition: this is a genuine tie on count');
+  assert.equal(ranking[0].key, 'discovery', 'the worse-scoring failures win the tie');
+  assert.equal(ranking[0].avgFailedScore, 1.5);
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ leads with the week\'s focus and shows all four elements, so the pick is visible rather than asserted', () => {
+  const repCfg = { name: 'Joana' };
+  const flagged = [{
+    prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 2, feedback: 'ok',
+    gaps: { discovery: 'confirming/deepening what the earlier call surfaced' }
+  }];
+  const ranking = [
+    { key: 'discovery', label: 'Discovery', failed: 3, scored: 4, avgFailedScore: 2, failedCalls: flagged },
+    { key: 'objections', label: 'Objection handling', failed: 1, scored: 4, avgFailedScore: 3, failedCalls: [] },
+    { key: 'ask', label: 'Asking for the money / the booking', failed: 0, scored: 4, avgFailedScore: null, failedCalls: [] },
+    { key: 'framework', label: 'Framework explanation', failed: 0, scored: 0, avgFailedScore: null, failedCalls: [] }
+  ];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', ranking);
+
+  assert.equal(email.subject, 'Joana — discovery is this week\'s focus (24/08 - 30/08)');
+  assert.ok(email.body.indexOf('failed on 3 of 4') !== -1, 'plain body states the focus and its rate');
+  assert.ok(email.body.indexOf('Objection handling: failed 1 of 4') !== -1, 'plain body shows the other elements too');
+  assert.ok(email.body.indexOf('Framework explanation: not graded on any call last week') !== -1,
+    'an element graded on nothing is said to be ungraded, not shown as a clean pass it did not earn');
+  assert.ok(email.htmlBody.indexOf('This week\'s training focus for Joana: Discovery') !== -1,
+    'htmlBody leads with the focus');
+  // The Gaps column detail is the difference between "discovery was weak" and
+  // "he never confirmed what the QC already surfaced".
+  assert.ok(email.body.indexOf('Missing: confirming/deepening what the earlier call surfaced') !== -1,
+    'plain body names which sub-piece failed');
+  assert.ok(email.htmlBody.indexOf('confirming/deepening what the earlier call surfaced') !== -1,
+    'htmlBody names which sub-piece failed');
+});
+
 test('buildPlaybookReviewNewMaterialEmail_ subject drops the year (Kris\'s ask 02/09/2026: "we know what year it is"), but the body keeps full dates', () => {
   const repCfg = { name: 'Sean' };
   const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
   const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
 
-  assert.equal(email.subject, 'Sean — last week\'s calls to review (24/08 - 30/08)');
+  // Subject now names the week's training focus (03/09/2026) rather than a
+  // generic "calls to review" — the year-stripping it pins is unchanged.
+  assert.equal(email.subject, 'Sean — objection handling is this week\'s focus (24/08 - 30/08)');
   assert.ok(email.body.indexOf('24/08/2026 - 30/08/2026') !== -1, 'body should keep the full year, unlike the subject');
 });
 

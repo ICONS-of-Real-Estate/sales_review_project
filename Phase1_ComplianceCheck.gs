@@ -2747,15 +2747,91 @@ var PLAYBOOK_REVIEW_CONFIG = {
   TRIGGER_HOUR: 8 // Tuesday morning, CONFIG.BUSINESS_TIMEZONE — ahead of that day's training session
 };
 
-// Same "flagged for an objection issue" test sendJoanaRawMaterialToTomas
-// (above) used, pulled out so the weekly review can reuse it for any rep.
-var PLAYBOOK_REVIEW_OBJECTION_FAILURE_MODES_ = ['objections_missed', 'both', 'multiple'];
+/**
+ * The four elements Kris named (03/09/2026) as the ones every rep is graded
+ * on every week, with the weakest becoming that week's training focus:
+ *
+ *   "The 4 main elements are 1. Discovery (QC does this too) 2. Framework
+ *    (only sales call) 3. Ask for the money (ask for the booking on QC)
+ *    4. Objection handling. All 4 need to be graded and the highest priority
+ *    trained each week."
+ *
+ * Each maps to the sheet column its judged flag already lands in. Two of the
+ * four carry a companion "Gaps" column naming WHICH sub-piece failed (which
+ * of the three framework legs, which part of discovery) — real coaching
+ * detail worth putting in front of Tomás, not just a red flag.
+ *
+ * Note what each element MEANS is already role-aware upstream, so nothing
+ * here needs a per-rep special case: "Asked For Close" is redefined by Bens'
+ * and the QC rubric as asking for the BOOKING rather than the money (see
+ * buildBensJudgeSystemPrompt_'s header in Phase2_CallScoring.gs), and
+ * framework is deliberately never scored on a QC call — which is exactly why
+ * a blank flag has to mean "no signal" rather than a failure below.
+ */
+var TRAINING_PRIORITY_ELEMENTS_ = [
+  { key: 'discovery', label: 'Discovery', column: 'Flag: Discovery Adequate', gapsColumn: 'Discovery Gaps' },
+  { key: 'framework', label: 'Framework explanation', column: 'Flag: Framework Explained', gapsColumn: 'Framework Gaps' },
+  { key: 'ask', label: 'Asking for the money / the booking', column: 'Flag: Asked For Close', gapsColumn: null },
+  { key: 'objections', label: 'Objection handling', column: 'Flag: Objections Handled', gapsColumn: null }
+];
 
-function isObjectionFlaggedRow_(row, col) {
-  var mode = String(row[col['Primary Failure Mode'] - 1] || '').trim();
-  var objectionsHandled = row[col['Flag: Objections Handled'] - 1];
-  return PLAYBOOK_REVIEW_OBJECTION_FAILURE_MODES_.indexOf(mode) !== -1 ||
-    ((mode === '' || mode === 'none') && objectionsHandled === false);
+/**
+ * Reads one Sales Call Log row into the four-element shape
+ * rankTrainingPriorities_ works on. A cell that isn't an actual boolean is
+ * "no signal" (null) — NOT a pass and NOT a failure. Three separate things
+ * produce a blank here and none of them is a rep failing anything: a row
+ * scored before that column existed, a dimension the rubric variant
+ * legitimately doesn't score (framework on a QC call), and a parse failure
+ * that never produced flags. Counting any of those as a failure would put a
+ * whole week's training on an element nobody actually got graded on.
+ */
+function trainingElementFlagsForRow_(row, col) {
+  var flags = {};
+  var gaps = {};
+  TRAINING_PRIORITY_ELEMENTS_.forEach(function (el) {
+    var raw = row[col[el.column] - 1];
+    flags[el.key] = (raw === true || raw === false) ? raw : null;
+    gaps[el.key] = el.gapsColumn ? String(row[col[el.gapsColumn] - 1] || '').trim() : '';
+  });
+  return { flags: flags, gaps: gaps };
+}
+
+/**
+ * Ranks the four elements worst-first for one rep's week. Pure — takes the
+ * already-read calls, does no I/O of its own.
+ *
+ * Priority is the NUMBER OF CALLS that failed the element, per Kris's ask:
+ * one bad call is noise, the same failure across several calls is the real
+ * skill gap. Ties break toward the element whose failing calls scored worse,
+ * so "failed 2 calls at score 1-2" outranks "failed 2 calls at score 4".
+ *
+ * `scored` is reported alongside `failed` because the two have different
+ * denominators by design — framework isn't scored on QC calls at all — so
+ * "2 of 3" and "2 of 8" must stay distinguishable rather than both reading
+ * as a bare "2".
+ */
+function rankTrainingPriorities_(calls) {
+  return TRAINING_PRIORITY_ELEMENTS_.map(function (el) {
+    var scored = calls.filter(function (c) { return c.flags[el.key] === true || c.flags[el.key] === false; });
+    var failedCalls = scored.filter(function (c) { return c.flags[el.key] === false; });
+    var avgFailedScore = failedCalls.length
+      ? failedCalls.reduce(function (sum, c) { return sum + (Number(c.score) || 0); }, 0) / failedCalls.length
+      : null;
+    return {
+      key: el.key,
+      label: el.label,
+      scored: scored.length,
+      failed: failedCalls.length,
+      failedCalls: failedCalls,
+      avgFailedScore: avgFailedScore
+    };
+  }).sort(function (a, b) {
+    if (b.failed !== a.failed) return b.failed - a.failed;
+    if (a.avgFailedScore === null && b.avgFailedScore === null) return 0;
+    if (a.avgFailedScore === null) return 1;
+    if (b.avgFailedScore === null) return -1;
+    return a.avgFailedScore - b.avgFailedScore;
+  });
 }
 
 /**
@@ -2819,42 +2895,53 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
     Utilities.formatDate(shiftBusinessDate_(week.end, tz, -1), tz, 'dd/MM/yyyy');
 
   CONFIG.REPS.forEach(function (repCfg) {
-    var flagged = [];
+    // Every one of the rep's calls last week, not just the objection-flagged
+    // ones this used to filter down to — all four elements get graded, then
+    // the worst becomes the week's focus (Kris, 03/09/2026).
+    var calls = [];
     rows.forEach(function (row, i) {
       if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repCfg.name.toLowerCase()) return;
       var callDate = row[col['Call Date'] - 1];
       if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
-      if (!isObjectionFlaggedRow_(row, col)) return;
+      var judged = trainingElementFlagsForRow_(row, col);
       // Kris's ask (02/09/2026), same as sendRandomCalibrationDigest_'s own
       // fix (29/08/2026): "if you want calls reviewed, add the links" —
       // straight to the call's Transcript URL (the thing being judged) and
       // its Sales Call Log row (where Tomás's session notes get typed in).
-      flagged.push({
+      calls.push({
         prospectName: row[col['Prospect Name'] - 1],
         callDate: Utilities.formatDate(callDate, tz, 'dd/MM/yyyy'),
         score: row[col['Call Quality Score'] - 1],
         feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim(),
         transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim(),
-        rowLink: salesCallLogRowLink_(logSheet, i + 2)
+        rowLink: salesCallLogRowLink_(logSheet, i + 2),
+        flags: judged.flags,
+        gaps: judged.gaps
       });
     });
 
+    var ranking = rankTrainingPriorities_(calls);
+    var focus = ranking[0];
+    var flagged = (focus && focus.failed) ? focus.failedCalls : [];
+
     if (forcePreview) {
-      log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + flagged.length +
-        ' flagged call(s) last week (' + windowLabel + ').');
+      log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
+        windowLabel + '). Priority: ' + ranking.map(function (r) {
+          return r.label + ' ' + r.failed + '/' + r.scored;
+        }).join(', ') + '.');
       return;
     }
 
     var sent = flagged.length
-      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel)
+      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking)
       : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
       return;
     }
-    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - ' + flagged.length +
-      ' flagged call(s) for the week of ' + windowLabel + '.');
+    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - focus "' + focus.label + '" (' +
+      focus.failed + '/' + focus.scored + ' call(s)) for the week of ' + windowLabel + '.');
   });
 }
 
@@ -2871,23 +2958,53 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
  * reused so a score is colored the same way everywhere in the system,
  * rather than inventing a second color rubric here.
  */
-function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
+function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking) {
   // Kris's ask (02/09/2026): "don't need the year in the subject — we know
   // what year it is." Only the subject drops it; the body keeps the full
   // dd/MM/yyyy dates, same as every other email in this system.
-  var subject = repCfg.name + ' — last week\'s calls to review (' + stripYearFromDateRangeLabel_(windowLabel) + ')';
+  var focus = (ranking && ranking.length) ? ranking[0] : null;
+  var focusLabel = focus ? focus.label : 'Objection handling';
+  var subject = repCfg.name + ' — ' + focusLabel.toLowerCase() + ' is this week\'s focus (' +
+    stripYearFromDateRangeLabel_(windowLabel) + ')';
+
+  // The full four-element standing, so the pick is visible rather than
+  // asserted — Tomás can see that e.g. discovery failed 3 of 5 while the
+  // money-ask failed 1 of 5, and why the session is going where it is.
+  // An element nobody was graded on last week (scored 0) is shown as such
+  // rather than as a clean pass it didn't earn.
+  var rankingLines = (ranking || []).map(function (r) {
+    if (!r.scored) return '  - ' + r.label + ': not graded on any call last week';
+    return '  - ' + r.label + ': failed ' + r.failed + ' of ' + r.scored + ' graded call(s)';
+  });
+  var rankingHtml = (ranking || []).map(function (r, i) {
+    var text = r.scored
+      ? 'failed <strong>' + r.failed + ' of ' + r.scored + '</strong> graded call(s)'
+      : '<span style="color:#888;">not graded on any call last week</span>';
+    return '<li style="margin-bottom:3px;' + (i === 0 ? 'font-weight:bold;' : '') + '">' +
+      escapeHtml_(r.label) + ' — ' + text + '</li>';
+  }).join('');
+
   var body =
     'Tomás,\n\n' +
-    repCfg.name + '\'s objection-handling material for last week (' + windowLabel + ') — ' +
-    flagged.length + ' flagged call(s). Raw data, not a finished playbook — this week\'s session should focus ' +
-    'on just these, not older material already covered.\n\n' +
+    'This week\'s training focus for ' + repCfg.name + ': ' + focusLabel.toUpperCase() +
+    (focus ? ' — failed on ' + focus.failed + ' of ' + focus.scored + ' graded call(s)' : '') +
+    ' last week (' + windowLabel + ').\n\n' +
+    (rankingLines.length ? 'All four elements, worst first:\n' + rankingLines.join('\n') + '\n\n' : '') +
+    'The ' + flagged.length + ' call(s) that failed on ' + focusLabel.toLowerCase() + ' — raw data, not a ' +
+    'finished playbook. This week\'s session should focus on just these, not older material already ' +
+    'covered.\n\n' +
     flagged.map(function (c, i) {
       // Kris's ask (02/09/2026): "if you want calls reviewed, add the
       // links" — straight to the transcript and to the Sales Call Log row.
       var links = [];
       if (c.transcriptUrl) links.push('Transcript: ' + c.transcriptUrl);
       if (c.rowLink) links.push('Sheet row: ' + c.rowLink);
+      // Discovery and framework each carry a Gaps column naming which
+      // sub-piece actually failed — the difference between "discovery was
+      // weak" and "he never confirmed what the QC already surfaced".
+      var gap = (focus && c.gaps) ? c.gaps[focus.key] : '';
       return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
+        (gap ? 'Missing: ' + gap + '\n   ' : '') +
         (c.feedback || '(no AI feedback summary on file)') +
         (links.length ? '\n   ' + links.join(' | ') : '');
     }).join('\n\n') +
@@ -2897,6 +3014,7 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
     var feedbackHtml = escapeHtml_(c.feedback || '(no AI feedback summary on file)')
       .replace(/\n/g, '<br>')
       .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
+    var gapHtml = (focus && c.gaps && c.gaps[focus.key]) ? escapeHtml_(c.gaps[focus.key]) : '';
     var linksHtml = [];
     if (c.transcriptUrl) linksHtml.push('<a href="' + escapeHtml_(c.transcriptUrl) + '">Transcript</a>');
     if (c.rowLink) linksHtml.push('<a href="' + escapeHtml_(c.rowLink) + '">Sheet row</a>');
@@ -2904,6 +3022,8 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
       '<p style="margin:0 0 6px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
       '</strong> (' + escapeHtml_(c.callDate) + '), score ' +
       '<strong style="color:' + dailyPracticeScoreColor_(c.score) + ';">' + escapeHtml_(String(c.score)) + '</strong></p>' +
+      (gapHtml ? '<p style="margin:0 0 6px;font-size:13px;color:#c0392b;"><strong>Missing:</strong> ' +
+        gapHtml + '</p>' : '') +
       '<p style="margin:0;">' + feedbackHtml + '</p>' +
       (linksHtml.length ? '<p style="margin:6px 0 0;font-size:12px;">' + linksHtml.join(' &nbsp;|&nbsp; ') + '</p>' : '') +
       '</div>';
@@ -2911,10 +3031,18 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
   var htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
     '<p>Tomás,</p>' +
-    '<p><strong>' + escapeHtml_(repCfg.name) + '\'s objection-handling material for last week (' +
-    escapeHtml_(windowLabel) + ')</strong> — ' + flagged.length + ' flagged call(s). Raw data, not a ' +
-    'finished playbook — this week\'s session should focus on just these, not older material already ' +
-    'covered.</p>' +
+    '<div style="border-left:4px solid #b8860b;background:#fdf8e8;padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
+    '<p style="margin:0 0 4px;font-size:15px;"><strong>This week\'s training focus for ' +
+    escapeHtml_(repCfg.name) + ': ' + escapeHtml_(focusLabel) + '</strong></p>' +
+    '<p style="margin:0;">' +
+    (focus ? 'Failed on <strong>' + focus.failed + ' of ' + focus.scored + '</strong> graded call(s) ' : '') +
+    'last week (' + escapeHtml_(windowLabel) + ').</p>' +
+    '</div>' +
+    (rankingHtml ? '<p style="margin:0 0 4px;">All four elements, worst first:</p>' +
+      '<ul style="margin:0 0 14px;padding-left:20px;font-size:13px;">' + rankingHtml + '</ul>' : '') +
+    '<p>The <strong>' + flagged.length + ' call(s)</strong> that failed on ' +
+    escapeHtml_(focusLabel.toLowerCase()) + ' — raw data, not a finished playbook. This week\'s session ' +
+    'should focus on just these, not older material already covered.</p>' +
     callsHtml +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +
     'session.</i></p>' +
@@ -2923,8 +3051,8 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
   return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
-function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
-  var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel);
+function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking) {
+  var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking);
   return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL,
     htmlBody: email.htmlBody,
@@ -2935,9 +3063,10 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel) {
 function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel) {
   var body =
     'Tomás,\n\n' +
-    'No flagged calls for ' + repCfg.name + ' last week (' + windowLabel + ') — nothing new to train on for ' +
-    'objections this session. Per Kris\'s ask, this is deliberately NOT a pointer back to older material — ' +
-    'training should stay scoped to what actually happened last week.\n\n' +
+    'Nothing flagged for ' + repCfg.name + ' last week (' + windowLabel + ') — none of the four elements ' +
+    '(discovery, framework, asking for the money/booking, objection handling) failed on a graded call, so ' +
+    'there\'s no new material to train on this session. Per Kris\'s ask, this is deliberately NOT a pointer ' +
+    'back to older material — training should stay scoped to what actually happened last week.\n\n' +
     '— Sent automatically ahead of this week\'s session.';
 
   return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no flagged calls last week', body, {
