@@ -167,23 +167,28 @@ test('additionalTeamGuestEmails_ finds a company-domain guest other than the rep
   );
 });
 
-test('buildHandoffBriefCcList_ includes any additional team guest and dedupes, so an AM who happens to be Kris/Tomás does not get a doubled CC header', () => {
+test('buildHandoffBriefCcList_ includes any additional team guest and dedupes, so an AM who happens to be Kris does not get a doubled CC header — Tomás is no longer auto-CC\'d (Kris\'s ask 03/09/2026: "This only needs to go to Joana or the sales rep / CC me so I can see the quality")', () => {
   // Return values come from the vm sandbox's own realm, so assert.deepEqual's
   // prototype-identity check fails against this file's plain array literals
   // for realm reasons, not a real mismatch — compare content directly, same
   // convention as stripFencesAndParseJson_'s test elsewhere in this file.
   assert.equal(
     gas.buildHandoffBriefCcList_('sean@iconsofrealestate.com', ['am.newhire@iconsofrealestate.com']).join(','),
-    'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL + ',am.newhire@iconsofrealestate.com'
+    'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL + ',am.newhire@iconsofrealestate.com'
+  );
+  assert.equal(
+    gas.buildHandoffBriefCcList_('sean@iconsofrealestate.com', [gas.CONFIG.KRIS_EMAIL]).join(','),
+    'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL,
+    'must not duplicate Kris\'s CC line just because he was also invited as the "additional" guest'
   );
   assert.equal(
     gas.buildHandoffBriefCcList_('sean@iconsofrealestate.com', [gas.CONFIG.TOMAS_EMAIL]).join(','),
     'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL,
-    'must not duplicate Tomás\'s CC line just because he was also invited as the "additional" guest'
+    'Tomás is only CC\'d if he\'s actually an invited guest on the calendar event, not automatically on every brief'
   );
   assert.equal(
     gas.buildHandoffBriefCcList_(null, []).join(','),
-    gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL,
+    gas.CONFIG.KRIS_EMAIL,
     'a missing prior-rep email (repEmailByName_ found nothing) must be dropped, not sent as null/undefined'
   );
 });

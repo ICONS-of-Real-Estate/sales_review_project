@@ -554,13 +554,15 @@ function previewUpcomingHandoffBriefs_() {
  * an account manager invited to the same upcoming call (e.g. a post-sale
  * Discovery call) needs the brief too, not just the rep it's addressed to —
  * see additionalTeamGuestEmails_'s own comment (Phase1_ComplianceCheck.gs)
- * for how that list gets identified from the calendar invite. Pure/testable
- * — dedupes against CONFIG.KRIS_EMAIL/CONFIG.TOMAS_EMAIL, which are always
- * CC'd anyway, so an AM who happens to BE Tomás or Kris doesn't get a
- * doubled header.
+ * for how that list gets identified from the calendar invite. Kris's follow-up
+ * ask (03/09/2026): this only needs to reach Joana/the rep it's addressed to
+ * — Tomás doesn't need every brief CC'd to him, only Kris does (to spot-check
+ * quality). Pure/testable — dedupes against CONFIG.KRIS_EMAIL, which is
+ * always CC'd anyway, so a prior rep or AM who happens to BE Kris doesn't get
+ * a doubled header.
  */
 function buildHandoffBriefCcList_(priorRepEmail, additionalTeamGuestEmails) {
-  var ccList = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL]
+  var ccList = [priorRepEmail, CONFIG.KRIS_EMAIL]
     .concat(additionalTeamGuestEmails || [])
     .filter(Boolean);
   return ccList.filter(function (e, i) { return ccList.indexOf(e) === i; });
