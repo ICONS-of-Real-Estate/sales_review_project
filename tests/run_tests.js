@@ -2328,7 +2328,7 @@ test('alertHeaderDriftOnce_ sends both a plain body and the styled htmlBody', ()
   }
 });
 
-test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill trigger, since it is not part of standing automation (real bug, 31/08/2026: Kris installed installRescoreAllCallsTrigger() directly to run the retroactive rescore, but the backfill was meant to wait on Tomás\'s calibration sign-off — a one-off trigger like this must never be left running just because the master installer got re-run for an unrelated phase)', () => {
+test('installAllReadyTriggers_ sweeps ANY trigger not in STANDING_AUTOMATION_HANDLERS_, not just one hardcoded ad-hoc handler (real bug, 03/09/2026: the old carve-out only ever knew about installRescoreAllCallsTrigger() by name — a second ad-hoc backfill added the same day, installRescoreLastWeekTrigger(), would have been just as invisible to it as the three phases below turned out to be)', () => {
   const originalScriptApp = gas.ScriptApp;
   const originalInstallAutomation = gas.installAutomation;
   const originalInstallPhase2Trigger = gas.installPhase2Trigger;
@@ -2336,12 +2336,15 @@ test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill 
   const originalInstallTomas = gas.installTomasScoringAutomation;
   const originalInstallJoana = gas.installJoanaScoringAutomation;
   const originalInstallBens = gas.installBensScoringAutomation;
-  const originalRemoveRescore = gas.removeRescoreAllCallsTrigger_;
   const configFlags = ['HANDOFF_CONFIG', 'INBOX_SLA_CONFIG', 'WEEKLY_SCORECARD_CONFIG', 'TRAINING_REVIEW_CONFIG',
-    'TOMAS_TRANSCRIPT_REMINDER_CONFIG', 'DAILY_PRACTICE_CONFIG', 'RANDOM_CALIBRATION_CONFIG', 'REPLY_TRACKER_CONFIG'];
+    'TOMAS_TRANSCRIPT_REMINDER_CONFIG', 'DAILY_PRACTICE_CONFIG', 'RANDOM_CALIBRATION_CONFIG', 'REPLY_TRACKER_CONFIG',
+    'PLAYBOOK_REVIEW_CONFIG', 'WEEKLY_TRAINING_SUMMARY_CONFIG', 'GHL_CONFIG'];
   const originalEnabled = {};
   try {
-    gas.ScriptApp = fakeScriptAppTriggers_([]);
+    // Seed two orphans a real project could accumulate: an old-style ad-hoc
+    // backfill runner, and a totally unrecognized leftover (e.g. a trigger
+    // someone added by hand in the Console UI, or a since-renamed handler).
+    gas.ScriptApp = fakeScriptAppTriggers_(['runRescoreAllCallsViaTrigger_', 'someLongDeletedFunction_']);
     gas.installAutomation = () => {};
     gas.installPhase2Trigger = () => {};
     gas.installSeanScoringAutomation = () => {};
@@ -2353,9 +2356,6 @@ test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill 
     gas.installBensScoringAutomation = () => { gas.RUN_TAG = 'installBensScoringAutomation'; };
     configFlags.forEach((name) => { originalEnabled[name] = gas[name].ENABLED; gas[name].ENABLED = false; });
 
-    let removeCalled = false;
-    gas.removeRescoreAllCallsTrigger_ = () => { removeCalled = true; };
-
     const originalLog = gas.Logger.log;
     const lines = [];
     gas.Logger.log = (msg) => lines.push(msg);
@@ -2365,14 +2365,20 @@ test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill 
       gas.Logger.log = originalLog;
     }
 
-    assert.equal(removeCalled, true, 'the master installer must always stop the ad-hoc rescore trigger, not just install standing phases');
+    const remainingHandlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.ok(remainingHandlers.indexOf('runRescoreAllCallsViaTrigger_') === -1,
+      'the known ad-hoc rescore runner must still be swept');
+    assert.ok(remainingHandlers.indexOf('someLongDeletedFunction_') === -1,
+      'ANY unrecognized handler must be swept, not just the one the old carve-out knew by name');
+
+    const doneLine = lines.find((l) => l.indexOf('installAllReadyTriggers_ done.') !== -1);
+    assert.match(doneLine, /Swept 2 orphan trigger\(s\)/, 'the summary must report what the sweep removed');
 
     // Real bug found live (31/08/2026): every install*() call above sets its
     // own RUN_TAG, leaving it stuck on whichever ran last (here,
     // installBensScoringAutomation) by the time the "done" summary logs —
     // it showed up live as "[installReplyTrackerTriggers] installAllReadyTriggers_
     // done." instead of its own tag.
-    const doneLine = lines.find((l) => l.indexOf('installAllReadyTriggers_ done.') !== -1);
     assert.match(doneLine, /^\[installAllReadyTriggers_\] installAllReadyTriggers_ done\./,
       'the final summary log must carry installAllReadyTriggers_\'s own RUN_TAG, not a stale one left by an earlier install*() call');
   } finally {
@@ -2383,8 +2389,55 @@ test('installAllReadyTriggers_ always stops the ad-hoc rescoreAllCalls backfill 
     gas.installTomasScoringAutomation = originalInstallTomas;
     gas.installJoanaScoringAutomation = originalInstallJoana;
     gas.installBensScoringAutomation = originalInstallBens;
-    gas.removeRescoreAllCallsTrigger_ = originalRemoveRescore;
     configFlags.forEach((name) => { gas[name].ENABLED = originalEnabled[name]; });
+  }
+});
+
+test('installAllReadyTriggers_ now installs the three phases that used to require manual setup (playbook review, weekly training summary, GHL sync) when their CONFIG.ENABLED is true — real gap found live 03/09/2026: all three had been installed by hand per their own file\'s "ONE-TIME SETUP" comment and were invisible to this function', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalInstallAutomation = gas.installAutomation;
+  const originalInstallPhase2Trigger = gas.installPhase2Trigger;
+  const originalInstallSean = gas.installSeanScoringAutomation;
+  const originalInstallTomas = gas.installTomasScoringAutomation;
+  const originalInstallJoana = gas.installJoanaScoringAutomation;
+  const originalInstallBens = gas.installBensScoringAutomation;
+  const configFlags = ['HANDOFF_CONFIG', 'INBOX_SLA_CONFIG', 'WEEKLY_SCORECARD_CONFIG', 'TRAINING_REVIEW_CONFIG',
+    'TOMAS_TRANSCRIPT_REMINDER_CONFIG', 'DAILY_PRACTICE_CONFIG', 'RANDOM_CALIBRATION_CONFIG', 'REPLY_TRACKER_CONFIG'];
+  const originalEnabled = {};
+  const originalPlaybook = gas.PLAYBOOK_REVIEW_CONFIG.ENABLED;
+  const originalSummary = gas.WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED;
+  const originalGhl = gas.GHL_CONFIG.ENABLED;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_([]);
+    gas.installAutomation = () => {};
+    gas.installPhase2Trigger = () => {};
+    gas.installSeanScoringAutomation = () => {};
+    gas.installTomasScoringAutomation = () => {};
+    gas.installJoanaScoringAutomation = () => {};
+    gas.installBensScoringAutomation = () => {};
+    configFlags.forEach((name) => { originalEnabled[name] = gas[name].ENABLED; gas[name].ENABLED = false; });
+    gas.PLAYBOOK_REVIEW_CONFIG.ENABLED = true;
+    gas.WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED = true;
+    gas.GHL_CONFIG.ENABLED = true;
+
+    gas.installAllReadyTriggers_();
+
+    const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.ok(handlers.indexOf('runWeeklyPlaybookReview') !== -1, 'playbook review trigger must now be installed');
+    assert.ok(handlers.indexOf('runWeeklyTrainingSummaries') !== -1, 'weekly training summary trigger must now be installed');
+    assert.ok(handlers.indexOf('syncGhlEmailAndDisposition_') !== -1, 'GHL sync trigger must now be installed');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.installAutomation = originalInstallAutomation;
+    gas.installPhase2Trigger = originalInstallPhase2Trigger;
+    gas.installSeanScoringAutomation = originalInstallSean;
+    gas.installTomasScoringAutomation = originalInstallTomas;
+    gas.installJoanaScoringAutomation = originalInstallJoana;
+    gas.installBensScoringAutomation = originalInstallBens;
+    configFlags.forEach((name) => { gas[name].ENABLED = originalEnabled[name]; });
+    gas.PLAYBOOK_REVIEW_CONFIG.ENABLED = originalPlaybook;
+    gas.WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED = originalSummary;
+    gas.GHL_CONFIG.ENABLED = originalGhl;
   }
 });
 
@@ -3561,13 +3614,17 @@ test('rescoreAllCalls_ returns true when this pass found eligible rows, and fals
 
 function fakeScriptAppTriggers_(initialHandlerNames) {
   const triggers = initialHandlerNames.map((name) => ({ getHandlerFunction: () => name }));
-  // Chainable builder supporting both calling conventions used in this codebase:
-  // .timeBased().everyMinutes(n).create() (rescore/legacy-backfill triggers) and
-  // .timeBased().everyDays(1).atHour(h).inTimezone(tz).create() (Phase 1/7 daily triggers).
+  // Chainable builder supporting every calling convention used in this codebase:
+  // .timeBased().everyMinutes(n).create() (rescore/legacy-backfill triggers),
+  // .timeBased().everyHours(n).create() (reinstallHourlyTrigger_ — Phase 2/9),
+  // .timeBased().everyDays(1).atHour(h).inTimezone(tz).create() (Phase 1/7 daily triggers), and
+  // .timeBased().onWeekDay(d).atHour(h).inTimezone(tz).create() (Phase 1/5 weekly triggers).
   const makeBuilder = (fnName) => {
     const builder = {
       everyMinutes: () => builder,
+      everyHours: () => builder,
       everyDays: () => builder,
+      onWeekDay: () => builder,
       atHour: () => builder,
       inTimezone: () => builder,
       create: () => { const t = { getHandlerFunction: () => fnName }; triggers.push(t); return t; }
@@ -3578,6 +3635,10 @@ function fakeScriptAppTriggers_(initialHandlerNames) {
     getProjectTriggers: () => triggers.slice(),
     deleteTrigger: (t) => { const idx = triggers.indexOf(t); if (idx !== -1) triggers.splice(idx, 1); },
     newTrigger: (fnName) => ({ timeBased: () => makeBuilder(fnName) }),
+    // WeekDay is a plain enum on the real ScriptApp — installPlaybookReviewTrigger
+    // and installWeeklyTrainingSummaryTrigger both reference ScriptApp.WeekDay.TUESDAY.
+    WeekDay: { SUNDAY: 'SUNDAY', MONDAY: 'MONDAY', TUESDAY: 'TUESDAY', WEDNESDAY: 'WEDNESDAY',
+      THURSDAY: 'THURSDAY', FRIDAY: 'FRIDAY', SATURDAY: 'SATURDAY' },
     _triggers: triggers
   };
 }

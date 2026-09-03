@@ -3267,6 +3267,53 @@ function installAutomation() {
 }
 
 /**
+ * Every handler function name this project's standing automation is allowed
+ * to have a trigger for — the complete set installAllReadyTriggers_ below
+ * can install (whether or not each one's phase is currently enabled). This
+ * is what makes the sweep at the end of that function possible: any trigger
+ * whose handler ISN'T in this list is by definition not standing automation
+ * this file knows about, and gets removed.
+ *
+ * Real gap found live (03/09/2026): the project hit Apps Script's 20-trigger
+ * cap. Investigating found TWO separate problems, not one:
+ *   1. installAllReadyTriggers_ was missing three phases entirely —
+ *      installPlaybookReviewTrigger (runWeeklyPlaybookReview),
+ *      installWeeklyTrainingSummaryTrigger (runWeeklyTrainingSummaries), and
+ *      installGhlSyncTrigger (syncGhlEmailAndDisposition_) — all three had
+ *      been installed by hand per their own file's "ONE-TIME SETUP" comment,
+ *      completely invisible to this "install everything" function. A fresh
+ *      run of installAllReadyTriggers_ on a rebuilt project would have
+ *      silently left them off.
+ *   2. The only orphan-trigger cleanup here was one hardcoded carve-out for
+ *      rescoreAllCalls's own backfill runner — anything else left behind by
+ *      an ad-hoc job (runRescoreLastWeekViaTrigger_ added 03/09/2026,
+ *      runAllLegacyBackfills_, or any future one-off) was invisible to this
+ *      function and would sit there forever, silently eating a trigger slot.
+ *      scoreBensLegacyTranscripts looked exactly like this kind of leftover
+ *      at first glance — it isn't (see installBensScoringAutomation's own
+ *      header, 25/08/2026: it's genuinely standing automation) — but telling
+ *      "genuinely standing" apart from "an ad-hoc job someone forgot to
+ *      clean up" by eye is exactly the mistake a canonical list prevents.
+ *
+ * Keep this list in sync whenever a new phase gets its own install*Trigger()
+ * function — a handler installed above but missing here gets swept as an
+ * orphan on the very next run.
+ */
+var STANDING_AUTOMATION_HANDLERS_ = [
+  'runDailyComplianceCheck', 'selfHealTriggers_',                          // Phase 1
+  'runWeeklyPlaybookReview',                                               // Phase 1 — Playbook Review
+  'scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreTomasTranscripts', // Phase 2
+  'scoreJoanaTranscripts', 'scoreBensLegacyTranscripts', 'runRandomCalibrationSample',
+  'sendUpcomingHandoffBriefs_',                                            // Phase 3
+  'runInboxSlaCheck',                                                      // Phase 4
+  'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
+  'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
+  'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
+  'classifyNewReplies', 'sendReplyMetricsReport_',                         // Phase 8
+  'syncGhlEmailAndDisposition_'                                            // Phase 9
+];
+
+/**
  * Single entry point that installs every trigger this project knows about —
  * but only for whatever is ACTUALLY ready to run, never as a way to skip a
  * phase's own preview-before-live gate. Answers "do we have one thing to run
@@ -3280,12 +3327,17 @@ function installAutomation() {
  *     ENABLED flag at all, and Phase 2's SHADOW_MODE only gates the Kris
  *     review-queue EMAIL, not the scoring/logging itself — running the
  *     scoring pipeline on a schedule is exactly what shadow mode is for.
- *   - Phase 3 (handoff briefs), Phase 4 (inbox SLA), Phase 5 (weekly
- *     scorecard) — installed ONLY if that phase's own CONFIG.ENABLED is
- *     already true, i.e. a human ran its preview*() function and flipped the
- *     flag themselves. Otherwise this logs why it skipped that one and
+ *   - Every other phase — installed ONLY if that phase's own CONFIG.ENABLED
+ *     is already true, i.e. a human ran its preview*() function and flipped
+ *     the flag themselves. Otherwise this logs why it skipped that one and
  *     leaves it alone — flipping ENABLED to true and re-running this
  *     picks it up.
+ *
+ * Also SWEEPS: after installing/skipping every known phase, deletes any
+ * trigger whose handler isn't in STANDING_AUTOMATION_HANDLERS_ above —
+ * ad-hoc backfill runners included, whatever job left them behind. Re-run
+ * this any time the trigger count looks wrong; it both fixes the count and
+ * reports exactly what it removed.
  */
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function installAllReadyTriggers() {
@@ -3305,6 +3357,17 @@ function installAllReadyTriggers_() {
   installJoanaScoringAutomation();
   installBensScoringAutomation();
   installed.push('Phase 2: ongoing call scoring (every 4h) + Sean/Tomás/Joana/Bens auto-scoring (every 4h each)');
+
+  // Real gap found live (03/09/2026): this was installed by hand per its own
+  // file's "ONE-TIME SETUP" comment and was invisible to this function ever
+  // since — a fresh run would have silently left it off.
+  if (typeof PLAYBOOK_REVIEW_CONFIG !== 'undefined' && PLAYBOOK_REVIEW_CONFIG.ENABLED) {
+    installPlaybookReviewTrigger();
+    installed.push('Phase 1: weekly playbook review (Training Prep Bot)');
+  } else {
+    skipped.push('Phase 1 (playbook review) — PLAYBOOK_REVIEW_CONFIG.ENABLED is false. Run ' +
+      'previewWeeklyPlaybookReview() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
 
   if (typeof HANDOFF_CONFIG !== 'undefined' && HANDOFF_CONFIG.ENABLED) {
     installHandoffBriefTrigger();
@@ -3328,6 +3391,15 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 5 (weekly scorecard) — WEEKLY_SCORECARD_CONFIG.ENABLED is false. Run ' +
       'migrateAddPrimaryFailureModeColumn() + previewWeeklyScorecards() first, then flip ENABLED and re-run this.');
+  }
+
+  // Same gap as Phase 1's playbook review above — installed by hand, invisible here until now.
+  if (typeof WEEKLY_TRAINING_SUMMARY_CONFIG !== 'undefined' && WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED) {
+    installWeeklyTrainingSummaryTrigger();
+    installed.push('Phase 5: weekly training summary docs for Tomás');
+  } else {
+    skipped.push('Phase 5 (weekly training summary) — WEEKLY_TRAINING_SUMMARY_CONFIG.ENABLED is false. ' +
+      'Run previewWeeklyTrainingSummaries() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   if (typeof TRAINING_REVIEW_CONFIG !== 'undefined' && TRAINING_REVIEW_CONFIG.ENABLED) {
@@ -3371,29 +3443,47 @@ function installAllReadyTriggers_() {
       'previewReplyClassification() + previewReplyMetricsReport() first, then flip ENABLED and re-run this.');
   }
 
-  // Real bug found live (31/08/2026): installRescoreAllCallsTrigger() (see
-  // Phase2_CallScoring.gs) is an AD-HOC one-off backfill trigger, not a
-  // standing phase — it must never be part of the "everything's on" state
-  // this function otherwise sets up, and it must never be left running
-  // silently just because this function was re-run for an unrelated reason.
-  // Explicitly ensures it's OFF every time, same as every other cleanup
-  // this function already does — start a backfill on purpose via
-  // installRescoreAllCallsTrigger() directly, not as a side effect of this.
-  //
+  // Same gap as Phase 1/5's manually-installed triggers above.
+  if (typeof GHL_CONFIG !== 'undefined' && GHL_CONFIG.ENABLED) {
+    installGhlSyncTrigger();
+    installed.push('Phase 9: GHL CRM sync');
+  } else {
+    skipped.push('Phase 9 (GHL sync) — GHL_CONFIG.ENABLED is false. Run previewGhlSync() first, ' +
+      'confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
   // RUN_TAG reset here on purpose: every install*() call above sets its own
   // RUN_TAG at its own top (that's how each log_() line above got its own
   // [installXxx] prefix), which leaves RUN_TAG stuck on whichever ran last
-  // by the time we get here. removeRescoreAllCallsTrigger_() doesn't set its
-  // own RUN_TAG, so without this reset both its log line and the "done"
-  // summary below would carry the wrong (stale) tag — confirmed live
-  // (31/08/2026): both showed up as [installReplyTrackerTriggers].
+  // by the time we get here — confirmed live (31/08/2026): the sweep below
+  // and the "done" summary both showed up as [installReplyTrackerTriggers]
+  // without this reset.
   RUN_TAG = 'installAllReadyTriggers_';
-  if (typeof removeRescoreAllCallsTrigger_ === 'function') {
-    removeRescoreAllCallsTrigger_();
+
+  // General orphan sweep — replaces the old hardcoded single-purpose
+  // rescoreAllCalls carve-out (31/08/2026). Real gap found live (03/09/2026):
+  // that carve-out only ever knew about ONE ad-hoc backfill trigger by name.
+  // A second one (runRescoreLastWeekViaTrigger_, added the same day) would
+  // have been just as invisible to it as the three missing phases above
+  // were — anything not in STANDING_AUTOMATION_HANDLERS_ is, by definition,
+  // not standing automation this file knows about, so it gets removed
+  // regardless of what it's called or when it was added. Start a backfill
+  // on purpose with its own install*Trigger() function afterward — this
+  // function will stop it again the next time it's re-run, same as before.
+  var orphansRemoved = [];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var handler = t.getHandlerFunction();
+    if (STANDING_AUTOMATION_HANDLERS_.indexOf(handler) === -1) {
+      ScriptApp.deleteTrigger(t);
+      orphansRemoved.push(handler);
+    }
+  });
+  if (orphansRemoved.length) {
+    installed.push('Swept ' + orphansRemoved.length + ' orphan trigger(s), not part of standing ' +
+      'automation: ' + orphansRemoved.join(', '));
+  } else {
+    installed.push('Orphan sweep: none found — every existing trigger is recognized standing automation.');
   }
-  installed.push('Ad-hoc: rescoreAllCalls backfill trigger explicitly stopped if it was running — ' +
-    'it is NOT part of standing automation. Start one on purpose with installRescoreAllCallsTrigger() ' +
-    'in Phase2_CallScoring.gs when actually running a backfill.');
 
   log_('installAllReadyTriggers_ done.\nInstalled:\n  ' + installed.join('\n  ') +
     '\nSkipped:\n  ' + skipped.join('\n  '));
