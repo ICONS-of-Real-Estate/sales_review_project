@@ -343,6 +343,71 @@ test('deriveBookingDecisionFields_ only judges a call that actually booked a Dis
   assert.equal(gas.deriveBookingDecisionFields_(null).appropriate, '', 'must not throw on a null result');
 });
 
+test('deriveElevationFields_ only judges a call where the original rep was actually present, and reads blank (not a fabricated failure) when they weren\'t (Kris\'s ask 03/09/2026: "the sales rep needs to elevate the other person... this is Thomas, he\'s amazing... and let the other guys get to it")', () => {
+  // Rep never joined this call at all — the AM/Tomás ran it solo. Nothing to fail.
+  const repAbsent = gas.deriveElevationFields_({
+    flags: { rep_present_on_call: false, elevation_done: true }
+  });
+  assert.equal(repAbsent.done, '', 'must be blank, not a value, when the rep was never on the call');
+  assert.equal(repAbsent.gapText, '');
+
+  // Rep present and did a real handoff.
+  const goodElevation = gas.deriveElevationFields_({
+    flags: { rep_present_on_call: true, elevation_done: true }
+  });
+  assert.equal(goodElevation.done, true);
+  assert.equal(goodElevation.gapText, '');
+
+  // Rep present but skipped the handoff — the real failure case.
+  const missedElevation = gas.deriveElevationFields_({
+    flags: { rep_present_on_call: true, elevation_done: false }
+  });
+  assert.equal(missedElevation.done, false);
+  assert.ok(missedElevation.gapText.length > 0, 'a real miss must carry an explanatory gap, not just a bare false');
+
+  // A variant/sentinel that never scored this dimension at all must read as
+  // blank "no signal", never as a fabricated failure — same convention as
+  // deriveDiscoveryFields_/deriveBookingDecisionFields_ above.
+  const noneScored = gas.deriveElevationFields_({ flags: { asked_for_close: true } });
+  assert.equal(noneScored.done, '', 'no elevation flags at all must be blank, not false');
+  assert.equal(noneScored.gapText, '');
+
+  assert.equal(gas.deriveElevationFields_({}).done, '');
+  assert.equal(gas.deriveElevationFields_(null).done, '', 'must not throw on a null result');
+});
+
+test('isValidDiscoveryJudgeSchema_ requires the Discovery-call-specific fields (money_collected, elevation) — NOT the QC rubric\'s booked_next_step, since Discovery calls are a completely different call (Kris, 03/09/2026: "Discovery calls are totally different!")', () => {
+  const good = {
+    lead_quality: { verdict: 'good_to_book', justification: 'x' },
+    call_quality_score: 4,
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      money_collected: true, rep_present_on_call: true, elevation_done: true
+    },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+    manual_review_recommended: false,
+    severity: 2,
+    root_cause_if_no_payment: 'N/A'
+  };
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(good), true);
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { flags: Object.assign({}, good.flags, { money_collected: undefined }) })), false,
+    'must reject a reply missing money_collected — the whole point of this variant');
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { root_cause_if_no_payment: undefined })), false);
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(null), false);
+});
+
+test('rubricVariantForNewScore_ routes a Discovery call to its own dedicated variant, separate from QC, so buildDiscoveryJudgeSystemPrompt_/scoreDiscoveryTranscript_ actually get used (03/09/2026)', () => {
+  assert.equal(gas.rubricVariantForNewScore_('Sean', 'Discovery'), 'discovery');
+  assert.equal(gas.scoreTranscriptByVariant_ !== undefined, true, 'scoreTranscriptByVariant_ must exist to dispatch to it');
+});
+
+test('Sales Call Log has columns for the booking-decision and elevation dimensions added 03/09/2026', () => {
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Booking Decision Appropriate') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Booking Decision Gap') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Elevation Done') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Elevation Gap') !== -1);
+});
+
 test('every judge variant that scores discovery returns flags deriveDiscoveryFields_ can actually read, and the Sales Call Log has columns to put them in', () => {
   // The whole point of the 03/09/2026 change: three variants already JUDGED
   // discovery but there was no column to write it to, so it could never be
@@ -1216,8 +1281,15 @@ test('rubricVariantForNewScore_ gives every rep their OWN rubric for a new score
 
   // Call type still wins over rep — a QC is never a closing call whoever ran it.
   assert.equal(gas.rubricVariantForNewScore_('Bens', 'QC'), 'qc');
-  assert.equal(gas.rubricVariantForNewScore_('Sean', 'Discovery'), 'qc');
   assert.equal(gas.rubricVariantForNewScore_('Tomás', 'QC'), 'qc');
+
+  // Real bug found live (03/09/2026, Kris: "Discovery calls are totally
+  // different!"): a Discovery call (the account manager's post-sale
+  // onboarding/payment call) used to route to the QC rubric too — built
+  // entirely around qualification-questioning quality, nothing about money
+  // collection or elevating the AM. Split into its own dedicated variant.
+  assert.equal(gas.rubricVariantForNewScore_('Sean', 'Discovery'), 'discovery');
+  assert.equal(gas.rubricVariantForNewScore_('Bens', 'Discovery'), 'discovery');
 });
 
 test('resolveRubricVariantForRow_ still reports HISTORY, not what should score a call — rows the ongoing pipeline scored before 03/09/2026 really were scored by the shared rubric, and checkRegressionDrift_ depends on knowing that', () => {

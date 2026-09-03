@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-03-booking-decision';
+var RUBRIC_VERSION = '2026-09-03-elevation-discovery-variant';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -684,6 +684,52 @@ function deriveBookingDecisionFields_(result) {
     appropriate: appropriate,
     gapText: appropriate ? '' :
       'Booked a Discovery call without the lead confirming payment on this call — should have booked a Second Sales Call with Tomás instead'
+  };
+}
+
+/**
+ * Elevation — per Kris (03/09/2026): "the sales rep needs to elevate the
+ * other person... hey, this is Thomas, he's fucking amazing, you're gonna
+ * absolutely love working with Thomas... and let the other guys get to it."
+ * Applies wherever an original rep hands a lead off live to someone else on
+ * the same call — the account manager on a Discovery call, or Tomás on a
+ * second/closing call. Shared/parameterized rather than duplicated per
+ * variant since the judgment itself (was there a genuine, warm handoff) is
+ * identical regardless of who's being elevated.
+ */
+function elevationRubricPrompt_(handoffToLabel) {
+  return [
+    'A separately-tracked dimension — it must NOT change your call_quality_score anchors. If the original rep',
+    '(the one who ran the earlier call, NOT ' + handoffToLabel + ') is present at the start of this call, judge',
+    'whether they did a proper "elevation" handoff before dropping off: introducing ' + handoffToLabel + ' by name',
+    'with genuine, specific enthusiasm (not a flat "this is X") AND restating the lead\'s own situation/problem so',
+    handoffToLabel + ' doesn\'t have to re-ask it from scratch, before letting ' + handoffToLabel + ' take over.',
+    'Score two flags:',
+    '  (a) rep_present_on_call — was the original rep present on this call at all (even briefly, just for the',
+    '      handoff), as opposed to ' + handoffToLabel + ' running the whole call solo with the lead?',
+    '  (b) elevation_done — only meaningful when (a) is true: did they do the full handoff described above',
+    '      (named introduction with real enthusiasm AND restating the lead\'s situation)? If (a) is false, score',
+    '      this TRUE (nothing to fail — there was no rep present on the call to do it).'
+  ].join('\n');
+}
+
+/**
+ * Derives the "Flag: Elevation Done"/"Elevation Gap" sheet columns. Only
+ * meaningful when the original rep was actually present on the call
+ * (rep_present_on_call true) — a call the rep never joined at all (the AM or
+ * Tomás running solo with the lead) is "does not apply", not a failure, same
+ * "blank = no signal" convention as deriveBookingDecisionFields_ above.
+ */
+function deriveElevationFields_(result) {
+  var flags = (result && result.flags) || {};
+  if (typeof flags.rep_present_on_call !== 'boolean' || typeof flags.elevation_done !== 'boolean') {
+    return { done: '', gapText: '' };
+  }
+  if (!flags.rep_present_on_call) return { done: '', gapText: '' };
+  return {
+    done: flags.elevation_done,
+    gapText: flags.elevation_done ? '' :
+      'Did not properly elevate/hand off to the next person (named introduction + restating the lead\'s situation) before dropping off the call'
   };
 }
 
@@ -1367,7 +1413,7 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   // reads as "no signal" (the same convention already used for columns added after older rows were
   // scored), not as "explained: false" with three fabricated gaps deriveFrameworkFields_ would otherwise
   // produce from a missing object.
-  if (variant !== 'qc') {
+  if (variant !== 'qc' && variant !== 'discovery') {
     var framework = deriveFrameworkFields_(result);
     sheet.getRange(rowIndex, col['Flag: Framework Explained']).setValue(framework.explained);
     sheet.getRange(rowIndex, col['Framework Gaps']).setValue(framework.gapsText);
@@ -1388,6 +1434,12 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   var booking = deriveBookingDecisionFields_(result);
   sheet.getRange(rowIndex, col['Flag: Booking Decision Appropriate']).setValue(booking.appropriate);
   sheet.getRange(rowIndex, col['Booking Decision Gap']).setValue(booking.gapText);
+  // Elevation (Kris, 03/09/2026) — only 'discovery' and 'tomas' score this;
+  // deriveElevationFields_ writes blank for every other variant/row, same
+  // "blank = no signal" convention as booking/discovery above.
+  var elevation = deriveElevationFields_(result);
+  sheet.getRange(rowIndex, col['Flag: Elevation Done']).setValue(elevation.done);
+  sheet.getRange(rowIndex, col['Elevation Gap']).setValue(elevation.gapText);
   // Records which rubric version produced this score — see RUBRIC_VERSION's
   // own comment above for the versioning convention. Blank on rows scored
   // before this column existed, same "no signal" pattern as every column
@@ -1685,22 +1737,28 @@ function buildBensFeedbackSummary_(result) {
 }
 
 // ---------------------------------------------------------------------------
-// QC / Discovery rubric — added 29/08/2026 per Kris: a Qualification Call or
-// Discovery call is not a closing call, for ANY rep, the same reason Bens'
-// variant exists — his QC-mode logic (SOP §3C) already modeled this
-// correctly but was gated to only apply when rep === 'Bens'. This is that
-// same logic generalized to apply by CALL TYPE instead, minus the
-// icons_100_interview-only fields (call_role/interview_content_quality_good/
-// next_step_type), which are specific to Bens' own guest-interview format
-// and don't describe a QC run by any other rep. The rep's job on a QC/
-// Discovery call is to qualify the lead and book a Sales Call for someone
-// else on the team (usually Tomás) to close — never to ask for money here.
+// QC rubric — added 29/08/2026 per Kris: a Qualification Call is not a
+// closing call, for ANY rep, the same reason Bens' variant exists — his
+// QC-mode logic (SOP §3C) already modeled this correctly but was gated to
+// only apply when rep === 'Bens'. This is that same logic generalized to
+// apply by CALL TYPE instead, minus the icons_100_interview-only fields
+// (call_role/interview_content_quality_good/next_step_type), which are
+// specific to Bens' own guest-interview format and don't describe a QC run
+// by any other rep. The rep's job on a QC call is to qualify the lead and
+// book a Sales Call for someone else on the team (usually Tomás) to close —
+// never to ask for money here.
+//
+// Real bug found live (03/09/2026, Kris): this used to also handle
+// "Discovery" calls — a completely different call (the account manager's
+// post-sale onboarding/payment call, not a pre-sales-call qualification
+// step). Split into its own dedicated variant, see buildDiscoveryJudgeSystemPrompt_
+// below — this prompt is QC-only now.
 // ---------------------------------------------------------------------------
 
 function buildQcJudgeSystemPrompt_() {
   return [
     'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a',
-    'Qualification Call (QC) or Discovery call. This is a pre-sales-call step, not a closing call — the rep\'s job',
+    'Qualification Call (QC). This is a pre-sales-call step, not a closing call — the rep\'s job',
     'is to qualify the lead and book a Sales Call for someone else on the team to run (usually Tomás or another',
     'closer), never to ask for money on this call. Applies the same way regardless of which rep ran it.',
     '',
@@ -1785,7 +1843,7 @@ function isValidQcJudgeSchema_(obj) {
     typeof obj.root_cause_if_no_booking === 'string');
 }
 
-/** Same retry/manual-review shape as scoreTranscript_/scoreBensTranscript_, against the QC/Discovery rubric. */
+/** Same retry/manual-review shape as scoreTranscript_/scoreBensTranscript_, against the QC rubric. */
 function scoreQcTranscript_(ctx) {
   var systemPrompt = buildQcJudgeSystemPrompt_();
   var userPrompt = buildJudgeUserPrompt_(ctx);
@@ -1827,7 +1885,7 @@ function scoreQcTranscript_(ctx) {
 }
 
 /** Packs the extra QC-only dimensions into the one free-text column the sheet has (AI Feedback Summary).
- * No framework line — QC/Discovery calls are explicitly not scored on framework explanation, see
+ * No framework line — QC calls are explicitly not scored on framework explanation, see
  * buildQcJudgeSystemPrompt_'s header comment: that's the Sales Call's job, not this one's. */
 function buildQcFeedbackSummary_(result) {
   var deliveryFields = deriveDeliveryFields_(result);
@@ -1840,6 +1898,159 @@ function buildQcFeedbackSummary_(result) {
     'Delivery effective: ' + deliveryFields.effective +
       (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
     'Root cause if no booking: ' + result.root_cause_if_no_booking
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Discovery-call rubric — added 03/09/2026 per Kris, split off from the QC
+// rubric above: "Discovery calls are totally different!" A Discovery call is
+// NOT a qualification step — it's the account manager's post-sale onboarding
+// call, where the ORIGINAL sales rep is still on the hook to actually
+// collect the money ("It's still the rep's job to get the money, not the
+// AM's"). Grading it against the QC rubric's "did they book the next step"
+// framing made no sense; this variant instead checks the two things that
+// actually matter here: did the rep properly elevate the account manager
+// before dropping off, and did the money actually get collected.
+//
+// NOT YET LIVE-VERIFIED — no real Discovery-call recording has been
+// reviewed against this prompt yet. Kris: "I will get the recordings" (still
+// pending as of 03/09/2026). Preview this against a real transcript before
+// trusting it, same "preview before enabling" discipline as every other
+// phase in this codebase (see CLAUDE.md) — do not assume the prompt/schema
+// below is right until it's been checked against actual call audio.
+// ---------------------------------------------------------------------------
+
+function buildDiscoveryJudgeSystemPrompt_() {
+  return [
+    'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a',
+    'Discovery call — the account manager\'s onboarding/payment call with a lead who already agreed on an',
+    'earlier Sales Call to move forward. The ORIGINAL sales rep who booked this call is still accountable for',
+    'actually collecting the money here — it is NOT the account manager\'s job to close, only to onboard once',
+    'payment is secured.',
+    '',
+    'Be skeptical by default. Every judgment must cite specific transcript evidence.',
+    '',
+    'Answer all of the following, in order, in your reasoning:',
+    '1. Did the rep explicitly ask for / confirm payment on this call — a real ask, not a soft "we\'ll get you',
+    '   set up"?',
+    '2. Did any payment-stage objections/hesitations come up (price, timing, "let me check with my partner"),',
+    '   and were they addressed with something concrete rather than brushed past?',
+    '3. Did the money actually get collected on this call?',
+    '4. If it did not, what is the single specific root cause?',
+    '',
+    elevationRubricPrompt_('the account manager'),
+    '',
+    deliveryRubricPrompt_(),
+    '',
+    'Score anchors for call_quality_score (1-5):',
+    '5 = money collected, any objections handled well, and (if the rep was present) a genuine elevation handoff.',
+    '4 = money collected, but the ask or objection-handling was weak, or the elevation handoff was missing.',
+    '3 = a real payment ask was made but no money collected, for a reason not clearly attributable to the rep.',
+    '2 = no money collected, the lead was clearly still interested, and the miss is attributable to the rep\'s',
+    '    execution (a weak or missing ask, an objection brushed past).',
+    '1 = no money collected AND no real attempt at a payment ask.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
+    'through all 4 questions with quoted evidence), then the structured fields, in this exact shape:',
+    '',
+    '{',
+    '  "reasoning": "string",',
+    '  "lead_quality": { "verdict": "good_to_book", "justification": "string — always good_to_book; this call',
+    '   does not re-decide whether the lead was worth pursuing, that was already settled on the Sales Call" },',
+    '  "call_quality_score": 1,',
+    '  "flags": {',
+    '    "asked_for_close": true,',
+    '    "objections_uncovered": true,',
+    '    "objections_overcome": true,',
+    '    "money_collected": true,',
+    '    "rep_present_on_call": true,',
+    '    "elevation_done": true',
+    '  },',
+    '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | no_money_collected | delivery_ineffective | multiple",',
+    '  "root_cause_if_no_payment": "string — the single specific reason money wasn\'t collected; \\"N/A\\" if it was",',
+    '  "manual_review_recommended": true,',
+    '  "severity": 1,',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own words',
+    '   from the transcript for the single most important moment before saying anything else. End with ONE',
+    '   specific behavior to change, not a list. Never compare this rep to any other rep by name. Put each',
+    '   distinct idea on its own line separated by a literal \\n — never chain them into one dense run-on',
+    '   paragraph."',
+    '}'
+  ].join('\n');
+}
+
+function isValidDiscoveryJudgeSchema_(obj) {
+  return !!(obj &&
+    obj.lead_quality && isValidLeadVerdict_(obj.lead_quality.verdict) &&
+    isValidScoreRange_(obj.call_quality_score) &&
+    obj.flags &&
+    typeof obj.flags.asked_for_close === 'boolean' &&
+    typeof obj.flags.objections_uncovered === 'boolean' &&
+    typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.money_collected === 'boolean' &&
+    typeof obj.flags.rep_present_on_call === 'boolean' &&
+    typeof obj.flags.elevation_done === 'boolean' &&
+    obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
+    typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
+    typeof obj.manual_review_recommended === 'boolean' &&
+    isValidScoreRange_(obj.severity) &&
+    typeof obj.root_cause_if_no_payment === 'string');
+}
+
+/** Same retry/manual-review shape as scoreQcTranscript_, against the Discovery-call rubric. */
+function scoreDiscoveryTranscript_(ctx) {
+  var systemPrompt = buildDiscoveryJudgeSystemPrompt_();
+  var userPrompt = buildJudgeUserPrompt_(ctx);
+  var lastRaw = null;
+
+  for (var attempt = 0; attempt <= PHASE2_CONFIG.MAX_PARSE_RETRIES; attempt++) {
+    var promptForThisAttempt = attempt === 0
+      ? userPrompt
+      : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
+    try {
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var parsed = stripFencesAndParseJson_(lastRaw);
+      if (!isValidDiscoveryJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Discovery-rubric fields.');
+      return parsed;
+    } catch (e) {
+      log_('    ↳ scoreDiscoveryTranscript_ attempt ' + (attempt + 1) + ' failed for ' + ctx.prospectName + ': ' + e);
+      handleJudgeRetryError_(e, attempt, PHASE2_CONFIG.MAX_PARSE_RETRIES);
+    }
+  }
+
+  log_('    ↳ ROUTED TO MANUAL REVIEW (parse failed twice) — ' + ctx.prospectName +
+    '. Raw model output: ' + String(lastRaw).slice(0, 1000));
+  return {
+    reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
+    call_quality_score: 1,
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false,
+      money_collected: false, rep_present_on_call: false, elevation_done: false
+    },
+    delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
+    primary_failure_mode: 'none',
+    root_cause_if_no_payment: 'Unscored — parse failure.',
+    manual_review_recommended: true,
+    severity: 5,
+    feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
+    _parseFailed: true
+  };
+}
+
+/** Packs the extra Discovery-only dimensions into the one free-text column the sheet has (AI Feedback Summary). */
+function buildDiscoveryFeedbackSummary_(result) {
+  var deliveryFields = deriveDeliveryFields_(result);
+  var elevationFields = deriveElevationFields_(result);
+  return [
+    result.feedback_summary,
+    '',
+    'Money collected: ' + result.flags.money_collected,
+    'Elevation: ' + (elevationFields.done === '' ? 'N/A — rep not present on this call' : elevationFields.done),
+    'Delivery effective: ' + deliveryFields.effective +
+      (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
+    'Root cause if no payment: ' + result.root_cause_if_no_payment
   ].join('\n');
 }
 
@@ -2355,6 +2566,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         var deliveryFields = deriveDeliveryFields_(result);
         var discoveryFields = deriveDiscoveryFields_(result);
         var bookingFields = deriveBookingDecisionFields_(result);
+        var elevationFields = deriveElevationFields_(result);
 
         // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
         // logs a comparison only, never changes what's appended below.
@@ -2395,7 +2607,9 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           discoveryFields.adequate,       // Flag: Discovery Adequate
           discoveryFields.gapsText,        // Discovery Gaps
           bookingFields.appropriate,      // Flag: Booking Decision Appropriate
-          bookingFields.gapText           // Booking Decision Gap
+          bookingFields.gapText,           // Booking Decision Gap
+          elevationFields.done,           // Flag: Elevation Done
+          elevationFields.gapText         // Elevation Gap
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -2899,6 +3113,7 @@ function scoreSeanTranscripts() {
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
           var bookingFields = deriveBookingDecisionFields_(result);
+          var elevationFields = deriveElevationFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -2941,7 +3156,9 @@ function scoreSeanTranscripts() {
             discoveryFields.adequate,        // Flag: Discovery Adequate
             discoveryFields.gapsText,         // Discovery Gaps
             bookingFields.appropriate,       // Flag: Booking Decision Appropriate
-            bookingFields.gapText            // Booking Decision Gap
+            bookingFields.gapText,            // Booking Decision Gap
+            elevationFields.done,            // Flag: Elevation Done
+            elevationFields.gapText          // Elevation Gap
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -3084,6 +3301,7 @@ function scoreJoanaTranscripts() {
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
           var bookingFields = deriveBookingDecisionFields_(result);
+          var elevationFields = deriveElevationFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. Joana
@@ -3125,7 +3343,9 @@ function scoreJoanaTranscripts() {
             discoveryFields.adequate,         // Flag: Discovery Adequate
             discoveryFields.gapsText,          // Discovery Gaps
             bookingFields.appropriate,        // Flag: Booking Decision Appropriate
-            bookingFields.gapText             // Booking Decision Gap
+            bookingFields.gapText,             // Booking Decision Gap
+            elevationFields.done,             // Flag: Elevation Done
+            elevationFields.gapText           // Elevation Gap
           ]);
 
           existing[key] = true;
@@ -3359,6 +3579,10 @@ function buildTomasJudgeSystemPrompt_() {
     '',
     discoveryRubricPrompt_(),
     '',
+    'If call_role is second_call_closer, also apply this (skip entirely — score both flags true — if call_role',
+    'is own_new_lead, since there is no earlier rep to have elevated you on THIS call):',
+    elevationRubricPrompt_('Tomás'),
+    '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
@@ -3375,7 +3599,9 @@ function buildTomasJudgeSystemPrompt_() {
     '    "stalling_converted_to_date": true,',
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true,',
-    '    "confirmed_prior_discovery": true',
+    '    "confirmed_prior_discovery": true,',
+    '    "rep_present_on_call": true,',
+    '    "elevation_done": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
@@ -3410,6 +3636,8 @@ function isValidTomasJudgeSchema_(obj) {
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
     typeof obj.flags.confirmed_prior_discovery === 'boolean' &&
+    typeof obj.flags.rep_present_on_call === 'boolean' &&
+    typeof obj.flags.elevation_done === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -3452,7 +3680,8 @@ function scoreTomasTranscript_(ctx) {
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false, closed_or_committed: false,
       followed_goal_mirror_map_proof_process: false, stalling_converted_to_date: false,
-      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false
+      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
+      rep_present_on_call: false, elevation_done: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
@@ -3470,6 +3699,7 @@ function scoreTomasTranscript_(ctx) {
 function buildTomasFeedbackSummary_(result) {
   var frameworkFields = deriveFrameworkFields_(result);
   var deliveryFields = deriveDeliveryFields_(result);
+  var elevationFields = deriveElevationFields_(result);
   return [
     result.feedback_summary,
     '',
@@ -3480,6 +3710,7 @@ function buildTomasFeedbackSummary_(result) {
       (frameworkFields.gapsText ? ' (missing: ' + frameworkFields.gapsText + ')' : ''),
     'Delivery effective: ' + deliveryFields.effective +
       (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
+    'Elevated by the original rep: ' + (elevationFields.done === '' ? 'N/A — no original rep present on this call' : elevationFields.done),
     'Teachable strength (pass to other reps): ' + result.teachable_strength,
     'Coach Tomás on: ' + result.coach_this
   ].join('\n');
@@ -3571,6 +3802,7 @@ function scoreTomasTranscripts() {
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
           var bookingFields = deriveBookingDecisionFields_(result);
+          var elevationFields = deriveElevationFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -3613,7 +3845,9 @@ function scoreTomasTranscripts() {
             discoveryFields.adequate,           // Flag: Discovery Adequate
             discoveryFields.gapsText,            // Discovery Gaps
             bookingFields.appropriate,          // Flag: Booking Decision Appropriate
-            bookingFields.gapText               // Booking Decision Gap
+            bookingFields.gapText,               // Booking Decision Gap
+            elevationFields.done,                // Flag: Elevation Done
+            elevationFields.gapText              // Elevation Gap
           ]);
 
           existing[key] = true;
@@ -4466,7 +4700,17 @@ var REGRESSION_BASELINE_HEADERS = [
  * transcript says nothing about which rubric describes that rep's job.
  */
 function rubricVariantForNewScore_(rep, callType) {
-  if (callType === 'QC' || callType === 'Discovery') return 'qc';
+  // Real bug found live (03/09/2026, Kris): "Discovery calls are totally
+  // different!" A Discovery call (the account manager's post-sale onboarding/
+  // payment call) was being graded under the QC rubric — built entirely
+  // around discovery-questioning quality, nothing about money collection or
+  // elevating the AM — because it shared this branch with real QC calls.
+  // Split off into its own variant; resolveRubricVariantForRow_ below is
+  // deliberately left pointing 'Discovery' at 'qc' — that's what historical
+  // rows were ACTUALLY scored under, and that function is history-only
+  // attribution, not "what should score this."
+  if (callType === 'Discovery') return 'discovery';
+  if (callType === 'QC') return 'qc';
   if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
   if (rep === 'Sean') return 'sean';
   if (rep === 'Bens') return 'bens';
@@ -4510,6 +4754,7 @@ function scoreTranscriptByVariant_(variant, ctx) {
     case 'bens': return scoreBensTranscript_(ctx);
     case 'tomas': return scoreTomasTranscript_(ctx);
     case 'qc': return scoreQcTranscript_(ctx);
+    case 'discovery': return scoreDiscoveryTranscript_(ctx);
     default: return scoreTranscript_(ctx);
   }
 }
@@ -4521,6 +4766,7 @@ function buildFeedbackSummaryForVariant_(variant, result) {
     case 'bens': return buildBensFeedbackSummary_(result);
     case 'tomas': return buildTomasFeedbackSummary_(result);
     case 'qc': return buildQcFeedbackSummary_(result);
+    case 'discovery': return buildDiscoveryFeedbackSummary_(result);
     default: return result.feedback_summary;
   }
 }
@@ -4666,6 +4912,21 @@ function computeQcAnalyticScore_(result) {
   return clampAnalyticScore_(5 - deduction);
 }
 
+/** Discovery-call equivalent of computeQcAnalyticScore_ — this variant's own flag vocabulary
+ * (money_collected instead of booked_next_step, elevation instead of discovery/framework), so it
+ * cannot reuse any existing deduction table without silently deducting for fields that don't exist. */
+function computeDiscoveryAnalyticScore_(result) {
+  var flags = (result && result.flags) || {};
+  var deduction = 0;
+  if (!flags.asked_for_close) deduction += 2;
+  if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
+  if (!deriveDeliveryFields_(result).effective) deduction += 1;
+  if (!flags.money_collected) deduction += 1;
+  var elevation = deriveElevationFields_(result);
+  if (elevation.done === false) deduction += 1;
+  return clampAnalyticScore_(5 - deduction);
+}
+
 /** Dispatches to the right analytic-score function for a rubric variant string (same vocabulary as scoreTranscriptByVariant_). */
 function computeAnalyticScore_(variant, result) {
   switch (variant) {
@@ -4673,6 +4934,7 @@ function computeAnalyticScore_(variant, result) {
     case 'bens': return computeBensAnalyticScore_(result);
     case 'tomas': return computeTomasAnalyticScore_(result);
     case 'qc': return computeQcAnalyticScore_(result);
+    case 'discovery': return computeDiscoveryAnalyticScore_(result);
     default: return computeSharedAnalyticScore_(result);
   }
 }

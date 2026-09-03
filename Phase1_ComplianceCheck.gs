@@ -1582,8 +1582,18 @@ var SALES_CALL_LOG_HEADERS = [
   'Flag: Booking Decision Appropriate', // AE (bool — blank when no Discovery
                             //    call was booked on this call at all, i.e.
                             //    this dimension doesn't apply)
-  'Booking Decision Gap'   // AF (free text explaining the mismatch, blank
+  'Booking Decision Gap',  // AF (free text explaining the mismatch, blank
                             //    when appropriate or not applicable)
+  // --- 03/09/2026: elevation, per Kris — "the sales rep needs to elevate
+  // the other person... this is Thomas, he's amazing, you're gonna love
+  // working with him... and let the other guys get to it." Scored on
+  // Discovery calls (elevating the account manager) and Tomás's second/
+  // closing calls (elevating Tomás) — blank when the original rep wasn't
+  // even present on the call, same "no signal" convention as every column
+  // above. See deriveElevationFields_/elevationRubricPrompt_. ---
+  'Flag: Elevation Done',  // AG (bool — blank when the original rep wasn't
+                            //    present on this call at all)
+  'Elevation Gap'          // AH (free text, blank when done or not applicable)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
