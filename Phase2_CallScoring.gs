@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-08-29-pitch-delivery';
+var RUBRIC_VERSION = '2026-09-03-discovery';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -277,6 +277,9 @@ function isValidJudgeSchema_(obj) {
     obj.flags && typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
     typeof obj.flags.objections_overcome === 'boolean' &&
+    typeof obj.flags.discovery_adequate === 'boolean' &&
+    typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.confirmed_prior_discovery === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -550,6 +553,92 @@ function deriveDeliveryFields_(result) {
   };
 }
 
+/**
+ * Discovery — the first of the four elements Kris named (03/09/2026) as the
+ * ones every rep must be graded on, every week, with the weakest one becoming
+ * that week's training focus: discovery, framework, the ask (money on a Sales
+ * Call, the booking on a QC), and objection handling.
+ *
+ * Three variants ALREADY judged discovery as two booleans under `flags`
+ * (Bens', the QC/Discovery rubric, and Sean's) — but nothing ever wrote them
+ * to a COLUMN. They were packed into the free-text AI Feedback Summary by
+ * buildBensFeedbackSummary_ and friends, which is unreadable to the weekly
+ * scorecard, the dashboard, or any "what is this rep weakest at" tally: the
+ * reason discovery could never be trained on. The shared rubric (Joana) and
+ * Tomás's own rubric didn't score it at all. This makes discovery a real,
+ * queryable dimension across every variant, exactly the shape framework and
+ * delivery already have above.
+ *
+ * `confirmed_prior_discovery` is deliberately NOT scored on the QC/first-touch
+ * rubric — per Kris: on a Sales Call (or a second call) the rep should CONFIRM
+ * what the QC already surfaced and go deeper where it was thin, which only
+ * means something when there was an earlier call to build on. Grading a
+ * first-touch QC against it would mark every QC down for the absence of a
+ * conversation that never happened — the same mistake Bens' own rubric exists
+ * to avoid (see buildBensJudgeSystemPrompt_'s header).
+ */
+var DISCOVERY_GAP_LABELS_ = {
+  discovery_adequate: 'depth of discovery questioning',
+  understood_leads_business: 'understanding the lead\'s business',
+  confirmed_prior_discovery: 'confirming/deepening what the earlier call surfaced'
+};
+
+/**
+ * Sales-call flavour of the discovery rubric — used by the variants that
+ * score a call with an earlier QC behind it. The QC/first-touch rubric keeps
+ * its own existing discovery wording and never sees the third flag.
+ */
+function discoveryRubricPrompt_() {
+  return [
+    'A separately-tracked dimension — it must NOT change your call_quality_score anchors. Judge DISCOVERY, in',
+    'three parts, each scored independently in the "flags" object below:',
+    '  (a) discovery_adequate — did the rep ask real questions to understand this lead\'s situation before',
+    '      pitching, rather than launching into the offer? Open questions that made the lead talk about their',
+    '      own business count; rhetorical set-ups for the pitch do not.',
+    '  (b) understood_leads_business — by the end of the call, had the rep demonstrably grasped what this lead',
+    '      actually does (their market, their role, how they currently get business)? Judge on evidence in the',
+    '      transcript — referring back to specifics the lead gave — not on whether they asked the question.',
+    '  (c) confirmed_prior_discovery — this call follows an earlier QC/qualification call, so the rep should',
+    '      CONFIRM what that earlier call already surfaced ("you mentioned you\'re running about 30 transactions',
+    '      a year — is that still right?") rather than either re-asking it cold as if it never happened, or',
+    '      assuming it and never checking. AND they should go DEEPER where the earlier discovery was thin —',
+    '      following up on anything that was left vague. Score true only if they did both: confirmed what was',
+    '      known, and dug further where it was shallow. A rep who simply repeats the QC\'s questions from',
+    '      scratch fails this, as does one who never references the earlier conversation at all.',
+    '      If the transcript makes clear this was genuine first contact with no earlier call behind it, score',
+    '      this TRUE — there was nothing to confirm, and a rep must never be marked down for the absence of a',
+    '      conversation that never happened.'
+  ].join('\n');
+}
+
+/**
+ * Derives the "Flag: Discovery Adequate"/"Discovery Gaps" sheet columns from
+ * any rubric variant's discovery booleans (which live under `flags`, not
+ * their own nested object — that's where the three existing variants already
+ * put them, and moving them would break live scoring for no gain).
+ *
+ * Unlike deriveFrameworkFields_/deriveDeliveryFields_ above, a MISSING key is
+ * not treated as a gap: the QC rubric legitimately never scores
+ * confirmed_prior_discovery, and counting its absence as a failure would show
+ * every QC call with a permanent phantom discovery gap. Only keys the variant
+ * actually returned are judged; a result with none of them (a variant that
+ * doesn't score discovery, or a parse-failure sentinel that dropped them)
+ * returns blank — the same "blank = no signal" convention every other
+ * column addition in this file uses for rows that predate it.
+ */
+function deriveDiscoveryFields_(result) {
+  var flags = (result && result.flags) || {};
+  var scored = Object.keys(DISCOVERY_GAP_LABELS_).filter(function (k) {
+    return typeof flags[k] === 'boolean';
+  });
+  if (!scored.length) return { adequate: '', gapsText: '' };
+  var gapKeys = scored.filter(function (k) { return !flags[k]; });
+  return {
+    adequate: gapKeys.length === 0,
+    gapsText: gapKeys.map(function (k) { return DISCOVERY_GAP_LABELS_[k]; }).join(', ')
+  };
+}
+
 function buildJudgeSystemPrompt_() {
   var fewShot = FEW_SHOT_ANCHORS.length
     ? '\n\nLabeled examples:\n' + FEW_SHOT_ANCHORS.map(function (ex, i) {
@@ -586,6 +675,8 @@ function buildJudgeSystemPrompt_() {
     '',
     deliveryRubricPrompt_(),
     '',
+    discoveryRubricPrompt_(),
+    '',
     '   Score anchors:',
     '   5 = close asked AND objections surfaced+resolved with concrete proof.',
     '   4 = close asked, minor objection-handling gap (surfaced but weakly resolved).',
@@ -607,10 +698,11 @@ function buildJudgeSystemPrompt_() {
     '  "reasoning": "string",',
     '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
     '  "call_quality_score": 1,',
-    '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true },',
+    '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true,',
+    '    "discovery_adequate": true, "understood_leads_business": true, "confirmed_prior_discovery": true },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | delivery_ineffective | multiple",',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | framework_not_explained | delivery_ineffective | multiple",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
     '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own',
@@ -668,7 +760,10 @@ function scoreTranscript_(ctx) {
     reasoning: 'JSON parse failed twice — see Apps Script log for raw model output.',
     lead_quality: { verdict: 'good_to_book', justification: 'Unscored — parse failure.' },
     call_quality_score: 1,
-    flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false },
+    flags: {
+      asked_for_close: false, objections_uncovered: false, objections_overcome: false,
+      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false
+    },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
@@ -1136,6 +1231,12 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   var delivery = deriveDeliveryFields_(result);
   sheet.getRange(rowIndex, col['Flag: Delivery Effective']).setValue(delivery.effective);
   sheet.getRange(rowIndex, col['Delivery Gaps']).setValue(delivery.gapsText);
+  // Discovery applies to EVERY variant, QC included (unlike framework above) —
+  // deriveDiscoveryFields_ handles the per-variant differences itself, writing
+  // blank rather than a fabricated failure when a variant didn't score it.
+  var discovery = deriveDiscoveryFields_(result);
+  sheet.getRange(rowIndex, col['Flag: Discovery Adequate']).setValue(discovery.adequate);
+  sheet.getRange(rowIndex, col['Discovery Gaps']).setValue(discovery.gapsText);
   // Records which rubric version produced this score — see RUBRIC_VERSION's
   // own comment above for the versioning convention. Blank on rows scored
   // before this column existed, same "no signal" pattern as every column
@@ -2101,6 +2202,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
         var frameworkFields = deriveFrameworkFields_(result);
         var deliveryFields = deriveDeliveryFields_(result);
+        var discoveryFields = deriveDiscoveryFields_(result);
 
         // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
         // logs a comparison only, never changes what's appended below.
@@ -2137,7 +2239,9 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           frameworkFields.gapsText,       // Framework Gaps
           RUBRIC_VERSION,                 // Rubric Version
           deliveryFields.effective,       // Flag: Delivery Effective
-          deliveryFields.gapsText         // Delivery Gaps
+          deliveryFields.gapsText,        // Delivery Gaps
+          discoveryFields.adequate,       // Flag: Discovery Adequate
+          discoveryFields.gapsText         // Discovery Gaps
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -2200,6 +2304,12 @@ function buildSeanJudgeSystemPrompt_() {
     '   rep fail to do or say that would have gotten it booked?',
     '4. Did the rep conduct real discovery — do they demonstrably understand this lead\'s specific business',
     '   (production volume, market, current marketing spend, team structure), not a generic read of the room?',
+    '4b. This call follows an earlier QC/qualification call, so did the rep CONFIRM what that call already',
+    '   surfaced ("you mentioned you\'re at about 30 transactions a year — still right?") rather than re-asking',
+    '   it cold as if it never happened, or silently assuming it? AND did they go DEEPER where that earlier',
+    '   discovery was thin, following up on whatever was left vague? Score confirmed_prior_discovery true only',
+    '   if both happened. If the transcript shows this was genuine first contact with no earlier call behind',
+    '   it, score it TRUE — never mark a rep down for the absence of a conversation that never happened.',
     '5. Did the rep capture the lead\'s actual stated goals, and explicitly connect the podcast framework back',
     '   to achieving those specific goals — not a generic pitch that would fit any lead?',
     '6. Bottom line: if the call ended with no money and no second call booked, what is the single root cause?',
@@ -2233,6 +2343,7 @@ function buildSeanJudgeSystemPrompt_() {
     '    "objections_overcome": true,',
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true,',
+    '    "confirmed_prior_discovery": true,',
     '    "captured_leads_goals": true,',
     '    "tied_framework_to_goals": true,',
     '    "booked_second_call_with_tomas": true',
@@ -2266,6 +2377,7 @@ function isValidSeanJudgeSchema_(obj) {
     typeof obj.flags.objections_overcome === 'boolean' &&
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.confirmed_prior_discovery === 'boolean' &&
     typeof obj.flags.captured_leads_goals === 'boolean' &&
     typeof obj.flags.tied_framework_to_goals === 'boolean' &&
     typeof obj.flags.booked_second_call_with_tomas === 'boolean' &&
@@ -2308,7 +2420,7 @@ function scoreSeanTranscript_(ctx) {
     call_quality_score: 1,
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
-      discovery_adequate: false, understood_leads_business: false,
+      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
       captured_leads_goals: false, tied_framework_to_goals: false,
       booked_second_call_with_tomas: false
     },
@@ -2624,6 +2736,7 @@ function scoreSeanTranscripts() {
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
+          var discoveryFields = deriveDiscoveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -2662,7 +2775,9 @@ function scoreSeanTranscripts() {
             frameworkFields.gapsText,        // Framework Gaps
             RUBRIC_VERSION,                  // Rubric Version
             deliveryFields.effective,        // Flag: Delivery Effective
-            deliveryFields.gapsText          // Delivery Gaps
+            deliveryFields.gapsText,         // Delivery Gaps
+            discoveryFields.adequate,        // Flag: Discovery Adequate
+            discoveryFields.gapsText          // Discovery Gaps
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -2803,6 +2918,7 @@ function scoreJoanaTranscripts() {
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
+          var discoveryFields = deriveDiscoveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. Joana
@@ -2840,7 +2956,9 @@ function scoreJoanaTranscripts() {
             frameworkFields.gapsText,         // Framework Gaps
             RUBRIC_VERSION,                   // Rubric Version
             deliveryFields.effective,         // Flag: Delivery Effective
-            deliveryFields.gapsText           // Delivery Gaps
+            deliveryFields.gapsText,          // Delivery Gaps
+            discoveryFields.adequate,         // Flag: Discovery Adequate
+            discoveryFields.gapsText           // Discovery Gaps
           ]);
 
           existing[key] = true;
@@ -3072,6 +3190,8 @@ function buildTomasJudgeSystemPrompt_() {
     '',
     deliveryRubricPrompt_(),
     '',
+    discoveryRubricPrompt_(),
+    '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
@@ -3085,11 +3205,14 @@ function buildTomasJudgeSystemPrompt_() {
     '    "objections_overcome": true,',
     '    "closed_or_committed": true,',
     '    "followed_goal_mirror_map_proof_process": true,',
-    '    "stalling_converted_to_date": true',
+    '    "stalling_converted_to_date": true,',
+    '    "discovery_adequate": true,',
+    '    "understood_leads_business": true,',
+    '    "confirmed_prior_discovery": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | framework_not_explained | delivery_ineffective | multiple",',
+    '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | framework_not_explained | delivery_ineffective | multiple",',
     '  "teachable_strength": "string",',
     '  "coach_this": "string",',
     '  "manual_review_recommended": true,',
@@ -3117,6 +3240,9 @@ function isValidTomasJudgeSchema_(obj) {
     typeof obj.flags.closed_or_committed === 'boolean' &&
     typeof obj.flags.followed_goal_mirror_map_proof_process === 'boolean' &&
     typeof obj.flags.stalling_converted_to_date === 'boolean' &&
+    typeof obj.flags.discovery_adequate === 'boolean' &&
+    typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.confirmed_prior_discovery === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -3158,7 +3284,8 @@ function scoreTomasTranscript_(ctx) {
     call_quality_score: 1,
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false, closed_or_committed: false,
-      followed_goal_mirror_map_proof_process: false, stalling_converted_to_date: false
+      followed_goal_mirror_map_proof_process: false, stalling_converted_to_date: false,
+      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
@@ -3275,6 +3402,7 @@ function scoreTomasTranscripts() {
           var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
+          var discoveryFields = deriveDiscoveryFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -3313,7 +3441,9 @@ function scoreTomasTranscripts() {
             frameworkFields.gapsText,           // Framework Gaps
             RUBRIC_VERSION,                      // Rubric Version
             deliveryFields.effective,           // Flag: Delivery Effective
-            deliveryFields.gapsText             // Delivery Gaps
+            deliveryFields.gapsText,            // Delivery Gaps
+            discoveryFields.adequate,           // Flag: Discovery Adequate
+            discoveryFields.gapsText             // Discovery Gaps
           ]);
 
           existing[key] = true;

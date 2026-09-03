@@ -160,7 +160,12 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
   const good = {
     lead_quality: { verdict: 'good_to_book' },
     call_quality_score: 4,
-    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    // discovery_adequate/understood_leads_business/confirmed_prior_discovery became
+    // required on the shared rubric 03/09/2026 — see deriveDiscoveryFields_'s own test.
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true
+    },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
@@ -199,6 +204,77 @@ test('deriveFrameworkFields_ — all three explained means no gaps; a missing fr
   const nullResult = gas.deriveFrameworkFields_(null);
   assert.equal(nullResult.explained, false);
   assert.equal(nullResult.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
+});
+
+test('deriveDiscoveryFields_ — judges only the discovery flags a variant actually returned, so the QC rubric (which never scores confirmed_prior_discovery) is not shown a phantom gap for it (Kris 03/09/2026: discovery is one of the 4 elements every rep must be graded on)', () => {
+  // Sales-call variant: all three flags scored and passed.
+  const allGood = gas.deriveDiscoveryFields_({
+    flags: { discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true }
+  });
+  assert.equal(allGood.adequate, true);
+  assert.equal(allGood.gapsText, '');
+
+  // Sales-call variant failing only the confirm/deepen-the-QC piece.
+  const noConfirm = gas.deriveDiscoveryFields_({
+    flags: { discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: false }
+  });
+  assert.equal(noConfirm.adequate, false);
+  assert.equal(noConfirm.gapsText, 'confirming/deepening what the earlier call surfaced');
+
+  // QC/first-touch variant: only two flags exist. The third must NOT be counted
+  // as a gap — that would mark every QC down for a conversation that never happened.
+  const qcPassing = gas.deriveDiscoveryFields_({
+    flags: { discovery_adequate: true, understood_leads_business: true }
+  });
+  assert.equal(qcPassing.adequate, true, 'a QC with both its flags passed is adequate, not failed by the missing third');
+  assert.equal(qcPassing.gapsText, '');
+
+  const qcFailing = gas.deriveDiscoveryFields_({
+    flags: { discovery_adequate: false, understood_leads_business: true }
+  });
+  assert.equal(qcFailing.adequate, false);
+  assert.equal(qcFailing.gapsText, 'depth of discovery questioning');
+
+  // A variant that scores no discovery at all, or any pre-existing row shape,
+  // must read as blank "no signal" — never as a fabricated failure.
+  const noneScored = gas.deriveDiscoveryFields_({ flags: { asked_for_close: true } });
+  assert.equal(noneScored.adequate, '', 'no discovery flags at all must be blank, not false');
+  assert.equal(noneScored.gapsText, '');
+
+  assert.equal(gas.deriveDiscoveryFields_({}).adequate, '');
+  assert.equal(gas.deriveDiscoveryFields_(null).adequate, '', 'must not throw on a null result');
+});
+
+test('every judge variant that scores discovery returns flags deriveDiscoveryFields_ can actually read, and the Sales Call Log has columns to put them in', () => {
+  // The whole point of the 03/09/2026 change: three variants already JUDGED
+  // discovery but there was no column to write it to, so it could never be
+  // tallied or trained on. Pin both halves — the flags exist in the schema
+  // validators, and the columns exist in the header list.
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Discovery Adequate') !== -1,
+    'Sales Call Log must have a Flag: Discovery Adequate column');
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Discovery Gaps') !== -1,
+    'Sales Call Log must have a Discovery Gaps column');
+
+  // The shared rubric (Joana) and Tomás's rubric did not score discovery at all
+  // before this change — their validators must now require it, otherwise a
+  // model reply omitting discovery would still be accepted as a valid score.
+  const sharedBase = {
+    lead_quality: { verdict: 'good_to_book', justification: 'x' },
+    call_quality_score: 3,
+    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+    manual_review_recommended: false,
+    severity: 2
+  };
+  assert.equal(gas.isValidJudgeSchema_(sharedBase), false,
+    'shared/Joana rubric must reject a reply with no discovery flags');
+
+  sharedBase.flags.discovery_adequate = true;
+  sharedBase.flags.understood_leads_business = true;
+  sharedBase.flags.confirmed_prior_discovery = true;
+  assert.equal(gas.isValidJudgeSchema_(sharedBase), true,
+    'shared/Joana rubric accepts the reply once discovery is scored');
 });
 
 test('deriveDeliveryFields_ — both covered means no gaps; a missing delivery object means every gap listed, not a throw (29/08/2026, same pattern as deriveFrameworkFields_)', () => {
@@ -2237,7 +2313,12 @@ test('isValidJudgeSchema_ rejects a schema-shaped object with an invalid verdict
   const base = {
     lead_quality: { verdict: 'good_to_book' },
     call_quality_score: 4,
-    flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+    // discovery_adequate/understood_leads_business/confirmed_prior_discovery became
+    // required on the shared rubric 03/09/2026 — see deriveDiscoveryFields_'s own test.
+    flags: {
+      asked_for_close: true, objections_uncovered: true, objections_overcome: true,
+      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true
+    },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,

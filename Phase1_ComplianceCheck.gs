@@ -1441,10 +1441,30 @@ var SALES_CALL_LOG_HEADERS = [
   // Tomás transcripts, not invented — see Phase2_CallGradingSOP.md §3G. ---
   'Flag: Delivery Effective', // AA (bool — paced appropriately AND read/adapted
                             //    to the lead's engagement, both covered)
-  'Delivery Gaps'           // AB (comma-joined: which of the 2 pieces were
+  'Delivery Gaps',          // AB (comma-joined: which of the 2 pieces were
                             //    missing/weak, blank if both covered — same
                             //    "pack real content into a real column" pattern
                             //    as Framework Gaps before it)
+  // --- 03/09/2026: discovery, per Kris — "The 4 main elements are
+  // 1. Discovery (QC does this too) 2. Framework (only sales call) 3. Ask for
+  // the money (ask for the booking on QC) 4. Objection handling. All 4 need to
+  // be graded and the highest priority trained each week." Three rubric
+  // variants already JUDGED discovery (Bens'/QC's/Sean's discovery_adequate +
+  // understood_leads_business flags) but only ever packed the answer into the
+  // free-text AI Feedback Summary — no column meant no scorecard tally, no
+  // dashboard signal, and no way to ever pick discovery as a week's training
+  // focus. See DISCOVERY_GAP_LABELS_/deriveDiscoveryFields_ in
+  // Phase2_CallScoring.gs. ---
+  'Flag: Discovery Adequate', // AC (bool — real discovery questions asked AND
+                            //    the lead's business actually understood; on a
+                            //    Sales Call also: the earlier QC's findings
+                            //    confirmed and deepened where they were thin.
+                            //    Blank on rows scored before this column
+                            //    existed, same "no signal" convention as every
+                            //    column addition above.)
+  'Discovery Gaps'          // AD (comma-joined: which discovery pieces were
+                            //    missing/weak, blank if all covered — same
+                            //    pattern as Framework Gaps/Delivery Gaps)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
