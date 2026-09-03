@@ -123,6 +123,26 @@ test('eventLooksInternalOnly_ flags a guest list that is non-empty but entirely 
     'no guests at all is the separate "prospect never added as a Calendar guest" case — must NOT be filtered here');
 });
 
+test('dropInternalOnlyBacklogEntries_ retroactively clears a backlog entry whose live Calendar guest list is now confirmed internal-only, leaves everything else alone (real bug 02/09/2026: Bens\' 3 QC/Joana 1-1s were flagged before the getRepCallEvents_ fix shipped and would be stuck in the backlog forever otherwise)', () => {
+  const backlog = [
+    { eventId: 'evt-internal', title: 'QC', prospectGuess: '(name not parsed from calendar title)', attendeeEmails: [], callDateLabel: '28/08/2026', time: '10:00' },
+    { eventId: 'evt-external', title: 'Joey Lamielle - Icons 100', prospectGuess: 'Joey Lamielle', attendeeEmails: ['joey@example.com'], callDateLabel: '26/08/2026', time: '10:30' },
+    { eventId: null, title: 'Old entry, no event ID', prospectGuess: 'Someone', attendeeEmails: [], callDateLabel: '20/08/2026', time: '09:00' },
+    { eventId: 'evt-deleted', title: 'Deleted event', prospectGuess: 'Nobody', attendeeEmails: [], callDateLabel: '19/08/2026', time: '09:00' }
+  ];
+  const lookup = (eventId) => {
+    if (eventId === 'evt-internal') return ['joana@iconsofrealestate.com', 'bens@iconsofrealestate.com'];
+    if (eventId === 'evt-external') return ['joey@example.com'];
+    return null; // deleted/unfound event
+  };
+  const kept = gas.dropInternalOnlyBacklogEntries_('Bens', backlog, lookup);
+  assert.equal(kept.length, 3, 'only the internal-only entry should be dropped');
+  assert.ok(!kept.some((e) => e.eventId === 'evt-internal'), 'internal-only entry dropped');
+  assert.ok(kept.some((e) => e.eventId === 'evt-external'), 'external prospect entry kept');
+  assert.ok(kept.some((e) => e.eventId === null), 'entry with no eventId left alone, not guessed at');
+  assert.ok(kept.some((e) => e.eventId === 'evt-deleted'), 'entry whose live lookup failed left alone, not guessed at');
+});
+
 test('stripFencesAndParseJson_ strips markdown code fences before parsing', () => {
   const parsed = gas.stripFencesAndParseJson_('```json\n{"a": 1}\n```');
   // parsed.a's JSON.parse ran inside the vm sandbox's own realm, so

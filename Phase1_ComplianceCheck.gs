@@ -381,6 +381,9 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
     var allRowsAnyDate = getAllTrackerRows_(repCfg, null, tz);
     var loggedRowsAnyDate = allRowsAnyDate.filter(function (r) { return r.logged; });
     backlog = reconcileComplianceBacklog_(repCfg.name, backlog, loggedRowsAnyDate);
+    backlog = dropInternalOnlyBacklogEntries_(repCfg.name, backlog, function (eventId) {
+      return calendarEventRawGuestEmails_(repCfg, eventId);
+    });
     saveComplianceBacklog_(repCfg.name, backlog);
   }
 
@@ -434,6 +437,57 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
 function eventLooksInternalOnly_(rawGuestEmails) {
   if (!rawGuestEmails.length) return false;
   return rawGuestEmails.every(function (e) { return INTERNAL_EMAILS.indexOf(e) !== -1; });
+}
+
+/**
+ * Retroactive companion to eventLooksInternalOnly_/getRepCallEvents_ above
+ * (02/09/2026 follow-up, same Bens/Joana "QC" bug): that fix only stops a
+ * NEW internal-only event from entering the backlog — it can't reach
+ * backward. 3 of Bens' backlog entries were flagged before the fix shipped
+ * and would be stuck forever, since reconcileComplianceBacklog_ only clears
+ * an entry once a matching LOGGED tracker row shows up, and an internal 1-1
+ * will never have one.
+ *
+ * Re-checks each entry's LIVE Calendar guest list via the injected
+ * `lookupGuestEmails(eventId)` rather than the entry's own stored
+ * attendeeEmails — those already had internal guests stripped out by
+ * getRepCallEvents_ before storage, so a genuinely internal-only event's
+ * stored attendeeEmails is an empty array, indistinguishable from the
+ * separate "prospect never added as a guest" case. An entry with no eventId,
+ * or whose lookup returns null (event deleted/inaccessible), is left alone
+ * rather than guessed at. Pure given `lookupGuestEmails`; the real lookup
+ * (calendarEventRawGuestEmails_ below) does the actual Calendar I/O.
+ */
+function dropInternalOnlyBacklogEntries_(repName, backlog, lookupGuestEmails) {
+  return backlog.filter(function (entry) {
+    if (!entry.eventId) return true;
+    var rawGuestEmails = lookupGuestEmails(entry.eventId);
+    if (!rawGuestEmails) return true;
+    if (eventLooksInternalOnly_(rawGuestEmails)) {
+      log_('  [' + repName + '] backlog item "' + entry.prospectGuess + '" (' + entry.callDateLabel +
+        ') — now confirmed internal-only, dropping from backlog.');
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Live Calendar lookup backing dropInternalOnlyBacklogEntries_ above. Returns null (not an empty array — that would mean "confirmed no guests") when the event can't be found or read, so callers can tell "not internal" apart from "couldn't check." */
+function calendarEventRawGuestEmails_(repCfg, eventId) {
+  var cal = repCfg.calendarId === 'primary'
+    ? CalendarApp.getDefaultCalendar()
+    : CalendarApp.getCalendarById(repCfg.calendarId);
+  if (!cal) return null;
+  var ev;
+  try {
+    ev = cal.getEventById(eventId);
+  } catch (e) {
+    return null;
+  }
+  if (!ev) return null;
+  return ev.getGuestList()
+    .map(function (g) { return (g.getEmail() || '').toLowerCase().trim(); })
+    .filter(Boolean);
 }
 
 /**
