@@ -2959,6 +2959,62 @@ test('formatEmailAgeLabel_ stays in hours under 48h, switches to rounded days at
   assert.equal(gas.formatEmailAgeLabel_(656), '27d old');
 });
 
+// --- Task: no-show follow-up check (03/09/2026) ---
+// Kris's ask: "There's five no shows, which is concerning. They've been
+// followed up with properly. We need to be able to check that... Same with
+// Sean and Tomas."
+
+test('findRecentNoShowRows_ only picks up No-show rows inside the lookback window, across every rep, and skips a row with no parseable Call Date rather than guessing', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const blankRow = () => new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  const setRow = (fields) => {
+    const row = blankRow();
+    Object.keys(fields).forEach((h) => { row[col[h] - 1] = fields[h]; });
+    return row;
+  };
+
+  const rows = [
+    setRow({ 'Prospect Name': 'Recent No-show', 'Prospect Email': 'a@example.com', Rep: 'Sean', 'Call Date': '01/09/2026', 'Outcome Disposition': 'No-show' }),
+    setRow({ 'Prospect Name': 'Old No-show', 'Prospect Email': 'b@example.com', Rep: 'Joana', 'Call Date': '01/01/2026', 'Outcome Disposition': 'No-show' }),
+    setRow({ 'Prospect Name': 'Not A No-show', 'Prospect Email': 'c@example.com', Rep: 'Tomás', 'Call Date': '01/09/2026', 'Outcome Disposition': 'Sold' }),
+    setRow({ 'Prospect Name': 'No Date', 'Prospect Email': 'd@example.com', Rep: 'Bens', 'Call Date': '', 'Outcome Disposition': 'No-show' })
+  ];
+  const cutoff = new gas.Date('2026-08-25T00:00:00Z');
+  const results = gas.findRecentNoShowRows_(rows, col, cutoff);
+
+  assert.equal(results.length, 1, 'only the recent, real No-show with a parseable date should survive');
+  assert.equal(results[0].prospectName, 'Recent No-show');
+  assert.equal(results[0].rep, 'Sean');
+});
+
+test('repEmailForFollowUpCheck_ covers Tomás (missing from CONFIG.REPS, unlike Bens/Joana/Sean) without guessing for an unknown rep', () => {
+  assert.equal(gas.repEmailForFollowUpCheck_('Sean'), gas.repEmailByName_('Sean'));
+  assert.equal(gas.repEmailForFollowUpCheck_('Tomás'), gas.CONFIG.TOMAS_EMAIL);
+  assert.equal(gas.repEmailForFollowUpCheck_('Tomas'), gas.CONFIG.TOMAS_EMAIL, 'must work without the accent too');
+  assert.equal(gas.repEmailForFollowUpCheck_('Some Rando'), null, 'must never guess an email for an unrecognized rep');
+});
+
+test('buildNoShowFollowUpReport_ sections each status separately and is honest that "followed up" only ever means an email was found, never proof of a phone call', () => {
+  const results = [
+    { prospectName: 'A', rep: 'Sean', callDateLabel: '01/09/2026', status: 'not_followed_up' },
+    { prospectName: 'B', rep: 'Joana', callDateLabel: '01/09/2026', status: 'followed_up' },
+    { prospectName: 'C', rep: 'Tomás', callDateLabel: '01/09/2026', status: 'unverifiable_no_prospect_email' }
+  ];
+  const report = gas.buildNoShowFollowUpReport_(results, 14);
+
+  assert.ok(report.subject.indexOf('1 unconfirmed of 3') !== -1, 'subject must surface the actionable count up front');
+  assert.ok(report.body.indexOf('A') !== -1 && report.body.indexOf('B') !== -1 && report.body.indexOf('C') !== -1);
+  const notFollowedIdx = report.body.indexOf('NOT followed up');
+  const aIdx = report.body.indexOf('A (Sean');
+  const followedIdx = report.body.indexOf('followed up (an email');
+  const bIdx = report.body.indexOf('B (Joana');
+  assert.ok(notFollowedIdx !== -1 && aIdx > notFollowedIdx && aIdx < followedIdx, 'A must land in the NOT-followed-up section, not the followed-up one');
+  assert.ok(bIdx > followedIdx, 'B must land in the followed-up section');
+  assert.ok(report.body.toLowerCase().indexOf('cannot see a phone call') !== -1,
+    'must be explicit that this is a starting point for review, not final proof');
+});
+
 test('repIsToRecipient_ checks the rep\'s own addresses (including aliases) against the To list, not Cc', () => {
   const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com', aliases: ['bens@ardorseo.com'] };
   assert.equal(gas.repIsToRecipient_(repCfg, ['bens@iconsofrealestate.com']), true);

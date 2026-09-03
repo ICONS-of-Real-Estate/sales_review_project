@@ -3434,7 +3434,7 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreTomasTranscripts', // Phase 2
   'scoreJoanaTranscripts', 'scoreBensLegacyTranscripts', 'runRandomCalibrationSample',
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
-  'runInboxSlaCheck',                                                      // Phase 4
+  'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4
   'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
@@ -3520,6 +3520,15 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 4 (inbox SLA) — INBOX_SLA_CONFIG.ENABLED is false. Needs the domain-wide-' +
       'delegation setup (see that file\'s header) + previewInboxSlaCheck() first, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof NO_SHOW_FOLLOWUP_CONFIG !== 'undefined' && NO_SHOW_FOLLOWUP_CONFIG.ENABLED) {
+    installNoShowFollowUpCheckTrigger();
+    installed.push('Phase 4: no-show follow-up check');
+  } else {
+    skipped.push('Phase 4 (no-show follow-up check) — NO_SHOW_FOLLOWUP_CONFIG.ENABLED is false. Needs the ' +
+      'same Gmail domain-wide-delegation setup as inbox SLA above + previewNoShowFollowUpCheck() first, ' +
+      'then flip ENABLED and re-run this.');
   }
 
   if (typeof WEEKLY_SCORECARD_CONFIG !== 'undefined' && WEEKLY_SCORECARD_CONFIG.ENABLED) {

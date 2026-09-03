@@ -661,3 +661,212 @@ function installInboxSlaTrigger() {
     ' and skips itself on Saturday/Sunday. INBOX_SLA_CONFIG.ENABLED is currently ' +
     INBOX_SLA_CONFIG.ENABLED + ' — while false this only logs instead of sending.');
 }
+
+// ---------------------------------------------------------------------------
+// No-show follow-up check — Kris's ask (03/09/2026): "There's five no
+// shows, which is concerning. They've been followed up with properly. We
+// need to be able to check that... Same with Sean and Tomas." Reuses the
+// SAME Gmail domain-wide-delegation service account as the inbox SLA check
+// above — same one-time setup (this file's own header), same
+// gmail.readonly scope, no additional admin work needed — to check whether
+// the rep who owns a No-show sent a follow-up email to the lead afterward.
+//
+// This is a REPORT to Kris/Tomás, not an automated nag to reps: "followed
+// up" here only ever means "an email to the lead's address was found" — it
+// cannot see a phone call, so it is a starting point for review, never
+// final proof either way.
+//
+// Real limitation, worth knowing up front: most Sales Call Log rows have a
+// BLANK Prospect Email today (see Phase9_GhlSync.gs's own header comment),
+// so most no-shows will read "unverifiable" until that gets filled in —
+// either by the pending GHL sync decision or by hand.
+// ---------------------------------------------------------------------------
+
+var NO_SHOW_FOLLOWUP_CONFIG = {
+  // Same "preview before enabling" discipline as every other phase.
+  ENABLED: false,
+  LOOKBACK_DAYS: 14
+};
+
+/** repEmailByName_ (Phase3_HandoffBrief.gs) only covers CONFIG.REPS — Tomás isn't in it (his calls
+ * aren't calendar-scanned the way Bens/Joana/Sean's are). Falls back to CONFIG.TOMAS_EMAIL for him,
+ * never guesses for anyone else. */
+function repEmailForFollowUpCheck_(repName) {
+  var viaReps = repEmailByName_(repName);
+  if (viaReps) return viaReps;
+  var normalized = String(repName || '').trim().toLowerCase();
+  if (normalized === 'tomás' || normalized === 'tomas') return CONFIG.TOMAS_EMAIL;
+  return null;
+}
+
+/**
+ * Pure scan of the Sales Call Log's raw row values for No-show rows within
+ * the lookback window, across every rep — no Spreadsheet/date-object calls
+ * beyond what's passed in, so it's directly testable. Skips a row with no
+ * parseable Call Date rather than guessing.
+ */
+function findRecentNoShowRows_(rows, col, cutoffDate) {
+  var results = [];
+  rows.forEach(function (row, i) {
+    var disposition = String(row[col['Outcome Disposition'] - 1] || '').trim();
+    if (disposition !== 'No-show') return;
+    var dateLabel = String(row[col['Call Date'] - 1] || '').trim();
+    var parts = dateLabel.split('/'); // ['dd', 'MM', 'yyyy']
+    if (parts.length !== 3) return;
+    var callDate = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
+    if (isNaN(callDate.getTime()) || callDate < cutoffDate) return;
+    results.push({
+      rowIndex: i + 2,
+      prospectName: String(row[col['Prospect Name'] - 1] || '').trim(),
+      prospectEmail: String(row[col['Prospect Email'] - 1] || '').trim().toLowerCase(),
+      rep: String(row[col['Rep'] - 1] || '').trim(),
+      callDateLabel: dateLabel,
+      callDate: callDate
+    });
+  });
+  return results;
+}
+
+/**
+ * Checks whether the rep sent ANY email to the lead's address after the
+ * no-show call date, via the same impersonated-Gmail-search mechanism as
+ * the inbox SLA check above. Never throws — a Gmail API failure reads as
+ * 'search_failed', same "distinguish failure from a genuine negative"
+ * policy this codebase uses elsewhere (see GHL sync's own comment).
+ */
+function checkNoShowFollowUpStatus_(noShowRow) {
+  if (!noShowRow.prospectEmail) return 'unverifiable_no_prospect_email';
+  var repEmail = repEmailForFollowUpCheck_(noShowRow.rep);
+  if (!repEmail) return 'unverifiable_no_rep_email';
+
+  var afterDateStr = Utilities.formatDate(noShowRow.callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy/MM/dd');
+  var query = 'in:sent to:' + noShowRow.prospectEmail + ' after:' + afterDateStr;
+  try {
+    var accessToken = getGmailAccessTokenForUser_(repEmail);
+    var page = gmailApiGet_(accessToken, '/threads?q=' + encodeURIComponent(query) + '&maxResults=1');
+    return (page.threads && page.threads.length) ? 'followed_up' : 'not_followed_up';
+  } catch (e) {
+    log_('  checkNoShowFollowUpStatus_ failed for ' + noShowRow.prospectName + ' (' + noShowRow.rep + '): ' + e);
+    return 'search_failed';
+  }
+}
+
+/** Pure report builder — {subject, body, htmlBody} — kept separate from MailApp/Gmail I/O so it's
+ * testable without either. `results` is findRecentNoShowRows_'s output, each entry additionally
+ * carrying a `status` from checkNoShowFollowUpStatus_. */
+function buildNoShowFollowUpReport_(results, windowDays) {
+  var byStatus = {
+    followed_up: [], not_followed_up: [],
+    unverifiable_no_prospect_email: [], unverifiable_no_rep_email: [], search_failed: []
+  };
+  results.forEach(function (r) { byStatus[r.status].push(r); });
+
+  var subject = 'No-show follow-up check — ' + byStatus.not_followed_up.length + ' unconfirmed of ' +
+    results.length + ' no-show(s) in the last ' + windowDays + ' days';
+
+  var lineText = function (r) { return '  • ' + r.prospectName + ' (' + r.rep + ', ' + r.callDateLabel + ')'; };
+  var lineHtml = function (r) { return '<li>' + escapeHtml_(r.prospectName) + ' (' + escapeHtml_(r.rep) + ', ' + r.callDateLabel + ')</li>'; };
+
+  var sectionText = function (label, list) {
+    return list.length + ' ' + label + ':\n' + (list.length ? list.map(lineText).join('\n') : '  (none)');
+  };
+  var sectionHtml = function (label, list) {
+    return '<p><b>' + list.length + ' ' + label + '</b></p>' +
+      (list.length ? '<ul>' + list.map(lineHtml).join('') + '</ul>' : '<p>(none)</p>');
+  };
+
+  var body = [
+    'No-show follow-up check — last ' + windowDays + ' days.',
+    '',
+    sectionText('NOT followed up (no email found to the lead since the no-show)', byStatus.not_followed_up),
+    '',
+    sectionText('followed up (an email to the lead was found)', byStatus.followed_up),
+    '',
+    sectionText('unverifiable — no Prospect Email on file', byStatus.unverifiable_no_prospect_email),
+    sectionText('unverifiable — rep email unknown', byStatus.unverifiable_no_rep_email),
+    sectionText('search failed (Gmail API error) — see Apps Script log', byStatus.search_failed),
+    '',
+    '"Followed up" here only ever means an email was found to the lead\'s address — it cannot see a phone ' +
+      'call, so this is a starting point for review, not final proof either way.'
+  ].join('\n');
+
+  var htmlBody =
+    '<p>No-show follow-up check — last ' + windowDays + ' days.</p>' +
+    sectionHtml('NOT followed up (no email found to the lead since the no-show)', byStatus.not_followed_up) +
+    sectionHtml('followed up (an email to the lead was found)', byStatus.followed_up) +
+    sectionHtml('unverifiable — no Prospect Email on file', byStatus.unverifiable_no_prospect_email) +
+    sectionHtml('unverifiable — rep email unknown', byStatus.unverifiable_no_rep_email) +
+    sectionHtml('search failed (Gmail API error) — see Apps Script log', byStatus.search_failed) +
+    '<p><i>"Followed up" here only ever means an email was found to the lead\'s address — it cannot see a ' +
+    'phone call, so this is a starting point for review, not final proof either way.</i></p>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+/** Shared scan+check pass — used by both the preview and the live send below, so they can't disagree. */
+function computeNoShowFollowUpResults_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return []; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var cutoff = new Date(Date.now() - NO_SHOW_FOLLOWUP_CONFIG.LOOKBACK_DAYS * 24 * 3600000);
+  var noShows = findRecentNoShowRows_(rows, col, cutoff);
+  log_(noShows.length + ' no-show row(s) in the last ' + NO_SHOW_FOLLOWUP_CONFIG.LOOKBACK_DAYS + ' days.');
+
+  return noShows.map(function (r) {
+    var status = checkNoShowFollowUpStatus_(r);
+    log_('  ' + r.prospectName + ' (' + r.rep + ', ' + r.callDateLabel + '): ' + status);
+    return {
+      rowIndex: r.rowIndex, prospectName: r.prospectName, prospectEmail: r.prospectEmail,
+      rep: r.rep, callDateLabel: r.callDateLabel, callDate: r.callDate, status: status
+    };
+  });
+}
+
+/** Dry run: scans and checks exactly like the live run, but only logs the report — sends nothing. */
+function previewNoShowFollowUpCheck() {
+  RUN_TAG = 'previewNoShowFollowUpCheck';
+  log_('[previewNoShowFollowUpCheck] PREVIEW MODE — read-only. Nothing will be sent.');
+  var results = computeNoShowFollowUpResults_();
+  var report = buildNoShowFollowUpReport_(results, NO_SHOW_FOLLOWUP_CONFIG.LOOKBACK_DAYS);
+  log_('[previewNoShowFollowUpCheck] Would send: "' + report.subject + '"\n\n' + report.body);
+}
+
+/** Live run: same scan as the preview, but actually emails Kris/Tomás the report. Gated by
+ * NO_SHOW_FOLLOWUP_CONFIG.ENABLED — logs instead of sending while false. */
+function runNoShowFollowUpCheck() {
+  RUN_TAG = 'runNoShowFollowUpCheck';
+  var results = computeNoShowFollowUpResults_();
+  var report = buildNoShowFollowUpReport_(results, NO_SHOW_FOLLOWUP_CONFIG.LOOKBACK_DAYS);
+
+  if (!NO_SHOW_FOLLOWUP_CONFIG.ENABLED) {
+    log_('(NO_SHOW_FOLLOWUP_CONFIG.ENABLED is false — logging instead of sending) "' + report.subject + '"');
+    return;
+  }
+  guardedSend_(CONFIG.KRIS_EMAIL, report.subject, report.body,
+    { cc: CONFIG.TOMAS_EMAIL, htmlBody: report.htmlBody, name: 'No-show Follow-up Check' }, 2);
+}
+
+/**
+ * ONE-TIME setup, run manually — ideally only after previewNoShowFollowUpCheck() has been checked
+ * against real data. Daily, not hourly — this is a periodic report, not a time-critical nag.
+ */
+function installNoShowFollowUpCheckTrigger() {
+  RUN_TAG = 'installNoShowFollowUpCheckTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runNoShowFollowUpCheck') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runNoShowFollowUpCheck')
+    .timeBased()
+    .everyDays(1)
+    .atHour(INBOX_SLA_CONFIG.DAILY_TRIGGER_HOUR)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
+    .create();
+  log_('No-show follow-up check installed: runNoShowFollowUpCheck() now runs daily at ' +
+    INBOX_SLA_CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + '. ' +
+    'NO_SHOW_FOLLOWUP_CONFIG.ENABLED is currently ' + NO_SHOW_FOLLOWUP_CONFIG.ENABLED +
+    ' — while false this only logs instead of sending.');
+}
