@@ -1032,7 +1032,22 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
 
 // --- Task: frozen regression set / drift detection (25/08/2026) ---
 
-test('resolveRubricVariantForRow_ maps exact_key rows to the shared rubric for Sean/Bens, but Tomás always gets his own variant regardless of match method (real gap closed 29/08/2026: his own live-logged calls never got his rubric before this)', () => {
+test('rubricVariantForNewScore_ gives every rep their OWN rubric for a new score, so Bens is never graded on a closer\'s framework/money-ask again (real bug 03/09/2026: his framework failed 4 of 4 calls on a rubric written for somebody else\'s job)', () => {
+  // Kris, 26/08/2026: Bens "runs ICONS 100 lead-gen interviews and QCs ... and
+  // never asks for money or explains the framework himself."
+  assert.equal(gas.rubricVariantForNewScore_('Bens', 'Sales Call'), 'bens');
+  assert.equal(gas.rubricVariantForNewScore_('Sean', 'Sales Call'), 'sean');
+  assert.equal(gas.rubricVariantForNewScore_('Tomás', 'Sales Call'), 'tomas');
+  assert.equal(gas.rubricVariantForNewScore_('Joana', 'Sales Call'), 'shared',
+    'Joana has no dedicated variant and legitimately uses the shared closer rubric');
+
+  // Call type still wins over rep — a QC is never a closing call whoever ran it.
+  assert.equal(gas.rubricVariantForNewScore_('Bens', 'QC'), 'qc');
+  assert.equal(gas.rubricVariantForNewScore_('Sean', 'Discovery'), 'qc');
+  assert.equal(gas.rubricVariantForNewScore_('Tomás', 'QC'), 'qc');
+});
+
+test('resolveRubricVariantForRow_ still reports HISTORY, not what should score a call — rows the ongoing pipeline scored before 03/09/2026 really were scored by the shared rubric, and checkRegressionDrift_ depends on knowing that', () => {
   assert.equal(gas.resolveRubricVariantForRow_('Sean', 'exact_key'), 'shared');
   assert.equal(gas.resolveRubricVariantForRow_('Bens', 'exact_key'), 'shared');
   assert.equal(gas.resolveRubricVariantForRow_('Tomás', 'exact_key'), 'tomas');

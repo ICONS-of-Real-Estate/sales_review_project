@@ -910,7 +910,7 @@ function scoreNewlyLoggedCalls_() {
         // criteria that don't structurally apply to a pre-sales-call step,
         // and Tomás's own live-logged calls never got his own variant. See
         // resolveRubricVariantForRow_'s own comment for the dispatch order.
-        var variant = resolveRubricVariantForRow_(ctx.rep, 'exact_key', ctx.callType);
+        var variant = rubricVariantForNewScore_(ctx.rep, ctx.callType);
         var result = scoreTranscriptByVariant_(variant, ctx);
         writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
         scored++;
@@ -1010,7 +1010,6 @@ function rescoreAllCalls_(dryRun) {
 
       var scanRep = scanRow[col['Rep'] - 1];
       var scanCallType = scanRow[col['Call Type'] - 1] || 'QC';
-      var scanMatchMethod = scanRow[col['Match Method'] - 1];
       eligible.push({
         rowIndex: i + 2,
         row: scanRow,
@@ -1019,7 +1018,11 @@ function rescoreAllCalls_(dryRun) {
         transcriptUrl: scanTranscriptUrl,
         existingScore: scanExistingScore,
         rubricVersion: scanRubricVersion,
-        variant: resolveRubricVariantForRow_(scanRep, scanMatchMethod, scanCallType)
+        // A rescore produces a NEW score, so it uses the rubric that should
+        // score this rep's call — not whichever one happened to score the row
+        // originally (that's resolveRubricVariantForRow_'s job, and only
+        // regression-drift attribution wants it).
+        variant: rubricVariantForNewScore_(scanRep, scanCallType)
       });
     }
     eligible.sort(function (a, b) { return a.variant < b.variant ? -1 : (a.variant > b.variant ? 1 : 0); });
@@ -4243,9 +4246,17 @@ var REGRESSION_BASELINE_HEADERS = [
 ];
 
 /**
- * Which rubric variant actually scored a given "Sales Call Log" row — needed
- * so checkRegressionDrift_ re-scores under the SAME prompt the baseline was
- * frozen against, not just whatever the rep's name might suggest. The
+ * HISTORICAL ATTRIBUTION ONLY — which rubric variant actually scored a given
+ * "Sales Call Log" row. Use rubricVariantForNewScore_ above to decide which
+ * rubric SHOULD score a call; conflating the two is what let Bens be graded
+ * on a closer's rubric for weeks (see that function's header). The
+ * matchMethod logic below stays exactly as it is precisely BECAUSE it
+ * describes history: rows scored by the ongoing pipeline before 03/09/2026
+ * genuinely were scored by the shared rubric whatever the rep's own variant
+ * would have been, and checkRegressionDrift_ has to keep knowing that.
+ *
+ * Needed so checkRegressionDrift_ re-scores under the SAME prompt the
+ * baseline was frozen against, not just whatever the rep's name suggests. The
  * ongoing pipeline (scoreNewlyLoggedCalls_) always scores every exact_key
  * row through the SHARED rubric regardless of rep; the per-rep variants
  * (Sean/Bens/Tomás) only ever run through their own folder-scan backfill
@@ -4263,6 +4274,38 @@ var REGRESSION_BASELINE_HEADERS = [
  * a row is confirmed NOT a QC/Discovery does rep/matchMethod decide which
  * closing-call rubric applies, same as before this change.
  */
+/**
+ * Which rubric SHOULD score a call — as opposed to
+ * resolveRubricVariantForRow_ below, which reports which rubric DID score an
+ * existing row. Those are two different questions and answering both with one
+ * function is what caused the bug this exists to fix.
+ *
+ * Real bug found live (03/09/2026, from the first four-element training
+ * priority run): Bens' framework explanation failed on 4 of 4 calls and his
+ * close-ask on 2 of 4 — for a rep Kris explicitly defined (26/08/2026) as one
+ * who "runs ICONS 100 lead-gen interviews and QCs, books the next step for
+ * someone else on the team, and never asks for money or explains the
+ * framework himself" (TRAINING_REVIEW_ROLE_.Bens, Phase6_TrainingCallReview.gs,
+ * where drillsFramework is already false for exactly this reason). He was
+ * being graded on a rubric written for somebody else's job.
+ *
+ * The cause: scoreNewlyLoggedCalls_ calls the historical-attribution function
+ * with a hardcoded 'exact_key', which trips its matchMethod guard and routes
+ * EVERY non-QC, non-Tomás call to the shared closer rubric regardless of rep.
+ * The per-rep variants only ever ran on folder-scan backfills. The 29/08/2026
+ * dispatch fix closed that gap for Tomás but left Sean and Bens behind.
+ *
+ * Match method is deliberately absent here: how a row was matched to its
+ * transcript says nothing about which rubric describes that rep's job.
+ */
+function rubricVariantForNewScore_(rep, callType) {
+  if (callType === 'QC' || callType === 'Discovery') return 'qc';
+  if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
+  if (rep === 'Sean') return 'sean';
+  if (rep === 'Bens') return 'bens';
+  return 'shared';
+}
+
 function resolveRubricVariantForRow_(rep, matchMethod, callType) {
   if (callType === 'QC' || callType === 'Discovery') return 'qc';
   if (rep === 'Tomás' || rep === 'Tomas') return 'tomas';
