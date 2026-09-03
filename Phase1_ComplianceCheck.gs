@@ -440,6 +440,34 @@ function eventLooksInternalOnly_(rawGuestEmails) {
 }
 
 /**
+ * Any OTHER company-domain guest on this event — e.g. the account manager
+ * invited to a post-sale Discovery/onboarding call. Kris's ask (03/09/2026,
+ * real case: Stacie Staub's Discovery call went to Joana's handoff-brief
+ * email but not to her account manager, also invited to that same call):
+ * "Joana will join to make sure the invoice gets paid but it needs to be
+ * sent to the AM too."
+ *
+ * Deliberately checks the @iconsofrealestate.com DOMAIN, not membership in
+ * INTERNAL_EMAILS — an account manager is a real, distinct role from the
+ * fixed 5-person team list that constant models (see its own definition),
+ * and a newly-hired AM's address wouldn't be in that list yet. Domain-only
+ * risks nothing worse than CC'ing a teammate who was already going to see
+ * the call anyway; excluding them via a stale roster risks the AM never
+ * finding out about their own customer's call at all.
+ *
+ * Excludes repCfg.email (the rep this brief is already addressed to — no
+ * point CC'ing someone their own email is already going to) and, since
+ * getRepCallEvents_ already computes rawGuestEmails once, this only needs
+ * to filter it, no separate Calendar read.
+ */
+function additionalTeamGuestEmails_(rawGuestEmails, repEmail) {
+  var repEmailLower = String(repEmail || '').toLowerCase().trim();
+  return rawGuestEmails.filter(function (e) {
+    return e !== repEmailLower && e.indexOf('@iconsofrealestate.com') !== -1;
+  });
+}
+
+/**
  * Retroactive companion to eventLooksInternalOnly_/getRepCallEvents_ above
  * (02/09/2026 follow-up, same Bens/Joana "QC" bug): that fix only stops a
  * NEW internal-only event from entering the backlog — it can't reach
@@ -522,6 +550,7 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
         attendeeEmails: rawGuestEmails.filter(function (e) {
           return INTERNAL_EMAILS.indexOf(e) === -1;
         }),
+        additionalTeamGuestEmails: additionalTeamGuestEmails_(rawGuestEmails, repCfg.email),
         internalOnly: eventLooksInternalOnly_(rawGuestEmails)
       };
     })
@@ -535,7 +564,10 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
     .map(function (e) {
       // internalOnly only existed to drive the filter above -- drop it so
       // this function's return shape is unchanged for every other caller.
-      return { id: e.id, title: e.title, start: e.start, prospectGuess: e.prospectGuess, attendeeEmails: e.attendeeEmails };
+      return {
+        id: e.id, title: e.title, start: e.start, prospectGuess: e.prospectGuess,
+        attendeeEmails: e.attendeeEmails, additionalTeamGuestEmails: e.additionalTeamGuestEmails
+      };
     });
   log_('  events+attendees ' + repCfg.name + ': ' + mapped.map(function (e) {
     return '"' + e.title + '"→[' + e.attendeeEmails.join(',') + ']';

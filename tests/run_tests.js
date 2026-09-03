@@ -143,6 +143,51 @@ test('dropInternalOnlyBacklogEntries_ retroactively clears a backlog entry whose
   assert.ok(kept.some((e) => e.eventId === 'evt-deleted'), 'entry whose live lookup failed left alone, not guessed at');
 });
 
+test('additionalTeamGuestEmails_ finds a company-domain guest other than the rep the brief is addressed to (Kris 03/09/2026, real case: Stacie Staub\'s Discovery call included her account manager as a guest, but the handoff brief only went to Joana)', () => {
+  assert.deepEqual(
+    gas.additionalTeamGuestEmails_(['joana@iconsofrealestate.com', 'am.newhire@iconsofrealestate.com', 'stacie@example.com'], 'joana@iconsofrealestate.com'),
+    ['am.newhire@iconsofrealestate.com'],
+    'the AM must be found even though they are not in the fixed INTERNAL_EMAILS list — a new hire\'s address ' +
+    'would not be there yet, which is exactly why this checks the domain, not that roster'
+  );
+  assert.deepEqual(
+    gas.additionalTeamGuestEmails_(['joana@iconsofrealestate.com', 'stacie@example.com'], 'joana@iconsofrealestate.com'),
+    [],
+    'no additional company-domain guest — nothing to add'
+  );
+  assert.deepEqual(
+    gas.additionalTeamGuestEmails_(['joana@iconsofrealestate.com'], 'joana@iconsofrealestate.com'),
+    [],
+    'the rep\'s own address must never be returned as an "additional" guest'
+  );
+  assert.deepEqual(
+    gas.additionalTeamGuestEmails_(['stacie@example.com', 'stacie.colleague@example.com'], 'joana@iconsofrealestate.com'),
+    [],
+    'external guests (a different domain) must never be pulled into an internal handoff-brief CC line'
+  );
+});
+
+test('buildHandoffBriefCcList_ includes any additional team guest and dedupes, so an AM who happens to be Kris/Tomás does not get a doubled CC header', () => {
+  // Return values come from the vm sandbox's own realm, so assert.deepEqual's
+  // prototype-identity check fails against this file's plain array literals
+  // for realm reasons, not a real mismatch — compare content directly, same
+  // convention as stripFencesAndParseJson_'s test elsewhere in this file.
+  assert.equal(
+    gas.buildHandoffBriefCcList_('sean@iconsofrealestate.com', ['am.newhire@iconsofrealestate.com']).join(','),
+    'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL + ',am.newhire@iconsofrealestate.com'
+  );
+  assert.equal(
+    gas.buildHandoffBriefCcList_('sean@iconsofrealestate.com', [gas.CONFIG.TOMAS_EMAIL]).join(','),
+    'sean@iconsofrealestate.com,' + gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL,
+    'must not duplicate Tomás\'s CC line just because he was also invited as the "additional" guest'
+  );
+  assert.equal(
+    gas.buildHandoffBriefCcList_(null, []).join(','),
+    gas.CONFIG.KRIS_EMAIL + ',' + gas.CONFIG.TOMAS_EMAIL,
+    'a missing prior-rep email (repEmailByName_ found nothing) must be dropped, not sent as null/undefined'
+  );
+});
+
 test('stripFencesAndParseJson_ strips markdown code fences before parsing', () => {
   const parsed = gas.stripFencesAndParseJson_('```json\n{"a": 1}\n```');
   // parsed.a's JSON.parse ran inside the vm sandbox's own realm, so

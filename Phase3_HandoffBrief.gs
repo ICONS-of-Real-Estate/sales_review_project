@@ -548,6 +548,24 @@ function previewUpcomingHandoffBriefs_() {
  * — logs the would-be brief instead of sending while false. Idempotent via
  * the "Handoff Briefs Sent" tracking tab; safe to run hourly.
  */
+
+/**
+ * Builds the deduped CC list for one handoff brief. Kris's ask (03/09/2026):
+ * an account manager invited to the same upcoming call (e.g. a post-sale
+ * Discovery call) needs the brief too, not just the rep it's addressed to —
+ * see additionalTeamGuestEmails_'s own comment (Phase1_ComplianceCheck.gs)
+ * for how that list gets identified from the calendar invite. Pure/testable
+ * — dedupes against CONFIG.KRIS_EMAIL/CONFIG.TOMAS_EMAIL, which are always
+ * CC'd anyway, so an AM who happens to BE Tomás or Kris doesn't get a
+ * doubled header.
+ */
+function buildHandoffBriefCcList_(priorRepEmail, additionalTeamGuestEmails) {
+  var ccList = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL]
+    .concat(additionalTeamGuestEmails || [])
+    .filter(Boolean);
+  return ccList.filter(function (e, i) { return ccList.indexOf(e) === i; });
+}
+
 function sendUpcomingHandoffBriefs_() {
   RUN_TAG = 'sendUpcomingHandoffBriefs_';
   var lock = LockService.getScriptLock();
@@ -647,7 +665,10 @@ function sendUpcomingHandoffBriefs_() {
           if (!priorRepEmail) {
             log_('  No CONFIG.REPS email found for prior rep "' + prior.rep + '" — not CC\'d on this brief.');
           }
-          var cc = [priorRepEmail, CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL].filter(Boolean).join(',');
+          if (ev.additionalTeamGuestEmails.length) {
+            log_('  Also CC\'ing additional team guest(s) on this call: ' + ev.additionalTeamGuestEmails.join(', '));
+          }
+          var cc = buildHandoffBriefCcList_(priorRepEmail, ev.additionalTeamGuestEmails).join(',');
           var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, htmlBody: htmlBody, name: 'Call Handoff Brief Bot' }, 4);
           if (!didSend) {
             log_('  Send blocked/skipped for "' + ev.title + '" — NOT marking sent, will retry next hourly firing.');
