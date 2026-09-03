@@ -957,7 +957,7 @@ function scoreNewlyLoggedCalls_() {
 //      version and gets skipped on the next.
 var RESCORE_ALL_TIME_BUDGET_MS_ = 5 * 60 * 1000; // same margin under the 6-minute ceiling as INBOX_SLA_TIME_BUDGET_MS_
 
-function rescoreAllCalls_(dryRun) {
+function rescoreAllCalls_(dryRun, lastWeekOnly) {
   RUN_TAG = 'rescoreAllCalls_';
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
@@ -997,9 +997,28 @@ function rescoreAllCalls_(dryRun) {
     // that list by variant before making any model call — consecutive calls
     // now share the same system-prompt prefix, letting the cache actually work.
     var eligible = [];
+    // Kris's ask (03/09/2026), after seeing 470 rows go eligible at ~2.5
+    // minutes of Moonshot latency each: the weekly training picker only ever
+    // reads the most recently completed Mon-Sun week, so rescoring all of
+    // history to fix THIS week's session is ~470 model calls to change 16
+    // rows. Scoped mode rescores just that week — same window getWeekBounds_
+    // (Phase5_WeeklyScorecard.gs) gives the scorecard and the playbook
+    // review, so "what the picker reads" and "what this rescores" can't
+    // drift apart. Everything else (resumability, the version skip, the time
+    // budget) is unchanged; the rest of history can still be backfilled
+    // later with the unscoped run.
+    var scopeWeek = lastWeekOnly ? getWeekBounds_(new Date(), CONFIG.BUSINESS_TIMEZONE) : null;
     var skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0, skippedNotYetScored = 0;
+    var skippedOutsideWeek = 0;
     for (var i = 0; i < values.length; i++) {
       var scanRow = values[i];
+      if (scopeWeek) {
+        var scanCallDate = scanRow[col['Call Date'] - 1];
+        if (!(scanCallDate instanceof Date) || scanCallDate < scopeWeek.start || scanCallDate >= scopeWeek.end) {
+          skippedOutsideWeek++;
+          continue;
+        }
+      }
       var scanExistingScore = scanRow[col['Call Quality Score'] - 1];
       if (typeof scanExistingScore !== 'number') { skippedNotYetScored++; continue; }
       var scanRubricVersion = scanRow[col['Rubric Version'] - 1];
@@ -1027,7 +1046,13 @@ function rescoreAllCalls_(dryRun) {
     }
     eligible.sort(function (a, b) { return a.variant < b.variant ? -1 : (a.variant > b.variant ? 1 : 0); });
 
-    log_((dryRun ? 'previewRescoreAllCalls' : 'rescoreAllCalls') + ': ' + eligible.length +
+    var scopeLabel = scopeWeek
+      ? ' [last week only: ' + Utilities.formatDate(scopeWeek.start, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') +
+        ' - ' + Utilities.formatDate(shiftBusinessDate_(scopeWeek.end, CONFIG.BUSINESS_TIMEZONE, -1),
+          CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + '; ' + skippedOutsideWeek + ' row(s) outside it untouched]'
+      : '';
+    log_((dryRun ? 'previewRescore' : 'rescore') + (scopeWeek ? 'LastWeekCalls' : 'AllCalls') + scopeLabel + ': ' +
+      eligible.length +
       ' row(s) out of ' + values.length + ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
       (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row; logging each as it completes.'));
 
@@ -1108,6 +1133,70 @@ function previewRescoreAllCalls() {
  */
 function rescoreAllCalls() {
   return rescoreAllCalls_(false);
+}
+
+/**
+ * Dry run of the last-week-only rescore — logs which rows it would touch and
+ * how many it's leaving alone, calls no model, writes nothing.
+ */
+function previewRescoreLastWeekCalls() {
+  return rescoreAllCalls_(true, /*lastWeekOnly=*/true);
+}
+
+/**
+ * Live re-score scoped to the most recently completed Mon-Sun week — the
+ * exact window the weekly training picker (buildAndMaybeSendPlaybookReview_,
+ * Phase1_ComplianceCheck.gs) and the weekly scorecard both read.
+ *
+ * Kris's ask (03/09/2026) on seeing the unscoped run go 470 rows deep at
+ * ~2.5 minutes of Moonshot latency per call: getting THIS week's training
+ * session right only needs the ~16 calls that week actually contains, not
+ * all of history. Same resumability as the unscoped version — rows already
+ * carrying the current RUBRIC_VERSION are skipped, so a re-run continues
+ * where the time budget cut it off, and nothing is ever paid for twice.
+ * Backfilling the rest of history with rescoreAllCalls() later is
+ * unaffected: it simply finds fewer rows left to do.
+ */
+function rescoreLastWeekCalls() {
+  return rescoreAllCalls_(false, /*lastWeekOnly=*/true);
+}
+
+/** Trigger target for the scoped rescore — same self-removing pattern as runRescoreAllCallsViaTrigger_ above, so it stops on its own once last week is fully rescored. */
+function runRescoreLastWeekViaTrigger_() {
+  var moreWork = rescoreAllCalls_(false, /*lastWeekOnly=*/true);
+  if (!moreWork) removeRescoreLastWeekTrigger_();
+}
+
+/**
+ * Runs the scoped rescore unattended every 10 minutes until last week is
+ * done, then removes itself. At ~2 rows per 5-minute budget a 16-row week
+ * takes roughly 8 firings, so this saves clicking Run eight times.
+ *
+ * Note the 20-trigger project cap that bit installRescoreAllCallsTrigger()
+ * on 31/08/2026 — run listAllTriggers() first if this throws.
+ */
+function installRescoreLastWeekTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRescoreLastWeekViaTrigger_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runRescoreLastWeekViaTrigger_').timeBased().everyMinutes(10).create();
+  log_('Installed 10-minute rescoreLastWeekCalls trigger (any prior copy removed first) — it keeps firing ' +
+    'until last week has no rows left eligible, then removes itself automatically.');
+}
+
+/** Stops the scoped rescore trigger early — it also removes itself automatically once done. */
+function removeRescoreLastWeekTrigger_() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runRescoreLastWeekViaTrigger_') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  if (removed) {
+    log_('runRescoreLastWeekViaTrigger_: removed ' + removed + ' recurring trigger(s) — ' +
+      'either last week is fully rescored, or it was stopped early.');
+  }
 }
 
 /**

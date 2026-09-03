@@ -997,6 +997,76 @@ test('RUBRIC_VERSION is a non-empty date-prefixed string, per the versioning con
   assert.match(gas.RUBRIC_VERSION, /^\d{4}-\d{2}-\d{2}-/);
 });
 
+test('rescoreAllCalls_ in last-week-only mode rescores just the week the training picker reads, leaving every older row untouched (Kris 03/09/2026: 470 rows at ~2.5min each to fix the 16 calls that week actually contains)', () => {
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const headers = gas.SALES_CALL_LOG_HEADERS;
+  const col = {};
+  headers.forEach((h, i) => { col[h] = i + 1; });
+
+  // getWeekBounds_ is the single source of truth for "last week" shared with
+  // the playbook picker and the weekly scorecard — derive the fixture dates
+  // from it rather than hardcoding, so the two can never drift apart.
+  // Dates must be built with the SANDBOX's Date constructor: the product code
+  // guards with `instanceof Date` (same as buildAndMaybeSendPlaybookReview_),
+  // and a Node-realm Date fails that check inside the vm even though a real
+  // sheet cell would pass it — the same cross-realm trap documented on
+  // assert.deepEqual elsewhere in this file.
+  const week = gas.getWeekBounds_(new gas.Date(), tz);
+  const inWeek = new gas.Date(week.start.getTime() + 24 * 3600 * 1000);
+  const longAgo = new gas.Date(week.start.getTime() - 60 * 24 * 3600 * 1000);
+
+  const row = (name, date) => {
+    const r = new Array(headers.length).fill('');
+    r[col['Prospect Name'] - 1] = name;
+    r[col['Call Date'] - 1] = date;
+    r[col['Rep'] - 1] = 'Sean';
+    r[col['Call Type'] - 1] = 'Sales Call';
+    r[col['Call Quality Score'] - 1] = 3;
+    r[col['Transcript URL'] - 1] = 'https://docs.google.com/document/d/x/edit';
+    r[col['Rubric Version'] - 1] = '2026-08-29-pitch-delivery'; // stale, so eligible
+    return r;
+  };
+  const values = [row('In Window', inWeek), row('Two Months Ago', longAgo)];
+
+  const fakeSheet = {
+    getLastRow: () => values.length + 1,
+    getSheetId: () => 1,
+    getName: () => 'Sales Call Log',
+    getRange(startRow, startCol, numRows) {
+      if (startRow === 1) return { getValues: () => [headers.slice()] };
+      return { getValues: () => values.slice(startRow - 2, startRow - 2 + numRows) };
+    }
+  };
+
+  const originals = { log: gas.log_, ss: gas.SpreadsheetApp, lock: gas.LockService, ut: gas.Utilities };
+  const logged = [];
+  gas.log_ = (m) => logged.push(String(m));
+  gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) };
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: (n) => (n === 'Sales Call Log' ? fakeSheet : null), getSheets: () => [fakeSheet] }) };
+  gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+  try {
+    // Dry run: exercises the whole eligibility/scoping path with no model calls.
+    gas.rescoreAllCalls_(true, /*lastWeekOnly=*/true);
+    const all = logged.join('\n');
+    assert.ok(/In Window/.test(all), 'a call inside last week must be picked up');
+    assert.ok(!/Two Months Ago/.test(all), 'a call outside last week must not be rescored in scoped mode');
+    assert.ok(/1 row\(s\) outside it untouched/.test(all),
+      'the log must say how many rows were left alone, so the saving is visible');
+
+    // Unscoped mode is unchanged — both rows are still eligible.
+    logged.length = 0;
+    gas.rescoreAllCalls_(true, /*lastWeekOnly=*/false);
+    const unscoped = logged.join('\n');
+    assert.ok(/In Window/.test(unscoped) && /Two Months Ago/.test(unscoped),
+      'the unscoped rescore must still cover all of history');
+  } finally {
+    gas.log_ = originals.log;
+    gas.SpreadsheetApp = originals.ss;
+    gas.LockService = originals.lock;
+    gas.Utilities = originals.ut;
+  }
+});
+
 test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version column', () => {
   // Minimal fake sheet: getRange(row, col).setValue(v) records into a plain
   // map keyed "row:col" — writeScoreToRow_ only ever calls getRange/setValue,
