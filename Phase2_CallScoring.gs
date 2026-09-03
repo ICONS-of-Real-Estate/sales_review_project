@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-03-discovery';
+var RUBRIC_VERSION = '2026-09-03-booking-decision';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -280,6 +280,8 @@ function isValidJudgeSchema_(obj) {
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
     typeof obj.flags.confirmed_prior_discovery === 'boolean' &&
+    typeof obj.flags.booked_discovery_call === 'boolean' &&
+    typeof obj.flags.lead_ready_with_money === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -639,6 +641,52 @@ function deriveDiscoveryFields_(result) {
   };
 }
 
+/**
+ * Sales-call-only rubric block, per Kris (03/09/2026): "if you get money on
+ * the phone you can book a disco call [Discovery — the AM's onboarding/
+ * payment call] or you book closing call [Second Sales Call with Tomás]."
+ * A Sales Call that ends in a booked Discovery call is only the right choice
+ * when the lead actually committed to paying on THIS call — otherwise it
+ * should have been a Second Sales Call with Tomás instead. Kris's own
+ * framing: "sales reps are lazy, and they book through to a discovery call
+ * where it's not a hell yes."
+ */
+function bookingDecisionRubricPrompt_() {
+  return [
+    'A separately-tracked dimension — it must NOT change your call_quality_score anchors. This company books TWO',
+    'different kinds of next step after a Sales Call: a Discovery call (the account manager\'s onboarding/payment',
+    'call — only correct when the lead is ready to pay NOW) or a Second Sales Call with Tomás (the right choice',
+    'for anyone who is interested but not yet at "yes, let\'s do this, take my payment"). Score two flags:',
+    '  (a) booked_discovery_call — did the rep book a Discovery call as this call\'s next step? False if a Second',
+    '      Sales Call, a Follow-up, or nothing was booked.',
+    '  (b) lead_ready_with_money — only meaningful when (a) is true: did the lead explicitly commit to paying/',
+    '      moving forward NOW on this call (a real "yes, let\'s do it," not just polite interest or "sounds',
+    '      good")? If (a) is false, score this true (nothing to fail — this dimension does not apply).'
+  ].join('\n');
+}
+
+/**
+ * Derives the "Flag: Booking Decision Appropriate"/"Booking Decision Gap"
+ * sheet columns. Only meaningful when a Discovery call was actually booked
+ * (booked_discovery_call true) — anything else (a Second Sales Call, a
+ * Follow-up, nothing booked, or a variant/sentinel that never scored this
+ * dimension) is "does not apply", not a failure, same "blank = no signal"
+ * convention as deriveDiscoveryFields_ above.
+ */
+function deriveBookingDecisionFields_(result) {
+  var flags = (result && result.flags) || {};
+  if (typeof flags.booked_discovery_call !== 'boolean' || typeof flags.lead_ready_with_money !== 'boolean') {
+    return { appropriate: '', gapText: '' };
+  }
+  if (!flags.booked_discovery_call) return { appropriate: '', gapText: '' };
+  var appropriate = flags.lead_ready_with_money;
+  return {
+    appropriate: appropriate,
+    gapText: appropriate ? '' :
+      'Booked a Discovery call without the lead confirming payment on this call — should have booked a Second Sales Call with Tomás instead'
+  };
+}
+
 function buildJudgeSystemPrompt_() {
   var fewShot = FEW_SHOT_ANCHORS.length
     ? '\n\nLabeled examples:\n' + FEW_SHOT_ANCHORS.map(function (ex, i) {
@@ -677,6 +725,8 @@ function buildJudgeSystemPrompt_() {
     '',
     discoveryRubricPrompt_(),
     '',
+    bookingDecisionRubricPrompt_(),
+    '',
     '   Score anchors:',
     '   5 = close asked AND objections surfaced+resolved with concrete proof.',
     '   4 = close asked, minor objection-handling gap (surfaced but weakly resolved).',
@@ -699,7 +749,8 @@ function buildJudgeSystemPrompt_() {
     '  "lead_quality": { "verdict": "good_to_book | should_screen_out", "justification": "string" },',
     '  "call_quality_score": 1,',
     '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true,',
-    '    "discovery_adequate": true, "understood_leads_business": true, "confirmed_prior_discovery": true },',
+    '    "discovery_adequate": true, "understood_leads_business": true, "confirmed_prior_discovery": true,',
+    '    "booked_discovery_call": false, "lead_ready_with_money": true },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | framework_not_explained | delivery_ineffective | multiple",',
@@ -762,7 +813,8 @@ function scoreTranscript_(ctx) {
     call_quality_score: 1,
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
-      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false
+      discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
+      booked_discovery_call: false, lead_ready_with_money: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
@@ -1329,6 +1381,13 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   var discovery = deriveDiscoveryFields_(result);
   sheet.getRange(rowIndex, col['Flag: Discovery Adequate']).setValue(discovery.adequate);
   sheet.getRange(rowIndex, col['Discovery Gaps']).setValue(discovery.gapsText);
+  // Booking-decision quality (Kris, 03/09/2026) — only 'shared'/'sean' score
+  // this (the variants that actually make the Discovery-vs-Second-Sales-Call
+  // decision); deriveBookingDecisionFields_ writes blank for every other
+  // variant/row, same "blank = no signal" convention as discovery above.
+  var booking = deriveBookingDecisionFields_(result);
+  sheet.getRange(rowIndex, col['Flag: Booking Decision Appropriate']).setValue(booking.appropriate);
+  sheet.getRange(rowIndex, col['Booking Decision Gap']).setValue(booking.gapText);
   // Records which rubric version produced this score — see RUBRIC_VERSION's
   // own comment above for the versioning convention. Blank on rows scored
   // before this column existed, same "no signal" pattern as every column
@@ -2295,6 +2354,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         var frameworkFields = deriveFrameworkFields_(result);
         var deliveryFields = deriveDeliveryFields_(result);
         var discoveryFields = deriveDiscoveryFields_(result);
+        var bookingFields = deriveBookingDecisionFields_(result);
 
         // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
         // logs a comparison only, never changes what's appended below.
@@ -2333,7 +2393,9 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           deliveryFields.effective,       // Flag: Delivery Effective
           deliveryFields.gapsText,        // Delivery Gaps
           discoveryFields.adequate,       // Flag: Discovery Adequate
-          discoveryFields.gapsText         // Discovery Gaps
+          discoveryFields.gapsText,        // Discovery Gaps
+          bookingFields.appropriate,      // Flag: Booking Decision Appropriate
+          bookingFields.gapText           // Booking Decision Gap
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -2412,6 +2474,8 @@ function buildSeanJudgeSystemPrompt_() {
     '',
     deliveryRubricPrompt_(),
     '',
+    bookingDecisionRubricPrompt_(),
+    '',
     'Score anchors for call_quality_score (1-5):',
     '5 = money closed OR second call booked, with strong discovery, goal-alignment, and objection handling.',
     '4 = second call booked, but one of discovery / goal-alignment / objection-handling was weak.',
@@ -2438,7 +2502,9 @@ function buildSeanJudgeSystemPrompt_() {
     '    "confirmed_prior_discovery": true,',
     '    "captured_leads_goals": true,',
     '    "tied_framework_to_goals": true,',
-    '    "booked_second_call_with_tomas": true',
+    '    "booked_second_call_with_tomas": true,',
+    '    "booked_discovery_call": false,',
+    '    "lead_ready_with_money": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
@@ -2473,6 +2539,8 @@ function isValidSeanJudgeSchema_(obj) {
     typeof obj.flags.captured_leads_goals === 'boolean' &&
     typeof obj.flags.tied_framework_to_goals === 'boolean' &&
     typeof obj.flags.booked_second_call_with_tomas === 'boolean' &&
+    typeof obj.flags.booked_discovery_call === 'boolean' &&
+    typeof obj.flags.lead_ready_with_money === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
@@ -2514,7 +2582,8 @@ function scoreSeanTranscript_(ctx) {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
       discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
       captured_leads_goals: false, tied_framework_to_goals: false,
-      booked_second_call_with_tomas: false
+      booked_second_call_with_tomas: false,
+      booked_discovery_call: false, lead_ready_with_money: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
@@ -2829,6 +2898,7 @@ function scoreSeanTranscripts() {
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
+          var bookingFields = deriveBookingDecisionFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -2869,7 +2939,9 @@ function scoreSeanTranscripts() {
             deliveryFields.effective,        // Flag: Delivery Effective
             deliveryFields.gapsText,         // Delivery Gaps
             discoveryFields.adequate,        // Flag: Discovery Adequate
-            discoveryFields.gapsText          // Discovery Gaps
+            discoveryFields.gapsText,         // Discovery Gaps
+            bookingFields.appropriate,       // Flag: Booking Decision Appropriate
+            bookingFields.gapText            // Booking Decision Gap
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -3011,6 +3083,7 @@ function scoreJoanaTranscripts() {
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
+          var bookingFields = deriveBookingDecisionFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. Joana
@@ -3050,7 +3123,9 @@ function scoreJoanaTranscripts() {
             deliveryFields.effective,         // Flag: Delivery Effective
             deliveryFields.gapsText,          // Delivery Gaps
             discoveryFields.adequate,         // Flag: Discovery Adequate
-            discoveryFields.gapsText           // Discovery Gaps
+            discoveryFields.gapsText,          // Discovery Gaps
+            bookingFields.appropriate,        // Flag: Booking Decision Appropriate
+            bookingFields.gapText             // Booking Decision Gap
           ]);
 
           existing[key] = true;
@@ -3495,6 +3570,7 @@ function scoreTomasTranscripts() {
           var frameworkFields = deriveFrameworkFields_(result);
           var deliveryFields = deriveDeliveryFields_(result);
           var discoveryFields = deriveDiscoveryFields_(result);
+          var bookingFields = deriveBookingDecisionFields_(result);
 
           // Analytic-score shadow check (QA_COACHING_RESEARCH_REPORT.md §1.4) —
           // logs a comparison only, never changes what's appended below. This
@@ -3535,7 +3611,9 @@ function scoreTomasTranscripts() {
             deliveryFields.effective,           // Flag: Delivery Effective
             deliveryFields.gapsText,            // Delivery Gaps
             discoveryFields.adequate,           // Flag: Discovery Adequate
-            discoveryFields.gapsText             // Discovery Gaps
+            discoveryFields.gapsText,            // Discovery Gaps
+            bookingFields.appropriate,          // Flag: Booking Decision Appropriate
+            bookingFields.gapText               // Booking Decision Gap
           ]);
 
           existing[key] = true;

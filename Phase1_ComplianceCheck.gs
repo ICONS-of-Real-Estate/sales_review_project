@@ -1566,9 +1566,24 @@ var SALES_CALL_LOG_HEADERS = [
                             //    Blank on rows scored before this column
                             //    existed, same "no signal" convention as every
                             //    column addition above.)
-  'Discovery Gaps'          // AD (comma-joined: which discovery pieces were
+  'Discovery Gaps',         // AD (comma-joined: which discovery pieces were
                             //    missing/weak, blank if all covered — same
                             //    pattern as Framework Gaps/Delivery Gaps)
+  // --- 03/09/2026: booking-decision quality, per Kris — "sales reps are
+  // lazy, and they book through to a discovery call where it's not a hell
+  // yes." A Sales Call that books a Discovery call (the account manager's
+  // onboarding/payment call) is only the right choice when the lead
+  // committed to paying on that call; otherwise it should have been a
+  // Second Sales Call with Tomás. Only 'shared'/'sean' rubric variants score
+  // this (the ones that actually make the decision) — blank everywhere
+  // else, same "no signal" convention as every column above. See
+  // deriveBookingDecisionFields_/bookingDecisionRubricPrompt_ in
+  // Phase2_CallScoring.gs. ---
+  'Flag: Booking Decision Appropriate', // AE (bool — blank when no Discovery
+                            //    call was booked on this call at all, i.e.
+                            //    this dimension doesn't apply)
+  'Booking Decision Gap'   // AF (free text explaining the mismatch, blank
+                            //    when appropriate or not applicable)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

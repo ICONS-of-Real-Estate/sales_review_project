@@ -223,9 +223,12 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
     call_quality_score: 4,
     // discovery_adequate/understood_leads_business/confirmed_prior_discovery became
     // required on the shared rubric 03/09/2026 — see deriveDiscoveryFields_'s own test.
+    // booked_discovery_call/lead_ready_with_money became required the same day —
+    // see deriveBookingDecisionFields_'s own test.
     flags: {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
-      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true
+      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true,
+      booked_discovery_call: false, lead_ready_with_money: true
     },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
@@ -306,6 +309,40 @@ test('deriveDiscoveryFields_ — judges only the discovery flags a variant actua
   assert.equal(gas.deriveDiscoveryFields_(null).adequate, '', 'must not throw on a null result');
 });
 
+test('deriveBookingDecisionFields_ only judges a call that actually booked a Discovery call, and only fails it when the lead never confirmed payment on that call (Kris\'s ask 03/09/2026: "sales reps are lazy, and they book through to a discovery call where it\'s not a hell yes")', () => {
+  // No Discovery call booked at all — this dimension does not apply, blank not failure.
+  const noBooking = gas.deriveBookingDecisionFields_({
+    flags: { booked_discovery_call: false, lead_ready_with_money: false }
+  });
+  assert.equal(noBooking.appropriate, '', 'must be blank, not false, when no Discovery call was booked');
+  assert.equal(noBooking.gapText, '');
+
+  // Discovery booked AND the lead committed to paying — the correct call.
+  const goodBooking = gas.deriveBookingDecisionFields_({
+    flags: { booked_discovery_call: true, lead_ready_with_money: true }
+  });
+  assert.equal(goodBooking.appropriate, true);
+  assert.equal(goodBooking.gapText, '');
+
+  // Discovery booked WITHOUT the lead committing — the exact "lazy booking" pattern.
+  const prematureBooking = gas.deriveBookingDecisionFields_({
+    flags: { booked_discovery_call: true, lead_ready_with_money: false }
+  });
+  assert.equal(prematureBooking.appropriate, false);
+  assert.ok(prematureBooking.gapText.indexOf('Second Sales Call with Tomás') !== -1,
+    'the gap text must say what should have been booked instead');
+
+  // A variant/sentinel that never scored this dimension at all must read as
+  // blank "no signal", never as a fabricated failure — same convention as
+  // deriveDiscoveryFields_ above.
+  const noneScored = gas.deriveBookingDecisionFields_({ flags: { asked_for_close: true } });
+  assert.equal(noneScored.appropriate, '', 'no booking-decision flags at all must be blank, not false');
+  assert.equal(noneScored.gapText, '');
+
+  assert.equal(gas.deriveBookingDecisionFields_({}).appropriate, '');
+  assert.equal(gas.deriveBookingDecisionFields_(null).appropriate, '', 'must not throw on a null result');
+});
+
 test('every judge variant that scores discovery returns flags deriveDiscoveryFields_ can actually read, and the Sales Call Log has columns to put them in', () => {
   // The whole point of the 03/09/2026 change: three variants already JUDGED
   // discovery but there was no column to write it to, so it could never be
@@ -334,8 +371,13 @@ test('every judge variant that scores discovery returns flags deriveDiscoveryFie
   sharedBase.flags.discovery_adequate = true;
   sharedBase.flags.understood_leads_business = true;
   sharedBase.flags.confirmed_prior_discovery = true;
+  assert.equal(gas.isValidJudgeSchema_(sharedBase), false,
+    'shared/Joana rubric must also reject a reply with discovery scored but no booking-decision flags (03/09/2026)');
+
+  sharedBase.flags.booked_discovery_call = false;
+  sharedBase.flags.lead_ready_with_money = true;
   assert.equal(gas.isValidJudgeSchema_(sharedBase), true,
-    'shared/Joana rubric accepts the reply once discovery is scored');
+    'shared/Joana rubric accepts the reply once discovery AND booking-decision are both scored');
 });
 
 test('deriveDeliveryFields_ — both covered means no gaps; a missing delivery object means every gap listed, not a throw (29/08/2026, same pattern as deriveFrameworkFields_)', () => {
@@ -2667,9 +2709,12 @@ test('isValidJudgeSchema_ rejects a schema-shaped object with an invalid verdict
     call_quality_score: 4,
     // discovery_adequate/understood_leads_business/confirmed_prior_discovery became
     // required on the shared rubric 03/09/2026 — see deriveDiscoveryFields_'s own test.
+    // booked_discovery_call/lead_ready_with_money became required the same day —
+    // see deriveBookingDecisionFields_'s own test.
     flags: {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
-      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true
+      discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true,
+      booked_discovery_call: false, lead_ready_with_money: true
     },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
