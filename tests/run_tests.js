@@ -112,6 +112,17 @@ test('guessProspectFromTitle_ extracts the prospect name from the real calendar 
   assert.equal(gas.guessProspectFromTitle_('Real Estate Podcast: Andrea Brunson'), 'Andrea Brunson');
 });
 
+test('titleLooksLikeSalesOrQcCall_ recognizes Sean\'s "Qualification Call" calendar title convention, not just Bens\' "QC" (real bug found live 03/09/2026: "qualification call" does not contain the substring "qc", so every one of Sean\'s QCs was invisible to getRepCallEvents_/getRepCallEventsRaw_ — no handoff brief before them, no way to notice a QC that never produced a recording)', () => {
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('QC'), true, 'Bens\' bare "QC" title');
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('Podcast Qualification Call / Tom Wood'), true, 'Joana\'s title convention');
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('Qualification Call / Sabiha Razzak'), true,
+    'Sean\'s title convention — plain "Qualification Call", no "QC" abbreviation and no "Podcast" prefix');
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('Sales Call / Anthony Camperi'), true);
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('Weekly Team Sync'), false, 'not a sales/QC call at all');
+  assert.equal(gas.titleLooksLikeSalesOrQcCall_('Update Tracker - Qualification Call reminder'), false,
+    'an EXCLUDE keyword must still win even though "qualification call" also matches an INCLUDE keyword');
+});
+
 test('eventLooksInternalOnly_ flags a guest list that is non-empty but entirely internal, leaves an empty list alone (real bug 02/09/2026: Bens\' internal "QC" 1-1 with Joana got nagged as a real sales/QC call)', () => {
   assert.equal(gas.eventLooksInternalOnly_(['joana@iconsofrealestate.com']), true,
     'Bens+Joana internal 1-1, titled plain "QC" — must be recognized as internal-only');

@@ -97,6 +97,14 @@ var CONFIG = {
   CALL_TITLE_INCLUDE: [
     'qc',                              // Bens's QC sessions
     'podcast qualification call',      // Joana's QC calls
+    // Real bug found live (03/09/2026, Kris's ask): Sean's QC calendar
+    // events are titled plain "Qualification Call / <name>", not "QC" —
+    // "qualification" does not contain the substring "qc", so every one of
+    // his QCs was silently invisible to getRepCallEvents_/getRepCallEventsRaw_,
+    // which meant no handoff brief before them AND no way to ever notice a
+    // QC that never produced a recording (both looked like "no QC happened"
+    // rather than "QC happened, everything downstream missed it").
+    'qualification call',
     'starting a podcast',              // Joana/Sean discovery calls
     'icons 100 podcast recording',     // Bens's recordings
     'real estate podcast:',            // Joana recordings
@@ -519,6 +527,18 @@ function calendarEventRawGuestEmails_(repCfg, eventId) {
 }
 
 /**
+ * Pure title classifier shared by getRepCallEvents_/getRepCallEventsRaw_ —
+ * extracted so the CALL_TITLE_INCLUDE/EXCLUDE matching itself is directly
+ * testable without a live Calendar event object.
+ */
+function titleLooksLikeSalesOrQcCall_(title) {
+  var t = (title || '').toLowerCase();
+  var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
+  if (excluded) return false;
+  return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
+}
+
+/**
  * Pull the rep's calendar events for [dayStart, dayEnd) and keep only those
  * that look like sales/QC calls (title keyword match, and not an
  * internal-only meeting that happens to match on title alone).
@@ -530,12 +550,7 @@ function getRepCallEvents_(repCfg, dayStart, dayEnd) {
   if (!cal) throw new Error('No calendar found for id ' + repCfg.calendarId);
 
   var mapped = cal.getEvents(dayStart, dayEnd)
-    .filter(function (ev) {
-      var t = (ev.getTitle() || '').toLowerCase();
-      var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
-      if (excluded) return false;
-      return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
-    })
+    .filter(function (ev) { return titleLooksLikeSalesOrQcCall_(ev.getTitle()); })
     .map(function (ev) {
       var rawGuestEmails = ev.getGuestList()
         .map(function (g) { return (g.getEmail() || '').toLowerCase().trim(); })
@@ -3656,12 +3671,7 @@ function getRepCallEventsRaw_(repCfg, dayStart, dayEnd) {
     ? CalendarApp.getDefaultCalendar()
     : CalendarApp.getCalendarById(repCfg.calendarId);
   if (!cal) throw new Error('No calendar found for id ' + repCfg.calendarId);
-  return cal.getEvents(dayStart, dayEnd).filter(function (ev) {
-    var t = (ev.getTitle() || '').toLowerCase();
-    var excluded = CONFIG.CALL_TITLE_EXCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
-    if (excluded) return false;
-    return CONFIG.CALL_TITLE_INCLUDE.some(function (k) { return t.indexOf(k) !== -1; });
-  });
+  return cal.getEvents(dayStart, dayEnd).filter(function (ev) { return titleLooksLikeSalesOrQcCall_(ev.getTitle()); });
 }
 
 /** Debug: dry-run the compliance check against a specific date. Run from editor. */
