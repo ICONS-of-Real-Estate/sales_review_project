@@ -376,24 +376,73 @@ test('deriveElevationFields_ only judges a call where the original rep was actua
   assert.equal(gas.deriveElevationFields_(null).done, '', 'must not throw on a null result');
 });
 
-test('isValidDiscoveryJudgeSchema_ requires the Discovery-call-specific fields (money_collected, elevation) — NOT the QC rubric\'s booked_next_step, since Discovery calls are a completely different call (Kris, 03/09/2026: "Discovery calls are totally different!")', () => {
+test('isValidDiscoveryJudgeSchema_ requires the SOP-content fields (goals/guest avatar/branding/launch strategy) AND the rep\'s money_collected_by_rep — NOT the QC rubric\'s booked_next_step, since Discovery calls are a completely different call graded against the real SOP (Kris, 03/09/2026: "Use the SOP when grading disco calls")', () => {
   const good = {
     lead_quality: { verdict: 'good_to_book', justification: 'x' },
     call_quality_score: 4,
     flags: {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
-      money_collected: true, rep_present_on_call: true, elevation_done: true
+      smart_goals_defined: true, guest_avatar_identified: true,
+      branding_preferences_captured: true, launch_strategy_discussed: true,
+      money_collected_by_rep: true, rep_present_on_call: true, elevation_done: true
     },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2,
-    root_cause_if_no_payment: 'N/A'
+    root_cause_if_thin_call: 'N/A'
   };
   assert.equal(gas.isValidDiscoveryJudgeSchema_(good), true);
-  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { flags: Object.assign({}, good.flags, { money_collected: undefined }) })), false,
-    'must reject a reply missing money_collected — the whole point of this variant');
-  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { root_cause_if_no_payment: undefined })), false);
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { flags: Object.assign({}, good.flags, { smart_goals_defined: undefined }) })), false,
+    'must reject a reply missing an SOP-content flag — the whole point of grading against the real SOP');
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { flags: Object.assign({}, good.flags, { money_collected_by_rep: undefined }) })), false,
+    'must reject a reply missing money_collected_by_rep — the rep\'s segment of this call');
+  assert.equal(gas.isValidDiscoveryJudgeSchema_(Object.assign({}, good, { root_cause_if_thin_call: undefined })), false);
   assert.equal(gas.isValidDiscoveryJudgeSchema_(null), false);
+});
+
+test('deriveDiscoveryContentFields_ grades the AM\'s SOP-content coverage — unlike elevation/booking, a missing flag IS a real gap here, never "not applicable", since covering goals/guest-avatar/branding/launch-strategy is always the AM\'s job on a real Discovery call', () => {
+  const allCovered = gas.deriveDiscoveryContentFields_({
+    flags: { smart_goals_defined: true, guest_avatar_identified: true, branding_preferences_captured: true, launch_strategy_discussed: true }
+  });
+  assert.equal(allCovered.covered, true);
+  assert.equal(allCovered.gapsText, '');
+
+  const twoGaps = gas.deriveDiscoveryContentFields_({
+    flags: { smart_goals_defined: false, guest_avatar_identified: true, branding_preferences_captured: false, launch_strategy_discussed: true }
+  });
+  assert.equal(twoGaps.covered, false);
+  assert.ok(twoGaps.gapsText.indexOf('SMART goals') !== -1 && twoGaps.gapsText.indexOf('branding preferences') !== -1);
+
+  // Missing object (a parse-failure sentinel, or a non-discovery variant's result) reads as
+  // every gap listed — deliberately NOT blank, since this dimension is never legitimately
+  // not-applicable for an actual Discovery call, unlike elevation/booking-decision.
+  const missingObject = gas.deriveDiscoveryContentFields_({});
+  assert.equal(missingObject.covered, false);
+  assert.ok(missingObject.gapsText.indexOf('SMART goals') !== -1 && missingObject.gapsText.indexOf('guest avatar') !== -1 &&
+    missingObject.gapsText.indexOf('branding') !== -1 && missingObject.gapsText.indexOf('launch strategy') !== -1);
+});
+
+test('deriveRepPaymentFields_ only judges the ORIGINAL SALES REP\'s payment collection, gated on rep_present_on_call exactly like deriveElevationFields_ (Kris, 03/09/2026: "the sales rep still joins the Discovery call and is responsible for picking up the payment, then they introduce the AM")', () => {
+  const repAbsent = gas.deriveRepPaymentFields_({
+    flags: { rep_present_on_call: false, money_collected_by_rep: true }
+  });
+  assert.equal(repAbsent.collected, '', 'must be blank, not a value, when the rep was never on the call — nothing to grade');
+  assert.equal(repAbsent.gapText, '');
+
+  const collected = gas.deriveRepPaymentFields_({
+    flags: { rep_present_on_call: true, money_collected_by_rep: true }
+  });
+  assert.equal(collected.collected, true);
+  assert.equal(collected.gapText, '');
+
+  const notCollected = gas.deriveRepPaymentFields_({
+    flags: { rep_present_on_call: true, money_collected_by_rep: false }
+  });
+  assert.equal(notCollected.collected, false);
+  assert.ok(notCollected.gapText.length > 0);
+
+  assert.equal(gas.deriveRepPaymentFields_({}).collected, '');
+  assert.equal(gas.deriveRepPaymentFields_(null).collected, '', 'must not throw on a null result');
 });
 
 test('rubricVariantForNewScore_ routes a Discovery call to its own dedicated variant, separate from QC, so buildDiscoveryJudgeSystemPrompt_/scoreDiscoveryTranscript_ actually get used (03/09/2026)', () => {
@@ -401,11 +450,15 @@ test('rubricVariantForNewScore_ routes a Discovery call to its own dedicated var
   assert.equal(gas.scoreTranscriptByVariant_ !== undefined, true, 'scoreTranscriptByVariant_ must exist to dispatch to it');
 });
 
-test('Sales Call Log has columns for the booking-decision and elevation dimensions added 03/09/2026', () => {
+test('Sales Call Log has columns for the booking-decision, elevation, and Discovery-SOP-content/rep-payment dimensions added 03/09/2026', () => {
   assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Booking Decision Appropriate') !== -1);
   assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Booking Decision Gap') !== -1);
   assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Elevation Done') !== -1);
   assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Elevation Gap') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Discovery Content Covered') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Discovery Content Gaps') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Flag: Payment Collected By Rep') !== -1);
+  assert.ok(gas.SALES_CALL_LOG_HEADERS.indexOf('Payment Collected By Rep Gap') !== -1);
 });
 
 test('every judge variant that scores discovery returns flags deriveDiscoveryFields_ can actually read, and the Sales Call Log has columns to put them in', () => {

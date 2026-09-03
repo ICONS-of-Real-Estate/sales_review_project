@@ -188,7 +188,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-03-elevation-discovery-variant';
+var RUBRIC_VERSION = '2026-09-03-discovery-sop-rubric';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -1440,6 +1440,20 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   var elevation = deriveElevationFields_(result);
   sheet.getRange(rowIndex, col['Flag: Elevation Done']).setValue(elevation.done);
   sheet.getRange(rowIndex, col['Elevation Gap']).setValue(elevation.gapText);
+  // Discovery-call-only dimensions (Kris, 03/09/2026, graded against the real
+  // "SOP for Podcast Discovery Calls"). Gated to 'discovery' specifically —
+  // unlike elevation/booking above, deriveDiscoveryContentFields_ treats a
+  // MISSING flag as a real gap (never legitimately not-applicable for an
+  // actual Discovery call), so calling it for any other variant would write
+  // a fabricated "nothing covered" failure instead of reading blank.
+  if (variant === 'discovery') {
+    var discoveryContent = deriveDiscoveryContentFields_(result);
+    sheet.getRange(rowIndex, col['Flag: Discovery Content Covered']).setValue(discoveryContent.covered);
+    sheet.getRange(rowIndex, col['Discovery Content Gaps']).setValue(discoveryContent.gapsText);
+    var repPayment = deriveRepPaymentFields_(result);
+    sheet.getRange(rowIndex, col['Flag: Payment Collected By Rep']).setValue(repPayment.collected);
+    sheet.getRange(rowIndex, col['Payment Collected By Rep Gap']).setValue(repPayment.gapText);
+  }
   // Records which rubric version produced this score — see RUBRIC_VERSION's
   // own comment above for the versioning convention. Blank on rows scored
   // before this column existed, same "no signal" pattern as every column
@@ -1903,55 +1917,82 @@ function buildQcFeedbackSummary_(result) {
 
 // ---------------------------------------------------------------------------
 // Discovery-call rubric — added 03/09/2026 per Kris, split off from the QC
-// rubric above: "Discovery calls are totally different!" A Discovery call is
-// NOT a qualification step — it's the account manager's post-sale onboarding
-// call, where the ORIGINAL sales rep is still on the hook to actually
-// collect the money ("It's still the rep's job to get the money, not the
-// AM's"). Grading it against the QC rubric's "did they book the next step"
-// framing made no sense; this variant instead checks the two things that
-// actually matter here: did the rep properly elevate the account manager
-// before dropping off, and did the money actually get collected.
+// rubric above: "Discovery calls are totally different!" Rewritten the same
+// day against the real "SOP for Podcast Discovery Calls" (Google Doc
+// 1Z1hGZOyaSThy3pt5rzKRGoh70cp3Immulalt-7cinCs) once Kris said "Use the SOP
+// when grading disco calls" — the SOP's own Roles & Responsibilities section
+// makes clear this is NOT a payment call: it's the account manager's
+// vision-setting call (podcast goals, guest avatar, branding, launch
+// strategy), with onboarding handled after. The SOP is silent on payment
+// entirely — but Kris's real-world complaint (Sean not confirming payment
+// before a Discovery call gets booked) showed up for real in the first two
+// live calls reviewed (Jason Pietruszka: contract pending, no payment;
+// Stacie Staub: lead says she paid, unconfirmed our side) — kept as its own
+// checked dimension for that reason, scored as "did the AM appropriately
+// confirm or flag payment status" rather than "did money change hands on
+// this call", since the SOP never asks the AM to collect it here.
 //
-// NOT YET LIVE-VERIFIED — no real Discovery-call recording has been
-// reviewed against this prompt yet. Kris: "I will get the recordings" (still
-// pending as of 03/09/2026). Preview this against a real transcript before
-// trusting it, same "preview before enabling" discipline as every other
-// phase in this codebase (see CLAUDE.md) — do not assume the prompt/schema
-// below is right until it's been checked against actual call audio.
+// NOT YET LIVE-VERIFIED END TO END — reviewed against the SOP's written
+// requirements and the two real Jason/Stacie transcripts read manually, but
+// this exact prompt has not yet been run against either through the live
+// Kimi judge. Preview before trusting it, same discipline as every other
+// phase in this codebase (see CLAUDE.md).
 // ---------------------------------------------------------------------------
 
 function buildDiscoveryJudgeSystemPrompt_() {
   return [
-    'You are a sales-call QA evaluator for a podcast-production offer sold to real estate agents, reviewing a',
-    'Discovery call — the account manager\'s onboarding/payment call with a lead who already agreed on an',
-    'earlier Sales Call to move forward. The ORIGINAL sales rep who booked this call is still accountable for',
-    'actually collecting the money here — it is NOT the account manager\'s job to close, only to onboard once',
-    'payment is secured.',
+    'You are a QA evaluator for a podcast-production agency, reviewing a Discovery call. This call can have',
+    'TWO distinct segments, graded separately, for two different people:',
+    '',
+    '  SEGMENT 1 — the ORIGINAL SALES REP\'s segment (only when they are present — see rep_present_on_call',
+    '  below). Per Kris: "If the sales rep didn\'t get the money on the phone [the earlier Sales Call], but',
+    '  got a very strong buying signal, they book a Discovery call. The sales rep still joins the Discovery',
+    '  call and is responsible for picking up the payment, then they introduce the AM." This segment is',
+    '  graded like a real close: did the rep properly ask for and collect payment, and did they elevate the',
+    '  AM with a genuine, warm handoff before dropping off?',
+    '',
+    '  SEGMENT 2 — the ACCOUNT MANAGER\'s segment (the rest of the call, or all of it if the rep was never on',
+    '  it at all). Per the company\'s own SOP for these calls, this is NOT a closing/payment call — the AM\'s',
+    '  job is to understand the client\'s podcast vision: goals, ideal guest avatar, branding preferences, and',
+    '  launch strategy, with technical onboarding handled afterward. Do NOT penalize the AM for not asking for',
+    '  money — that is never their job, it is segment 1\'s job (if segment 1 happened at all).',
     '',
     'Be skeptical by default. Every judgment must cite specific transcript evidence.',
     '',
     'Answer all of the following, in order, in your reasoning:',
-    '1. Did the rep explicitly ask for / confirm payment on this call — a real ask, not a soft "we\'ll get you',
-    '   set up"?',
-    '2. Did any payment-stage objections/hesitations come up (price, timing, "let me check with my partner"),',
-    '   and were they addressed with something concrete rather than brushed past?',
-    '3. Did the money actually get collected on this call?',
-    '4. If it did not, what is the single specific root cause?',
+    '1. Was the original sales rep present on this call at all (even briefly, just to hand off)? If so, did',
+    '   they properly ask for and collect the payment — a real ask, not a soft "we\'ll get you set up"? If they',
+    '   were never present, say so plainly rather than guessing — there is nothing to grade for segment 1.',
+    '2. (AM segment) Were the podcast\'s goals discussed and tied to the client\'s REAL business objectives',
+    '   (e.g. a specific number of transactions, leads, or recruits) rather than vague enthusiasm ("just want',
+    '   more visibility")?',
+    '3. (AM segment) Was an ideal guest avatar identified (who they\'d want as guests, and why)?',
+    '4. (AM segment) Were branding preferences captured (logos/colors/fonts, and comfort with video)?',
+    '5. (AM segment) Was a launch strategy discussed (episode frequency, preferred release days, recording',
+    '   approach)?',
+    '6. (AM segment) Did the client raise any questions or hesitations, and were they addressed with',
+    '   something concrete rather than brushed past?',
+    '7. (AM segment) Were clear next steps locked in before ending the call — including booking the',
+    '   onboarding call with the podcast coordinator, not left open-ended?',
     '',
-    elevationRubricPrompt_('the account manager'),
+'8. (Segment 1, only if the rep was present) ' + elevationRubricPrompt_('the account manager'),
     '',
     deliveryRubricPrompt_(),
     '',
-    'Score anchors for call_quality_score (1-5):',
-    '5 = money collected, any objections handled well, and (if the rep was present) a genuine elevation handoff.',
-    '4 = money collected, but the ask or objection-handling was weak, or the elevation handoff was missing.',
-    '3 = a real payment ask was made but no money collected, for a reason not clearly attributable to the rep.',
-    '2 = no money collected, the lead was clearly still interested, and the miss is attributable to the rep\'s',
-    '    execution (a weak or missing ask, an objection brushed past).',
-    '1 = no money collected AND no real attempt at a payment ask.',
+    'call_quality_score grades the AM\'s segment (2-7 above) ONLY — the rep\'s payment-collection/elevation',
+    'segment is tracked separately via money_collected_by_rep/elevation_done below and must NOT move this',
+    'score up or down; a call with a flawless AM segment is a 5 even if the rep\'s handoff was weak, and vice',
+    'versa. Score anchors for call_quality_score (1-5):',
+    '5 = goals/guest-avatar/branding/launch-strategy all covered with real specifics, next steps locked in.',
+    '4 = the above mostly covered, but one area was thin (e.g. goals stayed vague, or next steps were fuzzy).',
+    '3 = roughly half the required ground was covered; real gaps remain in what the team now knows about this',
+    '    client\'s podcast.',
+    '2 = most of the required ground was NOT covered, attributable to the AM\'s execution (not a difficult/',
+    '    unresponsive client).',
+    '1 = the call barely covered any of the required ground at all.',
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
-    'through all 4 questions with quoted evidence), then the structured fields, in this exact shape:',
+    'through all the numbered items above with quoted evidence), then the structured fields, in this exact shape:',
     '',
     '{',
     '  "reasoning": "string",',
@@ -1962,22 +2003,75 @@ function buildDiscoveryJudgeSystemPrompt_() {
     '    "asked_for_close": true,',
     '    "objections_uncovered": true,',
     '    "objections_overcome": true,',
-    '    "money_collected": true,',
+    '    "smart_goals_defined": true,',
+    '    "guest_avatar_identified": true,',
+    '    "branding_preferences_captured": true,',
+    '    "launch_strategy_discussed": true,',
+    '    "money_collected_by_rep": true,',
     '    "rep_present_on_call": true,',
     '    "elevation_done": true',
     '  },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
-    '  "primary_failure_mode": "none | no_close_ask | objections_missed | no_money_collected | delivery_ineffective | multiple",',
-    '  "root_cause_if_no_payment": "string — the single specific reason money wasn\'t collected; \\"N/A\\" if it was",',
+    '  "primary_failure_mode": "none | vague_goals | no_guest_avatar | no_branding_discussion | no_launch_strategy | unclear_next_steps | money_not_collected_by_rep | delivery_ineffective | multiple",',
+    '  "root_cause_if_thin_call": "string — the single specific reason coverage was thin, if call_quality_score is 3 or below; \\"N/A\\" otherwise",',
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
-    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the rep\'s own words',
+    '  "feedback_summary": "string — 2-3 sentences, coaching-ready. MUST open by quoting the AM\'s own words',
     '   from the transcript for the single most important moment before saying anything else. End with ONE',
-    '   specific behavior to change, not a list. Never compare this rep to any other rep by name. Put each',
+    '   specific behavior to change, not a list. Never compare this AM to any other AM by name. Put each',
     '   distinct idea on its own line separated by a literal \\n — never chain them into one dense run-on',
     '   paragraph."',
     '}'
   ].join('\n');
+}
+
+/**
+ * SOP-content coverage — the four call-agenda items the SOP requires
+ * ("SOP for Podcast Discovery Calls" §4). Same "blank = no signal, missing
+ * object = every gap listed" convention as deriveFrameworkFields_ — a
+ * parse-failure sentinel or any variant that never scores these reads as
+ * fully uncovered, not blank, since (unlike discovery/framework on the
+ * Sales Call side) this dimension is NEVER legitimately not-applicable for
+ * a real Discovery call.
+ */
+var DISCOVERY_CONTENT_GAP_LABELS_ = {
+  smart_goals_defined: 'SMART goals tied to the client\'s real business objectives',
+  guest_avatar_identified: 'ideal guest avatar',
+  branding_preferences_captured: 'branding preferences (logos/colors/fonts/video comfort)',
+  launch_strategy_discussed: 'launch strategy (episode frequency, release days, recording approach)'
+};
+
+function deriveDiscoveryContentFields_(result) {
+  var flags = (result && result.flags) || {};
+  var gapKeys = Object.keys(DISCOVERY_CONTENT_GAP_LABELS_).filter(function (k) { return !flags[k]; });
+  return {
+    covered: gapKeys.length === 0,
+    gapsText: gapKeys.map(function (k) { return DISCOVERY_CONTENT_GAP_LABELS_[k]; }).join(', ')
+  };
+}
+
+/**
+ * Rep's payment-collection check — NOT part of the SOP (which is silent on
+ * payment entirely for this call, since the AM never owns it). Kris (real
+ * business flow, 03/09/2026): "If the sales rep didn't get the money on the
+ * phone, but got a very strong buying signal, they book a Discovery call.
+ * The sales rep still joins the Discovery call and is responsible for
+ * picking up the payment, then they introduce the AM." Gated on
+ * rep_present_on_call exactly like deriveElevationFields_ — if the rep was
+ * never on this call at all (money already collected on the earlier Sales
+ * Call), there is nothing to grade here, blank not a fabricated failure.
+ */
+function deriveRepPaymentFields_(result) {
+  var flags = (result && result.flags) || {};
+  if (typeof flags.rep_present_on_call !== 'boolean' || typeof flags.money_collected_by_rep !== 'boolean') {
+    return { collected: '', gapText: '' };
+  }
+  if (!flags.rep_present_on_call) return { collected: '', gapText: '' };
+  return {
+    collected: flags.money_collected_by_rep,
+    gapText: flags.money_collected_by_rep ? '' :
+      'Rep was present on this call but did not collect the payment before handing off to the AM'
+  };
 }
 
 function isValidDiscoveryJudgeSchema_(obj) {
@@ -1988,14 +2082,18 @@ function isValidDiscoveryJudgeSchema_(obj) {
     typeof obj.flags.asked_for_close === 'boolean' &&
     typeof obj.flags.objections_uncovered === 'boolean' &&
     typeof obj.flags.objections_overcome === 'boolean' &&
-    typeof obj.flags.money_collected === 'boolean' &&
+    typeof obj.flags.smart_goals_defined === 'boolean' &&
+    typeof obj.flags.guest_avatar_identified === 'boolean' &&
+    typeof obj.flags.branding_preferences_captured === 'boolean' &&
+    typeof obj.flags.launch_strategy_discussed === 'boolean' &&
+    typeof obj.flags.money_collected_by_rep === 'boolean' &&
     typeof obj.flags.rep_present_on_call === 'boolean' &&
     typeof obj.flags.elevation_done === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
     isValidScoreRange_(obj.severity) &&
-    typeof obj.root_cause_if_no_payment === 'string');
+    typeof obj.root_cause_if_thin_call === 'string');
 }
 
 /** Same retry/manual-review shape as scoreQcTranscript_, against the Discovery-call rubric. */
@@ -2027,11 +2125,13 @@ function scoreDiscoveryTranscript_(ctx) {
     call_quality_score: 1,
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
-      money_collected: false, rep_present_on_call: false, elevation_done: false
+      smart_goals_defined: false, guest_avatar_identified: false,
+      branding_preferences_captured: false, launch_strategy_discussed: false,
+      money_collected_by_rep: false, rep_present_on_call: false, elevation_done: false
     },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
-    root_cause_if_no_payment: 'Unscored — parse failure.',
+    root_cause_if_thin_call: 'Unscored — parse failure.',
     manual_review_recommended: true,
     severity: 5,
     feedback_summary: 'Automated scoring failed twice to return parseable JSON; needs manual review.',
@@ -2043,14 +2143,18 @@ function scoreDiscoveryTranscript_(ctx) {
 function buildDiscoveryFeedbackSummary_(result) {
   var deliveryFields = deriveDeliveryFields_(result);
   var elevationFields = deriveElevationFields_(result);
+  var contentFields = deriveDiscoveryContentFields_(result);
+  var paymentFields = deriveRepPaymentFields_(result);
   return [
     result.feedback_summary,
     '',
-    'Money collected: ' + result.flags.money_collected,
-    'Elevation: ' + (elevationFields.done === '' ? 'N/A — rep not present on this call' : elevationFields.done),
+    'SOP content covered (AM segment): ' + contentFields.covered +
+      (contentFields.gapsText ? ' (missing: ' + contentFields.gapsText + ')' : ''),
+    'Money collected by rep (rep segment): ' + (paymentFields.collected === '' ? 'N/A — rep not present on this call' : paymentFields.collected),
+    'Elevation (rep segment): ' + (elevationFields.done === '' ? 'N/A — rep not present on this call' : elevationFields.done),
     'Delivery effective: ' + deliveryFields.effective +
       (deliveryFields.gapsText ? ' (missing: ' + deliveryFields.gapsText + ')' : ''),
-    'Root cause if no payment: ' + result.root_cause_if_no_payment
+    'Root cause if thin call: ' + result.root_cause_if_thin_call
   ].join('\n');
 }
 
@@ -4915,15 +5019,19 @@ function computeQcAnalyticScore_(result) {
 /** Discovery-call equivalent of computeQcAnalyticScore_ — this variant's own flag vocabulary
  * (money_collected instead of booked_next_step, elevation instead of discovery/framework), so it
  * cannot reuse any existing deduction table without silently deducting for fields that don't exist. */
+/**
+ * call_quality_score grades the AM's segment ONLY (per the prompt's own
+ * instruction) — the rep's elevation/payment-collection segment is tracked
+ * separately and deliberately excluded here, same as it must not move the
+ * model's own score.
+ */
 function computeDiscoveryAnalyticScore_(result) {
   var flags = (result && result.flags) || {};
   var deduction = 0;
-  if (!flags.asked_for_close) deduction += 2;
+  if (!flags.asked_for_close) deduction += 1; // next steps not locked in
   if (!(flags.objections_uncovered && flags.objections_overcome)) deduction += 1;
   if (!deriveDeliveryFields_(result).effective) deduction += 1;
-  if (!flags.money_collected) deduction += 1;
-  var elevation = deriveElevationFields_(result);
-  if (elevation.done === false) deduction += 1;
+  if (!deriveDiscoveryContentFields_(result).covered) deduction += 2; // the core of what this call is for
   return clampAnalyticScore_(5 - deduction);
 }
 

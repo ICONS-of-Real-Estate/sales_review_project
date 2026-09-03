@@ -1593,7 +1593,26 @@ var SALES_CALL_LOG_HEADERS = [
   // above. See deriveElevationFields_/elevationRubricPrompt_. ---
   'Flag: Elevation Done',  // AG (bool — blank when the original rep wasn't
                             //    present on this call at all)
-  'Elevation Gap'          // AH (free text, blank when done or not applicable)
+  'Elevation Gap',         // AH (free text, blank when done or not applicable)
+  // --- 03/09/2026: Discovery-call-only dimensions, graded against the real
+  // "SOP for Podcast Discovery Calls" (Kris: "Use the SOP when grading disco
+  // calls"). Only the 'discovery' rubric variant writes these — every other
+  // variant/row reads blank. See deriveDiscoveryContentFields_/
+  // deriveRepPaymentFields_ in Phase2_CallScoring.gs. ---
+  'Flag: Discovery Content Covered', // AI (bool — all 4 SOP call-agenda
+                            //    items covered: goals/guest avatar/branding/
+                            //    launch strategy. Blank on non-Discovery rows.)
+  'Discovery Content Gaps', // AJ (comma-joined: which of the 4 were missing)
+  // Not part of the SOP (which never asks the AM to collect payment) — kept
+  // because Kris's real complaint (a rep not confirming payment before a
+  // Discovery call happens) showed up in the first two real calls reviewed.
+  // Graded on the ORIGINAL SALES REP, not the AM: "the sales rep still joins
+  // the Discovery call and is responsible for picking up the payment, then
+  // they introduce the AM." Blank whenever the rep wasn't present on the
+  // call at all (money already collected earlier).
+  'Flag: Payment Collected By Rep', // AK (bool — blank when rep wasn't
+                            //    present on this call at all)
+  'Payment Collected By Rep Gap'    // AL (free text, blank when collected or n/a)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
