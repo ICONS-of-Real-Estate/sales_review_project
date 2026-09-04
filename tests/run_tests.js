@@ -796,11 +796,12 @@ test('mostFrequent_ picks the most common value, alphabetical tie-break for dete
 const SCORECARD_COL = {
   'Rep': 1, 'Prospect Name': 2, 'Call Date': 3, 'Call Quality Score': 4,
   'Primary Failure Mode': 5, 'Flag: Asked For Close': 6, 'Flag: Objections Handled': 7,
-  'AI Feedback Summary': 8, 'Outcome Disposition': 9, 'Transcript URL': 10, 'Manual Review Recommended': 11
+  'AI Feedback Summary': 8, 'Outcome Disposition': 9, 'Transcript URL': 10, 'Manual Review Recommended': 11,
+  'Call Type': 12
 };
 
-function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary, outcomeDisposition, transcriptUrl, manualReviewRecommended }) {
-  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || '', transcriptUrl || '', manualReviewRecommended === true];
+function scorecardRow(gas, { rep, name, date, score, pfm, askedForClose, objectionsHandled, feedbackSummary, outcomeDisposition, transcriptUrl, manualReviewRecommended, callType }) {
+  return [rep, name, date, score, pfm || '', askedForClose, objectionsHandled, feedbackSummary || '', outcomeDisposition || '', transcriptUrl || '', manualReviewRecommended === true, callType || ''];
 }
 
 // computeRepWeeklyStats_ now derives its rolling-4-week window via
@@ -900,6 +901,33 @@ test('computeRepWeeklyStats_ carries transcriptUrl and manualReviewRecommended i
   const callA = stats.weekCalls.filter((c) => c.name === 'A')[0];
   assert.equal(callA.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
   assert.equal(callA.manualReviewRecommended, false);
+});
+
+test('isSalesCallTypeForScorecard_ excludes QC and Discovery specifically, defaults blank/unrecognized to true', () => {
+  assert.equal(gas.isSalesCallTypeForScorecard_('QC'), false);
+  assert.equal(gas.isSalesCallTypeForScorecard_('qc'), false, 'case-insensitive');
+  assert.equal(gas.isSalesCallTypeForScorecard_('Discovery'), false);
+  assert.equal(gas.isSalesCallTypeForScorecard_('Sales Call'), true);
+  assert.equal(gas.isSalesCallTypeForScorecard_(''), true, 'blank (older rows predating this column) must not be silently excluded');
+  assert.equal(gas.isSalesCallTypeForScorecard_(null), true);
+  assert.equal(gas.isSalesCallTypeForScorecard_('Second Sales Call'), true);
+});
+
+test('computeRepWeeklyStats_ excludes a QC call from worstCall and every average — real case: Andrew Coppens (2/5, QC, Sean) won "worst call of the week" and was quoted with sales-coaching framing despite being correctly scored under the QC rubric, not the sales one (Tomás\'s comment, 03/09/2026, on Sean\'s Weekly Training Summary: "this a qualification call, it needs to be assessed as [QC], we should separate them for sales calls")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 24);
+  const weekEnd = bizDate(gas, 2026, 8, 31);
+  const rows = [
+    scorecardRow(gas, { rep: 'Sean', name: 'Andrew Coppens', date: bizDate(gas, 2026, 8, 27), score: 2, callType: 'QC', feedbackSummary: 'QC-specific feedback' }),
+    scorecardRow(gas, { rep: 'Sean', name: 'A Real Sales Call', date: bizDate(gas, 2026, 8, 27), score: 4, callType: 'Sales Call' })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+
+  assert.equal(stats.weekCalls.length, 1, 'the QC row must never enter weekCalls at all');
+  assert.equal(stats.weekCalls[0].name, 'A Real Sales Call');
+  assert.equal(stats.weeklyAvg, 4, 'the QC score (2) must not drag the sales-call average down');
+  assert.equal(stats.worstCall.name, 'A Real Sales Call', 'a lower-scored QC call must never win "worst call of the week" over a real sales call');
+  assert.equal(stats.historicCount, 1, 'the QC row must not enter the historic average either');
 });
 
 test('computeRepWeeklyStats_ counts this week\'s calls missing an Outcome Disposition', () => {

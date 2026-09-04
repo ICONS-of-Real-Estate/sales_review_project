@@ -136,6 +136,25 @@ function getWeekBounds_(now, tz) {
 }
 
 /**
+ * True for a Call Type that belongs in the Weekly Scorecard's sales-coaching
+ * stats — worst call, weekly/rolling/historic averages, priority-to-improve,
+ * the asked-for-close/objections-handled flag tallies. False for QC and
+ * Discovery specifically — those have their own rubrics and their own
+ * coaching concepts entirely (see rubricVariantForNewScore_,
+ * Phase2_CallScoring.gs), and this report is built end to end around sales
+ * coaching (the Tuesday "objections + asking for the money" review call it
+ * feeds into). A blank/unrecognized Call Type (older rows that predate this
+ * column, or anything not named here) defaults to true — this report has
+ * always included those, and excluding them retroactively would silently
+ * shrink every rep's historic average rather than just keeping today's
+ * QC/Discovery rows out.
+ */
+function isSalesCallTypeForScorecard_(callType) {
+  var t = String(callType || '').trim().toLowerCase();
+  return t !== 'qc' && t !== 'discovery';
+}
+
+/**
  * Tallies one rep's rows into weekly + historic stats. rows/col are the full sheet read.
  *
  * Also computes a rolling 4-week average (QA_COACHING_RESEARCH_REPORT.md §2,
@@ -155,7 +174,7 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
   var weekMissingOutcomeDisposition = 0;
   var rolling4WeekScores = [];
   var rolling4WeekStart = shiftBusinessDate_(weekEnd, tz || CONFIG.BUSINESS_TIMEZONE, -28);
-  var skippedUnusableCallDate = 0, skippedNonNumericScore = 0;
+  var skippedUnusableCallDate = 0, skippedNonNumericScore = 0, skippedNonSalesCallType = 0;
 
   rows.forEach(function (row) {
     // Real bug found live (26/08/2026 silent-failure audit): this was a
@@ -164,6 +183,25 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     // rep's weekly scorecard, not just misfiled. Match the way Phase1's
     // checkRep_ already does.
     if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repName.toLowerCase()) return;
+
+    // Real bug found live (03/09/2026, Tomás — comment on Sean's Weekly
+    // Training Summary): this used to pool EVERY scored row together
+    // regardless of Call Type, so a QC call (Andrew Coppens, scored under
+    // the QC rubric, correctly per rubricVariantForNewScore_) could win
+    // "worst call of the week" and get quoted with sales-coaching framing
+    // — "ask for the money," objection handling — none of which a QC call
+    // was ever judged on. "QCs need to be assessed as QCs, not sales
+    // calls... we should separate them for sales calls." This report is
+    // built entirely around sales-coaching concepts (asked for close,
+    // objections handled, the Tuesday "objections + asking for the money"
+    // review call it feeds into) — QC and Discovery rows don't belong in
+    // it at all, not just scored differently. isSalesCallTypeForScorecard_
+    // is the one place that decision lives, so a QC or Discovery row is
+    // excluded from every stat below (worst call, weekly/rolling/historic
+    // averages, priority-to-improve, flag-miss tallies) rather than only
+    // some of them.
+    if (!isSalesCallTypeForScorecard_(row[col['Call Type'] - 1])) { skippedNonSalesCallType++; return; }
+
     var score = row[col['Call Quality Score'] - 1];
     if (typeof score !== 'number') { skippedNonNumericScore++; return; } // only rows Phase 2 has actually scored
 
@@ -225,9 +263,10 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     }
   });
 
-  if (skippedUnusableCallDate || skippedNonNumericScore) {
+  if (skippedUnusableCallDate || skippedNonNumericScore || skippedNonSalesCallType) {
     log_('  computeRepWeeklyStats_(' + repName + '): skipped ' + skippedUnusableCallDate +
-      ' row(s) with an unusable Call Date and ' + skippedNonNumericScore + ' row(s) with a non-numeric score ' +
+      ' row(s) with an unusable Call Date, ' + skippedNonNumericScore + ' row(s) with a non-numeric score, and ' +
+      skippedNonSalesCallType + ' row(s) with a non-sales-call Call Type (QC/Discovery/etc.) ' +
       '(excluded from all stats, not miscounted into any of them).');
   }
 
