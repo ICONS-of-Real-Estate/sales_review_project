@@ -924,18 +924,36 @@ function repConfigByName_(repName) {
  * (Tomás isn't in CONFIG.REPS — see repEmailForFollowUpCheck_'s own comment,
  * Phase4_InboxSLA.gs) or on a calendar API failure — never guesses "no
  * appointment" from the absence of a way to check.
+ *
+ * `eventsCache`, when passed, memoizes the CalendarApp.getEvents() call per
+ * rep for the life of one computeGhlHygieneFindings_ scan — nowDate and the
+ * lookahead window are the same for every row in a single run, so every row
+ * for the same rep would otherwise re-fetch that rep's ENTIRE future
+ * calendar window from scratch. Real cost found live (03/09/2026, Kris's
+ * first full-sheet run): Joana's window alone was re-fetched over a dozen
+ * times in a couple of minutes, purely because every one of her matched
+ * rows re-triggered the same CalendarApp call — on a bigger sheet that risks
+ * the Apps Script 6-minute execution ceiling outright, not just wasted time.
  */
-function ghlHasFutureCalendarEvent_(repName, prospectName, nowDate) {
+function ghlHasFutureCalendarEvent_(repName, prospectName, nowDate, eventsCache) {
   var repCfg = repConfigByName_(repName);
   if (!repCfg) return null;
-  var dayEnd = new Date(nowDate.getTime() + GHL_HYGIENE_CONFIG.FUTURE_APPOINTMENT_LOOKAHEAD_DAYS * 24 * 3600000);
+
   var events;
-  try {
-    events = getRepCallEvents_(repCfg, nowDate, dayEnd);
-  } catch (e) {
-    log_('ghlHasFutureCalendarEvent_: calendar lookup failed for ' + repName + ': ' + e);
-    return null;
+  if (eventsCache && Object.prototype.hasOwnProperty.call(eventsCache, repName)) {
+    events = eventsCache[repName];
+  } else {
+    var dayEnd = new Date(nowDate.getTime() + GHL_HYGIENE_CONFIG.FUTURE_APPOINTMENT_LOOKAHEAD_DAYS * 24 * 3600000);
+    try {
+      events = getRepCallEvents_(repCfg, nowDate, dayEnd);
+    } catch (e) {
+      log_('ghlHasFutureCalendarEvent_: calendar lookup failed for ' + repName + ': ' + e);
+      events = null;
+    }
+    if (eventsCache) eventsCache[repName] = events;
   }
+  if (events === null) return null; // lookup failed -- unverifiable, not "no appointment"
+
   var queryTokens = normalizeNameTokens_(prospectName);
   return events.some(function (ev) {
     var evTokens = normalizeNameTokens_(ev.prospectGuess || '');
@@ -1006,6 +1024,7 @@ function computeGhlHygieneFindings_(locationId, stageLookup) {
   var cutoff = new Date(Date.now() - GHL_HYGIENE_CONFIG.LOOKBACK_DAYS * 24 * 3600000);
   var now = new Date();
   var findings = [];
+  var calendarEventsByRep = {}; // memoizes ghlHasFutureCalendarEvent_'s CalendarApp call per rep for this whole scan
 
   rows.forEach(function (row) {
     var prospectName = String(row[col['Prospect Name'] - 1] || '').trim();
@@ -1027,7 +1046,7 @@ function computeGhlHygieneFindings_(locationId, stageLookup) {
     if (!oppsRes.ok) { stats.opportunityLookupFailed++; return; }
     stats.checked++;
 
-    var hasFutureEvent = ghlHasFutureCalendarEvent_(rep, prospectName, now);
+    var hasFutureEvent = ghlHasFutureCalendarEvent_(rep, prospectName, now, calendarEventsByRep);
     var issue = classifyGhlHygieneRow_({
       prospectName: prospectName, rep: rep, callDateLabel: callDateLabel, callDate: callDate,
       opportunities: oppsRes.opportunities, stageLookup: stageLookup,

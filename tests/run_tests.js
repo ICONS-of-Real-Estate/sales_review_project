@@ -4386,6 +4386,35 @@ test('ghlHasFutureCalendarEvent_ returns null, not throws, when the calendar loo
   }
 });
 
+test('ghlHasFutureCalendarEvent_ hits CalendarApp only once per rep when given an eventsCache, not once per row (real cost found live 03/09/2026: Joana\'s calendar window was re-fetched over a dozen times in one scan)', () => {
+  const originalGetEvents = gas.getRepCallEvents_;
+  let calls = 0;
+  gas.getRepCallEvents_ = () => { calls++; return [{ prospectGuess: 'Anthony Camperi' }]; };
+  const cache = {};
+  try {
+    gas.ghlHasFutureCalendarEvent_('Sean', 'Anthony Camperi', new Date('2026-09-10T12:00:00Z'), cache);
+    gas.ghlHasFutureCalendarEvent_('Sean', 'Someone Else', new Date('2026-09-10T12:00:00Z'), cache);
+    gas.ghlHasFutureCalendarEvent_('Sean', 'A Third Person', new Date('2026-09-10T12:00:00Z'), cache);
+    assert.equal(calls, 1, 'the second and third call for the same rep must reuse the cached event list');
+  } finally {
+    gas.getRepCallEvents_ = originalGetEvents;
+  }
+});
+
+test('ghlHasFutureCalendarEvent_ caches a failed lookup too, so a broken calendar doesn\'t get retried on every row of the same rep', () => {
+  const originalGetEvents = gas.getRepCallEvents_;
+  let calls = 0;
+  gas.getRepCallEvents_ = () => { calls++; throw new Error('Calendar API down'); };
+  const cache = {};
+  try {
+    assert.equal(gas.ghlHasFutureCalendarEvent_('Sean', 'Anyone', new Date('2026-09-10T12:00:00Z'), cache), null);
+    assert.equal(gas.ghlHasFutureCalendarEvent_('Sean', 'Someone Else', new Date('2026-09-10T12:00:00Z'), cache), null);
+    assert.equal(calls, 1);
+  } finally {
+    gas.getRepCallEvents_ = originalGetEvents;
+  }
+});
+
 test('groupGhlHygieneFindingsByRep_ buckets findings by rep, preserving each rep\'s own list', () => {
   const findings = [
     { prospectName: 'A', rep: 'Sean', issues: ['unpipelined_lead'] },
@@ -4461,6 +4490,29 @@ test('computeGhlHygieneFindings_ reads a REAL Date-object Call Date cell, not ju
   gas.getRepCallEvents_ = originalGetEvents;
   assert.equal(result.stats.inWindow, 1, 'a real Date-object cell must be recognized as in-window, not silently dropped as unparseable');
   assert.equal(result.findings.length, 1);
+});
+
+test('computeGhlHygieneFindings_ fetches each rep\'s calendar only once for the whole scan, not once per matched row (the real cost problem found live 03/09/2026)', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Contact One', Rep: 'Joana', 'Call Date': new gas.Date(Date.now() - 3 * 24 * 3600000) }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Contact Two', Rep: 'Joana', 'Call Date': new gas.Date(Date.now() - 4 * 24 * 3600000) }),
+    fakeSalesCallLogRow({ 'Prospect Name': 'Contact Three', Rep: 'Joana', 'Call Date': new gas.Date(Date.now() - 5 * 24 * 3600000) })
+  ];
+  const originalGetEvents = gas.getRepCallEvents_;
+  let calendarCalls = 0;
+  gas.getRepCallEvents_ = () => { calendarCalls++; return []; };
+  let searchCalls = 0;
+  withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: (locationId, name) => {
+      searchCalls++;
+      return { ok: true, contacts: [{ id: 'c-' + searchCalls, name: name }] };
+    },
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [] })
+  }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
+  gas.getRepCallEvents_ = originalGetEvents;
+  assert.equal(searchCalls, 3, 'sanity check: all 3 rows must have actually been processed');
+  assert.equal(calendarCalls, 1, 'Joana\'s calendar must be fetched once for the run, reused across all 3 of her rows');
 });
 
 // ---------------------------------------------------------------------------
