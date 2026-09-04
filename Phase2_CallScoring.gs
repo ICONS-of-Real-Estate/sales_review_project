@@ -4034,6 +4034,100 @@ function installBensScoringAutomation() {
   log_('Bens auto-scoring installed: scoreBensLegacyTranscripts() now runs every 4 hours.');
 }
 
+// ---------------------------------------------------------------------------
+// Consolidated ongoing scoring (04/09/2026) — see runAllOngoingScoringPasses_
+// below. installAllReadyTriggers_ (Phase1_ComplianceCheck.gs) now calls
+// installOngoingScoringTrigger() instead of the five install*Trigger/
+// install*ScoringAutomation functions above; those are left in place for
+// manual/debug use (re-enabling just one rep's pass on its own trigger while
+// investigating something), but note that doing so adds back a trigger the
+// next installAllReadyTriggers_()/installOngoingScoringTrigger() run will
+// remove again, same idempotent "one canonical installer wins" pattern this
+// codebase already uses everywhere else.
+// ---------------------------------------------------------------------------
+
+/**
+ * Real gap found live (04/09/2026): the project hit Apps Script's 20-trigger
+ * project cap trying to add Phase 11's Bens podcast sync trigger
+ * (installBensPodcastSyncTrigger, Phase11_BensPodcastSync.gs). listAllTriggers()
+ * showed 5 of the 20 slots were five separate every-4-hours triggers
+ * (scoreNewlyLoggedCalls_, scoreSeanTranscripts, scoreJoanaTranscripts,
+ * scoreTomasTranscripts, scoreBensLegacyTranscripts) doing the exact same
+ * class of job on the exact same cadence — no reason for 5 trigger objects
+ * instead of 1 handler that calls all 5 passes in sequence. Frees 4 slots.
+ *
+ * Each pass is independently idempotent (skips whatever it already scored),
+ * so calling them sequentially in a single execution is safe — this is the
+ * same sequencing runAllLegacyBackfills_ above already used for exactly this
+ * reason, on a 10-minute one-off backfill trigger rather than this ongoing
+ * 4-hour one.
+ *
+ * Order matters: Bens is deliberately LAST. Real bug found live (23/08/2026,
+ * documented on runAllLegacyBackfills_ above): his backlog alone can consume
+ * a full execution budget and starve whoever runs after him — Joana was the
+ * rep who actually got starved that day, which is exactly why this puts her
+ * right after the (usually fast) scoreNewlyLoggedCalls_ pass instead.
+ *
+ * Bounded by ONGOING_SCORING_TIME_BUDGET_MS_ so an unusually large backlog on
+ * one pass can't push the whole chain past this account's execution cap —
+ * skips whatever hasn't started yet and logs it; the next 4-hour firing picks
+ * up exactly where this one left off, since every pass here is independently
+ * idempotent and needs no resume bookkeeping of its own.
+ */
+var ONGOING_SCORING_TIME_BUDGET_MS_ = 20 * 60 * 1000; // this Workspace account gets 30-minute executions (confirmed live 22/08/2026) -- 10-minute safety margin
+
+/** Pure/testable — no Date.now() call of its own, so a test can pass fixed timestamps. */
+function shouldSkipRemainingScoringPasses_(runStartMs, nowMs, budgetMs) {
+  return (nowMs - runStartMs) > budgetMs;
+}
+
+function runAllOngoingScoringPasses_() {
+  RUN_TAG = 'runAllOngoingScoringPasses_';
+  var runStart = Date.now();
+  var passes = [
+    { name: 'scoreNewlyLoggedCalls_', fn: scoreNewlyLoggedCalls_ },
+    { name: 'scoreJoanaTranscripts', fn: scoreJoanaTranscripts },
+    { name: 'scoreSeanTranscripts', fn: scoreSeanTranscripts },
+    { name: 'scoreTomasTranscripts', fn: scoreTomasTranscripts },
+    { name: 'scoreBensLegacyTranscripts', fn: scoreBensLegacyTranscripts } // last -- see this function's own header comment
+  ];
+
+  for (var i = 0; i < passes.length; i++) {
+    if (shouldSkipRemainingScoringPasses_(runStart, Date.now(), ONGOING_SCORING_TIME_BUDGET_MS_)) {
+      log_('runAllOngoingScoringPasses_: time budget hit before ' + passes[i].name +
+        ' (and ' + (passes.length - i - 1) + ' more) -- skipping for this firing, the next one picks it up.');
+      break;
+    }
+    try {
+      passes[i].fn();
+    } catch (e) {
+      log_('runAllOngoingScoringPasses_: ' + passes[i].name + ' threw: ' + e + ' -- continuing to the next pass.');
+      sendOpsAlert_('Scoring pass error: ' + passes[i].name, String(e));
+    }
+  }
+}
+
+/**
+ * ONE-TIME setup, replacing installPhase2Trigger/installSeanScoringAutomation/
+ * installJoanaScoringAutomation/installTomasScoringAutomation/
+ * installBensScoringAutomation as the normal way to enable ongoing scoring —
+ * run this instead of those five. Deletes every one of their triggers (if
+ * present) plus any existing copy of its own, then installs the single
+ * combined trigger. Safe to re-run any time.
+ */
+function installOngoingScoringTrigger() {
+  RUN_TAG = 'installOngoingScoringTrigger';
+  ['scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreJoanaTranscripts',
+    'scoreTomasTranscripts', 'scoreBensLegacyTranscripts', 'runAllOngoingScoringPasses_'].forEach(function (handler) {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
+    });
+  });
+  ScriptApp.newTrigger('runAllOngoingScoringPasses_').timeBased().everyHours(4).create();
+  log_('Installed: runAllOngoingScoringPasses_() now runs every 4 hours, replacing the 5 separate ' +
+    'per-pass triggers this project used to install individually (frees 4 trigger slots).');
+}
+
 /**
  * Cleanup for a specific failure mode: if scoreSeanTranscripts() or
  * scoreNewlyLoggedCalls_() ever runs while LITELLM_PROXY_URL/LITELLM_API_KEY

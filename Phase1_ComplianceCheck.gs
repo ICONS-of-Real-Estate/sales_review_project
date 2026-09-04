@@ -3452,19 +3452,30 @@ function installAutomation() {
  * Keep this list in sync whenever a new phase gets its own install*Trigger()
  * function — a handler installed above but missing here gets swept as an
  * orphan on the very next run.
+ *
+ * Updated 04/09/2026 (same project-cap incident as the header above, this
+ * time triggered by adding Phase 11's Bens podcast sync): the five separate
+ * Phase 2 ongoing-scoring handlers were consolidated into one,
+ * runAllOngoingScoringPasses_ (see its own header, Phase2_CallScoring.gs) —
+ * removed here so the sweep now correctly treats the old individual
+ * handlers as orphans if anyone re-installs one by hand and forgets to clean
+ * up. Also added runBensPodcastSync_ (Phase 11), which — like
+ * syncGhlEmailAndDisposition_ before the 03/09/2026 fix above — had its own
+ * install*Trigger() function but was never added here, so it would have been
+ * swept as an orphan on the very next installAllReadyTriggers_ run.
  */
 var STANDING_AUTOMATION_HANDLERS_ = [
   'runDailyComplianceCheck', 'selfHealTriggers_',                          // Phase 1
   'runWeeklyPlaybookReview',                                               // Phase 1 — Playbook Review
-  'scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreTomasTranscripts', // Phase 2
-  'scoreJoanaTranscripts', 'scoreBensLegacyTranscripts', 'runRandomCalibrationSample',
+  'runAllOngoingScoringPasses_', 'runRandomCalibrationSample',             // Phase 2
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4
   'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
   'classifyNewReplies', 'sendReplyMetricsReport_',                         // Phase 8
-  'syncGhlEmailAndDisposition_'                                            // Phase 9
+  'syncGhlEmailAndDisposition_',                                           // Phase 9
+  'runBensPodcastSync_'                                                    // Phase 11
 ];
 
 /**
@@ -3505,12 +3516,9 @@ function installAllReadyTriggers_() {
   installAutomation();
   installed.push('Phase 1: daily compliance check + weekly self-heal');
 
-  installPhase2Trigger();
-  installSeanScoringAutomation();
-  installTomasScoringAutomation();
-  installJoanaScoringAutomation();
-  installBensScoringAutomation();
-  installed.push('Phase 2: ongoing call scoring (every 4h) + Sean/Tomás/Joana/Bens auto-scoring (every 4h each)');
+  installOngoingScoringTrigger();
+  installed.push('Phase 2: ongoing call scoring + Sean/Tomás/Joana/Bens auto-scoring, ' +
+    'consolidated onto one every-4h trigger (04/09/2026 — was 5 separate triggers)');
 
   // Real gap found live (03/09/2026): this was installed by hand per its own
   // file's "ONE-TIME SETUP" comment and was invisible to this function ever
@@ -3623,6 +3631,16 @@ function installAllReadyTriggers_() {
       'confirm it looks right, then flip ENABLED and re-run this.');
   }
 
+  // Same gap as Phase 1/5/9's manually-installed triggers above — added
+  // 04/09/2026, same incident that consolidated Phase 2's triggers.
+  if (typeof BENS_PODCAST_SYNC_CONFIG !== 'undefined' && BENS_PODCAST_SYNC_CONFIG.ENABLED) {
+    installBensPodcastSyncTrigger();
+    installed.push('Phase 11: Bens podcast tracker sync');
+  } else {
+    skipped.push('Phase 11 (Bens podcast sync) — BENS_PODCAST_SYNC_CONFIG.ENABLED is false. Run ' +
+      'previewBensPodcastSync() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
   // RUN_TAG reset here on purpose: every install*() call above sets its own
   // RUN_TAG at its own top (that's how each log_() line above got its own
   // [installXxx] prefix), which leaves RUN_TAG stuck on whichever ran last
@@ -3681,16 +3699,16 @@ var SELF_HEAL_TRIGGER_REGISTRY_ = [
     // No pauseProperty: this one should always stay on.
   },
   {
-    handler: 'scoreNewlyLoggedCalls_',
-    install: function () { reinstallHourlyTrigger_('scoreNewlyLoggedCalls_', 4); },
-    label: 'Phase 2 ongoing-scoring trigger',
-    pauseProperty: 'PAUSE_PHASE2_TRIGGER'
-  },
-  {
-    handler: 'scoreSeanTranscripts',
-    install: function () { reinstallHourlyTrigger_('scoreSeanTranscripts', 4); },
-    label: 'Sean auto-scoring trigger',
-    pauseProperty: 'PAUSE_SEAN_TRIGGER'
+    // 04/09/2026: was two entries here (scoreNewlyLoggedCalls_,
+    // scoreSeanTranscripts) for two of the five triggers that got
+    // consolidated into runAllOngoingScoringPasses_ (Phase2_CallScoring.gs) —
+    // replaced with one entry so self-heal still recognizes and repairs the
+    // (now single) ongoing-scoring trigger instead of recreating one of the
+    // two old ones it used to know about by name.
+    handler: 'runAllOngoingScoringPasses_',
+    install: installOngoingScoringTrigger,
+    label: 'consolidated ongoing-scoring trigger',
+    pauseProperty: 'PAUSE_ONGOING_SCORING_TRIGGER'
   }
 ];
 

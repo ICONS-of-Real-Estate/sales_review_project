@@ -5730,3 +5730,62 @@ test('formatBensSyncDateForLog_ passes through a non-Date value (e.g. a blank Bo
   assert.equal(gas.formatBensSyncDateForLog_(''), '(blank)');
   assert.equal(gas.formatBensSyncDateForLog_('31/08/2026'), '31/08/2026');
 });
+
+// ---------------------------------------------------------------------------
+// Consolidated ongoing scoring (04/09/2026) — freed 4 trigger slots for
+// Phase 11's Bens podcast sync trigger after the project hit Apps Script's
+// 20-trigger cap.
+// ---------------------------------------------------------------------------
+
+test('shouldSkipRemainingScoringPasses_ is false within budget and true once elapsed time exceeds it', () => {
+  assert.equal(gas.shouldSkipRemainingScoringPasses_(1000, 1000 + 5 * 60 * 1000, 20 * 60 * 1000), false);
+  assert.equal(gas.shouldSkipRemainingScoringPasses_(1000, 1000 + 25 * 60 * 1000, 20 * 60 * 1000), true);
+  assert.equal(gas.shouldSkipRemainingScoringPasses_(1000, 1000 + 20 * 60 * 1000, 20 * 60 * 1000), false, 'exactly at budget must not skip yet — only strictly over');
+});
+
+test('runAllOngoingScoringPasses_ calls all 5 passes, Bens last, and one pass throwing does not stop the rest', () => {
+  const order = [];
+  const originals = {};
+  ['scoreNewlyLoggedCalls_', 'scoreJoanaTranscripts', 'scoreSeanTranscripts', 'scoreTomasTranscripts', 'scoreBensLegacyTranscripts'].forEach((name) => {
+    originals[name] = gas[name];
+    gas[name] = () => {
+      order.push(name);
+      if (name === 'scoreSeanTranscripts') throw new Error('simulated Sean pass failure');
+    };
+  });
+  const originalOpsAlert = gas.sendOpsAlert_;
+  gas.sendOpsAlert_ = () => {};
+  try {
+    gas.runAllOngoingScoringPasses_();
+    assert.deepEqual(order, ['scoreNewlyLoggedCalls_', 'scoreJoanaTranscripts', 'scoreSeanTranscripts', 'scoreTomasTranscripts', 'scoreBensLegacyTranscripts']);
+  } finally {
+    Object.keys(originals).forEach((name) => { gas[name] = originals[name]; });
+    gas.sendOpsAlert_ = originalOpsAlert;
+  }
+});
+
+test('installOngoingScoringTrigger removes all 5 old per-pass triggers and any prior copy of its own, installing exactly one combined trigger', () => {
+  const originalScriptApp = gas.ScriptApp;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreJoanaTranscripts',
+      'scoreTomasTranscripts', 'scoreBensLegacyTranscripts', 'runAllOngoingScoringPasses_', 'someUnrelatedHandler_']);
+    gas.installOngoingScoringTrigger();
+    const handlerNames = gas.ScriptApp._triggers.map((t) => t.getHandlerFunction());
+    assert.deepEqual(handlerNames.filter((h) => h === 'runAllOngoingScoringPasses_').length, 1);
+    ['scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreJoanaTranscripts', 'scoreTomasTranscripts', 'scoreBensLegacyTranscripts'].forEach((h) => {
+      assert.ok(handlerNames.indexOf(h) === -1, h + ' must be removed by the consolidated installer');
+    });
+    assert.ok(handlerNames.indexOf('someUnrelatedHandler_') !== -1, 'must not touch unrelated triggers');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('STANDING_AUTOMATION_HANDLERS_ reflects the 04/09/2026 consolidation: old per-pass handlers gone, new combined + Bens sync handlers present (a handler missing here gets silently swept as an orphan by installAllReadyTriggers_)', () => {
+  ['scoreNewlyLoggedCalls_', 'scoreSeanTranscripts', 'scoreJoanaTranscripts', 'scoreTomasTranscripts', 'scoreBensLegacyTranscripts'].forEach((h) => {
+    assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf(h) === -1,
+      h + ' was consolidated into runAllOngoingScoringPasses_ and must not remain a separately-recognized standing handler');
+  });
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runAllOngoingScoringPasses_') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runBensPodcastSync_') !== -1);
+});
