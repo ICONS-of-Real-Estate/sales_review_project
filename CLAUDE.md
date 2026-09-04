@@ -80,6 +80,38 @@ client sites, so the dashboard deliberately does not touch ports 80/443,
 nginx, or iptables). This sandbox/session has no SSH access to the VPS, so
 Claude cannot run these steps itself — say so and tell the user to run them.
 
+## Who does what — never guess this again
+
+**Bens does NOT take Sales Calls.** His job is ICONS 100 (the podcast) and
+QCs (Qualification Calls) only. Kris has had to correct this more than
+once — do not re-derive it from column names or infer it from a tracker,
+just take it as fact.
+
+Concretely, this means:
+- The Sales Call Log's "Outcome Disposition" vocabulary (Sold / Not Sold /
+  Follow-up / No-show) does not describe Bens's work — it was written for
+  reps who close sales, which he isn't.
+- Bens has his own long-standing tab, **"Icons 100 Series Podcast
+  Tracker"**, in the same shared spreadsheet as the Sales Call Log
+  (`1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4`) — columns: Name, Email,
+  Source, Booked, Booking Date, Recording Date, Recording Done, QC Booked,
+  QC Date, QC Show Up, SC Booked, SC Date, SC Show Up, Sale, Comments. This
+  is his real system of record for booking/QC status, not a redundant
+  side-tracker.
+- **Known live bug, unresolved as of 03/09/2026**: `CONFIG.REPS`'s Bens
+  entry in `Phase1_ComplianceCheck.gs` has `sheetName: 'Sales Call Log'`,
+  but its `columns.outcomeLogged`/`callDate`/`prospectName` fallback lists
+  (`'Recording Done'`, `'Recording Date'`, `'Booking Date'`, `'Name'`) are
+  real headers from HIS tracker tab, not from "Sales Call Log" — those
+  columns don't exist there at all. The compliance bot is nagging him
+  about calls that were never going to appear in the tab it's actually
+  reading, and he has no way to make it stop by updating anything, since
+  his real tracker isn't the tab being checked. This needs Kris's decision
+  (point the compliance check at his real tracker vs. build a sync into
+  Sales Call Log) before it gets touched — see git log around 03/09/2026
+  ("GHL hygiene Rules 2/3...") for where this was being investigated when
+  found.
+
 ## Where to look for more context
 
 - `HANDOFF.md` — session-to-session handoff notes (what's live, what's
