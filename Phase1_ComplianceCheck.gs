@@ -136,7 +136,7 @@ var CONFIG = {
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
       sheetName: 'Sales Call Log',
       // Fixed 04/09/2026 (Phase11_BensPodcastSync.gs) — this used to list
-      // fallback headers from HIS OWN "Icons 100 Series Podcast Tracker" tab
+      // fallback headers from HIS OWN "Icons Podcast Recordings" tab
       // ('Recording Done', 'Recording Date', 'Booking Date', 'Name') even
       // though sheetName points at "Sales Call Log", which doesn't have any
       // of those columns at all (see CLAUDE.md "Who does what — never guess

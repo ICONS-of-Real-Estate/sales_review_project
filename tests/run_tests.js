@@ -5712,3 +5712,11 @@ test('isSalesCallTypeForScorecard_ excludes "Icons 100 Recording" rows from sale
   assert.equal(gas.isSalesCallTypeForScorecard_('icons 100 recording'), false);
   assert.equal(gas.isSalesCallTypeForScorecard_('Sales Call'), true);
 });
+
+test('getValidatedBensTrackerColumnMap_ tolerates the real tracker\'s stray trailing space on "SC Booked " rather than throwing header-drift', () => {
+  const headerRow = gas.BENS_PODCAST_TRACKER_HEADERS.slice();
+  headerRow[headerRow.indexOf('SC Booked')] = 'SC Booked ';
+  const sheet = { getRange: () => ({ getValues: () => [headerRow] }) };
+  const col = gas.getValidatedBensTrackerColumnMap_(sheet);
+  assert.equal(col['SC Booked'], headerRow.indexOf('SC Booked ') + 1);
+});

@@ -91,26 +91,33 @@ Concretely, this means:
 - The Sales Call Log's "Outcome Disposition" vocabulary (Sold / Not Sold /
   Follow-up / No-show) does not describe Bens's work — it was written for
   reps who close sales, which he isn't.
-- Bens has his own long-standing tab, **"Icons 100 Series Podcast
-  Tracker"**, in the same shared spreadsheet as the Sales Call Log
+- Bens has his own long-standing tab, **"Icons Podcast Recordings"**, in
+  the same shared spreadsheet as the Sales Call Log
   (`1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4`) — columns: Name, Email,
   Source, Booked, Booking Date, Recording Date, Recording Done, QC Booked,
   QC Date, QC Show Up, SC Booked, SC Date, SC Show Up, Sale, Comments. This
   is his real system of record for booking/QC status, not a redundant
-  side-tracker.
-- **Known live bug, unresolved as of 03/09/2026**: `CONFIG.REPS`'s Bens
-  entry in `Phase1_ComplianceCheck.gs` has `sheetName: 'Sales Call Log'`,
-  but its `columns.outcomeLogged`/`callDate`/`prospectName` fallback lists
-  (`'Recording Done'`, `'Recording Date'`, `'Booking Date'`, `'Name'`) are
-  real headers from HIS tracker tab, not from "Sales Call Log" — those
-  columns don't exist there at all. The compliance bot is nagging him
-  about calls that were never going to appear in the tab it's actually
-  reading, and he has no way to make it stop by updating anything, since
-  his real tracker isn't the tab being checked. This needs Kris's decision
-  (point the compliance check at his real tracker vs. build a sync into
-  Sales Call Log) before it gets touched — see git log around 03/09/2026
-  ("GHL hygiene Rules 2/3...") for where this was being investigated when
-  found.
+  side-tracker. (This tab was previously misnamed "Icons 100 Series Podcast
+  Tracker" in this file — corrected 04/09/2026 after downloading the live
+  spreadsheet and confirming no tab with that name actually exists; "Icons
+  Podcast Recordings" has the exact column layout described above.)
+- **Fixed 04/09/2026** (`Phase11_BensPodcastSync.gs`): the bug below is
+  resolved. `CONFIG.REPS`'s Bens entry (`Phase1_ComplianceCheck.gs`) now
+  uses real "Sales Call Log" headers for its column fallbacks, and
+  `previewBensPodcastSync()`/`runBensPodcastSync()` sync his tracker rows
+  (once "Recording Done" is checked) into "Sales Call Log" as `Rep: Bens`,
+  `Call Type: Icons 100 Recording` rows — `Outcome Logged` true, `Outcome
+  Disposition` deliberately left blank (confirmed with Tomás: outcome is
+  the closer's job, not Bens's). Gated behind
+  `BENS_PODCAST_SYNC_CONFIG.ENABLED` (false by default) — still needs a
+  `previewBensPodcastSync()` run reviewed and the flag flipped before it's
+  live. Original bug description, kept for history: `sheetName:
+  'Sales Call Log'` but `columns.outcomeLogged`/`callDate`/`prospectName`
+  fallback lists (`'Recording Done'`, `'Recording Date'`, `'Booking
+  Date'`, `'Name'`) were real headers from HIS tracker tab, not from
+  "Sales Call Log" — those columns didn't exist there at all, so the
+  compliance bot nagged him about calls that could never appear in the tab
+  it was actually reading.
 
 ## Where to look for more context
 

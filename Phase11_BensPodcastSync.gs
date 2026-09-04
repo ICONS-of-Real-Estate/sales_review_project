@@ -3,11 +3,17 @@
  *
  * Background: CONFIG.REPS's Bens entry (Phase1_ComplianceCheck.gs) has always
  * pointed sheetName at "Sales Call Log", but his real system of record is a
- * separate tab in the same spreadsheet, "Icons 100 Series Podcast Tracker"
- * (see CLAUDE.md "Who does what — never guess this again"). Nothing ever
- * copied his tracker rows into "Sales Call Log", so the daily compliance
- * check found nothing there for him and nagged him about calls that were
- * never going to appear in the tab it was actually reading.
+ * separate tab in the same spreadsheet — "Icons Podcast Recordings" (see
+ * CLAUDE.md "Who does what — never guess this again", which named it "Icons
+ * 100 Series Podcast Tracker"; that name is stale/wrong — confirmed live
+ * 04/09/2026 by downloading the actual spreadsheet and listing its real tab
+ * names: no tab named "Icons 100 Series Podcast Tracker" exists, but "Icons
+ * Podcast Recordings" has the exact column layout CLAUDE.md described, so
+ * it's the same tab under its real name. CLAUDE.md corrected in the same
+ * commit.). Nothing ever copied his tracker rows into "Sales Call Log", so
+ * the daily compliance check found nothing there for him and nagged him
+ * about calls that were never going to appear in the tab it was actually
+ * reading.
  *
  * Confirmed with Tomas (doc comments + email reply on the proposal doc,
  * 04/09/2026) before building this:
@@ -49,7 +55,7 @@
 
 var BENS_PODCAST_SYNC_CONFIG = {
   ENABLED: false,
-  TRACKER_SHEET_NAME: 'Icons 100 Series Podcast Tracker',
+  TRACKER_SHEET_NAME: 'Icons Podcast Recordings',
   CALL_TYPE: 'Icons 100 Recording',
   REP_NAME: 'Bens'
 };
@@ -60,11 +66,20 @@ var BENS_PODCAST_TRACKER_HEADERS = [
   'SC Date', 'SC Show Up', 'Sale', 'Comments'
 ];
 
+/**
+ * Trims both sides before comparing — unlike getValidatedColumnMap_'s exact
+ * match on "Sales Call Log" (a sheet this codebase itself writes the header
+ * row for), this tab's real header row has a stray trailing space on "SC
+ * Booked " (confirmed live 04/09/2026), and there's no reason to make Bens
+ * fix a whitespace typo in a column this sync doesn't even read for its own
+ * logic. Trim, don't ignore: still throws loudly on an actual column being
+ * renamed/removed/reordered, same safety net as getValidatedColumnMap_.
+ */
 function getValidatedBensTrackerColumnMap_(sheet) {
   var header = sheet.getRange(1, 1, 1, BENS_PODCAST_TRACKER_HEADERS.length).getValues()[0];
   var mismatches = [];
   BENS_PODCAST_TRACKER_HEADERS.forEach(function (expected, i) {
-    if (header[i] !== expected) {
+    if (String(header[i] || '').trim() !== expected) {
       mismatches.push('column ' + (i + 1) + ': expected "' + expected + '", found "' + header[i] + '"');
     }
   });
