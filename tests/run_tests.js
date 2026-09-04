@@ -3041,6 +3041,31 @@ test('findRecentNoShowRows_ only picks up No-show rows inside the lookback windo
   assert.equal(results[0].rep, 'Sean');
 });
 
+test('findRecentNoShowRows_ reads a REAL Date-object Call Date cell, not just "dd/MM/yyyy" text (same live bug class the GHL hygiene check found 03/09/2026 — getValues() hands back an actual Date for a genuine Sheets date cell, and this function used to have its own text-only parser)', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const blankRow = () => new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  const setRow = (fields) => {
+    const row = blankRow();
+    Object.keys(fields).forEach((h) => { row[col[h] - 1] = fields[h]; });
+    return row;
+  };
+
+  const rows = [
+    setRow({
+      'Prospect Name': 'Recent No-show', 'Prospect Email': 'a@example.com', Rep: 'Sean',
+      'Call Date': new gas.Date(gas.Date.UTC(2026, 8, 1, 12, 0, 0)), // gas.Date -- real Date, own realm (see parseSalesCallLogDate_'s own tests)
+      'Outcome Disposition': 'No-show'
+    })
+  ];
+  const cutoff = new gas.Date('2026-08-25T00:00:00Z');
+  gas.Utilities = { formatDate: realFormatDate };
+  const results = gas.findRecentNoShowRows_(rows, col, cutoff);
+
+  assert.equal(results.length, 1, 'a real Date-object cell must be recognized, not silently dropped as unparseable');
+  assert.equal(results[0].callDateLabel, '01/09/2026');
+});
+
 test('repEmailForFollowUpCheck_ covers Tomás (missing from CONFIG.REPS, unlike Bens/Joana/Sean) without guessing for an unknown rep', () => {
   assert.equal(gas.repEmailForFollowUpCheck_('Sean'), gas.repEmailByName_('Sean'));
   assert.equal(gas.repEmailForFollowUpCheck_('Tomás'), gas.CONFIG.TOMAS_EMAIL);

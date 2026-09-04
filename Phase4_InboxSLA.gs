@@ -704,17 +704,24 @@ function repEmailForFollowUpCheck_(repName) {
  * the lookback window, across every rep — no Spreadsheet/date-object calls
  * beyond what's passed in, so it's directly testable. Skips a row with no
  * parseable Call Date rather than guessing.
+ *
+ * Call Date parsing goes through parseSalesCallLogDate_ (Phase9_GhlSync.gs)
+ * rather than a local dd/MM/yyyy-only split — this function used to have
+ * its own copy of that same text-only parsing, which the GHL hygiene check
+ * (built 03/09/2026) found was silently blind to a real Date-object cell
+ * (getValues() hands back an actual Date for a genuine Sheets date cell,
+ * and String(aDateObject) has no '/' in it at all). This check is still
+ * ENABLED: false so it never hit that live, but it carried the identical
+ * bug and would have on its first real run.
  */
 function findRecentNoShowRows_(rows, col, cutoffDate) {
   var results = [];
   rows.forEach(function (row, i) {
     var disposition = String(row[col['Outcome Disposition'] - 1] || '').trim();
     if (disposition !== 'No-show') return;
-    var dateLabel = String(row[col['Call Date'] - 1] || '').trim();
-    var parts = dateLabel.split('/'); // ['dd', 'MM', 'yyyy']
-    if (parts.length !== 3) return;
-    var callDate = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
-    if (isNaN(callDate.getTime()) || callDate < cutoffDate) return;
+    var callDate = parseSalesCallLogDate_(row[col['Call Date'] - 1]);
+    if (!callDate || callDate < cutoffDate) return;
+    var dateLabel = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
     results.push({
       rowIndex: i + 2,
       prospectName: String(row[col['Prospect Name'] - 1] || '').trim(),
