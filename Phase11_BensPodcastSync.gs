@@ -54,7 +54,7 @@
  */
 
 var BENS_PODCAST_SYNC_CONFIG = {
-  ENABLED: false,
+  ENABLED: true,
   TRACKER_SHEET_NAME: 'Icons Podcast Recordings',
   CALL_TYPE: 'Icons 100 Recording',
   REP_NAME: 'Bens'
