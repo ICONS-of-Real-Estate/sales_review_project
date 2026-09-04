@@ -4112,7 +4112,7 @@ function withMockedGhlSync_(mocks, fn) {
     ghlSearchContactByName_: gas.ghlSearchContactByName_,
     ghlListOpportunitiesForContact_: gas.ghlListOpportunitiesForContact_
   };
-  gas.Utilities = { sleep: () => {} };
+  gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
   Object.assign(gas, mocks);
   try {
     return fn();
@@ -4225,6 +4225,29 @@ test('computeGhlSyncFixes_ stops at the time budget and reports a partial scan, 
 // CRM hygiene checks (Phase9_GhlSync.gs) — Rules 2/3 + Tomás's own
 // booked-without-appointment rule from the CRM Hygiene Automation doc.
 // ---------------------------------------------------------------------------
+
+test('parseSalesCallLogDate_ parses a "dd/MM/yyyy" text cell', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = gas.parseSalesCallLogDate_('01/09/2026');
+  assert.equal(realFormatDate(result, 'America/New_York', 'yyyy/MM/dd'), '2026/09/01');
+});
+
+test('parseSalesCallLogDate_ parses a REAL Date-object cell, not just text (real bug found live 03/09/2026: getValues() hands back an actual Date for a genuine Sheets date cell — String(aDateObject) has no "/" at all, so the text-only parser silently treated every one of 471/471 live rows as unparseable)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  // Must be a Date built in the gas sandbox's OWN realm (gas.Date, exposed by gas_env.js for exactly
+  // this) -- a host-realm `new Date(...)` fails `instanceof Date` inside the vm sandbox and would
+  // silently fall through to the text-parsing branch instead of exercising the one under test.
+  const result = gas.parseSalesCallLogDate_(new gas.Date(gas.Date.UTC(2026, 8, 1, 12, 0, 0))); // Sept 1 2026, midday UTC
+  assert.equal(realFormatDate(result, 'America/New_York', 'yyyy/MM/dd'), '2026/09/01');
+});
+
+test('parseSalesCallLogDate_ returns null, not a throw, for blank/junk/malformed input', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  assert.equal(gas.parseSalesCallLogDate_(''), null);
+  assert.equal(gas.parseSalesCallLogDate_(null), null);
+  assert.equal(gas.parseSalesCallLogDate_('not a date'), null);
+  assert.equal(gas.parseSalesCallLogDate_(new gas.Date(NaN)), null);
+});
 
 test('ghlStageLooksBooked_ matches any "...Booked" stage name across pipelines, not an exact list (GHL_PIPELINE_MAP.md shows this pattern repeated)', () => {
   assert.equal(gas.ghlStageLooksBooked_('Sales Call - Booked'), true);
@@ -4420,6 +4443,24 @@ test('computeGhlHygieneFindings_ finds a real hygiene issue end to end: a confid
   assert.equal(result.stats.checked, 1);
   assert.equal(result.findings.length, 1);
   assert.ok(result.findings[0].issues.indexOf('unpipelined_lead') !== -1);
+});
+
+test('computeGhlHygieneFindings_ reads a REAL Date-object Call Date cell, not just text (the exact live bug, 03/09/2026 — see parseSalesCallLogDate_\'s own header comment)', () => {
+  // gas.Date (not the host Date) -- same instanceof-across-realms reasoning as parseSalesCallLogDate_'s own tests above.
+  const recentDate = new gas.Date(Date.now() - 5 * 24 * 3600000); // a real Date object, same as getValues() hands back for a genuine Sheets date cell
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Anthony Camperi', Rep: 'Sean', 'Call Date': recentDate })
+  ];
+  const originalGetEvents = gas.getRepCallEvents_;
+  gas.getRepCallEvents_ = () => [];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Anthony Camperi' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [] })
+  }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
+  gas.getRepCallEvents_ = originalGetEvents;
+  assert.equal(result.stats.inWindow, 1, 'a real Date-object cell must be recognized as in-window, not silently dropped as unparseable');
+  assert.equal(result.findings.length, 1);
 });
 
 // ---------------------------------------------------------------------------

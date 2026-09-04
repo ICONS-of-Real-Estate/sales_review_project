@@ -944,6 +944,37 @@ function ghlHasFutureCalendarEvent_(repName, prospectName, nowDate) {
 }
 
 /**
+ * Reads a Sales Call Log row's Call Date cell as a real Date at midnight in
+ * the business timezone. getValues() hands this back as EITHER a real Date
+ * object (a genuine Sheets date cell) or a "dd/MM/yyyy" text string —
+ * Phase1_ComplianceCheck.gs's own header comment ("Call Date (D) number
+ * format DD/MM/YYYY") and findLegacyBackfillDuplicates_'s `date instanceof
+ * Date` check (Phase2_CallScoring.gs) both confirm this codebase has real
+ * examples of both in the live sheet. Real bug found live (03/09/2026): the
+ * first version of this function only handled the text-string case (split by
+ * '/', same as findRecentNoShowRows_ in Phase4_InboxSLA.gs) — every row
+ * whose cell was an actual Date object silently read as unparseable, since
+ * String(aDateObject) has no '/' characters at all. That produced a
+ * previewGhlHygieneCheck_ run reporting 471/471 rows outside the lookback
+ * window — not one single row genuinely too old, every row unreadable.
+ * Returns null (not a throw) for anything genuinely unparseable, same
+ * never-guess policy as the rest of this file.
+ */
+function parseSalesCallLogDate_(cellValue) {
+  if (cellValue instanceof Date) {
+    if (isNaN(cellValue.getTime())) return null;
+    var y = Number(Utilities.formatDate(cellValue, CONFIG.BUSINESS_TIMEZONE, 'yyyy'));
+    var m = Number(Utilities.formatDate(cellValue, CONFIG.BUSINESS_TIMEZONE, 'MM'));
+    var d = Number(Utilities.formatDate(cellValue, CONFIG.BUSINESS_TIMEZONE, 'dd'));
+    return dateAtMidnightInBusinessTimezone_(y, m, d);
+  }
+  var parts = String(cellValue || '').trim().split('/'); // ['dd', 'MM', 'yyyy']
+  if (parts.length !== 3) return null;
+  var parsed = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
  * Shared scan — used by both previewGhlHygieneCheck_ and runGhlHygieneCheck_
  * so they can't disagree, same pattern as computeGhlSyncFixes_ and
  * computeNoShowFollowUpResults_ (Phase4_InboxSLA.gs) above/elsewhere. Costs
@@ -979,14 +1010,12 @@ function computeGhlHygieneFindings_(locationId, stageLookup) {
   rows.forEach(function (row) {
     var prospectName = String(row[col['Prospect Name'] - 1] || '').trim();
     var rep = String(row[col['Rep'] - 1] || '').trim();
-    var callDateLabel = String(row[col['Call Date'] - 1] || '').trim();
     if (!prospectName || !rep) return;
 
-    var parts = callDateLabel.split('/'); // ['dd', 'MM', 'yyyy'] — same layout findRecentNoShowRows_ parses
-    if (parts.length !== 3) return;
-    var callDate = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
-    if (isNaN(callDate.getTime()) || callDate < cutoff) return;
+    var callDate = parseSalesCallLogDate_(row[col['Call Date'] - 1]);
+    if (!callDate || callDate < cutoff) return;
     stats.inWindow++;
+    var callDateLabel = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
 
     var search = ghlSearchContactByName_(locationId, prospectName);
     if (!search.ok || !search.contacts.length) { stats.noGhlContact++; return; } // no GHL contact at all — nothing to check yet
