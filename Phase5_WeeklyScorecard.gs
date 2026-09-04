@@ -174,7 +174,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
   var weekMissingOutcomeDisposition = 0;
   var rolling4WeekScores = [];
   var rolling4WeekStart = shiftBusinessDate_(weekEnd, tz || CONFIG.BUSINESS_TIMEZONE, -28);
-  var skippedUnusableCallDate = 0, skippedNonNumericScore = 0, skippedNonSalesCallType = 0;
+  var skippedUnusableCallDate = 0, skippedNonNumericScore = 0, skippedNonSalesCallType = 0, skippedManualReview = 0;
+  var weekManualReviewFlags = [];
 
   rows.forEach(function (row) {
     // Real bug found live (26/08/2026 silent-failure audit): this was a
@@ -205,6 +206,34 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     var score = row[col['Call Quality Score'] - 1];
     if (typeof score !== 'number') { skippedNonNumericScore++; return; } // only rows Phase 2 has actually scored
 
+    // Real bug found live (03/09/2026, Tomás/Kris — comments on both April
+    // Stephens (Joana) and other manual-review-flagged calls): a call the
+    // judge itself flagged manual_review_recommended (e.g. "[BLANK_AUDIO]"
+    // repeated for the whole recording — nothing was ever actually heard)
+    // still carried a real-looking numeric score, and that score still fed
+    // every average and was still eligible to win "worst call of the week"
+    // — the email even said "do NOT hold this against [rep]" right next to
+    // a number that visibly WAS being held against them. "Can't be a 1/5 if
+    // you didn't even listen to it." Checked (and excluded) before the score
+    // ever reaches allScores — same treatment as a non-sales Call Type
+    // above, and deliberately independent of Call Date validity below (a
+    // garbage score is garbage whether or not we can place it in time).
+    // Collected into weekManualReviewFlags instead so it's still surfaced
+    // (per Kris: "flag the problem and ask for another recording"), just
+    // never as a score — only when a valid Call Date lets us confirm it's
+    // actually THIS week's flag to act on.
+    if (row[col['Manual Review Recommended'] - 1] === true) {
+      skippedManualReview++;
+      var flagDate = row[col['Call Date'] - 1];
+      if (flagDate instanceof Date && flagDate >= weekStart && flagDate < weekEnd) {
+        weekManualReviewFlags.push({
+          name: row[col['Prospect Name'] - 1] || '(unnamed)',
+          transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim()
+        });
+      }
+      return;
+    }
+
     allScores.push(score);
     var callDate = row[col['Call Date'] - 1];
     // Real bug found live (26/08/2026 silent-failure audit): a Call Date
@@ -214,6 +243,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     // counted in priorScores — removing it from this week's average AND
     // corrupting the "vs. your average before this week" baseline with a
     // call that should have been excluded from both, not miscounted into one.
+    // It still counts in allScores above (a genuinely scored call), just not
+    // in either date-dependent bucket below.
     if (!(callDate instanceof Date)) {
       skippedUnusableCallDate++;
       return;
@@ -229,12 +260,10 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
         score: score,
         feedbackSummary: String(row[col['AI Feedback Summary'] - 1] || '').trim(),
         // Kris's ask (01/09/2026): the worst-call section had no link to the
-        // actual transcript, and a manual-review-flagged call (e.g. a
-        // [BLANK_AUDIO] recording failure) only ever surfaced as prose
-        // buried inside the AI's own feedback paragraph — easy to miss and
-        // confusing to read as if it were real coaching feedback.
-        transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim(),
-        manualReviewRecommended: row[col['Manual Review Recommended'] - 1] === true
+        // actual transcript. A manual-review-flagged call never reaches this
+        // push at all any more (see the return above) — worstCall is always
+        // a real, gradable call now.
+        transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim()
       });
       // Real bug found live (26/08/2026 silent-failure audit): 'none' was
       // compared case-sensitively — a model-returned "None" (no enum
@@ -263,11 +292,11 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     }
   });
 
-  if (skippedUnusableCallDate || skippedNonNumericScore || skippedNonSalesCallType) {
+  if (skippedUnusableCallDate || skippedNonNumericScore || skippedNonSalesCallType || skippedManualReview) {
     log_('  computeRepWeeklyStats_(' + repName + '): skipped ' + skippedUnusableCallDate +
-      ' row(s) with an unusable Call Date, ' + skippedNonNumericScore + ' row(s) with a non-numeric score, and ' +
-      skippedNonSalesCallType + ' row(s) with a non-sales-call Call Type (QC/Discovery/etc.) ' +
-      '(excluded from all stats, not miscounted into any of them).');
+      ' row(s) with an unusable Call Date, ' + skippedNonNumericScore + ' row(s) with a non-numeric score, ' +
+      skippedNonSalesCallType + ' row(s) with a non-sales-call Call Type (QC/Discovery/etc.), and ' +
+      skippedManualReview + ' manual-review-flagged row(s) (excluded from all stats, not miscounted into any of them).');
   }
 
   // Lowest-scoring call of the week, if any — the task-level example the
@@ -290,7 +319,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     worstCall: worstCall,
     weekFailureModes: weekFailureModes,
     weekFlagMiss: weekFlagMiss,
-    weekMissingOutcomeDisposition: weekMissingOutcomeDisposition
+    weekMissingOutcomeDisposition: weekMissingOutcomeDisposition,
+    weekManualReviewFlags: weekManualReviewFlags
   };
 }
 
@@ -331,25 +361,33 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
 
   var priority = priorityToImprove_(stats);
   var worstCall = stats.worstCall;
-  // Kris's ask (01/09/2026): a manual-review-flagged call (e.g. a
-  // [BLANK_AUDIO] recording failure) used to only ever surface as prose
-  // buried inside the AI's own feedback paragraph — confusing to read as if
-  // it were real coaching feedback about something the rep actually did.
-  // Say it plainly, up front, instead.
-  var reviewFlagLine = worstCall && worstCall.manualReviewRecommended
-    ? '⚠️ Flagged for manual review — the AI could not reliably grade this call (see its own notes below for ' +
-      'why, e.g. a blank/failed recording). This should NOT be read as real coaching feedback until a human ' +
-      'has checked it.\n\n'
-    : '';
   var transcriptLine = worstCall
     ? 'Transcript: ' + (worstCall.transcriptUrl || '(no transcript on file)') + '\n\n'
     : '';
 
   var taskLevelSection = worstCall && worstCall.feedbackSummary
-    ? 'From ' + worstCall.name + ' this week:\n' + reviewFlagLine + worstCall.feedbackSummary + '\n\n' + transcriptLine
+    ? 'From ' + worstCall.name + ' this week:\n' + worstCall.feedbackSummary + '\n\n' + transcriptLine
     : (stats.weekCalls.length
       ? ''
       : 'No calls were scored this week.\n\n');
+
+  // Real bug found live (03/09/2026, Tomás/Kris — April Stephens, Joana):
+  // a manual-review-flagged call (e.g. "[BLANK_AUDIO]" for the whole
+  // recording — nothing was ever actually heard) used to still carry a
+  // real-looking score and could still win "worst call of the week," with
+  // only a warning line next to the very number that was still dragging
+  // every average down. "Can't be a 1/5 if you didn't even listen to it."
+  // computeRepWeeklyStats_ now excludes these from every score-based stat
+  // entirely — this is the one place they're still surfaced, as an action
+  // item (ask for a re-record), not a score.
+  var manualReviewSection = stats.weekManualReviewFlags.length
+    ? '⚠️ ' + stats.weekManualReviewFlags.length + ' recording(s) this week could not be graded at all — the AI ' +
+      'flagged them for manual review (e.g. blank/failed audio), so they carry NO score and are not counted in ' +
+      'any average below. Please ask for a new recording:\n' +
+      stats.weekManualReviewFlags.map(function (f) {
+        return '  • ' + f.name + (f.transcriptUrl ? ' — ' + f.transcriptUrl : ' (no transcript on file)');
+      }).join('\n') + '\n\n'
+    : '';
 
   var prioritySection = 'One thing to work on this week: ' +
     (priority || 'Not enough scored calls this week to identify a pattern.') + '\n\n';
@@ -388,6 +426,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
     'Weekly call scorecard for ' + weekLabel + ':\n\n' +
+    manualReviewSection +
     taskLevelSection +
     prioritySection +
     'Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.\n\n' +
@@ -411,18 +450,30 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     : '';
   var taskLevelHtml = worstCall && worstCall.feedbackSummary
     ? '<p><strong>From ' + escapeHtml_(worstCall.name) + ' this week:</strong></p>' +
-      (worstCall.manualReviewRecommended
-        ? '<p style="background:#fff4e5;border-left:4px solid #e0a200;padding:8px 12px;margin:0 0 8px 0;">' +
-          '⚠️ <strong>Flagged for manual review</strong> — the AI could not reliably grade this call (see its ' +
-          'own notes below for why, e.g. a blank/failed recording). This should NOT be read as real coaching ' +
-          'feedback until a human has checked it.</p>'
-        : '') +
       '<p>' + quotedFeedback + '</p>' +
       '<p>' + (worstCall.transcriptUrl
         ? '<strong>Transcript:</strong> <a href="' + escapeHtml_(worstCall.transcriptUrl) + '">' +
           escapeHtml_(worstCall.transcriptUrl) + '</a>'
         : '<strong>Transcript:</strong> <i>(no transcript on file)</i>') + '</p>'
     : (stats.weekCalls.length ? '' : '<p>No calls were scored this week.</p>');
+
+  // Same manual-review action item as manualReviewSection above, styled
+  // like the compliance-nudge/handoff-brief callouts elsewhere in this
+  // codebase — a real recording still needs to happen, so it's shown as an
+  // action item, not folded into the coaching quote it can no longer be.
+  var manualReviewHtml = stats.weekManualReviewFlags.length
+    ? '<p style="background:#fff4e5;border-left:4px solid #e0a200;padding:8px 12px;margin:0 0 12px 0;">' +
+      '⚠️ <strong>' + stats.weekManualReviewFlags.length + ' recording(s) this week could not be graded at all</strong> ' +
+      '— flagged for manual review (e.g. blank/failed audio), so they carry NO score and are not counted in any ' +
+      'average below. Please ask for a new recording:</p>' +
+      '<ul style="margin:0 0 12px 0;padding-left:20px;">' +
+      stats.weekManualReviewFlags.map(function (f) {
+        return '<li>' + escapeHtml_(f.name) + (f.transcriptUrl
+          ? ' — <a href="' + escapeHtml_(f.transcriptUrl) + '">' + escapeHtml_(f.transcriptUrl) + '</a>'
+          : ' (no transcript on file)') + '</li>';
+      }).join('') +
+      '</ul>'
+    : '';
 
   var thisWeekHtml = stats.weekCalls.length
     ? '<p>' + stats.weekCalls.length + ' call(s) scored, average <strong>' + stats.weeklyAvg.toFixed(1) + '/5</strong>' +
@@ -436,6 +487,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
     '<p>Hi ' + escapeHtml_(repCfg.name) + ',</p>' +
     '<p>Weekly call scorecard for ' + escapeHtml_(weekLabel) + ':</p>' +
+    manualReviewHtml +
     taskLevelHtml +
     '<p><strong>One thing to work on this week:</strong> ' +
     escapeHtml_(priority || 'Not enough scored calls this week to identify a pattern.') + '</p>' +
@@ -711,9 +763,9 @@ function buildWeeklyTrainingSummaryContent_(repName, stats, weekLabel) {
       name: worstCall.name,
       score: worstCall.score,
       feedbackSummary: worstCall.feedbackSummary || '',
-      transcriptUrl: worstCall.transcriptUrl || '',
-      manualReviewRecommended: !!worstCall.manualReviewRecommended
+      transcriptUrl: worstCall.transcriptUrl || ''
     } : null,
+    manualReviewFlags: stats.weekManualReviewFlags,
     priority: priorityToImprove_(stats),
     weekCalls: stats.weekCalls.map(function (c) { return { name: c.name, score: c.score }; }),
     weeklyAvg: stats.weeklyAvg,
@@ -741,6 +793,31 @@ function renderWeeklyTrainingSummaryDoc_(doc, content) {
   body.appendParagraph(content.repName + ' — Weekly Training Summary').setHeading(DocumentApp.ParagraphHeading.TITLE);
   body.appendParagraph('Week of ' + content.weekLabel + ' — for Tomás, Tuesday review call').setItalic(true);
 
+  // Real bug found live (03/09/2026, Tomás/Kris — April Stephens): a
+  // manual-review-flagged call (e.g. "[BLANK_AUDIO]" for the whole
+  // recording) used to be able to win "Worst call this week" and show a
+  // real-looking score right next to a "don't hold this against them"
+  // warning. computeRepWeeklyStats_ now excludes these from every score
+  // entirely — this is the one place they're still surfaced, as an action
+  // item, not a score. Rendered before the hasCalls check below, since a
+  // week can have manual-review flags with zero actually-gradable calls.
+  if (content.manualReviewFlags && content.manualReviewFlags.length) {
+    var mrHeader = body.appendParagraph('⚠️ ' + content.manualReviewFlags.length +
+      ' recording(s) this week could not be graded at all');
+    mrHeader.setBackgroundColor('#fff4e5');
+    mrHeader.editAsText().setForegroundColor('#7a5b00').setBold(true);
+    body.appendParagraph('Flagged for manual review (e.g. blank/failed audio) — no score, not counted in any ' +
+      'average below. Please ask for a new recording:');
+    content.manualReviewFlags.forEach(function (f) {
+      var prefix = '• ' + f.name + ' — ';
+      var fullText = prefix + (f.transcriptUrl || '(no transcript on file)');
+      var itemPara = body.appendParagraph(fullText);
+      if (f.transcriptUrl) {
+        itemPara.editAsText().setLinkUrl(prefix.length, fullText.length - 1, f.transcriptUrl);
+      }
+    });
+  }
+
   if (!content.hasCalls) {
     body.appendParagraph('No calls were scored this week.');
     return;
@@ -750,14 +827,6 @@ function renderWeeklyTrainingSummaryDoc_(doc, content) {
     var wc = content.worstCall;
     body.appendParagraph('Worst call this week — ' + wc.name + ' (' + wc.score + '/5)')
       .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-
-    if (wc.manualReviewRecommended) {
-      var flagPara = body.appendParagraph('⚠️ Flagged for manual review — do NOT hold this against ' +
-        content.repName + '. The AI could not reliably grade this call (see the notes below for why, e.g. a ' +
-        'blank/failed recording).');
-      flagPara.setBackgroundColor('#fff4e5');
-      flagPara.editAsText().setForegroundColor('#7a5b00').setBold(true);
-    }
 
     var feedbackPara = body.appendParagraph(wc.feedbackSummary);
     italicizeQuotesInDocParagraph_(feedbackPara, wc.feedbackSummary);

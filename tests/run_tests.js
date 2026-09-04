@@ -878,7 +878,7 @@ test('computeRepWeeklyStats_ identifies the week\'s lowest-scoring call as worst
   assert.ok(stats.worstCall.feedbackSummary.indexOf('isolating') !== -1);
 });
 
-test('computeRepWeeklyStats_ carries transcriptUrl and manualReviewRecommended into each week call (Kris\'s ask 01/09/2026: no way to check the actual transcript, and a manual-review-flagged call read as if it were real coaching feedback)', () => {
+test('computeRepWeeklyStats_ carries transcriptUrl into each week call', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const weekStart = bizDate(gas, 2026, 8, 10);
   const weekEnd = bizDate(gas, 2026, 8, 17);
@@ -887,20 +887,37 @@ test('computeRepWeeklyStats_ carries transcriptUrl and manualReviewRecommended i
       rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4,
       feedbackSummary: 'Fine call.', transcriptUrl: 'https://docs.google.com/document/d/abc/edit',
       manualReviewRecommended: false
-    }),
-    scorecardRow(gas, {
-      rep: 'Sean', name: 'B', date: bizDate(gas, 2026, 8, 12), score: 1,
-      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]".', transcriptUrl: 'https://docs.google.com/document/d/xyz/edit',
-      manualReviewRecommended: true
     })
   ];
   const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
-  assert.equal(stats.worstCall.name, 'B');
-  assert.equal(stats.worstCall.transcriptUrl, 'https://docs.google.com/document/d/xyz/edit');
-  assert.equal(stats.worstCall.manualReviewRecommended, true);
   const callA = stats.weekCalls.filter((c) => c.name === 'A')[0];
   assert.equal(callA.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
-  assert.equal(callA.manualReviewRecommended, false);
+});
+
+test('computeRepWeeklyStats_ excludes a manual-review-flagged call from every score-based stat, real case: April Stephens (Joana), "[BLANK_AUDIO]" for the whole recording scored 1/5 and won "worst call of the week" despite nothing ever being heard (Tomás\'s comment, 03/09/2026: "obvious mistake here, it cant be a 1/5 if it didn\'t even listen to it")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 24);
+  const weekEnd = bizDate(gas, 2026, 8, 31);
+  const rows = [
+    scorecardRow(gas, {
+      rep: 'Joana', name: 'April Stephens', date: bizDate(gas, 2026, 8, 26), score: 1,
+      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]".',
+      transcriptUrl: 'https://docs.google.com/document/d/xyz/edit', manualReviewRecommended: true
+    }),
+    scorecardRow(gas, {
+      rep: 'Joana', name: 'A Real Call', date: bizDate(gas, 2026, 8, 26), score: 4, manualReviewRecommended: false
+    })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Joana', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+
+  assert.equal(stats.weekCalls.length, 1, 'the manual-review row must never enter weekCalls at all');
+  assert.equal(stats.weekCalls[0].name, 'A Real Call');
+  assert.equal(stats.weeklyAvg, 4, 'the blank-audio "1/5" must not drag the average down');
+  assert.equal(stats.worstCall.name, 'A Real Call', 'a manual-review-flagged call must never win "worst call of the week"');
+  assert.equal(stats.historicCount, 1, 'must not enter the historic average either');
+  assert.equal(stats.weekManualReviewFlags.length, 1);
+  assert.equal(stats.weekManualReviewFlags[0].name, 'April Stephens');
+  assert.equal(stats.weekManualReviewFlags[0].transcriptUrl, 'https://docs.google.com/document/d/xyz/edit');
 });
 
 test('isSalesCallTypeForScorecard_ excludes QC and Discovery specifically, defaults blank/unrecognized to true', () => {
@@ -964,7 +981,8 @@ test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushe
     worstCall: { name: 'Jane Doe', score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' },
     weekFailureModes: ['objections_missed'],
     weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
-    weekMissingOutcomeDisposition: 1
+    weekMissingOutcomeDisposition: 1,
+    weekManualReviewFlags: []
   };
   const repCfg = { name: 'Sean', email: 'sean@example.com' };
   // buildWeeklyScorecardEmail_ calls Utilities.formatDate purely to render the
@@ -1003,12 +1021,12 @@ test('buildWeeklyScorecardEmail_ now includes a styled htmlBody with bold labels
     worstCall: {
       name: 'Jane Doe', score: 2,
       feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.',
-      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit',
-      manualReviewRecommended: false
+      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit'
     },
     weekFailureModes: ['objections_missed'],
     weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
-    weekMissingOutcomeDisposition: 1
+    weekMissingOutcomeDisposition: 1,
+    weekManualReviewFlags: []
   };
   const repCfg = { name: 'Sean', email: 'sean@example.com' };
   gas.Utilities = {
@@ -1031,18 +1049,14 @@ test('buildWeeklyScorecardEmail_ now includes a styled htmlBody with bold labels
     'every this-week call must be listed, not just the worst one');
 });
 
-test('buildWeeklyScorecardEmail_ clearly flags a manual-review call instead of letting it read as real coaching feedback (Kris\'s real complaint: a [BLANK_AUDIO] recording failure was buried in prose with no indication the AI couldn\'t actually grade it)', () => {
+test('buildWeeklyScorecardEmail_ surfaces a manual-review-flagged call as an action item (ask for a new recording), never as a score (Kris\'s real complaint, 03/09/2026, April Stephens: a [BLANK_AUDIO] recording failure carried a real-looking "1/5" and could still win "worst call" — computeRepWeeklyStats_ now keeps it out of stats.weekCalls/worstCall entirely; this only ever sees it via weekManualReviewFlags)', () => {
   const stats = {
-    weekCalls: [{ name: 'April Stephens', score: 1 }],
-    weeklyAvg: 1, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    weekCalls: [{ name: 'A Real Call', score: 4 }],
+    weeklyAvg: 4, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
     rolling4WeekAvg: 3, rolling4WeekCount: 5,
-    worstCall: {
-      name: 'April Stephens', score: 1,
-      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]" repeated for the entire call.',
-      transcriptUrl: '',
-      manualReviewRecommended: true
-    },
-    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0
+    worstCall: { name: 'A Real Call', score: 4, feedbackSummary: 'Solid call overall.' },
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0,
+    weekManualReviewFlags: [{ name: 'April Stephens', transcriptUrl: '' }]
   };
   const repCfg = { name: 'Joana', email: 'joana@example.com' };
   gas.Utilities = {
@@ -1054,10 +1068,13 @@ test('buildWeeklyScorecardEmail_ clearly flags a manual-review call instead of l
   };
   const email = gas.buildWeeklyScorecardEmail_(repCfg, stats, new gas.Date(2026, 7, 24), new gas.Date(2026, 7, 31), 'UTC');
 
-  assert.match(email.body, /Flagged for manual review/, 'plain-text body must say clearly that the AI could not grade this, not bury it in the feedback prose');
-  assert.match(email.htmlBody, /Flagged for manual review/, 'htmlBody must say the same thing clearly');
+  assert.match(email.body, /flagged (them )?for manual review/i, 'plain-text body must say clearly the AI could not grade this');
+  assert.match(email.htmlBody, /flagged (them )?for manual review/i, 'htmlBody must say the same thing clearly');
+  assert.match(email.body, /April Stephens/, 'the flagged call must be named so someone can act on it');
   assert.match(email.body, /no transcript on file/, 'a missing transcript must be stated plainly, not silently omitted');
   assert.match(email.htmlBody, /no transcript on file/);
+  assert.ok(email.body.indexOf('4/5') !== -1, 'the real scored call must still show its real score');
+  assert.equal(email.body.indexOf('1/5'), -1, 'a manual-review-flagged call must never show a numeric score at all');
 });
 
 // --- Task: Weekly Training Summary docs (01/09/2026) ---
@@ -1077,27 +1094,28 @@ test('findQuoteRanges_ finds every "..." quoted excerpt as inclusive-end charact
   assert.equal(gas.findQuoteRanges_('').length, 0);
 });
 
-test('buildWeeklyTrainingSummaryContent_ carries the manual-review flag and transcript link through, same as buildWeeklyScorecardEmail_\'s own stats', () => {
+test('buildWeeklyTrainingSummaryContent_ carries manualReviewFlags through (separately from worstCall, which can never be manual-review-flagged any more) and the worst call\'s transcript link', () => {
   const stats = {
-    weekCalls: [{ name: 'April Stephens', score: 1 }, { name: 'Dave Gove', score: 4 }],
-    weeklyAvg: 2.5, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    weekCalls: [{ name: 'Dave Gove', score: 4 }],
+    weeklyAvg: 4, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
     rolling4WeekAvg: 3, rolling4WeekCount: 5,
     worstCall: {
-      name: 'April Stephens', score: 1,
-      feedbackSummary: 'The only thing on this record is "[BLANK_AUDIO]" repeated for the entire call.',
-      transcriptUrl: 'https://docs.google.com/document/d/abc/edit',
-      manualReviewRecommended: true
+      name: 'Dave Gove', score: 4,
+      feedbackSummary: 'Solid call overall.',
+      transcriptUrl: 'https://docs.google.com/document/d/abc/edit'
     },
-    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 2
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 2,
+    weekManualReviewFlags: [{ name: 'April Stephens', transcriptUrl: 'https://docs.google.com/document/d/xyz/edit' }]
   };
   const content = gas.buildWeeklyTrainingSummaryContent_('Joana', stats, '24/08–30/08/2026');
   assert.equal(content.repName, 'Joana');
   assert.equal(content.hasCalls, true);
-  assert.equal(content.worstCall.name, 'April Stephens');
-  assert.equal(content.worstCall.manualReviewRecommended, true);
+  assert.equal(content.worstCall.name, 'Dave Gove');
   assert.equal(content.worstCall.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
-  assert.equal(content.weekCalls.length, 2);
+  assert.equal(content.weekCalls.length, 1);
   assert.equal(content.weekMissingOutcomeDisposition, 2);
+  assert.equal(content.manualReviewFlags.length, 1);
+  assert.equal(content.manualReviewFlags[0].name, 'April Stephens');
   assert.ok(content.priority, 'expected a priority string, even a fallback one');
 });
 
