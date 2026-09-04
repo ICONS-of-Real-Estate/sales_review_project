@@ -1081,13 +1081,22 @@ function buildComplianceEmail_(repCfg, backlog, tz, sheetGid) {
     );
   }
 
+  // Real bug found live (04/09/2026, Tomás): even with the right #gid= (the
+  // 01/09/2026 fix above), a bare "Tracker: <url>" gives no way to tell
+  // whether the link is even pointing at the right tab without clicking it —
+  // Tomás opened the shared multi-tab spreadsheet by hand (not via this
+  // link) and landed on Bens' tab by default, and had no way from the email
+  // alone to confirm this rep's actual link was correct. Naming the tab
+  // right next to the link costs nothing and answers that on sight.
+  var trackerLabel = 'Tracker (' + (repCfg.sheetName || 'Sales Call Log') + ' tab)';
+
   var body =
     'Hi ' + repCfg.name + ',\n\n' +
     'These ' + n + ' sales/QC call(s) still need attention in your tracker — each one shows the date it ' +
     'actually happened, so you can see how long it\'s been sitting:\n\n' +
     plainSections.join('\n\n') + '\n\n' +
     'This list carries over every day until each item is resolved, it does not reset.\n\n' +
-    'Tracker: ' + trackerUrl + '\n\n' +
+    trackerLabel + ': ' + trackerUrl + '\n\n' +
     'Reply to this email once you\'ve updated the tracker, so Kris/Tomás know it\'s done.\n\n' +
     '— This is an automated check. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
@@ -1098,7 +1107,7 @@ function buildComplianceEmail_(repCfg, backlog, tz, sheetGid) {
     'actually happened, so you can see how long it\'s been sitting:</p>' +
     htmlSections.join('') +
     '<p>This list carries over every day until each item is resolved, it does not reset.</p>' +
-    '<p><b>Tracker:</b> <a href="' + trackerUrl + '">' + trackerUrl + '</a></p>' +
+    '<p><b>' + trackerLabel + ':</b> <a href="' + trackerUrl + '">' + trackerUrl + '</a></p>' +
     '<p><b>Reply to this email once you\'ve updated the tracker</b>, so Kris/Tomás know it\'s done.</p>' +
     '<p><i>— This is an automated check. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.</i></p>';

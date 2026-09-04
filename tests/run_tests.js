@@ -5789,3 +5789,24 @@ test('STANDING_AUTOMATION_HANDLERS_ reflects the 04/09/2026 consolidation: old p
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runAllOngoingScoringPasses_') !== -1);
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runBensPodcastSync_') !== -1);
 });
+
+test('buildComplianceEmail_ names the tab right next to the Tracker link, not just a bare "Tracker:" (real confusion found live 04/09/2026: Tomás opened the shared multi-tab spreadsheet by hand, landed on Bens\' tab by default, and had no way from the email alone to tell if the link itself was pointing at the right tab)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const backlog = [
+    { eventId: 'evt-1', title: 'QC / Nicole Freed', prospectGuess: 'Nicole Freed', callDateLabel: '20/08/2026', time: '09:00', firstFlaggedAt: '2026-08-20T22:00:00.000Z' }
+  ];
+
+  const repCfg = { name: 'Sean', email: 'sean@iconsofrealestate.com', spreadsheetId: 'SHEET_ID', sheetName: 'Sales Call Log' };
+  const email = gas.buildComplianceEmail_(repCfg, backlog, gas.CONFIG.BUSINESS_TIMEZONE, 12345);
+  assert.ok(email.body.indexOf('Tracker (Sales Call Log tab): https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=12345') !== -1,
+    'plain body must name the tab right next to the link');
+  assert.ok(email.htmlBody.indexOf('<b>Tracker (Sales Call Log tab):</b>') !== -1,
+    'html body must name the tab right next to the link');
+
+  // repCfg.sheetName omitted must not print "undefined" -- falls back to the
+  // real default tab name every current rep actually uses.
+  const repCfgNoSheetName = { name: 'Joana', email: 'joana@iconsofrealestate.com', spreadsheetId: 'SHEET_ID' };
+  const emailNoSheetName = gas.buildComplianceEmail_(repCfgNoSheetName, backlog, gas.CONFIG.BUSINESS_TIMEZONE, 12345);
+  assert.ok(emailNoSheetName.body.indexOf('Tracker (Sales Call Log tab):') !== -1);
+  assert.ok(emailNoSheetName.body.indexOf('undefined') === -1);
+});
