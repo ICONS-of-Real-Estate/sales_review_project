@@ -170,7 +170,11 @@ function getWeekBounds_(now, tz) {
  */
 function isSalesCallTypeForScorecard_(callType) {
   var t = String(callType || '').trim().toLowerCase();
-  return t !== 'qc' && t !== 'discovery';
+  // 'icons 100 recording' added 04/09/2026 (Phase11_BensPodcastSync.gs) —
+  // a synced podcast-recording row is Bens's own booking/recording step,
+  // not a sales call, and per Tomas (email 04/09/2026) has no outcome for
+  // him to be scored against — same reasoning as QC/Discovery above.
+  return t !== 'qc' && t !== 'discovery' && t !== 'icons 100 recording';
 }
 
 /**

@@ -135,13 +135,19 @@ var CONFIG = {
       calendarId: 'bens@iconsofrealestate.com', // calendar must be shared with the account running this script
       spreadsheetId: '1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4',
       sheetName: 'Sales Call Log',
-      // Header names as they appear in THIS rep's sheet. Brief §2 target
-      // names are listed first; current real headers as fallbacks.
+      // Fixed 04/09/2026 (Phase11_BensPodcastSync.gs) — this used to list
+      // fallback headers from HIS OWN "Icons 100 Series Podcast Tracker" tab
+      // ('Recording Done', 'Recording Date', 'Booking Date', 'Name') even
+      // though sheetName points at "Sales Call Log", which doesn't have any
+      // of those columns at all (see CLAUDE.md "Who does what — never guess
+      // this again" for the history). Now that Phase 11 actually syncs his
+      // tracker rows INTO "Sales Call Log", this rep entry can just use the
+      // real "Sales Call Log" headers like Joana/Sean below.
       columns: {
-        prospectName: ['Prospect Name', 'Name'],
-        prospectEmail: ['Prospect Email', 'Email'],
-        callDate: ['Call Date', 'First Call Date', 'Recording Date', 'Booking Date'],
-        outcomeLogged: ['Outcome Logged', 'Call Taken', 'Recording Done'],
+        prospectName: ['Prospect Name'],
+        prospectEmail: ['Prospect Email'],
+        callDate: ['Call Date'],
+        outcomeLogged: ['Outcome Logged'],
         outcomeDisposition: ['Outcome Disposition'],
         callType: ['Call Type'],
         calendarEventId: ['Calendar Event ID'],
@@ -1487,7 +1493,7 @@ var SALES_CALL_LOG_HEADERS = [
   'Source',                 // C
   'Call Date',              // D  (DD/MM/YYYY)
   'Rep',                    // E  (dropdown: Bens/Joana/Sean)
-  'Call Type',              // F  (dropdown: QC/Sales Call/Discovery)
+  'Call Type',              // F  (dropdown: QC/Sales Call/Discovery/Icons 100 Recording)
   'Outcome Logged',         // G  (checkbox)
   'Outcome Disposition',    // H  (dropdown: Sold/Not Sold/Follow-up/No-show)
   'Calendar Event ID',      // I  (join key to Calendar + Riverside title)
@@ -1655,7 +1661,7 @@ function setupSalesCallLog() {
 
   // Data validation: Rep (E), Call Type (F), Outcome Disposition (H), Match Method (L)
   setDropdown_(sheet, 5, ['Bens', 'Joana', 'Sean']);
-  setDropdown_(sheet, 6, ['QC', 'Sales Call', 'Discovery']);
+  setDropdown_(sheet, 6, ['QC', 'Sales Call', 'Discovery', 'Icons 100 Recording']);
   setDropdown_(sheet, 8, ['Sold', 'Not Sold', 'Follow-up', 'No-show']);
   setDropdown_(sheet, 12, ['exact_key', 'fallback_heuristic', 'no_match']);
   setDropdown_(sheet, SALES_CALL_LOG_HEADERS.indexOf('Reviewed By') + 1, ['Kris', 'Tomás']);

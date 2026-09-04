@@ -5620,3 +5620,95 @@ test('buildConversionFunnelEmail_ renders every rep and the Tomás section, with
   assert.ok(email.body.indexOf('3') !== -1 && email.body.indexOf('last 30d') !== -1 && email.body.indexOf('last 90d') !== -1);
   assert.ok(email.body.indexOf('Bens specifically') !== -1, 'the incomplete-data caveat for Bens must be present');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 11 — Bens Podcast Tracker -> Sales Call Log sync
+// ---------------------------------------------------------------------------
+
+function bensTrackerCol(gas) {
+  const col = {};
+  gas.BENS_PODCAST_TRACKER_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  return col;
+}
+
+function bensTrackerRow(gas, overrides) {
+  const row = new Array(gas.BENS_PODCAST_TRACKER_HEADERS.length).fill('');
+  Object.keys(overrides).forEach((h) => { row[gas.BENS_PODCAST_TRACKER_HEADERS.indexOf(h)] = overrides[h]; });
+  return row;
+}
+
+function bensLogCol(gas) {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  return col;
+}
+
+test('computeBensPodcastSyncPlan_ creates a Sales Call Log row for a tracker row with Recording Done checked and no existing synced row', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Joey Lamielle', Email: 'joey@example.com', Source: 'Referral', 'Recording Date': '26/08/2026', 'Recording Done': true })
+  ];
+  const lCol = bensLogCol(gas);
+  const plan = gas.computeBensPodcastSyncPlan_(trackerRows, tCol, [], lCol);
+  assert.equal(plan.toCreate.length, 1);
+  assert.equal(plan.toCreate[0].prospectName, 'Joey Lamielle');
+  assert.equal(plan.toCreate[0].prospectEmail, 'joey@example.com');
+  assert.equal(plan.toCreate[0].callDate, '26/08/2026');
+  assert.equal(plan.stats.notRecordingDone, 0);
+});
+
+test('computeBensPodcastSyncPlan_ skips a tracker row whose Recording Done is not yet checked, rather than syncing it early', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Darlene Teeter', 'Recording Date': '31/08/2026', 'Recording Done': false })
+  ];
+  const lCol = bensLogCol(gas);
+  const plan = gas.computeBensPodcastSyncPlan_(trackerRows, tCol, [], lCol);
+  assert.equal(plan.toCreate.length, 0);
+  assert.equal(plan.stats.notRecordingDone, 1);
+});
+
+test('computeBensPodcastSyncPlan_ does NOT create a duplicate row when a matching Bens/"Icons 100 Recording" row already exists in Sales Call Log', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Mark Ryan', 'Recording Date': '31/08/2026', 'Recording Done': true })
+  ];
+  const lCol = bensLogCol(gas);
+  const existingLogRows = [
+    gas.SALES_CALL_LOG_HEADERS.map(() => '')
+  ];
+  existingLogRows[0][lCol['Prospect Name'] - 1] = 'Mark Ryan';
+  existingLogRows[0][lCol['Rep'] - 1] = 'Bens';
+  existingLogRows[0][lCol['Call Type'] - 1] = 'Icons 100 Recording';
+  const plan = gas.computeBensPodcastSyncPlan_(trackerRows, tCol, existingLogRows, lCol);
+  assert.equal(plan.toCreate.length, 0);
+  assert.equal(plan.stats.alreadySynced, 1);
+});
+
+test('computeBensPodcastSyncPlan_ falls back to Booking Date when Recording Date is blank', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Tammy DeWolfe', 'Booking Date': '01/09/2026', 'Recording Date': '', 'Recording Done': true })
+  ];
+  const lCol = bensLogCol(gas);
+  const plan = gas.computeBensPodcastSyncPlan_(trackerRows, tCol, [], lCol);
+  assert.equal(plan.toCreate.length, 1);
+  assert.equal(plan.toCreate[0].callDate, '01/09/2026');
+});
+
+test('computeBensPodcastSyncPlan_ skips a tracker row with Recording Done checked but no Name, rather than creating an unidentifiable row', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: '', 'Recording Date': '01/09/2026', 'Recording Done': true })
+  ];
+  const lCol = bensLogCol(gas);
+  const plan = gas.computeBensPodcastSyncPlan_(trackerRows, tCol, [], lCol);
+  assert.equal(plan.toCreate.length, 0);
+  assert.equal(plan.stats.missingName, 1);
+});
+
+test('isSalesCallTypeForScorecard_ excludes "Icons 100 Recording" rows from sales-coaching stats, same as QC/Discovery (Tomas: outcome is not Bens\'s to be scored on)', () => {
+  assert.equal(gas.isSalesCallTypeForScorecard_('Icons 100 Recording'), false);
+  assert.equal(gas.isSalesCallTypeForScorecard_('icons 100 recording'), false);
+  assert.equal(gas.isSalesCallTypeForScorecard_('Sales Call'), true);
+});
