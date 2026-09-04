@@ -920,6 +920,38 @@ test('computeRepWeeklyStats_ excludes a manual-review-flagged call from every sc
   assert.equal(stats.weekManualReviewFlags[0].transcriptUrl, 'https://docs.google.com/document/d/xyz/edit');
 });
 
+test('callScoreIsUnusableForStats_ flags only the parse-failure sentinel and blank-audio patterns, nothing else', () => {
+  assert.equal(gas.callScoreIsUnusableForStats_('Automated scoring failed twice to return parseable JSON; needs manual review.'), true);
+  assert.equal(gas.callScoreIsUnusableForStats_('The only thing on this record is "[BLANK_AUDIO]" repeated for the entire call.'), true);
+  assert.equal(gas.callScoreIsUnusableForStats_('[blank_audio]'), true, 'case-insensitive');
+  assert.equal(gas.callScoreIsUnusableForStats_('Sean asked for the money directly and closed the deal.'), false);
+  assert.equal(gas.callScoreIsUnusableForStats_(''), false);
+  assert.equal(gas.callScoreIsUnusableForStats_(null), false);
+});
+
+test('computeRepWeeklyStats_ does NOT exclude a real, well-graded call just because it was matched fallback_heuristic (Manual Review Recommended forced true, brief.txt §6) — the second, bigger bug found live 04/09/2026 fixing the first one: 467/473 rows in the real sheet carry that flag, and only ~96 are genuinely garbage; the other ~371 (e.g. a real 5/5 close with real quotes) were being wiped from the ENTIRE Weekly Scorecard history, not filtered clean', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 24);
+  const weekEnd = bizDate(gas, 2026, 8, 31);
+  const rows = [
+    // Real case: Meriam Hansen, Sean, 5/5, a genuine detailed close -- fallback_heuristic-matched
+    // (Manual Review Recommended forced true per brief.txt §6), NOT a parse failure or blank audio.
+    scorecardRow(gas, {
+      rep: 'Sean', name: 'Meriam Hansen', date: bizDate(gas, 2026, 8, 26), score: 5,
+      feedbackSummary: 'Strong close: Sean asked for the money directly -- "if you can make a decision today, I will give you the 500 bucks off" -- then processed the card live.',
+      manualReviewRecommended: true
+    })
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+
+  assert.equal(stats.weekCalls.length, 1, 'a real fallback_heuristic-matched score must still count');
+  assert.equal(stats.weekCalls[0].name, 'Meriam Hansen');
+  assert.equal(stats.weeklyAvg, 5);
+  assert.equal(stats.worstCall.name, 'Meriam Hansen', 'a real 5/5 must be eligible to be the week\'s (only, best) call');
+  assert.equal(stats.historicCount, 1);
+  assert.equal(stats.weekManualReviewFlags.length, 0, 'must NOT be surfaced as a "needs a new recording" action item -- nothing is wrong with it');
+});
+
 test('isSalesCallTypeForScorecard_ excludes QC and Discovery specifically, defaults blank/unrecognized to true', () => {
   assert.equal(gas.isSalesCallTypeForScorecard_('QC'), false);
   assert.equal(gas.isSalesCallTypeForScorecard_('qc'), false, 'case-insensitive');

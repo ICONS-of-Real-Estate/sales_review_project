@@ -77,6 +77,25 @@ function isExplicitlyFalse_(v) {
   return s === 'false' || s === 'no';
 }
 
+/**
+ * True only for the two ways a "Call Quality Score" is actually fake, not
+ * just fallback-matched: every judge variant's own hardcoded parse-failure
+ * sentinel ("Automated scoring failed twice to return parseable JSON..." —
+ * see the identical string across all 6 scoreTranscriptByVariant_ branches,
+ * Phase2_CallScoring.gs) always carries call_quality_score: 1 with nothing
+ * real behind it, and a "[BLANK_AUDIO]" transcript means the judge graded
+ * silence, not a call. Deliberately does NOT key off "Manual Review
+ * Recommended" — see computeRepWeeklyStats_'s own comment on why that flag
+ * means something else entirely (match confidence, not score validity) for
+ * the ~78% of this sheet matched via fallback_heuristic.
+ */
+function callScoreIsUnusableForStats_(feedbackSummary) {
+  var t = String(feedbackSummary || '');
+  if (t.indexOf('failed twice to return parseable JSON') !== -1) return true;
+  if (/\[BLANK_AUDIO\]/i.test(t)) return true;
+  return false;
+}
+
 /** Safe mean; null (not NaN/0) when the array is empty so callers can tell "no data" from "zero". */
 function mean_(arr) {
   if (!arr.length) return null;
@@ -206,23 +225,28 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     var score = row[col['Call Quality Score'] - 1];
     if (typeof score !== 'number') { skippedNonNumericScore++; return; } // only rows Phase 2 has actually scored
 
-    // Real bug found live (03/09/2026, Tomás/Kris — comments on both April
-    // Stephens (Joana) and other manual-review-flagged calls): a call the
-    // judge itself flagged manual_review_recommended (e.g. "[BLANK_AUDIO]"
-    // repeated for the whole recording — nothing was ever actually heard)
-    // still carried a real-looking numeric score, and that score still fed
-    // every average and was still eligible to win "worst call of the week"
-    // — the email even said "do NOT hold this against [rep]" right next to
-    // a number that visibly WAS being held against them. "Can't be a 1/5 if
-    // you didn't even listen to it." Checked (and excluded) before the score
-    // ever reaches allScores — same treatment as a non-sales Call Type
-    // above, and deliberately independent of Call Date validity below (a
-    // garbage score is garbage whether or not we can place it in time).
-    // Collected into weekManualReviewFlags instead so it's still surfaced
-    // (per Kris: "flag the problem and ask for another recording"), just
-    // never as a score — only when a valid Call Date lets us confirm it's
-    // actually THIS week's flag to act on.
-    if (row[col['Manual Review Recommended'] - 1] === true) {
+    // Real bug found live (03/09/2026, Tomás/Kris — April Stephens (Joana)):
+    // a call the judge itself flagged (e.g. "[BLANK_AUDIO]" repeated for the
+    // whole recording — nothing was ever actually heard) still carried a
+    // real-looking numeric score, and that score still fed every average
+    // and was still eligible to win "worst call of the week." "Can't be a
+    // 1/5 if you didn't even listen to it."
+    //
+    // SECOND, BIGGER bug found the same day fixing the first one: this used
+    // to key off the raw "Manual Review Recommended" column, which is force-
+    // set true for EVERY row matched via 'fallback_heuristic' (Match Method)
+    // per brief.txt §6 — a note to double-check the NAME/DATE MATCH, not a
+    // signal the score itself is fake. 467 of 473 rows in the live sheet
+    // carry that flag; only ~96 of those are real parse-failure/blank-audio
+    // garbage, the other ~371 (Meriam Hansen 5/5, real quotes, real
+    // feedback) are perfectly legitimate scores that were being wiped from
+    // the Weekly Scorecard's entire history, not just filtered clean.
+    // callScoreIsUnusableForStats_ replaces that with a precise check for
+    // the two ways a score is ACTUALLY garbage (JSON parse failure, blank/
+    // silent recording) — deliberately narrower than the AI's own manual-
+    // review flag, which the calibration/weekly-calibration functions below
+    // still read for its real purpose (match-confidence QA), untouched here.
+    if (callScoreIsUnusableForStats_(row[col['AI Feedback Summary'] - 1])) {
       skippedManualReview++;
       var flagDate = row[col['Call Date'] - 1];
       if (flagDate instanceof Date && flagDate >= weekStart && flagDate < weekEnd) {
@@ -296,7 +320,7 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
     log_('  computeRepWeeklyStats_(' + repName + '): skipped ' + skippedUnusableCallDate +
       ' row(s) with an unusable Call Date, ' + skippedNonNumericScore + ' row(s) with a non-numeric score, ' +
       skippedNonSalesCallType + ' row(s) with a non-sales-call Call Type (QC/Discovery/etc.), and ' +
-      skippedManualReview + ' manual-review-flagged row(s) (excluded from all stats, not miscounted into any of them).');
+      skippedManualReview + ' row(s) with a genuinely unusable score (parse failure/blank audio — not just a fallback-matched row, see this function\'s own comment) (all excluded from stats, not miscounted into any of them).');
   }
 
   // Lowest-scoring call of the week, if any — the task-level example the
