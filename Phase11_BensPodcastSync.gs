@@ -149,6 +149,25 @@ function computeBensPodcastSyncPlan_(trackerRows, trackerCol, existingLogRows, l
   return { toCreate: toCreate, stats: stats };
 }
 
+/**
+ * Log-display only — never touches what actually gets written to the
+ * sheet. A raw Date's default toString() (what plain string concatenation
+ * produces) renders in the Apps Script PROJECT's own default timezone, not
+ * CONFIG.BUSINESS_TIMEZONE (confirmed live 04/09/2026: preview output read
+ * "GMT+0700 (Indochina Time)" for a US business) — same class of
+ * timezone-mismatch bug this codebase has hit before (see formatDateCell_'s
+ * own header comment, Phase1_ComplianceCheck.gs). Reformats to the
+ * business timezone in the same dd/MM/yyyy convention every other preview
+ * log line in this codebase uses, purely so a human reviewing the preview
+ * output isn't misled about what date is actually being synced.
+ */
+function formatBensSyncDateForLog_(v) {
+  if (v instanceof Date && !isNaN(v)) {
+    return Utilities.formatDate(v, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
+  }
+  return String(v || '(blank)');
+}
+
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function previewBensPodcastSync() {
   return previewBensPodcastSync_();
@@ -179,7 +198,7 @@ function previewBensPodcastSync_() {
 
   plan.toCreate.forEach(function (fix) {
     log_('Tracker row ' + fix.trackerRow + ' "' + fix.prospectName + '" -> new Sales Call Log row ' +
-      '(Call Type "' + BENS_PODCAST_SYNC_CONFIG.CALL_TYPE + '", Call Date ' + fix.callDate + ').');
+      '(Call Type "' + BENS_PODCAST_SYNC_CONFIG.CALL_TYPE + '", Call Date ' + formatBensSyncDateForLog_(fix.callDate) + ').');
   });
 
   log_('');

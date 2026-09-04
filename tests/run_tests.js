@@ -5720,3 +5720,13 @@ test('getValidatedBensTrackerColumnMap_ tolerates the real tracker\'s stray trai
   const col = gas.getValidatedBensTrackerColumnMap_(sheet);
   assert.equal(col['SC Booked'], headerRow.indexOf('SC Booked ') + 1);
 });
+
+test('formatBensSyncDateForLog_ renders a Date in business timezone dd/MM/yyyy, not the script default timezone\'s toString()', () => {
+  const d = new gas.Date(Date.UTC(2026, 4, 18, 0, 0, 0));
+  assert.equal(gas.formatBensSyncDateForLog_(d), realFormatDate(d, 'America/New_York', 'dd/MM/yyyy'));
+});
+
+test('formatBensSyncDateForLog_ passes through a non-Date value (e.g. a blank Booking Date fallback) as-is', () => {
+  assert.equal(gas.formatBensSyncDateForLog_(''), '(blank)');
+  assert.equal(gas.formatBensSyncDateForLog_('31/08/2026'), '31/08/2026');
+});
