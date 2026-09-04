@@ -949,15 +949,28 @@ function ghlHasFutureCalendarEvent_(repName, prospectName, nowDate) {
  * computeNoShowFollowUpResults_ (Phase4_InboxSLA.gs) above/elsewhere. Costs
  * up to 3 GHL calls plus one calendar read per matched row, so it's bounded
  * to the last GHL_HYGIENE_CONFIG.LOOKBACK_DAYS rather than the whole sheet.
+ *
+ * Returns {findings, stats} rather than just the findings list — a run that
+ * finds zero issues looks identical in the log to a run that scanned zero
+ * rows (wrong sheet, everything outside the lookback window, nothing name-
+ * matched in GHL) unless the funnel itself is visible. Real gap found live
+ * (03/09/2026): the first previewGhlHygieneCheck_() run logged only "0
+ * row(s) with a hygiene issue found" with nothing to tell a clean scan from
+ * a scan that never actually checked anything.
  */
 function computeGhlHygieneFindings_(locationId, stageLookup) {
+  var stats = {
+    totalRows: 0, inWindow: 0, noGhlContact: 0, ambiguousOrNoMatch: 0,
+    opportunityLookupFailed: 0, checked: 0
+  };
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
-  if (!sheet) { log_('No Sales Call Log tab found.'); return []; }
+  if (!sheet) { log_('No Sales Call Log tab found.'); return { findings: [], stats: stats }; }
   var col = getValidatedColumnMap_(sheet);
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
+  if (lastRow < 2) return { findings: [], stats: stats };
   var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  stats.totalRows = rows.length;
 
   var cutoff = new Date(Date.now() - GHL_HYGIENE_CONFIG.LOOKBACK_DAYS * 24 * 3600000);
   var now = new Date();
@@ -973,15 +986,17 @@ function computeGhlHygieneFindings_(locationId, stageLookup) {
     if (parts.length !== 3) return;
     var callDate = dateAtMidnightInBusinessTimezone_(Number(parts[2]), Number(parts[1]), Number(parts[0]));
     if (isNaN(callDate.getTime()) || callDate < cutoff) return;
+    stats.inWindow++;
 
     var search = ghlSearchContactByName_(locationId, prospectName);
-    if (!search.ok || !search.contacts.length) return; // no GHL contact at all — nothing to check yet
+    if (!search.ok || !search.contacts.length) { stats.noGhlContact++; return; } // no GHL contact at all — nothing to check yet
     var candidates = search.contacts.filter(function (c) { return contactNameLooksLikeQuery_(c, prospectName); });
-    if (candidates.length !== 1) return; // no confident match, or ambiguous — same conservative policy as the sync above
+    if (candidates.length !== 1) { stats.ambiguousOrNoMatch++; return; } // no confident match, or ambiguous — same conservative policy as the sync above
 
     var contact = candidates[0];
     var oppsRes = ghlListOpportunitiesForContact_(locationId, contact.id);
-    if (!oppsRes.ok) return;
+    if (!oppsRes.ok) { stats.opportunityLookupFailed++; return; }
+    stats.checked++;
 
     var hasFutureEvent = ghlHasFutureCalendarEvent_(rep, prospectName, now);
     var issue = classifyGhlHygieneRow_({
@@ -994,7 +1009,7 @@ function computeGhlHygieneFindings_(locationId, stageLookup) {
     Utilities.sleep(250); // polite pacing — up to 3 GHL calls per matched row here
   });
 
-  return findings;
+  return { findings: findings, stats: stats };
 }
 
 /** Groups computeGhlHygieneFindings_'s flat list by rep, since the send step
@@ -1071,10 +1086,20 @@ function previewGhlHygieneCheck_() {
   if (!pipelines) return; // fetchGhlPipelines_ already logged why
   var stageLookup = buildGhlStageLookup_(pipelines);
 
-  var findings = computeGhlHygieneFindings_(locationId, stageLookup);
-  log_(findings.length + ' row(s) with a hygiene issue found.');
+  var result = computeGhlHygieneFindings_(locationId, stageLookup);
+  var stats = result.stats;
+  log_(stats.totalRows + ' row(s) in the Sales Call Log, ' + stats.inWindow + ' within the last ' +
+    GHL_HYGIENE_CONFIG.LOOKBACK_DAYS + ' day(s). Of those: ' + stats.noGhlContact + ' no GHL contact found, ' +
+    stats.ambiguousOrNoMatch + ' ambiguous/no confident name match, ' + stats.opportunityLookupFailed +
+    ' opportunity lookup failed, ' + stats.checked + ' actually checked.');
+  log_(result.findings.length + ' row(s) with a hygiene issue found.');
+  if (stats.checked === 0) {
+    log_('0 checked is why this shows 0 issues — that is NOT the same as "everything is clean". See the ' +
+      'funnel above for where rows dropped out (most likely: nothing in the Sales Call Log falls inside the ' +
+      GHL_HYGIENE_CONFIG.LOOKBACK_DAYS + '-day lookback window yet, or name-matching against GHL is coming up empty).');
+  }
 
-  var byRep = groupGhlHygieneFindingsByRep_(findings);
+  var byRep = groupGhlHygieneFindingsByRep_(result.findings);
   Object.keys(byRep).forEach(function (rep) {
     var report = buildGhlHygieneReportForRep_(byRep[rep]);
     log_('');
@@ -1118,10 +1143,13 @@ function runGhlHygieneCheck_() {
   if (!pipelines) return; // fetchGhlPipelines_ already logged why
   var stageLookup = buildGhlStageLookup_(pipelines);
 
-  var findings = computeGhlHygieneFindings_(locationId, stageLookup);
-  if (!findings.length) { log_('No GHL hygiene issues found.'); return; }
+  var result = computeGhlHygieneFindings_(locationId, stageLookup);
+  if (!result.findings.length) {
+    log_('No GHL hygiene issues found (' + result.stats.checked + ' row(s) actually checked).');
+    return;
+  }
 
-  var byRep = groupGhlHygieneFindingsByRep_(findings);
+  var byRep = groupGhlHygieneFindingsByRep_(result.findings);
   Object.keys(byRep).forEach(function (rep) {
     var repEmail = repEmailForFollowUpCheck_(rep);
     if (!repEmail) {

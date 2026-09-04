@@ -4390,13 +4390,16 @@ test('computeGhlHygieneFindings_ skips a row with no confident GHL match (no con
     fakeSalesCallLogRow({ 'Prospect Name': 'No Match', Rep: 'Sean', 'Call Date': '01/07/2026' })
   ];
   const originalDateFn = gas.dateAtMidnightInBusinessTimezone_;
-  gas.dateAtMidnightInBusinessTimezone_ = () => new Date('2026-07-01T12:00:00Z'); // well within LOOKBACK_DAYS-independent fixed "old" date
+  gas.dateAtMidnightInBusinessTimezone_ = () => new Date(Date.now() - 5 * 24 * 3600000); // genuinely inside the 30-day lookback window
   const result = withMockedGhlSync_({
     SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
     ghlSearchContactByName_: () => ({ ok: true, contacts: [] })
   }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
   gas.dateAtMidnightInBusinessTimezone_ = originalDateFn;
-  assert.equal(result.length, 0);
+  assert.equal(result.findings.length, 0);
+  assert.equal(result.stats.inWindow, 1, 'the row must have been counted as in-window before being dropped for no match');
+  assert.equal(result.stats.noGhlContact, 1);
+  assert.equal(result.stats.checked, 0);
 });
 
 test('computeGhlHygieneFindings_ finds a real hygiene issue end to end: a confidently-matched, unpipelined contact', () => {
@@ -4414,8 +4417,9 @@ test('computeGhlHygieneFindings_ finds a real hygiene issue end to end: a confid
   }, () => gas.computeGhlHygieneFindings_('loc-1', {}));
   gas.dateAtMidnightInBusinessTimezone_ = originalDateFn;
   gas.getRepCallEvents_ = originalGetEvents;
-  assert.equal(result.length, 1);
-  assert.ok(result[0].issues.indexOf('unpipelined_lead') !== -1);
+  assert.equal(result.stats.checked, 1);
+  assert.equal(result.findings.length, 1);
+  assert.ok(result.findings[0].issues.indexOf('unpipelined_lead') !== -1);
 });
 
 // ---------------------------------------------------------------------------
