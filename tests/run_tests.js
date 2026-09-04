@@ -5452,3 +5452,139 @@ test('sendRandomCalibrationDigest_\'s live send includes an htmlBody with bold n
   assert.ok(captured.options.htmlBody.indexOf('href="https://docs.google.com/document/d/xyz789/edit"') !== -1);
   assert.ok(captured.options.htmlBody.indexOf('no transcript on file') !== -1, 'expected a graceful fallback for the row with no transcript');
 });
+
+// ---------------------------------------------------------------------------
+// Conversion funnel report (Phase10_ConversionFunnel.gs) — Kris's ask
+// (04/09/2026): weekly, per rep, QC booked -> attended -> qualified ->
+// Sales Call booked -> attended -> Sold, plus Tomás's own closing-call
+// section, across this week / last 30 days / last 90 days.
+// ---------------------------------------------------------------------------
+
+test('isQcCallTypeForFunnel_ / isSalesCallTypeForFunnel_ match case/whitespace-insensitively, exclude Discovery from the Sales Call step', () => {
+  assert.equal(gas.isQcCallTypeForFunnel_('QC'), true);
+  assert.equal(gas.isQcCallTypeForFunnel_(' qc '), true);
+  assert.equal(gas.isQcCallTypeForFunnel_('Sales Call'), false);
+  assert.equal(gas.isSalesCallTypeForFunnel_('Sales Call'), true);
+  assert.equal(gas.isSalesCallTypeForFunnel_('sales call'), true);
+  assert.equal(gas.isSalesCallTypeForFunnel_('Discovery'), false, 'Discovery is the AM post-sale call, not a step in this funnel');
+  assert.equal(gas.isSalesCallTypeForFunnel_('QC'), false);
+});
+
+test('attendedForFunnel_ is false only for an explicit "No-show", true for blank (not yet known)', () => {
+  assert.equal(gas.attendedForFunnel_('No-show'), false);
+  assert.equal(gas.attendedForFunnel_('no-show'), false);
+  assert.equal(gas.attendedForFunnel_('Sold'), true);
+  assert.equal(gas.attendedForFunnel_(''), true);
+  assert.equal(gas.attendedForFunnel_(null), true);
+});
+
+test('safeRateForFunnel_ / formatFunnelRate_ report null (not 0 or a throw) on a zero denominator', () => {
+  assert.equal(gas.safeRateForFunnel_(3, 0), null);
+  assert.equal(gas.safeRateForFunnel_(3, 6), 0.5);
+  assert.equal(gas.formatFunnelRate_(0, 0), '0/0 (n/a)');
+  assert.equal(gas.formatFunnelRate_(1, 4), '1/4 (25%)');
+});
+
+test('matchLaterSalesCallForFunnel_ picks the EARLIEST Sales Call after the QC date, ignores earlier ones, matches name case/punctuation-insensitively', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const qcDate = bizDate(gas, 2026, 8, 10);
+  const rows = [
+    { prospectName: 'Andrew Coppens', callDate: bizDate(gas, 2026, 8, 5), outcomeDisposition: 'Sold' }, // before the QC -- must be ignored
+    { prospectName: 'ANDREW  Coppens.', callDate: bizDate(gas, 2026, 8, 20), outcomeDisposition: 'Not Sold' }, // later, but not the earliest
+    { prospectName: 'andrew coppens', callDate: bizDate(gas, 2026, 8, 12), outcomeDisposition: 'Sold' }, // the real match: earliest after the QC
+    { prospectName: 'A Different Person', callDate: bizDate(gas, 2026, 8, 11), outcomeDisposition: 'Sold' }
+  ];
+  const match = gas.matchLaterSalesCallForFunnel_(rows, 'Andrew Coppens', qcDate);
+  assert.ok(match);
+  assert.equal(realFormatDate(match.callDate, 'America/New_York', 'yyyy/MM/dd'), '2026/08/12');
+});
+
+test('matchLaterSalesCallForFunnel_ returns null when nothing matches (no name match, or nothing after the date)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const qcDate = bizDate(gas, 2026, 8, 10);
+  assert.equal(gas.matchLaterSalesCallForFunnel_([], 'Andrew Coppens', qcDate), null);
+  assert.equal(gas.matchLaterSalesCallForFunnel_(
+    [{ prospectName: 'Someone Else', callDate: bizDate(gas, 2026, 8, 15), outcomeDisposition: 'Sold' }],
+    'Andrew Coppens', qcDate
+  ), null);
+  assert.equal(gas.matchLaterSalesCallForFunnel_(
+    [{ prospectName: 'Andrew Coppens', callDate: bizDate(gas, 2026, 8, 1), outcomeDisposition: 'Sold' }],
+    'Andrew Coppens', qcDate
+  ), null, 'a Sales Call before the QC date must never count as what the QC produced');
+});
+
+function funnelRow(gas, { rep, prospectName, callType, callDate, outcomeDisposition, leadQualityVerdict }) {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  row[col['Rep'] - 1] = rep;
+  row[col['Prospect Name'] - 1] = prospectName;
+  row[col['Call Type'] - 1] = callType;
+  row[col['Call Date'] - 1] = callDate;
+  row[col['Outcome Disposition'] - 1] = outcomeDisposition || '';
+  row[col['Lead Quality Verdict'] - 1] = leadQualityVerdict || '';
+  return row;
+}
+
+test('computeConversionFunnelWindow_ builds the real end-to-end funnel: a booked, attended, qualified QC that produced a later Sales Call, sold — attributed to the QC rep even though a different rep closed it', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const windowStart = bizDate(gas, 2026, 8, 1);
+  const windowEnd = bizDate(gas, 2026, 8, 31);
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const rows = [
+    funnelRow(gas, { rep: 'Bens', prospectName: 'Andrew Coppens', callType: 'QC', callDate: bizDate(gas, 2026, 8, 10), outcomeDisposition: '', leadQualityVerdict: 'good_to_book' }),
+    funnelRow(gas, { rep: 'Bens', prospectName: 'No Show Lead', callType: 'QC', callDate: bizDate(gas, 2026, 8, 11), outcomeDisposition: 'No-show', leadQualityVerdict: '' }),
+    funnelRow(gas, { rep: 'Bens', prospectName: 'Screened Out Lead', callType: 'QC', callDate: bizDate(gas, 2026, 8, 12), outcomeDisposition: '', leadQualityVerdict: 'should_screen_out' }),
+    // Closed by Tomás, not Bens -- must still attribute to Bens's funnel (rep-agnostic match) AND count in Tomás's own section.
+    funnelRow(gas, { rep: 'Tomás', prospectName: 'Andrew Coppens', callType: 'Sales Call', callDate: bizDate(gas, 2026, 8, 15), outcomeDisposition: 'Sold' })
+  ];
+
+  const result = gas.computeConversionFunnelWindow_(rows, col, ['Bens', 'Sean', 'Joana'], windowStart, windowEnd);
+  const bens = result.byRep.Bens;
+  assert.equal(bens.qcBooked, 3);
+  assert.equal(bens.qcAttended, 2, 'the No-show QC must not count as attended');
+  assert.equal(bens.qcQualified, 1, 'only the good_to_book, attended QC counts as qualified');
+  assert.equal(bens.scBooked, 1, 'the qualified QC must be matched to its later Sales Call, whoever closed it');
+  assert.equal(bens.scAttended, 1);
+  assert.equal(bens.sold, 1);
+
+  assert.equal(result.tomas.booked, 1, 'Tomás\'s own section counts the same Sales Call independently');
+  assert.equal(result.tomas.attended, 1);
+  assert.equal(result.tomas.sold, 1);
+
+  assert.equal(result.byRep.Sean.qcBooked, 0);
+  assert.equal(result.byRep.Joana.qcBooked, 0);
+});
+
+test('computeConversionFunnelWindow_ excludes rows outside the window and non-QC/non-Sales-Call Call Types (e.g. Discovery)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const windowStart = bizDate(gas, 2026, 8, 1);
+  const windowEnd = bizDate(gas, 2026, 8, 31);
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+
+  const rows = [
+    funnelRow(gas, { rep: 'Bens', prospectName: 'Outside Window', callType: 'QC', callDate: bizDate(gas, 2026, 7, 15), leadQualityVerdict: 'good_to_book' }),
+    funnelRow(gas, { rep: 'Bens', prospectName: 'A Discovery Call', callType: 'Discovery', callDate: bizDate(gas, 2026, 8, 5) })
+  ];
+  const result = gas.computeConversionFunnelWindow_(rows, col, ['Bens', 'Sean', 'Joana'], windowStart, windowEnd);
+  assert.equal(result.byRep.Bens.qcBooked, 0);
+});
+
+test('buildConversionFunnelEmail_ renders every rep and the Tomás section, with week/30d/90d numbers all present', () => {
+  const emptyRep = { qcBooked: 0, qcAttended: 0, qcQualified: 0, scBooked: 0, scAttended: 0, sold: 0 };
+  const bensWeek = { qcBooked: 3, qcAttended: 2, qcQualified: 1, scBooked: 1, scAttended: 1, sold: 1 };
+  const windows = {
+    week: { byRep: { Bens: bensWeek, Sean: emptyRep, Joana: emptyRep }, tomas: { booked: 1, attended: 1, sold: 1 } },
+    month: { byRep: { Bens: emptyRep, Sean: emptyRep, Joana: emptyRep }, tomas: { booked: 0, attended: 0, sold: 0 } },
+    quarter: { byRep: { Bens: emptyRep, Sean: emptyRep, Joana: emptyRep }, tomas: { booked: 0, attended: 0, sold: 0 } }
+  };
+  const email = gas.buildConversionFunnelEmail_(['Bens', 'Sean', 'Joana'], windows, '24/08–30/08/2026');
+  assert.ok(email.subject.indexOf('Conversion Funnel') !== -1);
+  assert.ok(email.body.indexOf('Bens:') !== -1 && email.body.indexOf('Sean:') !== -1 && email.body.indexOf('Joana:') !== -1);
+  assert.ok(email.body.indexOf('Tomás') !== -1);
+  assert.ok(email.body.indexOf('3') !== -1 && email.body.indexOf('last 30d') !== -1 && email.body.indexOf('last 90d') !== -1);
+  assert.ok(email.body.indexOf('Bens specifically') !== -1, 'the incomplete-data caveat for Bens must be present');
+});
