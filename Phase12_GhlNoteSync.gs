@@ -127,6 +127,56 @@ function buildGhlReviewNoteBody_(rowData) {
 }
 
 /**
+ * One-off diagnostic, NOT part of the Phase 12 sync flow — run by hand,
+ * against one real contact, to find out empirically what GHL's Notes field
+ * actually renders. Real gap found live (05/09/2026): the first live batch
+ * used <p>/<strong> on the assumption "GHL notes render as rich text" (see
+ * buildGhlReviewNoteBody_'s old comment) — Kris's screenshot of the actual
+ * posted note showed <p> apparently produced line breaks but <strong>
+ * never bolded. Rather than guess again at which tags/spacing actually
+ * work, this posts several labeled variants side by side so a human can
+ * read back which ones rendered as intended. DELETE the note (via
+ * ghlDeleteContactNote_(contactId, noteId), noteId is returned/logged) once
+ * you've read it — this is throwaway test content on a real contact, not a
+ * genuine call review.
+ */
+function buildGhlNoteFormattingTestBody_() {
+  var lines = [];
+  lines.push('GHL NOTE FORMATTING TEST — read each line, then delete this note.');
+  lines.push('Variant A (strong tag): <strong>BOLD TEST</strong>');
+  lines.push('Variant B (b tag): <b>BOLD TEST</b>');
+  lines.push('Variant C (em tag): <em>ITALIC TEST</em>');
+  lines.push('Variant D (i tag): <i>ITALIC TEST</i>');
+  lines.push('Variant E (markdown): **BOLD TEST** and *ITALIC TEST*');
+  lines.push('Variant F (br double-spacing): line one<br><br>line two');
+  lines.push('Variant G (p double-spacing): <p>para one</p><p>para two</p>');
+  lines.push('Variant H (real newline double-spacing): line one\n\nline two');
+  return lines.join('<br>');
+}
+
+function previewGhlNoteFormattingTest_() {
+  log_('previewGhlNoteFormattingTest_: this would post the following body ' +
+    'to whatever contactId you pass runGhlNoteFormattingTest_ — nothing ' +
+    'written yet:\n' + buildGhlNoteFormattingTestBody_());
+}
+
+function runGhlNoteFormattingTest_(contactId) {
+  if (!contactId) {
+    log_('runGhlNoteFormattingTest_: pass a real GHL contactId, e.g. runGhlNoteFormattingTest_("abc123").');
+    return;
+  }
+  var res = ghlPostContactNote_(contactId, buildGhlNoteFormattingTestBody_());
+  if (!res.ok) {
+    log_('runGhlNoteFormattingTest_: POST failed (status ' + res.status + '): ' + res.body);
+    return;
+  }
+  log_('runGhlNoteFormattingTest_: test note posted to contact ' + contactId +
+    ' (note id ' + (res.noteId || '(none returned)') + '). Read it in GHL, ' +
+    'note which variants actually rendered bold/italic/spaced, then delete ' +
+    'it with ghlDeleteContactNote_("' + contactId + '", "' + (res.noteId || '<noteId>') + '").');
+}
+
+/**
  * Scans the live Sales Call Log for scored rows (Lead Quality Verdict
  * non-blank) not yet marked "GHL Review Synced", resolves each by GHL
  * contact name (same name-similarity filter as previewGhlMatching_ —
