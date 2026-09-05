@@ -283,8 +283,16 @@ function dailyPracticeScoreColor_(score) {
  * the link to the recording and transcript so I can easily check myself.
  * This one needs checking. What is the link?" — there wasn't one.
  */
-function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links) {
+/**
+ * `stats` is computeDailyPracticeScoreStats_'s output ({count, average}),
+ * already including today's own score — optional, defaulting to "no stats"
+ * so every pre-05/09/2026 caller/test keeps working unchanged. Kris,
+ * 05/09/2026: "can we also include the average score" / "Average score and
+ * total trainings done."
+ */
+function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links, stats) {
   links = links || {};
+  stats = stats || { count: 0, average: null };
   var subject = 'Practice Drill Feedback — ' + fileName;
   var closeAskLabel = trainingReviewRoleFor_(rep).closeAskSkillLabel;
   var focusLine = result.drill_type === 'close_ask'
@@ -305,7 +313,9 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links) {
     focusLine + '\n' +
     'Technique used: ' + techniqueLine + '\n' +
     'Delivery: ' + result.delivery_quality + '\n' +
-    'Score: ' + result.overall_score + '/5\n\n' +
+    'Score: ' + result.overall_score + '/5\n' +
+    (stats.count ? 'Average score to date: ' + stats.average + '/5 (' + stats.count + ' training(s) total)\n' : '') +
+    '\n' +
     (linkLines.length ? linkLines.join('\n') + '\n\n' : '') +
     '— This is an automated review of your practice drill. Drafted by AI; reply to Kris or Tomás with any issues.';
 
@@ -336,6 +346,10 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links) {
     '<li><strong>Delivery:</strong> ' + escapeHtml_(result.delivery_quality) + '</li>' +
     '<li><strong>Score:</strong> <strong style="color:' + dailyPracticeScoreColor_(result.overall_score) + ';">' +
     escapeHtml_(String(result.overall_score)) + '/5</strong></li>' +
+    (stats.count
+      ? '<li><strong>Average score to date:</strong> ' + escapeHtml_(String(stats.average)) + '/5 (' +
+        stats.count + ' training(s) total)</li>'
+      : '') +
     '</ul>' +
     (linkLines.length
       ? '<p style="margin:12px 0 4px 0;">' +
@@ -548,14 +562,16 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
       var result = gradeDailyPracticeTranscript_(rep, text, name);
       var sourceFile = findDailyPracticeFileByName_(folder, dailyPracticeSourceFileName_(name));
       var links = { transcriptUrl: file.getUrl(), recordingUrl: sourceFile ? sourceFile.getUrl() : null };
-      var email = buildDailyPracticeFeedbackEmail_(rep, name, result, links);
+      var priorScores = priorDailyPracticeScoresForRep_(getOrCreateDailyPracticeFollowupSheet_(), rep);
+      var stats = computeDailyPracticeScoreStats_(priorScores.concat([result.overall_score]));
+      var email = buildDailyPracticeFeedbackEmail_(rep, name, result, links, stats);
       var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
       var replyThreadId = findDailyPracticeFollowupThreadForFile_(rep, name);
 
       var delivered = deliverDailyPracticeGrading_(rep, repCfg, folder, name, result, email, escalate, dryRun, replyThreadId);
       if (dryRun) return;
       if (!delivered) return; // send failed/skipped — leave the thread row (if any) untouched so it's retried, not marked graded
-      if (replyThreadId) markDailyPracticeFollowupGraded_(rep, replyThreadId);
+      if (replyThreadId) markDailyPracticeFollowupGraded_(rep, replyThreadId, result.overall_score);
       processed++;
     });
 
@@ -785,7 +801,11 @@ function sendDailyPracticeReminders_() {
 // ---------------------------------------------------------------------------
 
 var DAILY_PRACTICE_FOLLOWUP_SHEET_NAME = 'Daily Practice Follow-ups';
-var DAILY_PRACTICE_FOLLOWUP_HEADERS = ['Rep', 'Assignment Date (YYMMDD)', 'Thread ID', 'Status', 'Last Nag At', 'Nag Count', 'Matched File'];
+// 'Score' (05/09/2026, Kris: "can we also include the average score" /
+// "Average score and total trainings done") — appended, not inserted, same
+// self-healing pattern as 'Matched File' before it (getOrCreateDailyPracticeFollowupSheet_
+// backfills the header on an already-live sheet automatically).
+var DAILY_PRACTICE_FOLLOWUP_HEADERS = ['Rep', 'Assignment Date (YYMMDD)', 'Thread ID', 'Status', 'Last Nag At', 'Nag Count', 'Matched File', 'Score'];
 
 function getOrCreateDailyPracticeFollowupSheet_() {
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
@@ -824,7 +844,7 @@ function registerDailyPracticeFollowup_(rep, dateStr, threadId) {
       if (existing[i][0] === rep && String(existing[i][1]) === dateStr) return; // already tracked
     }
   }
-  sheet.appendRow([rep, dateStr, threadId, 'open', '', 0, '']);
+  sheet.appendRow([rep, dateStr, threadId, 'open', '', 0, '', '']);
 }
 
 /** Row objects for every row currently in a given status (or any status if omitted). */
@@ -838,9 +858,12 @@ function loadDailyPracticeFollowupRows_(sheet, statusFilter) {
     // dateStr/threadId coerced to String here (not left as whatever Sheets'
     // auto-typing produced) so every downstream === comparison against a
     // literal string works regardless of how the cell round-tripped.
+    var rawScore = row[7];
     rows.push({
       rowIndex: i + 2, rep: row[0], dateStr: String(row[1]), threadId: row[2] ? String(row[2]) : '',
-      status: row[3], lastNagDate: row[4], nagCount: row[5], matchedFile: row[6] ? String(row[6]) : ''
+      status: row[3], lastNagDate: row[4], nagCount: row[5], matchedFile: row[6] ? String(row[6]) : '',
+      score: (rawScore === '' || rawScore === null || rawScore === undefined || isNaN(Number(rawScore)))
+        ? null : Number(rawScore)
     });
   });
   return rows;
@@ -856,11 +879,35 @@ function findDailyPracticeFollowupThreadForFile_(rep, fileName) {
   return match ? match.threadId : null;
 }
 
-function markDailyPracticeFollowupGraded_(rep, threadId) {
+function markDailyPracticeFollowupGraded_(rep, threadId, score) {
   var sheet = getOrCreateDailyPracticeFollowupSheet_();
   var rows = loadDailyPracticeFollowupRows_(sheet, null);
   var match = rows.filter(function (r) { return r.rep === rep && r.threadId === threadId; })[0];
-  if (match) sheet.getRange(match.rowIndex, 4).setValue('graded');
+  if (!match) return;
+  sheet.getRange(match.rowIndex, 4).setValue('graded');
+  if (typeof score === 'number' && !isNaN(score)) sheet.getRange(match.rowIndex, 8).setValue(score);
+}
+
+/** Every past graded score on file for `rep`, oldest-first order not guaranteed (not needed — only count/average matter). */
+function priorDailyPracticeScoresForRep_(sheet, rep) {
+  return loadDailyPracticeFollowupRows_(sheet, null)
+    .filter(function (r) { return r.rep === rep && r.score !== null; })
+    .map(function (r) { return r.score; });
+}
+
+/**
+ * Pure. Kris, 05/09/2026: "can we also include the average score" / "Average
+ * score and total trainings done" — on today's feedback email, alongside
+ * today's own score. `scores` should already include today's just-graded
+ * score (callers pass priorDailyPracticeScoresForRep_(...).concat([today's
+ * score])) so "average" and "total" both reflect today, not just history
+ * up to yesterday.
+ */
+function computeDailyPracticeScoreStats_(scores) {
+  var valid = (scores || []).filter(function (s) { return typeof s === 'number' && !isNaN(s); });
+  if (!valid.length) return { count: 0, average: null };
+  var sum = valid.reduce(function (a, b) { return a + b; }, 0);
+  return { count: valid.length, average: Math.round((sum / valid.length) * 10) / 10 };
 }
 
 /**
@@ -1237,13 +1284,18 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
     var text = getTranscriptText_(transcriptFile);
     var result = gradeDailyPracticeTranscript_(row.rep, text, transcriptName);
     var links = { transcriptUrl: transcriptFile.getUrl(), recordingUrl: namedFile.getUrl() };
-    var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result, links);
+    var priorScores = priorDailyPracticeScoresForRep_(sheet, row.rep);
+    var stats = computeDailyPracticeScoreStats_(priorScores.concat([result.overall_score]));
+    var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result, links, stats);
     var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
     var delivered = deliverDailyPracticeGrading_(row.rep, repCfg, folder, transcriptName, result, email, escalate, dryRun, row.threadId);
     // Only mark 'graded' on an actual successful delivery — leaving the row
     // as 'file_received' on a failed/skipped send means the next pass retries
     // it instead of silently losing the grading forever.
-    if (!dryRun && delivered) sheet.getRange(row.rowIndex, 4).setValue('graded');
+    if (!dryRun && delivered) {
+      sheet.getRange(row.rowIndex, 4).setValue('graded');
+      sheet.getRange(row.rowIndex, 8).setValue(result.overall_score);
+    }
 }
 
 /** Run this FIRST from the editor — logs compliance findings, sends nothing. */

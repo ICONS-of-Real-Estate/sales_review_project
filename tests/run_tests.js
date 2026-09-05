@@ -1967,7 +1967,7 @@ test('findDailyPracticeFollowupThreadForFile_ matches a dateStr Sheets stored as
   ];
   const sheet = {
     getLastRow: () => rows.length + 1,
-    getLastColumn: () => 7, // already has the "Matched File" column — no header migration needed
+    getLastColumn: () => 8, // already has the "Matched File"/"Score" columns — no header migration needed
     getRange: (row, col, numRows, numCols) => ({
       getValues: () => rows
     })
@@ -4976,7 +4976,7 @@ test('checkDailyPracticeCompliance_ end-to-end: repairing a double-claim in one 
     ];
     const fakeSheet = {
       getLastRow: () => data.length + 1,
-      getLastColumn: () => 7,
+      getLastColumn: () => 8,
       getRange: (row, col, numRows) => ({
         getValues: () => data.slice(row - 2, row - 2 + (numRows || 1)),
         setValue: (v) => { data[row - 2][col - 1] = v; },
@@ -5024,7 +5024,7 @@ test('checkDailyPracticeCompliance_ end-to-end: a file claimed by a row that has
     ];
     const fakeSheet = {
       getLastRow: () => data.length + 1,
-      getLastColumn: () => 7,
+      getLastColumn: () => 8,
       getRange: (row, col, numRows) => ({
         getValues: () => data.slice(row - 2, row - 2 + (numRows || 1)),
         setValue: (v) => { data[row - 2][col - 1] = v; },
@@ -7199,4 +7199,67 @@ test('refreshBacklogRecordingMissingFlags_ does not let one loosely-matched row 
   var result = gas.refreshBacklogRecordingMissingFlags_('Sean', backlog, allRowsAnyDate);
   var stillMissing = result.filter(function (e) { return e.recordingMissing; });
   assert.equal(stillMissing.length, 1, 'only one of the two entries may claim the single matching row');
+});
+
+// ---------------------------------------------------------------------------
+// Average score + total trainings on the daily practice feedback email
+// (Kris, 05/09/2026: "Score: 4/5 - can we also include the average score" /
+// "Average score and total trainings done").
+// ---------------------------------------------------------------------------
+
+test('computeDailyPracticeScoreStats_ averages and counts, rounded to one decimal', () => {
+  const stats = gas.computeDailyPracticeScoreStats_([4, 3, 5]);
+  assert.equal(stats.count, 3);
+  assert.equal(stats.average, 4); // (4+3+5)/3 = 4 exactly
+});
+
+test('computeDailyPracticeScoreStats_ rounds to one decimal place, not a long float', () => {
+  const stats = gas.computeDailyPracticeScoreStats_([4, 3, 4]);
+  assert.equal(stats.average, 3.7); // 11/3 = 3.666... -> 3.7
+});
+
+test('computeDailyPracticeScoreStats_ returns count:0, average:null for no scores at all — never NaN or a divide-by-zero', () => {
+  const stats = gas.computeDailyPracticeScoreStats_([]);
+  assert.equal(stats.count, 0);
+  assert.equal(stats.average, null);
+});
+
+test('computeDailyPracticeScoreStats_ ignores non-numeric entries mixed into the array', () => {
+  const stats = gas.computeDailyPracticeScoreStats_([4, null, undefined, 2]);
+  assert.equal(stats.count, 2);
+  assert.equal(stats.average, 3);
+});
+
+test('priorDailyPracticeScoresForRep_ only returns scores for the requested rep, skipping blanks and other reps', () => {
+  const rows = [
+    ['Sean', 260819, '', 'graded', '', 0, '', 4],
+    ['Sean', 260820, '', 'graded', '', 0, '', ''], // ungraded/blank score — must be excluded
+    ['Bens', 260819, '', 'graded', '', 0, '', 5]
+  ];
+  const sheet = {
+    getLastRow: () => rows.length + 1,
+    getRange: () => ({ getValues: () => rows })
+  };
+  const scores = gas.priorDailyPracticeScoresForRep_(sheet, 'Sean');
+  assert.deepEqual(Array.from(scores), [4]);
+});
+
+test('buildDailyPracticeFeedbackEmail_ shows the average score and total trainings when stats are provided', () => {
+  const result = {
+    drill_type: 'objection', objection_type: 'timing', technique_used: true, technique_description: 'x',
+    delivery_quality: 'confident', overall_score: 4, sharpen_next: 'x', feedback_summary: '"x" — good.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Sean', 'x.mp4', result, {}, { count: 5, average: 3.6 });
+  assert.ok(email.body.indexOf('Average score to date: 3.6/5 (5 training(s) total)') !== -1);
+  assert.ok(email.htmlBody.indexOf('<strong>Average score to date:</strong> 3.6/5 (5 training(s) total)') !== -1);
+});
+
+test('buildDailyPracticeFeedbackEmail_ omits the average line entirely on a rep\'s very first graded drill (count:0) rather than showing "null/5"', () => {
+  const result = {
+    drill_type: 'objection', objection_type: 'timing', technique_used: true, technique_description: 'x',
+    delivery_quality: 'confident', overall_score: 4, sharpen_next: 'x', feedback_summary: '"x" — good.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Sean', 'x.mp4', result); // no stats param at all — old call shape
+  assert.equal(email.body.indexOf('Average score'), -1);
+  assert.equal(email.htmlBody.indexOf('Average score'), -1);
 });
