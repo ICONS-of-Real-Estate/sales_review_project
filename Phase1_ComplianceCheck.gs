@@ -405,6 +405,7 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
     var allRowsAnyDate = getAllTrackerRows_(repCfg, null, tz);
     var loggedRowsAnyDate = allRowsAnyDate.filter(function (r) { return r.logged; });
     backlog = reconcileComplianceBacklog_(repCfg.name, backlog, loggedRowsAnyDate);
+    backlog = refreshBacklogRecordingMissingFlags_(repCfg.name, backlog, allRowsAnyDate);
     backlog = dropInternalOnlyBacklogEntries_(repCfg.name, backlog, function (eventId) {
       return calendarEventRawGuestEmails_(repCfg, eventId);
     });
@@ -897,6 +898,48 @@ function reconcileComplianceBacklog_(repName, backlog, loggedRowsAnyDate) {
     }
     return !hit;
   });
+}
+
+/**
+ * Option A from Kris's 04/09/2026 email to Tomás, re: Sean's stale "4 no
+ * outcome logged / 2 no recording" split ("all 6 actually have no
+ * recording, but the label was stale"): `recordingMissing` used to be
+ * decided ONCE, the first day an item was flagged (appendNewBacklogEntries_
+ * — `recordingMissing: !!ev.recordingMissing`), and reconcileComplianceBacklog_
+ * only ever asked "is this now logged?", never "does the underlying
+ * situation still match the label?" — so a real recording arriving late (a
+ * row appears, unlogged) never flipped a stale "no recording" label to "no
+ * outcome logged", and it stuck wrong forever even after reality changed.
+ *
+ * Re-derives recordingMissing fresh every run for every backlog entry still
+ * outstanding after reconcileComplianceBacklog_ — same "does ANY row at all
+ * exist for this event, logged or not" check matchEventsForRep_ used to set
+ * it the first time (a row only ever exists once a transcript has been
+ * received and scored — Phase 2 — so no row at all means no recording ever
+ * arrived; an unlogged row means the recording IS in, just the outcome
+ * isn't filled in).
+ *
+ * Threads a claimedRowIndexes map through, same reasoning as
+ * reconcileComplianceBacklog_ right above: without it, one loosely-matched
+ * row (no distinguishing event ID) could satisfy findMatch_'s name fallback
+ * for several backlog entries at once, incorrectly clearing more than one
+ * entry's "no recording" flag off a single real row.
+ */
+function refreshBacklogRecordingMissingFlags_(repName, backlog, allRowsAnyDate) {
+  var claimedRowIndexes = {};
+  backlog.forEach(function (entry) {
+    var available = allRowsAnyDate.filter(function (r) { return !claimedRowIndexes[r.rowIndex]; });
+    var hit = findMatch_(backlogEntryToEvent_(entry), available);
+    if (hit) claimedRowIndexes[hit.rowIndex] = true;
+    var refreshed = !hit;
+    if (!!entry.recordingMissing !== refreshed) {
+      log_('  [' + repName + '] backlog item "' + entry.prospectGuess + '" (' + entry.callDateLabel +
+        ') label refreshed: ' + (entry.recordingMissing ? 'no recording' : 'no outcome logged') + ' -> ' +
+        (refreshed ? 'no recording' : 'no outcome logged') + '.');
+    }
+    entry.recordingMissing = refreshed;
+  });
+  return backlog;
 }
 
 // A backlog entry outstanding this long has stopped being "will probably get

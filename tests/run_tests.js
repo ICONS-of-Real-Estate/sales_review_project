@@ -7151,3 +7151,52 @@ test('TRAINING_REVIEW_ROLE_ has no entry for Sean/Joana, only Bens — this is t
   assert.equal(gas.TRAINING_REVIEW_ROLE_.Sean, undefined, 'Sean must use the team rotation (no custom role entry)');
   assert.equal(gas.TRAINING_REVIEW_ROLE_.Joana, undefined, 'Joana must use the team rotation (no custom role entry)');
 });
+
+// ---------------------------------------------------------------------------
+// refreshBacklogRecordingMissingFlags_ — Option A from Kris's 04/09/2026
+// email to Tomás re: Sean's stale "4 no outcome logged / 2 no recording"
+// split ("all 6 actually have no recording, but the label was stale").
+// ---------------------------------------------------------------------------
+
+test('refreshBacklogRecordingMissingFlags_ flips a stale "no recording" entry to "no outcome logged" once ANY row (even unlogged) shows up for it — the exact bug Kris described', () => {
+  var backlog = [
+    { eventId: 'evt-1', prospectGuess: 'Russell Kubach', callDateLabel: '25/08/2026', attendeeEmails: [], recordingMissing: true }
+  ];
+  // A row now exists (the recording arrived and got scored) but the rep
+  // still hasn't filled in Outcome Disposition, so it's unlogged.
+  var allRowsAnyDate = [
+    { rowIndex: 7, prospect: 'russellkubach', email: '', eventId: 'evt-1', logged: false }
+  ];
+  var result = gas.refreshBacklogRecordingMissingFlags_('Sean', backlog, allRowsAnyDate);
+  assert.equal(result[0].recordingMissing, false);
+});
+
+test('refreshBacklogRecordingMissingFlags_ flips the other direction too: "no outcome logged" becomes "no recording" if the row that used to justify it is gone', () => {
+  var backlog = [
+    { eventId: 'evt-1', prospectGuess: 'Russell Kubach', callDateLabel: '25/08/2026', attendeeEmails: [], recordingMissing: false }
+  ];
+  var result = gas.refreshBacklogRecordingMissingFlags_('Sean', backlog, []); // no rows at all anywhere
+  assert.equal(result[0].recordingMissing, true);
+});
+
+test('refreshBacklogRecordingMissingFlags_ leaves an entry alone (no log line, no change) when the label is already correct', () => {
+  var backlog = [
+    { eventId: 'evt-1', prospectGuess: 'Russell Kubach', callDateLabel: '25/08/2026', attendeeEmails: [], recordingMissing: true }
+  ];
+  var result = gas.refreshBacklogRecordingMissingFlags_('Sean', backlog, []); // still nothing — stays "no recording"
+  assert.equal(result[0].recordingMissing, true);
+});
+
+test('refreshBacklogRecordingMissingFlags_ does not let one loosely-matched row clear two different entries\' recordingMissing at once', () => {
+  var backlog = [
+    { eventId: null, title: 'QC / Russell Kubach', prospectGuess: 'Russell Kubach', callDateLabel: '25/08/2026', attendeeEmails: [], recordingMissing: true },
+    { eventId: null, title: 'Sales Call / Russell Kubach', prospectGuess: 'Russell Kubach', callDateLabel: '26/08/2026', attendeeEmails: [], recordingMissing: true }
+  ];
+  // Only ONE row exists for "Russell Kubach", no event ID to disambiguate.
+  var allRowsAnyDate = [
+    { rowIndex: 7, prospect: 'russell kubach', email: '', eventId: '', logged: false }
+  ];
+  var result = gas.refreshBacklogRecordingMissingFlags_('Sean', backlog, allRowsAnyDate);
+  var stillMissing = result.filter(function (e) { return e.recordingMissing; });
+  assert.equal(stillMissing.length, 1, 'only one of the two entries may claim the single matching row');
+});
