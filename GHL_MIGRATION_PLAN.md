@@ -2,8 +2,8 @@
 
 > **Status: design only. No phase code has been changed.** This document
 > exists to be reviewed by Kris, Tomás, Joana and Hazel *before* anything is
-> built, because it contains one finding that changes what "GHL is the
-> system of record" can actually mean.
+> built, because it contains one open question that changes what "GHL is the
+> system of record" can actually mean — and one cheap probe that settles it.
 >
 > Companion to `GHL_PIPELINE_MAP.md` (what's in the CRM) and
 > `SYSTEM_OVERVIEW.md` (what the Apps Script system does). Read both first.
@@ -22,11 +22,13 @@ The short version of the answer:
    state, outcome, no-shows, who owns the lead. GHL knows all of it natively;
    the sheet only knows it because a human typed it in. This part should
    move, and it's the part that gets everyone off spreadsheet maintenance.
-2. **Per-call review history cannot live in GHL's structured fields** — not
-   because of our integration or any volume limit, but because of GHL's data
-   model: it stores one card per person, and we need one row per call (§2).
-   That history needs somewhere with rows. One such place already exists and
-   is already deployed (§4).
+2. **Where per-call review scores live is genuinely open** (§2). GHL logs
+   every call, SMS and email against a lead, so per-call history clearly
+   exists there. What is unverified is whether *our* 23 scored fields can
+   attach to one of those per-event objects, or only to the contact record
+   (where they'd hold one value per person). `previewGhlPerCallObjects()`
+   answers it in one read-only run. Everything below is provisional until
+   it does.
 3. **Even after the "Sales Call Log" tab is retired, the spreadsheet file
    itself has to survive** — seven other script-owned tabs live in it (§7).
 
@@ -48,31 +50,52 @@ Only **7 of the 12** phase files touch the Sales Call Log at all. Phases 6,
 7 and 8 are self-contained on Drive/Gmail plus their own tabs — they need no
 data migration whatsoever.
 
-## 2. The one real blocker: GHL has no per-call record
+## 2. The open question: where do per-call scores hang?
 
-**In plain terms: the spreadsheet stores one line per call. GHL stores one
-card per person.**
+> **Correction, 05/09/2026.** An earlier draft of this section asserted that
+> "GHL has no per-call record" and called it a blocker. That was wrong, and
+> Kris was right to reject it: *"If you call a lead 10 times, it is logged in
+> GHL. Same with SMS. Same with Email!"* GHL plainly stores many events per
+> contact — calls, messages, appointments, notes. The reasoning behind that
+> claim generalised from one narrow fact about *contact custom fields* to all
+> of GHL, and it was never verified. This section now states what is actually
+> known, what isn't, and how to settle it.
 
-Take Ward Frederick. He has had 4 calls with us. In the spreadsheet that's 4
-lines, each with its own score. On his GHL contact card there is one box
-called "Call Quality Score" — write call 2's score into it and call 1's is
-gone; write call 3 and call 2's is gone. At the end you have one number, and
-no way to see that he went 2/5 → 3/5 → 4/5.
+**What is true and verified:** a *contact custom field* holds one value per
+contact. Take Ward Frederick — 4 calls with us (rows 111, 195, 207, 221). In
+the spreadsheet that's 4 lines with 4 scores. If `Call Quality Score` is a
+field on his contact record, there is one box: write call 2's score and call
+1's is gone. You end with one number and no way to see he went 2/5 → 3/5 →
+4/5 — which is the entire coaching product, and what the Monday scorecard,
+the weekly calibration and every dashboard trend are built on.
 
-That progression is the entire coaching product. It's what the Monday
-scorecard compares ("this week vs. your 4-week average"), what the weekly
-calibration checks, and what every trend on the dashboard draws.
+**What is NOT established:** that contact fields are the only option. GHL
+logs every call, SMS, email, appointment and note against the contact. The
+real question — never actually checked — is whether any of those per-event
+objects can carry **our** custom fields, or whether custom fields attach only
+to contacts and opportunities.
 
-Note this is **not** a problem with the review notes — a contact can hold as
-many notes as you like, which is exactly why the Phase 12 sync works. It only
-affects **structured, sortable fields**.
+**How it gets settled:** `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`),
+a read-only probe added 05/09/2026. GHL returns a `model` on every custom
+field definition, naming the object type it attaches to. That list is the
+answer:
 
-In the system's own terms: the Sales Call Log's grain is one row per call;
-GHL's grain is one record per contact plus one per opportunity. Neither is
-one-per-call.
+- if it includes a **call / appointment / custom-object** model → structured
+  per-call scores can live in GHL, and GHL can be the system of record
+  outright;
+- if it's only **contact / opportunity** → per-call scores need a store with
+  rows (§4), and GHL keeps the notes plus a "latest review" on the card.
 
-This is not theoretical. From the real Phase 12 sync run on 05/09/2026 that
-posted 306 review notes:
+The probe also checks for **custom object schemas** (`GET /objects/`), which
+would be the cleanest answer of all: a purpose-built "Call Review" record per
+call. Until it has been run, everything downstream in this document that
+assumes an answer is provisional.
+
+Note the review **notes** are unaffected either way — a contact holds as many
+as you like, which is exactly why the Phase 12 sync works. This only concerns
+**structured, sortable, reportable fields**.
+
+For scale, from the real Phase 12 run on 05/09/2026 that posted 306 notes:
 
 - **Ward Frederick** — rows 111, 195, 207, 221 (4 calls)
 - **Deme Mekras** — rows 37, 136, 209, 212 (4 calls)
@@ -176,13 +199,16 @@ reps live. But it doesn't remove the need for a bulk-readable local store
 
 Each of these changes the plan materially. Three are cheap read-only probes.
 
-**Gate 1 — Does this GHL plan have Custom Objects?**
-Determines whether GHL could hold per-call history at all (§2). Probe: a
-read-only `previewGhlCustomObjects_()` following the same self-diagnosing
-contract as every other `ghl*_` function here — log full status + body on
-non-2xx, so the first real run *is* the verification (GHL's docs are
-egress-blocked from the dev sandbox, exactly as they were for the Notes and
-custom-fields work). *~1 hour.*
+**Gate 1 — Which GHL objects can carry our custom fields?**
+The fork in the road (§2). **Built and ready to run:**
+`previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`) — read-only. Reports every
+custom field definition grouped by the object `model` it attaches to, probes
+`GET /objects/` for custom object schemas, and dumps what GHL already logs
+natively per event on a real contact. Self-diagnosing per this codebase's
+usual contract: full status + body on any non-2xx, so a wrong endpoint guess
+reports itself rather than failing silently (GHL's docs are egress-blocked
+from the dev sandbox, exactly as they were for the Notes and contacts.write
+work — both of which were settled this way). *One run.*
 
 **Gate 2 — Is the custom-fields scope actually granted?**
 `GET /locations/{id}/customFields` returned 401 on 05/09/2026; Kris was
@@ -424,7 +450,8 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
 
 **This week — no phase code changes at all:**
 1. Gate 2 — confirm the custom-fields scope (Kris, in progress).
-2. Gate 1 — probe for Custom Objects. **This is the fork in the road.**
+2. Gate 1 — run `previewGhlPerCallObjects()`. **This is the fork in the
+   road, and it is already written.**
 3. F1 — add column AN, backfill contact IDs mostly free from the note-sync log.
 4. Put Gates 3 and 4 to Kris/Tomás as real questions with a deadline.
 5. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes

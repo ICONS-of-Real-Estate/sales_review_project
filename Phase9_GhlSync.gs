@@ -607,6 +607,103 @@ function previewGhlNotesAndCustomFields() {
 }
 
 /**
+ * Read-only. Answers ONE question, which GHL_MIGRATION_PLAN.md was wrong to
+ * assume the answer to: **is there a per-call object in GHL that can carry
+ * our 23 scored review fields?**
+ *
+ * Background (05/09/2026). An earlier draft of the migration plan claimed
+ * GHL "has no per-call record," reasoning from contact custom fields being
+ * one-value-per-contact. Kris's push-back was correct and the reasoning was
+ * not: "If you call a lead 10 times, it is logged in GHL. Same with SMS.
+ * Same with Email!" GHL plainly holds many events per contact. What was
+ * never actually checked is the narrower thing that matters — whether any of
+ * those per-event objects can carry OUR custom fields, or whether custom
+ * fields only attach to contacts/opportunities.
+ *
+ * So this probes, for one real contact, in the order that decides the
+ * architecture:
+ *   1. Custom field definitions grouped BY MODEL — the direct answer. GHL
+ *      returns a `model` per field definition; whichever object types show
+ *      up there are the ones that can hold structured scored data.
+ *   2. Custom OBJECT schemas (GET /objects/) — if this location has them,
+ *      a purpose-built "Call Review" record becomes possible and GHL can be
+ *      the system of record outright.
+ *   3. The contact's own per-call/message history (conversations, calls,
+ *      appointments, notes) — what GHL already logs natively per event,
+ *      which is the thing Kris was pointing at.
+ *
+ * Every endpoint is hit through ghlApiGet_ and its full status + body is
+ * logged on any non-2xx, so a wrong endpoint guess reports itself instead of
+ * failing silently — the same self-diagnosing contract that turned out to be
+ * how the Notes endpoint and the contacts.write scope both got settled.
+ * Writes nothing. Paste the whole log back.
+ */
+function previewGhlPerCallObjects() {
+  return previewGhlPerCallObjects_();
+}
+
+function previewGhlPerCallObjects_(contactId) {
+  RUN_TAG = 'previewGhlPerCallObjects_';
+  var locationId = getScriptSecret_(GHL_CONFIG.LOCATION_ID_PROPERTY);
+  log_('READ-ONLY probe. Nothing is written. Question: can any per-call GHL ' +
+    'object carry our scored review fields?');
+
+  // --- 1. Which object types can hold custom fields at all -----------------
+  var defs = ghlGetLocationCustomFieldDefs_(locationId);
+  if (!defs.ok) {
+    log_('1. GET /locations/{id}/customFields FAILED: HTTP ' + defs.status +
+      ' — if this is still 401, the Custom Fields scope has not been granted ' +
+      'to the Private Integration token yet. Body: ' + String(defs.body).slice(0, 500));
+  } else {
+    var byModel = {};
+    defs.raw.forEach(function (f) {
+      var m = f.model || 'contact';
+      if (!byModel[m]) byModel[m] = [];
+      byModel[m].push(f);
+    });
+    log_('1. ' + defs.raw.length + ' custom field definition(s), grouped by the OBJECT they attach to:');
+    Object.keys(byModel).forEach(function (m) {
+      log_('   model "' + m + '" — ' + byModel[m].length + ' field(s): ' +
+        byModel[m].map(function (f) { return '"' + f.name + '" (' + f.dataType + ')'; }).join(', '));
+    });
+    log_('   >>> THE KEY LINE: if the only models above are contact/opportunity, ' +
+      'then structured per-call scores cannot hang off a call/message record and ' +
+      'must live in a per-call store outside GHL. If a call/appointment/custom ' +
+      'object model appears, they can live in GHL.');
+  }
+
+  // --- 2. Custom objects (the best case) -----------------------------------
+  var objectsRes = ghlApiGet_('/objects/?locationId=' + encodeURIComponent(locationId));
+  log_('2. GET /objects/ (custom object schemas): HTTP ' + objectsRes.status);
+  log_('   Body (first 800 chars): ' + String(objectsRes.body).slice(0, 800));
+  log_('   >>> A 200 with real schemas means we can define a "Call Review" object ' +
+    'and GHL becomes the system of record outright. A 401/403/404 means this ' +
+    'plan tier or token does not expose them.');
+
+  // --- 3. What GHL already logs per event on a real contact ----------------
+  var cid = contactId ||
+    (typeof GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ !== 'undefined' ? GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ : '');
+  if (!cid || cid === 'PUT_A_REAL_GHL_CONTACT_ID_HERE') {
+    log_('3. Skipped — no contact id available. Pass one, or set ' +
+      'GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ (Phase12_GhlNoteSync.gs).');
+    return;
+  }
+  log_('3. Per-event history already logged by GHL on contact ' + cid + ':');
+  [
+    ['conversations', '/conversations/search?locationId=' + encodeURIComponent(locationId) +
+      '&contactId=' + encodeURIComponent(cid)],
+    ['appointments', '/contacts/' + encodeURIComponent(cid) + '/appointments'],
+    ['notes', '/contacts/' + encodeURIComponent(cid) + '/notes']
+  ].forEach(function (pair) {
+    var res = ghlApiGet_(pair[1]);
+    log_('   ' + pair[0] + ': HTTP ' + res.status + ' — ' + String(res.body).slice(0, 400));
+  });
+  log_('   >>> These prove what GHL logs natively per call/SMS/email. They are ' +
+    'GHL system objects though — (1) above is what says whether we can attach ' +
+    'our own scored fields to them.');
+}
+
+/**
  * Read-only. Resolves ONE real contact (first confident name match out of a
  * small Sales Call Log sample — same matching logic previewGhlMatching_
  * already proved viable) and dumps:
