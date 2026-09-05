@@ -1262,8 +1262,16 @@ def review_decide(
         # silently pretending it worked — a swallowed exception here means
         # Tomás's decision never actually reached the spreadsheet, the one
         # thing this whole page exists to do.
+        #
+        # Real bug found live (06/09/2026): the error message wasn't
+        # HTML-escaped, so an exception whose text contains something that
+        # looks like a tag (Google API error bodies sometimes do) rendered
+        # as invisible markup instead of visible text — the error page
+        # showed nothing after the colon. html.escape() here, and
+        # <pre>/white-space so a long JSON error body stays readable.
         return HTMLResponse(
-            f"<p>Could not save that decision to the spreadsheet: {e}</p>"
+            f"<p>Could not save that decision to the spreadsheet:</p>"
+            f"<pre style='white-space:pre-wrap;'>{html.escape(str(e))}</pre>"
             f"<p><a href='{back_url}'>Back to Review</a></p>",
             status_code=500,
         )

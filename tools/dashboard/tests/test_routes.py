@@ -468,3 +468,27 @@ def test_review_decide_surfaces_sheet_write_failure_instead_of_pretending_succes
     # And the local mirror must NOT have been updated as if it succeeded.
     row = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
     assert row == (0, 0)
+
+
+def test_review_decide_failure_message_is_html_escaped_and_visible(client, db_path, conn, monkeypatch):
+    """Real bug found live (06/09/2026): the error page showed nothing after
+    "Could not save that decision to the spreadsheet:" — the exception text
+    wasn't HTML-escaped, so a message containing something that looks like a
+    tag (Google API error bodies can) rendered as invisible markup instead
+    of visible text. The actual error text must always be readable, and
+    never accidentally executed as HTML."""
+    _insert_crm_row(conn, sheet_row=2)
+    conn.commit()
+
+    def _boom(table, sheet_row, approve):
+        raise Exception("<permission denied> caller lacks Editor access & scope=spreadsheets")
+
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", _boom)
+    resp = client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+    )
+    assert resp.status_code == 500
+    assert "&lt;permission denied&gt;" in resp.text
+    assert "&amp;" in resp.text
+    assert "<permission denied>" not in resp.text  # must never appear unescaped
