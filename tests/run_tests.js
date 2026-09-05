@@ -6771,3 +6771,50 @@ test('ghlStageTriageAlreadyDecided_ recognizes an opportunity id already on the 
   assert.equal(gas.ghlStageTriageAlreadyDecided_(['opp1', 'opp2'], 'opp3'), false);
   assert.equal(gas.ghlStageTriageAlreadyDecided_([], 'opp1'), false);
 });
+
+test('nextGhlStageTriageWriteRow_ finds the real next row by content, not sheet.getLastRow() — the actual bug hit live (05/09/2026): checkbox-formatted blank rows made getLastRow() report 999 with zero real data, pushing the first batch of suggestions down to row 1000', () => {
+  const values = {
+    2: [''], 3: [''] // rows 2-3 exist per getLastRow() but have blank Opportunity IDs (checkbox padding)
+  };
+  const fakeSheet = {
+    getLastRow: () => 3,
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(col, 4); // Opportunity ID column
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  assert.equal(gas.nextGhlStageTriageWriteRow_(fakeSheet), 2);
+});
+
+test('nextGhlStageTriageWriteRow_ writes immediately after the last row that actually has an Opportunity ID, skipping past real data correctly', () => {
+  const values = { 2: ['opp-a'], 3: ['opp-b'], 4: [''] };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows) => {
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  assert.equal(gas.nextGhlStageTriageWriteRow_(fakeSheet), 4);
+});
+
+test('nextGhlStageTriageWriteRow_ returns row 2 for a brand-new sheet with no data rows at all', () => {
+  assert.equal(gas.nextGhlStageTriageWriteRow_({ getLastRow: () => 1 }), 2);
+});
+
+test('readExistingGhlStageTriageOpportunityIds_ filters out blank/checkbox-padding rows so they never get reported as real decisions', () => {
+  const values = { 2: [''], 3: ['opp-real'], 4: ['  '] };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows) => {
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  const ids = gas.readExistingGhlStageTriageOpportunityIds_(fakeSheet);
+  assert.deepEqual(Array.from(ids), ['opp-real']);
+});

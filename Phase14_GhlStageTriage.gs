@@ -71,12 +71,33 @@ function getOrCreateGhlStageTriageSheet_() {
     sheet = ss.insertSheet(GHL_STAGE_TRIAGE_SHEET_NAME);
     sheet.getRange(1, 1, 1, GHL_STAGE_TRIAGE_HEADERS.length).setValues([GHL_STAGE_TRIAGE_HEADERS]).setFontWeight('bold');
     sheet.setFrozenRows(1);
-    // Checkboxes for the two decision columns (Approved, Rejected) — same
-    // "make the decision a real checkbox, not a typed word" pattern as
-    // Outcome Logged (Phase1_ComplianceCheck.gs setupSalesCallLog).
-    sheet.getRange(2, 11, 998, 2).insertCheckboxes();
+    // Deliberately NOT pre-formatting checkboxes across a big empty range
+    // here. Real bug hit live (05/09/2026): pre-inserting checkboxes over
+    // 998 blank rows made getLastRow() report those rows as "having
+    // content" even with every cell blank — the exact gotcha
+    // Phase1_ComplianceCheck.gs:663-668 already documents for
+    // insertCheckboxes(). That pushed the first real batch of suggestions
+    // down to row 1000 instead of row 2. Checkboxes are now inserted only
+    // on the specific rows just written (see previewGhlStageTriage_), so
+    // there's never a blank-but-"occupied" row for getLastRow() to see.
   }
   return sheet;
+}
+
+/**
+ * The next row to write real data to, computed from the Opportunity ID
+ * column (D) actually containing something — NOT sheet.getLastRow(), which
+ * checkbox formatting (or any other cell formatting with no value) can
+ * inflate past the real last row of content. See the comment above.
+ */
+function nextGhlStageTriageWriteRow_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 2;
+  var ids = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+  for (var r = ids.length - 1; r >= 0; r--) {
+    if (String(ids[r][0] || '').trim()) return r + 3; // +2 for 1-based/header, +1 for "next"
+  }
+  return 2; // every row so far is blank
 }
 
 /**
@@ -159,7 +180,9 @@ function ghlStageTriageAlreadyDecided_(existingOpportunityIds, opportunityId) {
 function readExistingGhlStageTriageOpportunityIds_(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
-  return sheet.getRange(2, 4, lastRow - 1, 1).getValues().map(function (r) { return String(r[0] || ''); });
+  return sheet.getRange(2, 4, lastRow - 1, 1).getValues()
+    .map(function (r) { return String(r[0] || '').trim(); })
+    .filter(function (id) { return !!id; }); // exclude blank/checkbox-formatted rows — see nextGhlStageTriageWriteRow_
 }
 
 /**
@@ -207,6 +230,43 @@ function ghlMostRecentConversationDate_(locationId, contactId) {
 /** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
 function previewGhlStageTriage() {
   return previewGhlStageTriage_();
+}
+
+/**
+ * ONE-TIME REPAIR, safe to run any number of times. Fixes the live fallout
+ * of the checkbox/getLastRow() bug above: the first real run (05/09/2026)
+ * wrote its 25 suggestions starting at row 1000 instead of row 2, because
+ * 998 checkbox-formatted-but-blank rows made getLastRow() think they held
+ * content. This deletes only rows whose Opportunity ID (col D) is blank AND
+ * that sit ABOVE the first row that actually has one — i.e. exactly the
+ * accidental padding, never a row with real data, never a row below the
+ * real data (a genuinely blank row there would be a different problem this
+ * function correctly leaves alone). Logs what it did either way.
+ */
+function repairGhlStageTriagePadding() {
+  RUN_TAG = 'repairGhlStageTriagePadding';
+  var sheet = getOrCreateGhlStageTriageSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('Sheet has no data rows — nothing to repair.'); return; }
+
+  var ids = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+  var firstRealOffset = -1;
+  for (var r = 0; r < ids.length; r++) {
+    if (String(ids[r][0] || '').trim()) { firstRealOffset = r; break; }
+  }
+  if (firstRealOffset <= 0) {
+    log_(firstRealOffset === 0
+      ? 'No padding found — real data already starts at row 2. Nothing to do.'
+      : 'No row has an Opportunity ID at all — nothing to repair (or nothing has been written yet).');
+    return;
+  }
+
+  var padStartRow = 2;
+  var padRowCount = firstRealOffset; // rows [2 .. 2+firstRealOffset-1] are blank padding
+  sheet.deleteRows(padStartRow, padRowCount);
+  log_('Deleted ' + padRowCount + ' blank padding row(s) (rows ' + padStartRow + '-' +
+    (padStartRow + padRowCount - 1) + ') so real suggestions now start at row 2. ' +
+    'Nothing with a real Opportunity ID was touched.');
 }
 
 /**
@@ -297,7 +357,11 @@ function previewGhlStageTriage_() {
   }
 
   if (newRows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, GHL_STAGE_TRIAGE_HEADERS.length).setValues(newRows);
+    var writeRow = nextGhlStageTriageWriteRow_(sheet);
+    sheet.getRange(writeRow, 1, newRows.length, GHL_STAGE_TRIAGE_HEADERS.length).setValues(newRows);
+    // Checkboxes on just these rows' Approved/Rejected cells — never a big
+    // empty range ahead of real data, see getOrCreateGhlStageTriageSheet_.
+    sheet.getRange(writeRow, 11, newRows.length, 2).insertCheckboxes();
   }
 
   log_('Scanned ' + scanned + ' stale, non-terminal opportunity(s) (>' +
