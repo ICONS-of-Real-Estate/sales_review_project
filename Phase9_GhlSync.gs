@@ -437,6 +437,146 @@ function previewGhlMatching_(perRep) {
     'as the join key, or whether GHL_PIPELINE_MAP.md\'s email-backfill-first plan needs a different approach.');
 }
 
+// ---------------------------------------------------------------------------
+// Notes/custom-fields capability probe (04/09/2026) — Tomás's ask (voice
+// note to Kris): stop maintaining "Sales Call Log" as a second system of
+// record at all. Reps update GHL only; call date/type/disposition become
+// real GHL fields, and a call's transcript/review lives as a GHL Note this
+// codebase's own scoring pipeline can read back. Two real unknowns block
+// any of that, and GHL's own docs are unreachable from any dev sandbox (see
+// this file's header) — the only way to answer them is probing the live
+// account, same as every other "is this endpoint/shape real" question in
+// this file. Read-only: writes nothing, safe to re-run.
+// ---------------------------------------------------------------------------
+
+/**
+ * One GHL contact's full record, including whatever custom fields this
+ * account has configured — endpoint/shape is a best-effort guess (GHL v2:
+ * GET /contacts/{contactId}), same self-diagnosing contract as every other
+ * ghl*_ function here: a non-200 or unrecognized shape reports the raw body
+ * instead of silently returning nothing.
+ */
+function ghlGetContact_(contactId) {
+  var res = ghlApiGet_('/contacts/' + encodeURIComponent(contactId));
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, body: res.body, url: res.url, contact: null };
+  }
+  var contact = (res.json && (res.json.contact || res.json)) || null;
+  return { ok: true, contact: contact };
+}
+
+/**
+ * Every Note on one GHL contact — endpoint/shape is a best-effort guess
+ * (GHL v2: GET /contacts/{contactId}/notes), same self-diagnosing contract
+ * as ghlGetContact_ above.
+ */
+function ghlGetContactNotes_(contactId) {
+  var res = ghlApiGet_('/contacts/' + encodeURIComponent(contactId) + '/notes');
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, body: res.body, url: res.url, notes: null };
+  }
+  var notes = (res.json && (res.json.notes || res.json.data)) || [];
+  return { ok: true, notes: notes };
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewGhlNotesAndCustomFields() {
+  return previewGhlNotesAndCustomFields_();
+}
+
+/**
+ * Read-only. Resolves ONE real contact (first confident name match out of a
+ * small Sales Call Log sample — same matching logic previewGhlMatching_
+ * already proved viable) and dumps:
+ *   1. Every custom field GHL already has configured on that contact record
+ *      (whether or not any of them are populated) — answers "can call
+ *      date/type/disposition live here as real fields, not just pipeline
+ *      stage."
+ *   2. Whether GET .../notes returns real note objects, is empty, or 404s —
+ *      answers "is there a Notes object at all, and can this codebase read
+ *      it back for scoring."
+ * Writes nothing. Paste the full log back to Claude — it's the answer to
+ * whether "ditch the spreadsheets, GHL is the one source of truth" (Kris,
+ * 04/09/2026, relaying Tomás) is buildable at all, and what it would
+ * actually look like.
+ */
+function previewGhlNotesAndCustomFields_() {
+  RUN_TAG = 'previewGhlNotesAndCustomFields_';
+  log_('PREVIEW MODE — read-only GHL notes/custom-fields probe. Nothing will be written or sent.');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var sample = sampleSalesCallLogRows_(10); // small net across reps -- only need ONE confident match
+  if (!sample.length) { log_('No Sales Call Log rows found to sample.'); return; }
+
+  var contact = null, matchedName = null;
+  for (var i = 0; i < sample.length && !contact; i++) {
+    var search = ghlSearchContactByName_(locationId, sample[i].prospectName);
+    if (!search.ok || !search.contacts.length) continue;
+    var candidates = search.contacts.filter(function (c) { return contactNameLooksLikeQuery_(c, sample[i].prospectName); });
+    if (candidates.length === 1) {
+      contact = candidates[0];
+      matchedName = sample[i].prospectName;
+    }
+  }
+  if (!contact) {
+    log_('Could not find a single confident contact match in a sample of ' + sample.length +
+      ' rows to probe against — re-run previewGhlMatching() first to confirm matching works at all.');
+    return;
+  }
+  log_('Probing against "' + matchedName + '" -> GHL contact id=' + contact.id);
+
+  log_('');
+  log_('--- Custom fields ---');
+  var full = ghlGetContact_(contact.id);
+  if (!full.ok) {
+    log_('GET /contacts/{id} FAILED: HTTP ' + full.status + '. Body (first 1000 chars): ' +
+      String(full.body).slice(0, 1000));
+  } else if (!full.contact) {
+    log_('GET /contacts/{id} returned 200 but no recognizable contact object. Raw body (first 1000 chars): ' +
+      String(full.body || JSON.stringify(full)).slice(0, 1000));
+  } else {
+    var customFields = full.contact.customFields || full.contact.customField || [];
+    if (!customFields || !customFields.length) {
+      log_('Contact record has NO custom fields populated/configured (or this account uses a different ' +
+        'field name than "customFields" -- raw contact keys: ' + Object.keys(full.contact).join(', ') + ').');
+    } else {
+      log_(customFields.length + ' custom field(s) found on this contact:');
+      customFields.forEach(function (f) {
+        log_('   ' + (f.name || f.key || f.id) + ' = ' + JSON.stringify(f.value));
+      });
+    }
+  }
+
+  log_('');
+  log_('--- Notes ---');
+  var notesRes = ghlGetContactNotes_(contact.id);
+  if (!notesRes.ok) {
+    log_('GET /contacts/{id}/notes FAILED: HTTP ' + notesRes.status + '. Body (first 1000 chars): ' +
+      String(notesRes.body).slice(0, 1000));
+    log_('   404 here likely means this account\'s API version/plan doesn\'t expose Notes this way -- ' +
+      'paste this back to Claude either way, the exact error decides the next step.');
+  } else if (!notesRes.notes.length) {
+    log_('Notes endpoint is REAL (HTTP 200) but this contact has none yet -- try again against a contact ' +
+      'you know has a manually-added note in the GHL UI, to confirm read-back actually works end to end.');
+  } else {
+    log_(notesRes.notes.length + ' note(s) found on this contact:');
+    notesRes.notes.forEach(function (n) {
+      log_('   [' + (n.dateAdded || n.createdAt || '?') + '] ' + String(n.body || n.text || JSON.stringify(n)).slice(0, 300));
+    });
+  }
+
+  log_('');
+  log_('Paste this whole log back to Claude — it decides whether GHL can be the single ' +
+    'source of truth for call fields + review notes, or what workaround is needed instead.');
+}
+
 /**
  * Maps a GHL stage name onto the Sales Call Log's "Outcome Disposition"
  * vocabulary (Sold / Not Sold / Follow-up / No-show), or null when the
