@@ -28,7 +28,7 @@
  */
 
 var GHL_NOTE_SYNC_CONFIG = {
-  ENABLED: false,
+  ENABLED: true,
 
   // Kris's ask (05/09/2026): "move forward with everything and revert back
   // Monday if Tomás doesn't like it." A full GHL account backup/restore
@@ -36,7 +36,11 @@ var GHL_NOTE_SYNC_CONFIG = {
   // small batch, prove the note-sync-log + revertGhlNoteSync_ round trip
   // actually works end to end against a handful of real notes, THEN raise
   // this (or set it back to null) for the full run. null/0 = no limit.
-  MAX_ROWS_PER_RUN: null
+  //
+  // Set to 3 for the first live run (05/09/2026) — raise to null once
+  // that batch is confirmed posted correctly in GHL and revertGhlNoteSync_
+  // is confirmed to actually undo it.
+  MAX_ROWS_PER_RUN: 3
 };
 
 var GHL_NOTE_SYNC_LOG_SHEET_NAME = 'GHL Note Sync Log';
