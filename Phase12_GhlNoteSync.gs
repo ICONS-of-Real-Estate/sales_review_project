@@ -154,15 +154,30 @@ function buildGhlNoteFormattingTestBody_() {
   return lines.join('<br>');
 }
 
-function previewGhlNoteFormattingTest_() {
+// EDIT THIS before running previewGhlNoteFormattingTest()/
+// runGhlNoteFormattingTest() from the Apps Script "Select function to run"
+// dropdown — that dropdown always calls with zero arguments, so it can't
+// pass a contactId directly. Anthony Camperi's contact ID (already used for
+// throwaway test notes this session) is a safe default; swap in any real
+// contact ID before running against someone else's record.
+var GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ = 'PUT_A_REAL_GHL_CONTACT_ID_HERE';
+
+function previewGhlNoteFormattingTest_(contactId) {
   log_('previewGhlNoteFormattingTest_: this would post the following body ' +
-    'to whatever contactId you pass runGhlNoteFormattingTest_ — nothing ' +
-    'written yet:\n' + buildGhlNoteFormattingTestBody_());
+    'to contact ' + (contactId || GHL_NOTE_FORMATTING_TEST_CONTACT_ID_) +
+    ' — nothing written yet:\n' + buildGhlNoteFormattingTestBody_());
+}
+
+// No-underscore wrapper — Apps Script's "Select function to run" dropdown
+// hides trailing-underscore functions (CLAUDE.md convention).
+function previewGhlNoteFormattingTest() {
+  previewGhlNoteFormattingTest_(GHL_NOTE_FORMATTING_TEST_CONTACT_ID_);
 }
 
 function runGhlNoteFormattingTest_(contactId) {
-  if (!contactId) {
-    log_('runGhlNoteFormattingTest_: pass a real GHL contactId, e.g. runGhlNoteFormattingTest_("abc123").');
+  if (!contactId || contactId === 'PUT_A_REAL_GHL_CONTACT_ID_HERE') {
+    log_('runGhlNoteFormattingTest_: set GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ ' +
+      '(top of Phase12_GhlNoteSync.gs) to a real GHL contactId first.');
     return;
   }
   var res = ghlPostContactNote_(contactId, buildGhlNoteFormattingTestBody_());
@@ -174,6 +189,12 @@ function runGhlNoteFormattingTest_(contactId) {
     ' (note id ' + (res.noteId || '(none returned)') + '). Read it in GHL, ' +
     'note which variants actually rendered bold/italic/spaced, then delete ' +
     'it with ghlDeleteContactNote_("' + contactId + '", "' + (res.noteId || '<noteId>') + '").');
+}
+
+// No-underscore wrapper — Apps Script's "Select function to run" dropdown
+// hides trailing-underscore functions (CLAUDE.md convention).
+function runGhlNoteFormattingTest() {
+  runGhlNoteFormattingTest_(GHL_NOTE_FORMATTING_TEST_CONTACT_ID_);
 }
 
 /**
