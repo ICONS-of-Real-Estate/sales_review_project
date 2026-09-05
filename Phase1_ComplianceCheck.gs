@@ -250,7 +250,17 @@ function log_(msg) {
  * this codebase already uses.
  */
 var COMPLIANCE_CHECK_CONFIG = {
-  ENABLED: false // Set false 05/09/2026 per Kris's explicit ask above — no code deleted, just switched off.
+  // Set false 05/09/2026 per Kris's explicit ask above — no code deleted,
+  // just switched off. REACTIVATION NOTE (06/09/2026): still firing as of
+  // 05/09/2026 because the code fix hadn't been clasp-pushed yet — the
+  // ENABLED flag itself is correct, it just needs the live Apps Script
+  // project updated to pick it up. Stays false until the GHL migration
+  // (GHL_MIGRATION_PLAN.md) is actually live for reps to work from —
+  // i.e. after Tomás's CRM organization session and Phase 12's note sync
+  // (or a successor) is the thing reps rely on instead of a spreadsheet
+  // tracker. Do not flip this back to true just because it's quiet;
+  // confirm with Kris/Tomás that GHL is the live source of truth first.
+  ENABLED: false
 };
 
 /**

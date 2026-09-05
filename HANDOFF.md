@@ -1,3 +1,19 @@
+## ⚠ PENDING REACTIVATION (added 06/09/2026, still open)
+
+**`COMPLIANCE_CHECK_CONFIG.ENABLED` (`Phase1_ComplianceCheck.gs`) is `false`
+— the daily tracker-nag emails are switched off.** Kris, 05/09/2026: "We
+don't want any trackers. Everything in GHL." Confirmed still firing live to
+Sean on 06/09/2026 (16 hours after the code fix), which means it hadn't
+been `clasp push`ed yet at that point, not a code bug.
+
+**Do not flip this back to `true`** until the GHL migration
+(`GHL_MIGRATION_PLAN.md`) is actually the thing reps use day to day —
+i.e. after Tomás's CRM organization session with Joana and whatever
+replaces the spreadsheet-tracker workflow is live. Check with Kris/Tomás
+before re-enabling, don't just assume "it's been quiet" means it's safe.
+
+---
+
 # Handoff — 28/08/2026 (session 12 — GHL integration built, Inbox SLA alias bug fixed, Reply Tracker bug found)
 
 ## 0. What happened this session (read this first)
