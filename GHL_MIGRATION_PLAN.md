@@ -373,7 +373,7 @@ always "flip the flag back" and never "restore from backup":
 | Stage | Behaviour | Risk |
 |---|---|---|
 | **0 — Shadow read** | read from *both* sheet and new source; act on the **sheet**; log every disagreement | none — measures risk before taking any |
-| **1 — New source authoritative, sheet fallback** | act on the new source; fall back when there's no match | low — Gate 4's orphans stay covered |
+| **1 — New source authoritative, sheet fallback** | act on the new source; fall back when there's no match | low — Q4's orphans stay covered |
 | **2 — New source only** | sheet no longer read | medium |
 | **3 — Retire the column** | stop *writing* the sheet column too | the irreversible one — last, per phase, only after stage 2 runs clean for a full cycle |
 
@@ -392,10 +392,10 @@ Ordered by recommended sequence. "Burden" is migration effort, not value.
 | — | **7** Daily Self-Practice | no | no | **none** | Drive + Gmail + its own tab. |
 | — | **8** Reply Tracker | no | no | **none** for SCL | But joins to Bens's human tracker **positionally with no header validation** (`Phase8:414`) — a column insert there silently produces wrong booking percentages. Worth fixing regardless. |
 | 1 | **9** GHL Sync | yes | fills B, H | small | Already GHL-native. Needs its log tab, then flip `ENABLED`. This is F2. |
-| 2 | **12** GHL Note Sync | yes | AM marker | small | Already live. Extend to write contact-level "latest review" fields once Gate 2 clears. Create-only/fill-blank. |
+| 2 | **12** GHL Note Sync | yes | AM marker | small | Already live. Extend to write contact-level "latest review" fields once Q2 clears. Create-only/fill-blank. |
 | 3 | **4** Inbox SLA | one read | no | small | Only `computeNoShowFollowUpResults_` touches SCL; joins on Prospect Email + Rep — both have obvious CRM homes. `NO_SHOW_FOLLOWUP_CONFIG.ENABLED` is still false, so there's no live behaviour to preserve. Must preserve the literal string `'No-show'`. |
 | 4 | **10** Conversion Funnel | yes (6 cols) | no | small | Pure read-only consumer, `ENABLED` still false — **never sent live**, so nothing to break. Two catches: its `good_to_book` funnel step is script-native with **no GHL equivalent**, and its blank-disposition-means-attended rule (§6 F2) makes pre/post numbers incomparable. Also: rows Phase 11 creates (`Call Type: Icons 100 Recording`) match neither of its call-type filters, so they're invisible to it today — a live inconsistency worth fixing while we're here. |
-| 5 | **1** Compliance | yes (heavy) | I, L | medium | Gains no-show visibility — the single biggest blind spot in the system. But: 6 full-sheet scans per run (§3), row-index write-back (F4), and checkbox/`isTruthyOutcome_` tolerance that only makes sense for a spreadsheet cell. Blocked on Gate 3. |
+| 5 | **1** Compliance | yes (heavy) | I, L | medium | Gains no-show visibility — the single biggest blind spot in the system. But: 6 full-sheet scans per run (§3), row-index write-back (F4), and checkbox/`isTruthyOutcome_` tolerance that only makes sense for a spreadsheet cell. Blocked on Q3. |
 | 6 | **5** Weekly Scorecard | yes | no | medium | Read-only; follows the store. Watch: it reads **cell type** (`typeof score !== 'number'`, `callDate instanceof Date`) and `callScoreIsUnusableForStats_` **pattern-matches free text inside AI Feedback Summary** to detect parse failures — that needs a real status field, not a string sniff. |
 | 7 | **3** Handoff Brief | yes | no | medium | Joins on **normalized Prospect Name only** — the weakest join in the system; a contact ID would genuinely improve it. Its two dedup tabs stay put (§7). |
 | 8 | **11** Bens Podcast Sync | yes (3 cols) | **appends A–U** | medium-high | ⚠️ **Live since 04/09/2026** (`ENABLED: true`) — `CLAUDE.md` still says false; that's stale and should be corrected. Writes by **positional `appendRow`**, and its only duplicate protection is a name+rep+calltype predicate. Any source swap must reproduce that predicate exactly or it duplicates rows daily. |
