@@ -6907,21 +6907,22 @@ test('classifyReconciliationNoise_ does NOT flag a real prospect name/email — 
   assert.equal(v.reason, '');
 });
 
-test('buildLeadReconciliationReviewRow_ ends every row in the same dedupe key dedupeReconciliationLeads_ uses, so a re-run can recognize an already-listed lead', () => {
+test('buildLeadReconciliationReviewRow_ has the same dedupe key dedupeReconciliationLeads_ uses at a fixed position (index 10, column K) — not "last element," since Needs More Info (06/09/2026) is appended after it', () => {
   const row = gas.buildLeadReconciliationReviewRow_({
     lead: { name: 'Ward Frederick', email: 'ward@example.com', sources: ['Sales Call Log:111'] },
     status: 'not_found', matches: []
   });
-  assert.equal(row[row.length - 1], 'email:ward@example.com');
+  assert.equal(row[10], 'email:ward@example.com');
   assert.equal(row[1], 'Ward Frederick');
   assert.equal(row[3], 'not_found');
+  assert.equal(row[11], false); // Needs More Info, default unset
 });
 
 test('buildLeadReconciliationReviewRow_ falls back to a normalized-name key when there is no email, matching dedupeReconciliationLeads_\'s own fallback', () => {
   const row = gas.buildLeadReconciliationReviewRow_({
     lead: { name: 'Deme Mekras', email: '', sources: ['Sales Call Log:37'] }, status: 'not_found', matches: []
   });
-  assert.equal(row[row.length - 1], 'name:deme mekras');
+  assert.equal(row[10], 'name:deme mekras');
 });
 
 test('buildLeadReconciliationReviewRow_ tags the noise columns inline, so "All" and "Candidates" can be built from the exact same row shape', () => {
@@ -6950,13 +6951,14 @@ test('nextReconciliationReviewWriteRow_ and readExistingReconciliationReviewKeys
 
 test('writeLeadReconciliationReviewRows_ skips a result whose dedupe key is already on the sheet, so a re-run never duplicates a still-missing lead\'s row', () => {
   const written = [];
-  let insertCheckboxesCalled = false;
+  let insertCheckboxesCallCount = 0;
   const fakeSheet = {
     getLastRow: () => 2, // header only, existing key check reads nothing
+    getLastColumn: () => 12, // full header width already — no migration needed
     getRange: () => ({
       getValues: () => [],
       setValues: (rows) => { written.push(...rows); },
-      insertCheckboxes: () => { insertCheckboxesCalled = true; }
+      insertCheckboxes: () => { insertCheckboxesCallCount++; }
     })
   };
   const originalSS = gas.SpreadsheetApp;
@@ -6968,10 +6970,82 @@ test('writeLeadReconciliationReviewRows_ skips a result whose dedupe key is alre
     const count = gas.writeLeadReconciliationReviewRows_('Lead Reconciliation - All', results, gas.buildLeadReconciliationReviewRow_);
     assert.equal(count, 1);
     assert.equal(written.length, 1);
-    assert.equal(insertCheckboxesCalled, true);
+    // Two separate checkbox ranges: Real Lead/Not a real lead (I:J), and
+    // Needs More Info (L, non-adjacent — Dedupe Key K sits between them).
+    assert.equal(insertCheckboxesCallCount, 2);
   } finally {
     gas.SpreadsheetApp = originalSS;
   }
+});
+
+// ---------------------------------------------------------------------------
+// "Needs More Info" (Kris, 06/09/2026): "Add another button. Don't
+// know...so that if he doesn't understand he can just hit that. Then
+// afterwards, you can do an analysis and give him more information." Both
+// review sheets' header-migration path (an already-existing sheet gets the
+// new header cell appended, without touching any already-written header).
+// ---------------------------------------------------------------------------
+
+test('getOrCreateLeadReconciliationReviewSheet_ extends an existing sheet\'s header row with "Needs More Info" without touching already-written headers', () => {
+  let headerWrite = null;
+  const fakeSheet = {
+    getLastColumn: () => 11, // pre-existing sheet, before "Needs More Info" was added
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(row, 1);
+      assert.equal(col, 12); // right after the existing 11 columns
+      return {
+        setValues: (vals) => { headerWrite = vals; return { setFontWeight: () => {} }; }
+      };
+    }
+  };
+  const originalSS = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet }) };
+  try {
+    gas.getOrCreateLeadReconciliationReviewSheet_('Lead Reconciliation - All');
+  } finally {
+    gas.SpreadsheetApp = originalSS;
+  }
+  assert.ok(headerWrite, 'the missing header cell should have been written');
+  assert.deepEqual(Array.from(headerWrite[0]), ['Needs More Info']);
+});
+
+test('getOrCreateCrmOrganizationReviewSheet_ extends an existing sheet\'s header row with "Needs More Info" without touching already-written headers', () => {
+  let headerWrite = null;
+  const fakeSheet = {
+    getLastColumn: () => 8, // pre-existing sheet, before "Needs More Info" was added
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(row, 1);
+      assert.equal(col, 9); // right after the existing 8 columns
+      return {
+        setValues: (vals) => { headerWrite = vals; return { setFontWeight: () => {} }; }
+      };
+    }
+  };
+  const originalSS = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet }) };
+  try {
+    gas.getOrCreateCrmOrganizationReviewSheet_();
+  } finally {
+    gas.SpreadsheetApp = originalSS;
+  }
+  assert.ok(headerWrite, 'the missing header cell should have been written');
+  assert.deepEqual(Array.from(headerWrite[0]), ['Needs More Info']);
+});
+
+test('getOrCreateCrmOrganizationReviewSheet_ does nothing to an already-fully-migrated sheet\'s header row', () => {
+  let getRangeCalled = false;
+  const fakeSheet = {
+    getLastColumn: () => 9, // already has "Needs More Info"
+    getRange: () => { getRangeCalled = true; return { setValues: () => ({ setFontWeight: () => {} }) }; }
+  };
+  const originalSS = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet }) };
+  try {
+    gas.getOrCreateCrmOrganizationReviewSheet_();
+  } finally {
+    gas.SpreadsheetApp = originalSS;
+  }
+  assert.equal(getRangeCalled, false);
 });
 
 // ---------------------------------------------------------------------------

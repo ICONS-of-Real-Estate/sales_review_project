@@ -342,9 +342,18 @@ function knownGhlContactNamesFromNoteLog_() {
   return known;
 }
 
+// "Needs More Info" (col L) added 06/09/2026 — Kris: "Add another button.
+// Don't know...so that if he doesn't understand he can just hit that. Then
+// afterwards, you can do an analysis and give him more information." A
+// third decision alongside Real Lead/Not a real lead: "set this aside, not
+// enough to decide yet." Appended at the END (after Dedupe Key, not
+// between "Not a real lead" and Dedupe Key) deliberately — same reasoning
+// as Phase15_CrmOrganizationReview.gs's own Needs More Info column:
+// inserting a column in the MIDDLE of an already-live sheet would silently
+// relabel every existing row's Dedupe Key data under the wrong header.
 var LEAD_RECONCILIATION_REVIEW_HEADERS_ = [
   'Timestamp', 'Name', 'Email', 'Status', 'Sources', 'Likely Noise', 'Noise Reason',
-  'Ambiguous GHL Matches', 'Real Lead — add to CRM', 'Not a real lead', 'Dedupe Key'
+  'Ambiguous GHL Matches', 'Real Lead — add to CRM', 'Not a real lead', 'Dedupe Key', 'Needs More Info'
 ];
 
 /**
@@ -372,6 +381,16 @@ function getOrCreateLeadReconciliationReviewSheet_(sheetName) {
     // getLastRow() think 998 blank rows held content and buried real data
     // at row 1000. Checkboxes go on only the specific rows just written,
     // see writeLeadReconciliationReviewRows_ below.
+  } else {
+    // Migration for a sheet that already existed before "Needs More Info"
+    // was added — extends the header row with any header cells it's
+    // missing, without touching a single already-written header.
+    var currentHeaderWidth = sheet.getLastColumn();
+    if (currentHeaderWidth < LEAD_RECONCILIATION_REVIEW_HEADERS_.length) {
+      var missing = LEAD_RECONCILIATION_REVIEW_HEADERS_.slice(currentHeaderWidth);
+      sheet.getRange(1, currentHeaderWidth + 1, 1, missing.length)
+        .setValues([missing]).setFontWeight('bold');
+    }
   }
   return sheet;
 }
@@ -404,7 +423,10 @@ function nextReconciliationReviewWriteRow_(sheet) {
 /**
  * Appends rows to one review sheet, skipping any lead whose dedupe key is
  * already present. Returns how many were actually written. `rowBuilder`
- * turns one result into a row array ending in its dedupe key.
+ * turns one result into a row array whose Dedupe Key sits at a FIXED
+ * position — index 10 (0-based), column K — rather than "last element,"
+ * so appending "Needs More Info" after Dedupe Key (06/09/2026) didn't
+ * require touching this key-extraction logic at all.
  */
 function writeLeadReconciliationReviewRows_(sheetName, results, rowBuilder) {
   if (!results.length) return 0;
@@ -413,18 +435,19 @@ function writeLeadReconciliationReviewRows_(sheetName, results, rowBuilder) {
   var newRows = [];
   results.forEach(function (r) {
     var row = rowBuilder(r);
-    var key = row[row.length - 1];
+    var key = row[10]; // Dedupe Key, column K — see readExistingReconciliationReviewKeys_
     if (existingKeys.indexOf(key) !== -1) return;
     newRows.push(row);
   });
   if (!newRows.length) return 0;
   var writeRow = nextReconciliationReviewWriteRow_(sheet);
   sheet.getRange(writeRow, 1, newRows.length, LEAD_RECONCILIATION_REVIEW_HEADERS_.length).setValues(newRows);
-  sheet.getRange(writeRow, 9, newRows.length, 2).insertCheckboxes(); // Real Lead / Not a real lead, this batch only
+  sheet.getRange(writeRow, 9, newRows.length, 2).insertCheckboxes(); // Real Lead / Not a real lead
+  sheet.getRange(writeRow, 12, newRows.length, 1).insertCheckboxes(); // Needs More Info
   return newRows.length;
 }
 
-/** Builds one review-sheet row (ending in its dedupe key) from one classified result. */
+/** Builds one review-sheet row from one classified result — Dedupe Key at index 10 (column K), Needs More Info last (column L). */
 function buildLeadReconciliationReviewRow_(result) {
   var lead = result.lead;
   var noise = classifyReconciliationNoise_(lead);
@@ -434,7 +457,7 @@ function buildLeadReconciliationReviewRow_(result) {
   var key = lead.email ? ('email:' + lead.email) : ('name:' + normalize_(lead.name));
   return [
     new Date(), lead.name, lead.email, result.status, lead.sources.join(', '),
-    noise.isNoise, noise.reason, matchesLabel, false, false, key
+    noise.isNoise, noise.reason, matchesLabel, false, false, key, false
   ];
 }
 

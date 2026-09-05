@@ -221,8 +221,18 @@ var CRM_ORGANIZATION_REVIEW_SHEET_NAME_ = 'CRM Organization Review';
 // 2"/"SALES CALL pipeline" that were already sitting in the sheet from the
 // FIRST run. Unlike Phase13, this file never had any dedupe check at all —
 // every run just appended fresh rows for the same recurring findings.
+// "Needs More Info" (col I) added 06/09/2026 — Kris: "Add another button.
+// Don't know...so that if he doesn't understand he can just hit that. Then
+// afterwards, you can do an analysis and give him more information." A
+// third decision alongside Approve/Reject: "set this aside, I don't have
+// enough to decide yet." Appended at the END (after Dedupe Key, not
+// between Reject and Dedupe Key) deliberately — inserting a column in the
+// MIDDLE of an already-live sheet would silently relabel every existing
+// row's Dedupe Key data under the wrong header. Appending at the end means
+// every existing column keeps the exact position it already has.
 var CRM_ORGANIZATION_REVIEW_HEADERS_ = [
-  'Timestamp', 'Category', 'Finding', 'Evidence', 'Suggested Action', 'Approve', 'Reject', 'Dedupe Key'
+  'Timestamp', 'Category', 'Finding', 'Evidence', 'Suggested Action', 'Approve', 'Reject', 'Dedupe Key',
+  'Needs More Info'
 ];
 
 function getOrCreateCrmOrganizationReviewSheet_() {
@@ -237,6 +247,16 @@ function getOrCreateCrmOrganizationReviewSheet_() {
     // exact mistake (Phase14_GhlStageTriage.gs, 05/09/2026) made
     // getLastRow() think blank rows held content and buried real data.
     // Checkboxes go on only the specific rows just written, below.
+  } else {
+    // Migration for a sheet that already existed before "Needs More Info"
+    // was added — extends the header row with any header cells it's
+    // missing, without touching a single already-written header.
+    var currentHeaderWidth = sheet.getLastColumn();
+    if (currentHeaderWidth < CRM_ORGANIZATION_REVIEW_HEADERS_.length) {
+      var missing = CRM_ORGANIZATION_REVIEW_HEADERS_.slice(currentHeaderWidth);
+      sheet.getRange(1, currentHeaderWidth + 1, 1, missing.length)
+        .setValues([missing]).setFontWeight('bold');
+    }
   }
   return sheet;
 }
@@ -375,7 +395,7 @@ function previewCrmOrganizationReview_() {
       f.total + ' open opportunities scanned, none in a terminal stage.',
       'Confirm whether this pipeline is still actively worked, or should be archived/consolidated ' +
         '(GHL_PIPELINE_MAP.md flagged "Cold Calling 2" as this exact pattern on 27/08 — this re-checks live).',
-      false, false, key
+      false, false, key, false
     ]);
   });
 
@@ -388,7 +408,7 @@ function previewCrmOrganizationReview_() {
         ' open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
       'Found on live, non-terminal opportunities across the pipelines scanned this run.',
       'Confirm who this is and whether their calls should be scored (GHL_PIPELINE_MAP.md §C, still open).',
-      false, false, key
+      false, false, key, false
     ]);
   });
 
@@ -398,7 +418,8 @@ function previewCrmOrganizationReview_() {
   if (newRows.length) {
     var writeRow = nextCrmOrganizationReviewWriteRow_(sheet);
     sheet.getRange(writeRow, 1, newRows.length, CRM_ORGANIZATION_REVIEW_HEADERS_.length).setValues(newRows);
-    sheet.getRange(writeRow, 6, newRows.length, 2).insertCheckboxes();
+    sheet.getRange(writeRow, 6, newRows.length, 2).insertCheckboxes(); // Approve, Reject
+    sheet.getRange(writeRow, 9, newRows.length, 1).insertCheckboxes(); // Needs More Info
     log_('Wrote ' + newRows.length + ' new finding(s) to "' + CRM_ORGANIZATION_REVIEW_SHEET_NAME_ + '".');
   } else {
     log_('Nothing new to report — no pipeline looked abandoned and no unrecognized assignee was found beyond what\'s already listed.');

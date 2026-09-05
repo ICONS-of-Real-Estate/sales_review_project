@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Needs More Info — Sales Review Dashboard{% endblock %}
+{% block content %}
+<h1>Needs More Info</h1>
+<p class="muted">
+  Everything marked "Don't know" from the Review queues — set aside instead
+  of blocking the rest of the swipe queue. Once more information has been
+  added (in the spreadsheet, or by asking Claude to do an analysis),
+  "Reset to pending" sends it back to the normal queue for a real decision.
+</p>
+<p><a href="/review">&larr; Back to Review overview</a></p>
+
+{% if cards %}
+<table>
+  <thead>
+    <tr><th>Queue</th><th>Item</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for card in cards %}
+    <tr>
+      <td>{{ 'CRM' if card.card_type == 'crm' else 'Lead' }}</td>
+      <td>
+        {% if card.card_type == 'crm' %}
+          <div class="review-category">{{ card.category }}</div>
+          <div>{{ card.finding }}</div>
+          {% if card.evidence %}<div class="muted">{{ card.evidence }}</div>{% endif %}
+          {% if card.suggested_action %}<div>{{ card.suggested_action }}</div>{% endif %}
+        {% else %}
+          <div>{{ card.name if card.name else '(no name)' }}{% if card.email %} — {{ card.email }}{% endif %}</div>
+          <div class="muted">{{ card.status }} · Sources: {{ card.sources }}</div>
+          {% if card.ambiguous_matches %}<div>Possible GHL matches: {{ card.ambiguous_matches }}</div>{% endif %}
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/review/needs-info/reset" style="display:inline;">
+          <input type="hidden" name="table" value="{{ card.table }}">
+          <input type="hidden" name="sheet_row" value="{{ card.sheet_row }}">
+          <button type="submit" class="review-undo-btn">Reset to pending</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nothing marked "Don't know" right now. 🎉</p>
+{% endif %}
+{% endblock %}

@@ -40,7 +40,7 @@
       <td>{{ d.decided_by }}</td>
       <td>{{ 'CRM' if d.table_name == 'crm_organization_review' else 'Lead' }}</td>
       <td>{{ d.label }}</td>
-      <td>{{ 'Approve' if d.decision == 'approve' else 'Reject' }}</td>
+      <td>{{ {'approve': 'Approve', 'reject': 'Reject', 'unsure': "Don't know"}.get(d.decision, d.decision) }}</td>
       <td>{{ 'Undone' if d.undone else 'Active' }}</td>
       <td>
         {% if not d.undone %}

@@ -87,6 +87,8 @@
     .review-btn-green:hover { background: #249456; }
     .review-btn-red { background: #8f2323; color: #ffecec; }
     .review-btn-red:hover { background: #a82929; }
+    .review-btn-neutral { background: #4a4a3a; color: #f2e9c9; flex: 0.6; }
+    .review-btn-neutral:hover { background: #5a5a46; }
     .review-toggle { margin-bottom: 1.25rem; font-size: 0.9rem; }
     .review-toggle a { margin-right: 1rem; }
     .review-toggle a.active { color: #e8ecf4; font-weight: 600; }
@@ -126,6 +128,7 @@
       <a href="/queue" class="{{ 'active' if active_page == 'queue' else '' }}">Review queue</a>
       <a href="/review" class="{{ 'active' if active_page == 'review' else '' }}">Review</a>
       <a href="/review/history">History</a>
+      <a href="/review/needs-info">Needs Info</a>
       <a href="/calls" class="{{ 'active' if active_page == 'calls' else '' }}">Calls</a>
     </div>
     {% if user_email %}

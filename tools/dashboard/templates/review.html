@@ -94,6 +94,7 @@
         <div><strong>Real lead</strong> = Yes, this is a genuine prospect that should exist in GHL. This button does NOT create them — someone still has to add them in GHL by hand.</div>
         <div><strong>Not a lead</strong> = No, this is noise (a newsletter, an internal address, a duplicate, a recording filename) — safe to ignore.</div>
       {% endif %}
+      <div><strong>Don't know</strong> = Set this one aside — it'll move to a separate list for someone to research further, instead of blocking the rest of this queue. It comes back once more information has been added.</div>
     </div>
 
     <form method="post" action="/review/decide" class="review-actions">
@@ -102,6 +103,9 @@
       {% if review_type == 'leads' %}<input type="hidden" name="only_candidates" value="{{ only_candidates }}">{% endif %}
       <button type="submit" name="decision" value="approve" class="review-btn review-btn-green">
         {{ 'Approve' if review_type == 'crm' else 'Real lead' }}
+      </button>
+      <button type="submit" name="decision" value="unsure" class="review-btn review-btn-neutral">
+        Don't know
       </button>
       <button type="submit" name="decision" value="reject" class="review-btn review-btn-red">
         {{ 'Reject' if review_type == 'crm' else 'Not a lead' }}

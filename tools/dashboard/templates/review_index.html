@@ -22,6 +22,10 @@
     <div class="value">{{ lead_candidate_count }}</div>
     <div class="label">Leads pending review (Candidates){% if lead_count > lead_candidate_count %}, {{ lead_count }} total incl. noise{% endif %}</div>
   </a>
+  <a href="/review/needs-info" class="stat {{ 'warn' if needs_info_count else '' }}">
+    <div class="value">{{ needs_info_count }}</div>
+    <div class="label">Marked "Don't know" — needs research</div>
+  </a>
 </div>
 <p><a href="/review/history">View history / undo a decision &rarr;</a></p>
 {% endblock %}

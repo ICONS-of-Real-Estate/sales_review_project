@@ -137,6 +137,9 @@ SCORECARD_HISTORY_COLUMNS = {
 # row (see its own comment) with the row's actual spreadsheet row number, and
 # it's mapped here into a real sheet_row column so /review's write-back
 # (sheets_write.py) knows exactly which row to update.
+# "Needs More Info" added 06/09/2026 — Kris: "Add another button. Don't
+# know...so that if he doesn't understand he can just hit that." A third
+# decision alongside Approve/Reject.
 CRM_ORGANIZATION_REVIEW_COLUMNS = {
     "Timestamp": "timestamp",
     "Category": "category",
@@ -145,6 +148,8 @@ CRM_ORGANIZATION_REVIEW_COLUMNS = {
     "Suggested Action": "suggested_action",
     "Approve": "approve",
     "Reject": "reject",
+    "Dedupe Key": "dedupe_key",
+    "Needs More Info": "needs_more_info",
     "__sheet_row__": "sheet_row",
 }
 
@@ -161,6 +166,7 @@ LEAD_RECONCILIATION_COLUMNS = {
     "Real Lead — add to CRM": "real_lead",
     "Not a real lead": "not_real_lead",
     "Dedupe Key": "dedupe_key",
+    "Needs More Info": "needs_more_info",
     "__sheet_row__": "sheet_row",
 }
 
@@ -175,6 +181,7 @@ BOOLEAN_COLUMNS = {
     "likely_noise",
     "real_lead",
     "not_real_lead",
+    "needs_more_info",
 }
 INT_COLUMNS = {
     "call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week",
@@ -362,13 +369,15 @@ def init_schema(conn):
         CREATE TABLE IF NOT EXISTS crm_organization_review (
             sheet_row INTEGER PRIMARY KEY,
             timestamp TEXT, category TEXT, finding TEXT, evidence TEXT,
-            suggested_action TEXT, approve INTEGER, reject INTEGER
+            suggested_action TEXT, approve INTEGER, reject INTEGER,
+            dedupe_key TEXT, needs_more_info INTEGER
         );
         CREATE TABLE IF NOT EXISTS lead_reconciliation (
             sheet_row INTEGER PRIMARY KEY,
             timestamp TEXT, name TEXT, email TEXT, status TEXT, sources TEXT,
             likely_noise INTEGER, noise_reason TEXT, ambiguous_matches TEXT,
-            real_lead INTEGER, not_real_lead INTEGER, dedupe_key TEXT
+            real_lead INTEGER, not_real_lead INTEGER, dedupe_key TEXT,
+            needs_more_info INTEGER
         );
         -- Kris, 06/09/2026: "Add to be able to review all the changes in
         -- the interface with an UNDO and UNDO ALL button" — an audit trail
@@ -397,6 +406,13 @@ def init_schema(conn):
     # Follow-ups row claimed, so a late-submission match can't be reused by
     # a different assignment day (Phase7_DailySelfPractice.gs).
     _add_column_if_missing(conn, "daily_practice_followups", "matched_file", "TEXT")
+    # 06/09/2026: crm_organization_review never had a dedupe_key column at
+    # all (added to the Sheet the same day Phase15_CrmOrganizationReview.gs
+    # gained its own dedupe check, but missed here) — and both review
+    # tables gained "Needs More Info" alongside Approve/Reject.
+    _add_column_if_missing(conn, "crm_organization_review", "dedupe_key", "TEXT")
+    _add_column_if_missing(conn, "crm_organization_review", "needs_more_info", "INTEGER")
+    _add_column_if_missing(conn, "lead_reconciliation", "needs_more_info", "INTEGER")
     conn.commit()
 
 

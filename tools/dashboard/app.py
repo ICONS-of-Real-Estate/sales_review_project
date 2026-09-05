@@ -1157,7 +1157,8 @@ def crm_review_pending_rows():
     conn = get_conn()
     rows = conn.execute(
         "SELECT sheet_row, timestamp, category, finding, evidence, suggested_action "
-        "FROM crm_organization_review WHERE approve = 0 AND reject = 0 ORDER BY sheet_row"
+        "FROM crm_organization_review "
+        "WHERE approve = 0 AND reject = 0 AND needs_more_info = 0 ORDER BY sheet_row"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1168,10 +1169,42 @@ def lead_review_pending_rows():
     rows = conn.execute(
         "SELECT sheet_row, timestamp, name, email, status, sources, likely_noise, "
         "noise_reason, ambiguous_matches, dedupe_key FROM lead_reconciliation "
-        "WHERE real_lead = 0 AND not_real_lead = 0 ORDER BY likely_noise ASC, sheet_row"
+        "WHERE real_lead = 0 AND not_real_lead = 0 AND needs_more_info = 0 "
+        "ORDER BY likely_noise ASC, sheet_row"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def needs_more_info_rows():
+    """Kris, 06/09/2026: "Add another button. Don't know...so that if he
+    doesn't understand he can just hit that. Then afterwards, you can do an
+    analysis and give him more information to make the right decision." —
+    everything currently set aside as "unsure," across both queues, so it
+    can be found and researched instead of getting stuck as the same
+    confusing card blocking the rest of the swipe queue."""
+    conn = get_conn()
+    crm_rows = conn.execute(
+        "SELECT sheet_row, timestamp, category, finding, evidence, suggested_action "
+        "FROM crm_organization_review WHERE needs_more_info = 1 ORDER BY sheet_row"
+    ).fetchall()
+    lead_rows = conn.execute(
+        "SELECT sheet_row, timestamp, name, email, status, sources, ambiguous_matches "
+        "FROM lead_reconciliation WHERE needs_more_info = 1 ORDER BY sheet_row"
+    ).fetchall()
+    conn.close()
+    cards = []
+    for r in crm_rows:
+        d = dict(r)
+        d["table"] = "crm_organization_review"
+        d["card_type"] = "crm"
+        cards.append(d)
+    for r in lead_rows:
+        d = dict(r)
+        d["table"] = "lead_reconciliation"
+        d["card_type"] = "lead"
+        cards.append(d)
+    return cards
 
 
 def lead_related_calls(name):
@@ -1215,6 +1248,7 @@ def review_index(request: Request):
             "crm_count": len(crm_pending),
             "lead_count": len(lead_pending),
             "lead_candidate_count": len(lead_candidates),
+            "needs_info_count": len(needs_more_info_rows()),
         },
     )
 
@@ -1277,11 +1311,58 @@ def review_leads_page(request: Request, only_candidates: str = "1"):
     )
 
 
+@app.get("/review/needs-info", response_class=HTMLResponse)
+def review_needs_info_page(request: Request):
+    return render(
+        request,
+        "review_needs_info.html",
+        {
+            "active_page": "review",
+            "freshness": freshness_status(),
+            "cards": needs_more_info_rows(),
+        },
+    )
+
+
+@app.post("/review/needs-info/reset")
+def review_needs_info_reset(request: Request, table: str = Form(...), sheet_row: int = Form(...)):
+    """Puts an "unsure" row back to pending — e.g. once someone has done the
+    analysis Kris asked for and it's ready for Tomás to decide on again."""
+    if table not in _REVIEW_TABLE_INFO:
+        return HTMLResponse(f"<p>Unknown review table {table!r}.</p>", status_code=400)
+    conn = get_conn()
+    try:
+        _clear_row(table, sheet_row, conn)
+    except Exception as e:
+        conn.close()
+        return HTMLResponse(
+            f"<p>Could not reset that row:</p>"
+            f"<pre style='white-space:pre-wrap;'>{html.escape(str(e))}</pre>"
+            f"<p><a href='/review/needs-info'>Back</a></p>",
+            status_code=500,
+        )
+    conn.execute(
+        "UPDATE review_decisions_log SET undone = 1 WHERE table_name = ? AND sheet_row = ? AND undone = 0",
+        (table, sheet_row),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/review/needs-info", status_code=303)
+
+
 # table -> the page to send the reviewer back to after a decision, and the
-# local-mirror columns that decision updates (see review_decide below).
+# local-mirror column each of the three decisions ("approve"/"reject"/
+# "unsure") updates (see review_decide below). "unsure" is the "Needs More
+# Info"/"Don't know" button (Kris, 06/09/2026).
 _REVIEW_TABLE_INFO = {
-    "crm_organization_review": {"back_url": "/review/crm", "approve_col": "approve", "reject_col": "reject"},
-    "lead_reconciliation": {"back_url": "/review/leads", "approve_col": "real_lead", "reject_col": "not_real_lead"},
+    "crm_organization_review": {
+        "back_url": "/review/crm",
+        "columns": {"approve": "approve", "reject": "reject", "unsure": "needs_more_info"},
+    },
+    "lead_reconciliation": {
+        "back_url": "/review/leads",
+        "columns": {"approve": "real_lead", "reject": "not_real_lead", "unsure": "needs_more_info"},
+    },
 }
 
 
@@ -1315,15 +1396,16 @@ def review_decide(
     info = _REVIEW_TABLE_INFO.get(table)
     if info is None:
         return HTMLResponse(f"<p>Unknown review table {table!r}.</p>", status_code=400)
+    if decision not in ("approve", "reject", "unsure"):
+        return HTMLResponse(f"<p>Unknown decision {decision!r}.</p>", status_code=400)
 
     back_url = info["back_url"] + (f"?only_candidates={only_candidates}" if table == "lead_reconciliation" else "")
-    approve = decision == "approve"
 
     conn = get_conn()
     label = _review_row_label(conn, table, sheet_row)
 
     try:
-        sheets_write.write_decision(table, sheet_row, approve)
+        sheets_write.write_decision(table, sheet_row, decision)
     except Exception as e:
         conn.close()
         # Surface the failure to whoever clicked the button rather than
@@ -1347,10 +1429,10 @@ def review_decide(
     # Update the local mirror immediately too, so this row doesn't reappear
     # in the queue for the next click — sync.py's next scheduled cycle will
     # overwrite this with the same values read back from the sheet anyway.
-    conn.execute(
-        f"UPDATE {table} SET {info['approve_col']} = ?, {info['reject_col']} = ? WHERE sheet_row = ?",
-        (int(approve), int(not approve), sheet_row),
-    )
+    cols = info["columns"]
+    set_clause = ", ".join(f"{col} = ?" for col in cols.values())
+    values = [1 if key == decision else 0 for key in cols] + [sheet_row]
+    conn.execute(f"UPDATE {table} SET {set_clause} WHERE sheet_row = ?", values)
     # Kris, 06/09/2026: "Add to be able to review all the changes in the
     # interface with an UNDO and UNDO ALL button" — every decision made
     # through this route is logged so /review/history can show it and undo
@@ -1406,15 +1488,19 @@ def _undo_one(conn, log_row):
     sheet-write failure (raised to the caller) leaves the log entry active
     and the mirror untouched rather than claiming an undo that didn't
     actually reach the spreadsheet."""
-    table = log_row["table_name"]
-    sheet_row = log_row["sheet_row"]
+    _clear_row(log_row["table_name"], log_row["sheet_row"], conn)
+    conn.execute("UPDATE review_decisions_log SET undone = 1 WHERE id = ?", (log_row["id"],))
+
+
+def _clear_row(table, sheet_row, conn):
+    """Unticks all three decision checkboxes on one row, on both the sheet
+    and the local mirror. Shared by _undo_one (undoing one logged decision)
+    and /review/needs-info/reset (putting an "unsure" row back to pending
+    without necessarily going through a specific log entry)."""
     info = _REVIEW_TABLE_INFO[table]
     sheets_write.clear_decision(table, sheet_row)
-    conn.execute(
-        f"UPDATE {table} SET {info['approve_col']} = 0, {info['reject_col']} = 0 WHERE sheet_row = ?",
-        (sheet_row,),
-    )
-    conn.execute("UPDATE review_decisions_log SET undone = 1 WHERE id = ?", (log_row["id"],))
+    set_clause = ", ".join(f"{col} = 0" for col in info["columns"].values())
+    conn.execute(f"UPDATE {table} SET {set_clause} WHERE sheet_row = ?", (sheet_row,))
 
 
 @app.post("/review/undo")

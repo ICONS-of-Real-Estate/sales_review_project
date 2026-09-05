@@ -302,11 +302,12 @@ def test_framework_pages_render_on_empty_db(client, db_path):
 # ---------------------------------------------------------------------------
 
 
-def _insert_crm_row(conn, sheet_row=2, approve=0, reject=0, **overrides):
+def _insert_crm_row(conn, sheet_row=2, approve=0, reject=0, needs_more_info=0, **overrides):
     row = {
         "sheet_row": sheet_row, "timestamp": "9/6/2026", "category": "Pipeline health",
         "finding": "Test finding", "evidence": "Test evidence", "suggested_action": "Test action",
-        "approve": approve, "reject": reject,
+        "approve": approve, "reject": reject, "dedupe_key": f"pipeline:test {sheet_row}",
+        "needs_more_info": needs_more_info,
     }
     row.update(overrides)
     cols = list(row.keys())
@@ -316,12 +317,13 @@ def _insert_crm_row(conn, sheet_row=2, approve=0, reject=0, **overrides):
     )
 
 
-def _insert_lead_row(conn, sheet_row=2, real_lead=0, not_real_lead=0, likely_noise=0, **overrides):
+def _insert_lead_row(conn, sheet_row=2, real_lead=0, not_real_lead=0, likely_noise=0, needs_more_info=0, **overrides):
     row = {
         "sheet_row": sheet_row, "timestamp": "9/6/2026", "name": "Test Lead", "email": "",
         "status": "not_found", "sources": "Sales Call Log:5", "likely_noise": likely_noise,
         "noise_reason": "", "ambiguous_matches": "", "real_lead": real_lead,
         "not_real_lead": not_real_lead, "dedupe_key": "name:test lead",
+        "needs_more_info": needs_more_info,
     }
     row.update(overrides)
     cols = list(row.keys())
@@ -439,7 +441,7 @@ def test_review_decide_approve_writes_to_sheet_and_updates_mirror(client, db_pat
     calls = []
     monkeypatch.setattr(
         app_module.sheets_write, "write_decision",
-        lambda table, sheet_row, approve: calls.append((table, sheet_row, approve)),
+        lambda table, sheet_row, decision: calls.append((table, sheet_row, decision)),
     )
     resp = client.post(
         "/review/decide",
@@ -448,7 +450,7 @@ def test_review_decide_approve_writes_to_sheet_and_updates_mirror(client, db_pat
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/review/crm"
-    assert calls == [("crm_organization_review", 2, True)]
+    assert calls == [("crm_organization_review", 2, "approve")]
 
     row = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
     assert row == (1, 0)
@@ -458,7 +460,7 @@ def test_review_decide_reject_updates_lead_reconciliation_columns(client, db_pat
     _insert_lead_row(conn, sheet_row=9)
     conn.commit()
 
-    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, approve: None)
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, decision: None)
     resp = client.post(
         "/review/decide",
         data={"table": "lead_reconciliation", "sheet_row": 9, "decision": "reject", "only_candidates": "1"},
@@ -476,6 +478,107 @@ def test_review_decide_unknown_table_is_rejected(client, db_path):
         data={"table": "some_typo", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
     )
     assert resp.status_code == 400
+
+
+def test_review_decide_unknown_decision_is_rejected(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2)
+    conn.commit()
+    resp = client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "maybe", "only_candidates": "1"},
+    )
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# "Don't know" / Needs More Info — Kris, 06/09/2026: "Add another button.
+# Don't know...so that if he doesn't understand he can just hit that. Then
+# afterwards, you can do an analysis and give him more information to make
+# the right decision." A third decision, set aside in its own queue rather
+# than blocking the swipe queue on a card nobody can resolve yet.
+# ---------------------------------------------------------------------------
+
+
+def test_review_decide_unsure_sets_needs_more_info_and_removes_it_from_the_pending_queue(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, finding="Confusing finding")
+    conn.commit()
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, decision: None)
+
+    resp = client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "unsure", "only_candidates": "1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    row = conn.execute(
+        "SELECT approve, reject, needs_more_info FROM crm_organization_review WHERE sheet_row = 2"
+    ).fetchone()
+    assert row == (0, 0, 1)
+
+    # No longer shows up in the normal swipe queue.
+    resp = client.get("/review/crm")
+    assert "Confusing finding" not in resp.text
+    assert "Nothing left to review" in resp.text
+
+
+def test_review_needs_info_page_lists_unsure_items_from_both_queues(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2, finding="Confusing CRM finding", needs_more_info=1)
+    _insert_lead_row(conn, sheet_row=3, name="Confusing Lead", needs_more_info=1)
+    conn.commit()
+    resp = client.get("/review/needs-info")
+    assert resp.status_code == 200
+    assert "Confusing CRM finding" in resp.text
+    assert "Confusing Lead" in resp.text
+
+
+def test_review_needs_info_page_renders_empty_state(client, db_path):
+    resp = client.get("/review/needs-info")
+    assert resp.status_code == 200
+    assert "Nothing marked" in resp.text
+
+
+def test_review_needs_info_reset_clears_the_flag_and_writes_to_the_sheet(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, needs_more_info=1)
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.sheets_write, "clear_decision",
+        lambda table, sheet_row: calls.append((table, sheet_row)),
+    )
+    resp = client.post(
+        "/review/needs-info/reset",
+        data={"table": "crm_organization_review", "sheet_row": 2},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert calls == [("crm_organization_review", 2)]
+
+    row = conn.execute(
+        "SELECT approve, reject, needs_more_info FROM crm_organization_review WHERE sheet_row = 2"
+    ).fetchone()
+    assert row == (0, 0, 0)
+
+    # Back in the normal swipe queue.
+    resp = client.get("/review/crm")
+    assert "1 left to review" in resp.text
+
+
+def test_review_needs_info_reset_also_marks_the_original_log_entry_undone(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, needs_more_info=1)
+    cur = conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'unsure', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)"
+    )
+    log_id = cur.lastrowid
+    conn.commit()
+
+    monkeypatch.setattr(app_module.sheets_write, "clear_decision", lambda table, sheet_row: None)
+    client.post("/review/needs-info/reset", data={"table": "crm_organization_review", "sheet_row": 2})
+
+    undone = conn.execute("SELECT undone FROM review_decisions_log WHERE id = ?", (log_id,)).fetchone()[0]
+    assert undone == 1
 
 
 def test_review_decide_surfaces_sheet_write_failure_instead_of_pretending_success(client, db_path, conn, monkeypatch):
@@ -534,7 +637,7 @@ def test_review_decide_failure_message_is_html_escaped_and_visible(client, db_pa
 def test_review_decide_logs_the_decision(client, db_path, conn, monkeypatch):
     _insert_crm_row(conn, sheet_row=2, category="Pipeline health", finding="Cold Calling 2 stuck")
     conn.commit()
-    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, approve: None)
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, decision: None)
 
     client.post(
         "/review/decide",
