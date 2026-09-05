@@ -160,7 +160,7 @@ function buildGhlNoteFormattingTestBody_() {
 // pass a contactId directly. Anthony Camperi's contact ID (already used for
 // throwaway test notes this session) is a safe default; swap in any real
 // contact ID before running against someone else's record.
-var GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ = 'PUT_A_REAL_GHL_CONTACT_ID_HERE';
+var GHL_NOTE_FORMATTING_TEST_CONTACT_ID_ = 'E9SFHgSF508zOfA6KcEI';
 
 function previewGhlNoteFormattingTest_(contactId) {
   log_('previewGhlNoteFormattingTest_: this would post the following body ' +
