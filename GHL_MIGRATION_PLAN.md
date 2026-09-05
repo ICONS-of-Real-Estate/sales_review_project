@@ -56,6 +56,17 @@ data migration whatsoever.
 > generalised from one narrow fact — that a *contact custom field* holds one
 > value per contact — to all of GHL, without checking. Retracted.
 
+> **✅ ANSWERED, 05/09/2026: Option A.** `previewGhlPerCallObjects()` returned
+> `GET /objects/` → HTTP 200 with real schemas — this location already has a
+> live custom object ("Company," `business.name`-keyed). Custom Objects are
+> genuinely available on this plan. A "Call Review" custom object is
+> buildable; nothing here needs to fall back to Option B.
+> (First probe attempt 401'd on both `/customFields` and `/objects/` — that
+> was a missing token scope, not evidence against Option A. Kris added
+> `locations/customFields.readonly`, `objects/schema.readonly`, and
+> `objects/record.readonly` to the "Sales Review Project" Private
+> Integration token's scopes, then the same probe returned real data.)
+
 The real question is mechanical: our review carries 23 scored fields per
 call, so those fields need to hang off something that exists **once per
 call**. Two options, and both put everything in GHL:
@@ -182,11 +193,11 @@ None of these stop the migration. Three are read-only probes we run
 ourselves; two need a human answer before Phase 2 moves.
 
 **Q1 — Option A or Option B?** (§2)
-**Kris's answer 05/09/2026: Option A** — a Call Review custom object, one
-record per call, scores as real CRM fields. Still needs the probe to confirm
-custom objects are actually available on this plan; Option B stands as the
-fallback if they aren't.
-**Probe built and ready to run:**
+**✅ ANSWERED — Option A.** A Call Review custom object, one record per call,
+scores as real CRM fields. Confirmed available on this plan (§2) —
+`GET /objects/` returns real schemas once the token has the
+`objects/schema.readonly`/`objects/record.readonly` scopes.
+**Probe that confirmed it:**
 `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`) — read-only. Reports every
 custom field definition grouped by the object `model` it attaches to, probes
 `GET /objects/` for custom object schemas, and dumps what GHL already logs
@@ -479,20 +490,30 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
 
 ## 13. Recommended sequence
 
-**Now — nothing destructive, no phase moves off the sheet yet:**
-1. Q2 — confirm the custom-fields scope (Kris, in progress).
-2. Q1 — run `previewGhlPerCallObjects()`. Picks Option A or B. **Written and
-   ready.**
-3. F1 — add column AN, backfill contact IDs mostly free from the note-sync
+**Done:**
+- ✅ Q1 — `previewGhlPerCallObjects()` confirmed Option A (Custom Objects
+  available).
+- ✅ Q2 — custom-fields/objects scopes granted on the "Sales Review Project"
+  token.
+
+**Now — nothing destructive, no phase moves off the sheet yet, and no GHL
+writes until Tomás's Monday sign-off (§0):**
+1. F1 — add column AN, backfill contact IDs mostly free from the note-sync
    log.
-4. F3 — build the Call Review custom object (Q1: Option A). This is the real
-   "everything in GHL" step: from here on, every newly scored call lands in
-   the CRM in full.
-5. Run `previewLeadReconciliation()` (`Phase13_LeadReconciliation.gs`) — the
+2. **Design** the Call Review custom object's schema (field names/types for
+   the 23 scored dimensions) — design only; actually *creating* it in GHL is
+   a write and waits for Tomás per his "don't do any more updates on GHL
+   until then."
+3. Run `previewLeadReconciliation()` (`Phase13_LeadReconciliation.gs`) — the
    audit of every spreadsheet against GHL — then create the missing contacts
-   (Q4) behind its own log-and-revert gate.
-6. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes
+   (Q4) behind its own log-and-revert gate, also after Monday.
+4. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes
    every later step fail loudly instead of quietly.
+
+**Once Tomás signs off (Monday):**
+5. F3 — actually create the Call Review custom object in GHL from the design
+   above. This is the real "everything in GHL" step: from here on, every
+   newly scored call lands in the CRM in full.
 
 **Then:**
 7. F4 — stable record IDs, and GHL contact URLs replacing the emailed
