@@ -89,8 +89,31 @@ function computeGhlReviewNoteSyncPlan_(locationId) {
   var runStart = Date.now();
   var truncated = false;
 
+  // Real gap found live (05/09/2026): previewGhlNoteSync_ printed one line
+  // ("PREVIEW MODE...") and then went completely silent for minutes — one
+  // blocking GHL search per not-yet-synced scored row, up to hundreds of
+  // rows in this sheet, so a normal multi-minute run looked identical to a
+  // hang (same class of bug already fixed once in computeGhlSyncFixes_,
+  // Phase9_GhlSync.gs — same fix here: log the real scope up front, then a
+  // heartbeat every GHL_SYNC_HEARTBEAT_INTERVAL_MS_ so there's always a
+  // recent line proving it's still making progress).
+  var needingScan = 0;
+  for (var n = 0; n < rows.length; n++) {
+    if (rows[n][col['Lead Quality Verdict'] - 1] && !isTruthyOutcome_(rows[n][col['GHL Review Synced'] - 1])) needingScan++;
+  }
+  log_('computeGhlReviewNoteSyncPlan_: ' + needingScan + ' of ' + rows.length + ' row(s) are scored and not yet ' +
+    'synced — scanning now (1 GHL search per row, so this can take a few minutes; a heartbeat line prints every ' +
+    Math.round(GHL_SYNC_HEARTBEAT_INTERVAL_MS_ / 1000) + 's while it runs).');
+  var lastHeartbeatAt = runStart;
+  var searchedSoFar = 0;
+
   for (var i = 0; i < rows.length; i++) {
-    if (Date.now() - runStart > GHL_NOTE_SYNC_TIME_BUDGET_MS_) { truncated = true; break; }
+    if (Date.now() - runStart > GHL_NOTE_SYNC_TIME_BUDGET_MS_) {
+      truncated = true;
+      log_('computeGhlReviewNoteSyncPlan_: time budget hit after ' + i + '/' + rows.length +
+        ' row(s) — re-run to continue (already-synced rows are skipped automatically, so this is always safe).');
+      break;
+    }
 
     var row = rows[i];
     stats.scanned++;
@@ -99,8 +122,15 @@ function computeGhlReviewNoteSyncPlan_(locationId) {
     if (!leadQualityVerdict) { stats.notScored++; continue; }
     if (isTruthyOutcome_(row[col['GHL Review Synced'] - 1])) { stats.alreadySynced++; continue; }
 
+    if (Date.now() - lastHeartbeatAt > GHL_SYNC_HEARTBEAT_INTERVAL_MS_) {
+      log_('computeGhlReviewNoteSyncPlan_: still going — ' + searchedSoFar + '/' + needingScan +
+        ' row(s) searched so far, ' + toPost.length + ' note(s) planned.');
+      lastHeartbeatAt = Date.now();
+    }
+
     var prospectName = row[col['Prospect Name'] - 1];
     var search = ghlSearchContactByName_(locationId, prospectName);
+    searchedSoFar++;
     if (!search.ok) { stats.searchFailed++; continue; }
 
     var candidates = search.contacts.filter(function (c) { return contactNameLooksLikeQuery_(c, prospectName); });

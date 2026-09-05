@@ -6295,3 +6295,24 @@ test('callKimiJudge_ still works when only the LEGACY LITELLM_* Script Propertie
     }
   );
 });
+
+test('computeGhlReviewNoteSyncPlan_ logs the scan scope up front, so a normal multi-minute run (one GHL search per row) never looks like a silent hang (real gap found live 05/09/2026, same class of bug already fixed once in computeGhlSyncFixes_)', () => {
+  const dataRows = [
+    ghlNoteSyncRow({ 'Prospect Name': 'Not Scored Guy', 'Lead Quality Verdict': '' }),
+    ghlNoteSyncRow({ 'Prospect Name': 'Already Synced Guy', 'Lead Quality Verdict': 'Qualified', 'GHL Review Synced': true }),
+    ghlNoteSyncRow({ 'Prospect Name': 'Needs Scan Guy', 'Lead Quality Verdict': 'Qualified' })
+  ];
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  gas.Logger.log = (msg) => lines.push(msg);
+  try {
+    withMockedGhlNoteSyncPlan_({
+      SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeGhlNoteSyncSheet(dataRows) }) },
+      ghlSearchContactByName_: () => ({ ok: true, contacts: [] })
+    }, () => gas.computeGhlReviewNoteSyncPlan_('loc-1'));
+    assert.ok(lines.some((l) => l.indexOf('1 of 3 row(s) are scored and not yet synced') !== -1),
+      'must state the real scan scope up front, before any per-row GHL calls');
+  } finally {
+    gas.Logger.log = originalLog;
+  }
+});
