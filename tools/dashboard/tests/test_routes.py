@@ -292,3 +292,136 @@ def test_training_page_shows_framework_drill(client, db_path, conn):
 def test_framework_pages_render_on_empty_db(client, db_path):
     for url in ("/", "/calls", "/calls?framework_explained=no", "/reps/Nobody", "/training"):
         assert client.get(url).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /review — Kris, 06/09/2026: "put it in an interface with a GREEN / RED
+# button for [Tomás] to quickly review each?" One card at a time from
+# crm_organization_review / lead_reconciliation, Approve/Reject writes back
+# to the sheet via sheets_write.py (mocked below — no real network/creds).
+# ---------------------------------------------------------------------------
+
+
+def _insert_crm_row(conn, sheet_row=2, approve=0, reject=0, **overrides):
+    row = {
+        "sheet_row": sheet_row, "timestamp": "9/6/2026", "category": "Pipeline health",
+        "finding": "Test finding", "evidence": "Test evidence", "suggested_action": "Test action",
+        "approve": approve, "reject": reject,
+    }
+    row.update(overrides)
+    cols = list(row.keys())
+    conn.execute(
+        f"INSERT INTO crm_organization_review ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+        [row[c] for c in cols],
+    )
+
+
+def _insert_lead_row(conn, sheet_row=2, real_lead=0, not_real_lead=0, likely_noise=0, **overrides):
+    row = {
+        "sheet_row": sheet_row, "timestamp": "9/6/2026", "name": "Test Lead", "email": "",
+        "status": "not_found", "sources": "Sales Call Log:5", "likely_noise": likely_noise,
+        "noise_reason": "", "ambiguous_matches": "", "real_lead": real_lead,
+        "not_real_lead": not_real_lead, "dedupe_key": "name:test lead",
+    }
+    row.update(overrides)
+    cols = list(row.keys())
+    conn.execute(
+        f"INSERT INTO lead_reconciliation ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+        [row[c] for c in cols],
+    )
+
+
+def test_review_page_renders_on_empty_db(client, db_path):
+    resp = client.get("/review")
+    assert resp.status_code == 200
+    assert "Nothing left to review" in resp.text
+
+
+def test_review_page_shows_first_undecided_crm_finding(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2, finding="Cold Calling 2 is 100% stuck")
+    conn.commit()
+    resp = client.get("/review")
+    assert resp.status_code == 200
+    assert "Cold Calling 2 is 100% stuck" in resp.text
+    assert "1 left to review" in resp.text
+
+
+def test_review_page_skips_already_decided_rows(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2, finding="Already approved", approve=1)
+    _insert_crm_row(conn, sheet_row=3, finding="Still pending")
+    conn.commit()
+    resp = client.get("/review")
+    assert "Still pending" in resp.text
+    assert "Already approved" not in resp.text
+
+
+def test_review_page_candidates_view_filters_out_noise_by_default(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Noise Lead", likely_noise=1, noise_reason="newsletter, not a lead")
+    conn.commit()
+    resp = client.get("/review")
+    assert "Nothing left to review" in resp.text
+    assert "more filtered out as likely noise" in resp.text
+
+
+def test_review_page_show_everything_includes_noise(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Noise Lead", likely_noise=1, noise_reason="newsletter, not a lead")
+    conn.commit()
+    resp = client.get("/review?only_candidates=0")
+    assert "Noise Lead" in resp.text
+
+
+def test_review_decide_approve_writes_to_sheet_and_updates_mirror(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, finding="Test finding")
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.sheets_write, "write_decision",
+        lambda table, sheet_row, approve: calls.append((table, sheet_row, approve)),
+    )
+    resp = client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert calls == [("crm_organization_review", 2, True)]
+
+    row = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
+    assert row == (1, 0)
+
+
+def test_review_decide_reject_updates_lead_reconciliation_columns(client, db_path, conn, monkeypatch):
+    _insert_lead_row(conn, sheet_row=9)
+    conn.commit()
+
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, approve: None)
+    resp = client.post(
+        "/review/decide",
+        data={"table": "lead_reconciliation", "sheet_row": 9, "decision": "reject", "only_candidates": "1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    row = conn.execute("SELECT real_lead, not_real_lead FROM lead_reconciliation WHERE sheet_row = 9").fetchone()
+    assert row == (0, 1)
+
+
+def test_review_decide_surfaces_sheet_write_failure_instead_of_pretending_success(client, db_path, conn, monkeypatch):
+    """A missed write must not report success — that's the one thing this
+    whole page exists to make happen reliably."""
+    _insert_crm_row(conn, sheet_row=2)
+    conn.commit()
+
+    def _boom(table, sheet_row, approve):
+        raise Exception("403 The caller does not have permission")
+
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", _boom)
+    resp = client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+    )
+    assert resp.status_code == 500
+    assert "Could not save" in resp.text
+    # And the local mirror must NOT have been updated as if it succeeded.
+    row = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
+    assert row == (0, 0)

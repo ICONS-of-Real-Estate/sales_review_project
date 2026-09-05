@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Review — Sales Review Dashboard{% endblock %}
+{% block content %}
+<h1>CRM &amp; Lead Review</h1>
+<p class="muted">
+  One finding at a time — Approve/Reject (or Real Lead/Not a real lead) writes
+  straight back to the spreadsheet. Nothing here ever touches GHL.
+</p>
+<div class="review-toggle">
+  <a href="/review?only_candidates=1" class="{{ 'active' if only_candidates != '0' else '' }}">Candidates only</a>
+  <a href="/review?only_candidates=0" class="{{ 'active' if only_candidates == '0' else '' }}">Show everything (incl. noise)</a>
+</div>
+
+{% if cards %}
+  {% set card = cards[0] %}
+  <div class="review-remaining">
+    {{ total_pending }} left to review
+    {% if only_candidates != '0' and total_all_pending > total_pending %}
+      ({{ total_all_pending - total_pending }} more filtered out as likely noise —
+      <a href="/review?only_candidates=0">show everything</a>)
+    {% endif %}
+  </div>
+  <div class="review-card">
+    {% if card.card_type == 'crm' %}
+      <div class="review-category">{{ card.category }}</div>
+      <h2 style="margin-top:0.25rem;">{{ card.finding }}</h2>
+      {% if card.evidence %}<p class="muted">{{ card.evidence }}</p>{% endif %}
+      {% if card.suggested_action %}<p>{{ card.suggested_action }}</p>{% endif %}
+    {% else %}
+      <div class="review-category">
+        Lead Reconciliation — {{ card.status }}
+        {% if card.likely_noise %}<span class="review-noise"> · looks like noise: {{ card.noise_reason }}</span>{% endif %}
+      </div>
+      <h2 style="margin-top:0.25rem;">
+        {{ card.name if card.name else '(no name)' }}{% if card.email %} — {{ card.email }}{% endif %}
+      </h2>
+      {% if card.sources %}<p class="muted">Sources: {{ card.sources }}</p>{% endif %}
+      {% if card.ambiguous_matches %}<p>Possible GHL matches: {{ card.ambiguous_matches }}</p>{% endif %}
+    {% endif %}
+    <form method="post" action="/review/decide" class="review-actions">
+      <input type="hidden" name="table" value="{{ card.table }}">
+      <input type="hidden" name="sheet_row" value="{{ card.sheet_row }}">
+      <input type="hidden" name="only_candidates" value="{{ only_candidates }}">
+      <button type="submit" name="decision" value="approve" class="review-btn review-btn-green">
+        {{ 'Approve' if card.card_type == 'crm' else 'Real lead' }}
+      </button>
+      <button type="submit" name="decision" value="reject" class="review-btn review-btn-red">
+        {{ 'Reject' if card.card_type == 'crm' else 'Not a lead' }}
+      </button>
+    </form>
+  </div>
+{% else %}
+  <p>Nothing left to review{{ '' if only_candidates == '0' else ' in Candidates view' }}. 🎉</p>
+  {% if only_candidates != '0' and total_all_pending > 0 %}
+    <p class="muted">
+      {{ total_all_pending }} more filtered out as likely noise —
+      <a href="/review?only_candidates=0">show everything</a> to check them anyway.
+    </p>
+  {% endif %}
+{% endif %}
+{% endblock %}

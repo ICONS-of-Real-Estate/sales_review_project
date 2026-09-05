@@ -70,6 +70,26 @@
     .playbook-body table { margin: 0.75rem 0; }
     .playbook-body hr { border: none; border-top: 1px solid #262c3d; margin: 1.5rem 0; }
     .playbook-body h3 { color: #e8ecf4; }
+    .review-card {
+      background: #161c2b; border-radius: 14px; padding: 2rem; max-width: 640px;
+    }
+    .review-remaining { font-size: 0.8rem; color: #9aa4bb; margin-bottom: 0.75rem; }
+    .review-category {
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; color: #9aa4bb;
+    }
+    .review-noise { color: #f2c14e; }
+    .review-actions { display: flex; gap: 1rem; margin-top: 1.75rem; }
+    .review-btn {
+      flex: 1; font-size: 1.15rem; font-weight: 700; padding: 1.1rem;
+      border: none; border-radius: 10px; cursor: pointer;
+    }
+    .review-btn-green { background: #1e7d46; color: #eafff2; }
+    .review-btn-green:hover { background: #249456; }
+    .review-btn-red { background: #8f2323; color: #ffecec; }
+    .review-btn-red:hover { background: #a82929; }
+    .review-toggle { margin-bottom: 1.25rem; font-size: 0.9rem; }
+    .review-toggle a { margin-right: 1rem; }
+    .review-toggle a.active { color: #e8ecf4; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -79,6 +99,7 @@
       <a href="/charts" class="{{ 'active' if active_page == 'charts' else '' }}">Charts</a>
       <a href="/training" class="{{ 'active' if active_page == 'training' else '' }}">Training</a>
       <a href="/queue" class="{{ 'active' if active_page == 'queue' else '' }}">Review queue</a>
+      <a href="/review" class="{{ 'active' if active_page == 'review' else '' }}">Review</a>
       <a href="/calls" class="{{ 'active' if active_page == 'calls' else '' }}">Calls</a>
     </div>
     {% if user_email %}

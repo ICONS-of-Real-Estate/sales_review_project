@@ -133,3 +133,68 @@ class TestReplaceTable:
         other.close()
         assert count == 0
         conn.rollback()
+
+
+class TestSheetRowStamping:
+    """06/09/2026: /review (app.py) needs to write Tomás's decision back to
+    the exact spreadsheet row it came from — fetch_tab stamps each row with
+    its real 1-indexed sheet row under "__sheet_row__" so that's never
+    re-derived or guessed downstream."""
+
+    def test_stamps_the_real_sheet_row_number_accounting_for_the_header(self):
+        service = _mock_service([
+            ["Timestamp", "Category", "Finding"],
+            ["9/6/2026", "Pipeline health", "First finding"],
+            ["9/6/2026", "Unrecognized assignee", "Second finding"],
+        ])
+        rows = sync.fetch_tab(service, "CRM Organization Review")
+        assert rows[0]["__sheet_row__"] == 2
+        assert rows[1]["__sheet_row__"] == 3
+
+    def test_skipped_blank_rows_do_not_shift_sheet_row_numbering(self):
+        """A skipped (blank first-column) row must not renumber the real
+        rows around it — sheet_row has to match the actual spreadsheet row,
+        not a position in the filtered output."""
+        service = _mock_service([
+            ["Timestamp", "Name"],
+            ["9/6/2026", "Real Lead One"],
+            ["", ""],
+            ["9/6/2026", "Real Lead Two"],
+        ])
+        rows = sync.fetch_tab(service, "Lead Reconciliation - All")
+        assert rows[0]["__sheet_row__"] == 2
+        assert rows[1]["__sheet_row__"] == 4
+
+
+class TestReviewTablesSchema:
+    """crm_organization_review / lead_reconciliation are new mirrored tables
+    (06/09/2026) backing /review — sheet_row is their primary key so
+    replace_table's full-refresh (DELETE + reinsert every cycle) still works
+    the same way every other synced table already does."""
+
+    def test_crm_organization_review_round_trips_through_replace_table(self, conn):
+        rows = [{
+            "Timestamp": "9/6/2026", "Category": "Pipeline health", "Finding": "Test finding",
+            "Evidence": "Test evidence", "Suggested Action": "Test action",
+            "Approve": "FALSE", "Reject": "FALSE", "__sheet_row__": 2,
+        }]
+        sync.replace_table(conn, "crm_organization_review", sync.CRM_ORGANIZATION_REVIEW_COLUMNS, rows)
+        conn.commit()
+        stored = conn.execute(
+            "SELECT sheet_row, finding, approve, reject FROM crm_organization_review"
+        ).fetchone()
+        assert stored == (2, "Test finding", 0, 0)
+
+    def test_lead_reconciliation_round_trips_through_replace_table(self, conn):
+        rows = [{
+            "Timestamp": "9/6/2026", "Name": "Test Lead", "Email": "test@example.com",
+            "Status": "not_found", "Sources": "Sales Call Log:5", "Likely Noise": "FALSE",
+            "Noise Reason": "", "Ambiguous GHL Matches": "", "Real Lead — add to CRM": "TRUE",
+            "Not a real lead": "FALSE", "Dedupe Key": "email:test@example.com", "__sheet_row__": 7,
+        }]
+        sync.replace_table(conn, "lead_reconciliation", sync.LEAD_RECONCILIATION_COLUMNS, rows)
+        conn.commit()
+        stored = conn.execute(
+            "SELECT sheet_row, name, real_lead, not_real_lead FROM lead_reconciliation"
+        ).fetchone()
+        assert stored == (7, "Test Lead", 1, 0)

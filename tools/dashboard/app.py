@@ -19,7 +19,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -27,6 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 import auth
+import sheets_write
 import sync
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
@@ -1131,6 +1132,109 @@ def charts_data(granularity: str = "week"):
 @app.get("/api/leads")
 def leads_api(verdict: str = "", failure_mode: str = "", rep: str = ""):
     return {"leads": get_leads(verdict=verdict or None, failure_mode=failure_mode or None, rep=rep or None)}
+
+
+# Kris, 06/09/2026: "This project has an interface. Is it easy enough to put
+# it in an interface with a GREEN / RED button for him to quickly review
+# each?" — Tomás's approve/reject work on "CRM Organization Review" and
+# "Lead Reconciliation - All" (Phase15_CrmOrganizationReview.gs /
+# Phase13_LeadReconciliation.gs) otherwise means opening the spreadsheet and
+# hunting through hundreds of rows for the ones still unticked. This is that
+# interface: one finding/lead at a time, two big buttons, writes straight
+# back to the sheet via sheets_write.py. "Undecided" = neither checkbox
+# ticked yet in the mirrored table.
+def review_queue_rows():
+    conn = get_conn()
+    crm_rows = conn.execute(
+        "SELECT sheet_row, timestamp, category, finding, evidence, suggested_action "
+        "FROM crm_organization_review WHERE approve = 0 AND reject = 0 ORDER BY sheet_row"
+    ).fetchall()
+    lead_rows = conn.execute(
+        "SELECT sheet_row, timestamp, name, email, status, sources, likely_noise, "
+        "noise_reason, ambiguous_matches, dedupe_key FROM lead_reconciliation "
+        "WHERE real_lead = 0 AND not_real_lead = 0 ORDER BY likely_noise ASC, sheet_row"
+    ).fetchall()
+    conn.close()
+
+    cards = []
+    for r in crm_rows:
+        d = dict(r)
+        d["table"] = "crm_organization_review"
+        d["card_type"] = "crm"
+        cards.append(d)
+    for r in lead_rows:
+        d = dict(r)
+        d["table"] = "lead_reconciliation"
+        d["card_type"] = "lead"
+        cards.append(d)
+    return cards
+
+
+@app.get("/review", response_class=HTMLResponse)
+def review_page(request: Request, only_candidates: str = "1"):
+    cards = review_queue_rows()
+    total_all = len(cards)
+    if only_candidates != "0":
+        # "Candidates" mirrors the same noise filter Phase13's own
+        # "Lead Reconciliation - Candidates" sheet applies (outreach-tool
+        # sender addresses, newsletters, recording filenames) — advisory
+        # only there, and the same here: still just a default view, never a
+        # decision, so "Show everything" always stays one click away.
+        cards = [c for c in cards if c["card_type"] != "lead" or not c.get("likely_noise")]
+    return render(
+        request,
+        "review.html",
+        {
+            "active_page": "review",
+            "freshness": freshness_status(),
+            "cards": cards,
+            "total_pending": len(cards),
+            "total_all_pending": total_all,
+            "only_candidates": only_candidates,
+        },
+    )
+
+
+@app.post("/review/decide")
+def review_decide(
+    request: Request,
+    table: str = Form(...),
+    sheet_row: int = Form(...),
+    decision: str = Form(...),
+    only_candidates: str = Form("1"),
+):
+    approve = decision == "approve"
+    try:
+        sheets_write.write_decision(table, sheet_row, approve)
+    except Exception as e:
+        # Surface the failure to whoever clicked the button rather than
+        # silently pretending it worked — a swallowed exception here means
+        # Tomás's decision never actually reached the spreadsheet, the one
+        # thing this whole page exists to do.
+        return HTMLResponse(
+            f"<p>Could not save that decision to the spreadsheet: {e}</p>"
+            f"<p><a href='/review?only_candidates={only_candidates}'>Back to Review</a></p>",
+            status_code=500,
+        )
+
+    # Update the local mirror immediately too, so this row doesn't reappear
+    # in the queue for the next click — sync.py's next scheduled cycle will
+    # overwrite this with the same values read back from the sheet anyway.
+    conn = get_conn()
+    if table == "crm_organization_review":
+        conn.execute(
+            "UPDATE crm_organization_review SET approve = ?, reject = ? WHERE sheet_row = ?",
+            (int(approve), int(not approve), sheet_row),
+        )
+    elif table == "lead_reconciliation":
+        conn.execute(
+            "UPDATE lead_reconciliation SET real_lead = ?, not_real_lead = ? WHERE sheet_row = ?",
+            (int(approve), int(not approve), sheet_row),
+        )
+    conn.commit()
+    conn.close()
+
+    return RedirectResponse(url=f"/review?only_candidates={only_candidates}", status_code=303)
 
 
 @app.get("/healthz")

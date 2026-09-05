@@ -45,6 +45,13 @@ SALES_CALL_LOG_TAB = "Sales Call Log"
 TRAINING_ASSIGNMENTS_TAB = "Training Assignments"
 DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
 SCORECARD_HISTORY_TAB = "Scorecard History"
+# Written by Phase15_CrmOrganizationReview.gs / Phase13_LeadReconciliation.gs
+# (both read-only against GHL — see those files). Synced here so /review can
+# show Tomás's pending findings without him opening the spreadsheet at all;
+# his Approve/Reject decision on /review writes back through sheets_write.py,
+# not through this (read-only) sync.
+CRM_ORGANIZATION_REVIEW_TAB = "CRM Organization Review"
+LEAD_RECONCILIATION_TAB = "Lead Reconciliation - All"
 
 # Sheet header name -> SQLite column name, looked up by name rather than
 # position — a reordered or newly-inserted column in the Sheet (which has
@@ -125,14 +132,54 @@ SCORECARD_HISTORY_COLUMNS = {
     "Sent At": "sent_at",
 }
 
+# Must match CRM_ORGANIZATION_REVIEW_HEADERS_ in Phase15_CrmOrganizationReview.gs.
+# "__sheet_row__" isn't a real sheet column — fetch_tab stamps it onto every
+# row (see its own comment) with the row's actual spreadsheet row number, and
+# it's mapped here into a real sheet_row column so /review's write-back
+# (sheets_write.py) knows exactly which row to update.
+CRM_ORGANIZATION_REVIEW_COLUMNS = {
+    "Timestamp": "timestamp",
+    "Category": "category",
+    "Finding": "finding",
+    "Evidence": "evidence",
+    "Suggested Action": "suggested_action",
+    "Approve": "approve",
+    "Reject": "reject",
+    "__sheet_row__": "sheet_row",
+}
+
+# Must match LEAD_RECONCILIATION_REVIEW_HEADERS_ in Phase13_LeadReconciliation.gs.
+LEAD_RECONCILIATION_COLUMNS = {
+    "Timestamp": "timestamp",
+    "Name": "name",
+    "Email": "email",
+    "Status": "status",
+    "Sources": "sources",
+    "Likely Noise": "likely_noise",
+    "Noise Reason": "noise_reason",
+    "Ambiguous GHL Matches": "ambiguous_matches",
+    "Real Lead — add to CRM": "real_lead",
+    "Not a real lead": "not_real_lead",
+    "Dedupe Key": "dedupe_key",
+    "__sheet_row__": "sheet_row",
+}
+
 BOOLEAN_COLUMNS = {
     "outcome_logged",
     "flag_asked_for_close",
     "flag_objections_handled",
     "manual_review_recommended",
     "flag_framework_explained",
+    "approve",
+    "reject",
+    "likely_noise",
+    "real_lead",
+    "not_real_lead",
 }
-INT_COLUMNS = {"call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week", "missing_outcome_disposition"}
+INT_COLUMNS = {
+    "call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week",
+    "missing_outcome_disposition", "sheet_row",
+}
 FLOAT_COLUMNS = {"weekly_avg_score", "rolling_4_week_avg", "historic_avg_before_week", "worst_call_score"}
 
 
@@ -218,12 +265,21 @@ def fetch_tab(service, tab_name):
     header = rows[0]
     out = []
     skipped = 0
-    for raw in rows[1:]:
+    # sheet_row is the row's real 1-indexed position in the spreadsheet
+    # (row 1 is the header, so the first data row is 2) — stamped onto every
+    # row as "__sheet_row__" so a caller that needs to write back to this
+    # exact row later (sheets_write.py, for /review's Approve/Reject) doesn't
+    # have to re-derive it. Not a real header, so it never collides with an
+    # actual column name; tables that don't map it (columns_map has no
+    # "__sheet_row__" key) simply ignore it.
+    for sheet_row, raw in enumerate(rows[1:], start=2):
         padded = raw + [""] * (len(header) - len(raw))
         if not str(padded[0]).strip():
             skipped += 1
             continue
-        out.append(dict(zip(header, padded)))
+        record = dict(zip(header, padded))
+        record["__sheet_row__"] = sheet_row
+        out.append(record)
     if skipped:
         print(f"NOTE: tab '{tab_name}' — skipped {skipped} row(s) blank in column A (placeholder/gap rows).", file=sys.stderr)
     return out
@@ -302,6 +358,17 @@ def init_schema(conn):
         CREATE TABLE IF NOT EXISTS sync_meta (
             key TEXT PRIMARY KEY,
             value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS crm_organization_review (
+            sheet_row INTEGER PRIMARY KEY,
+            timestamp TEXT, category TEXT, finding TEXT, evidence TEXT,
+            suggested_action TEXT, approve INTEGER, reject INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS lead_reconciliation (
+            sheet_row INTEGER PRIMARY KEY,
+            timestamp TEXT, name TEXT, email TEXT, status TEXT, sources TEXT,
+            likely_noise INTEGER, noise_reason TEXT, ambiguous_matches TEXT,
+            real_lead INTEGER, not_real_lead INTEGER, dedupe_key TEXT
         );
         """
     )
@@ -396,6 +463,8 @@ def main():
         "training_assignments": (TRAINING_ASSIGNMENTS_TAB, TRAINING_ASSIGNMENTS_COLUMNS),
         "daily_practice_followups": (DAILY_PRACTICE_FOLLOWUP_TAB, DAILY_PRACTICE_FOLLOWUP_COLUMNS),
         "scorecard_history": (SCORECARD_HISTORY_TAB, SCORECARD_HISTORY_COLUMNS),
+        "crm_organization_review": (CRM_ORGANIZATION_REVIEW_TAB, CRM_ORGANIZATION_REVIEW_COLUMNS),
+        "lead_reconciliation": (LEAD_RECONCILIATION_TAB, LEAD_RECONCILIATION_COLUMNS),
     }
 
     try:

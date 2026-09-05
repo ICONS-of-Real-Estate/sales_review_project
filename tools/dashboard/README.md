@@ -10,11 +10,20 @@ proven before any auth code is written (Phase B).
 
 ## What's here
 
-- `sync.py` — pulls the `Sales Call Log` and `Training Assignments` tabs
-  from the Sheet into `dashboard.db` (SQLite). Run on a timer; the mirror
-  is fully disposable — delete `dashboard.db` and re-run to rebuild it.
-- `app.py` — the FastAPI app. Reads only from `dashboard.db`, never talks
-  to Google directly.
+- `sync.py` — pulls the `Sales Call Log`, `Training Assignments`,
+  `CRM Organization Review`, and `Lead Reconciliation - All` tabs from the
+  Sheet into `dashboard.db` (SQLite). Run on a timer; the mirror is fully
+  disposable — delete `dashboard.db` and re-run to rebuild it.
+- `sheets_write.py` — the one place this app writes anything back to the
+  Sheet: Tomás's Approve/Reject (or "Real Lead"/"Not a real lead") clicks on
+  `/review` (see below). Everything else stays read-only.
+- `app.py` — the FastAPI app. Reads only from `dashboard.db` (never talks
+  to Google directly) except `/review/decide`, which calls `sheets_write.py`.
+- `/review` — one finding/lead at a time from `CRM Organization Review` /
+  `Lead Reconciliation - All` (Phase15_CrmOrganizationReview.gs /
+  Phase13_LeadReconciliation.gs), with big Approve/Reject buttons that write
+  straight back to the Sheet — added 06/09/2026 so Tomás doesn't have to
+  open the spreadsheet and hunt through hundreds of rows by hand.
 - `templates/`, `static/` — Jinja2 templates and static assets for the app.
 - `requirements.txt` — pinned Python deps.
 
@@ -35,7 +44,15 @@ it doesn't block this read-only step):
    see `.gitignore`).
 4. Open the Sales Call Log spreadsheet
    (`1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4`) → Share → paste the
-   service account's `...@....iam.gserviceaccount.com` email → **Viewer**.
+   service account's `...@....iam.gserviceaccount.com` email → **Editor**
+   (not just Viewer — `/review`'s Approve/Reject buttons write two
+   checkbox columns back to the Sheet via `sheets_write.py`, using this
+   same service account/key with a wider `spreadsheets` scope; Viewer-only
+   access makes every one of those writes fail with a 403, visible in the
+   dashboard as "Could not save that decision to the spreadsheet"). If this
+   account was already shared as Viewer-only before 06/09/2026, re-share it
+   and pick Editor to upgrade the existing permission — no need to remove
+   and re-add it.
 
 This is deliberately a service account, not the transcription pipeline's
 `token.json` user-OAuth pattern — see the research report §3.1/§0.4 for
