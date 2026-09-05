@@ -5412,6 +5412,44 @@ test('buildDailyPracticeFeedbackEmail_ italicizes quoted transcript excerpts and
     'expected 4 bullets: focus line, technique used, delivery, score');
 });
 
+test('buildDailyPracticeFeedbackEmail_ includes recording and transcript links when provided (Kris, 05/09/2026: "Include the link to the recording and transcript so I can easily check myself" — an escalation had no way to verify without manually hunting through Drive)', () => {
+  const result = {
+    drill_type: 'framework', objection_type: 'n/a', framework_topic: 'Framework Explanation',
+    technique_used: false, technique_description: '', delivery_quality: 'hesitant',
+    overall_score: 1, sharpen_next: 'Name each piece out loud.',
+    feedback_summary: '"we focus on the two critical things" — never actually named.'
+  };
+  const links = { recordingUrl: 'https://drive.google.com/file/d/REC123/view', transcriptUrl: 'https://drive.google.com/file/d/DOC456/view' };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Sean', '260903 Framework Explanation.mp4', result, links);
+
+  assert.ok(email.body.indexOf('Recording: https://drive.google.com/file/d/REC123/view') !== -1);
+  assert.ok(email.body.indexOf('Transcript: https://drive.google.com/file/d/DOC456/view') !== -1);
+  assert.ok(email.htmlBody.indexOf('<a href="https://drive.google.com/file/d/REC123/view">Recording</a>') !== -1);
+  assert.ok(email.htmlBody.indexOf('<a href="https://drive.google.com/file/d/DOC456/view">Transcript</a>') !== -1);
+});
+
+test('buildDailyPracticeFeedbackEmail_ omits a missing link entirely rather than rendering a broken one (a moved/deleted source file, or an old call site that never passed links at all)', () => {
+  const result = {
+    drill_type: 'objection', objection_type: 'timing', technique_used: true, technique_description: 'x',
+    delivery_quality: 'good', overall_score: 4, sharpen_next: 'x', feedback_summary: '"x" — fine.'
+  };
+  const noLinks = gas.buildDailyPracticeFeedbackEmail_('Sean', 'x.mp4', result);
+  assert.equal(noLinks.body.indexOf('Recording:'), -1);
+  assert.equal(noLinks.body.indexOf('Transcript:'), -1);
+  assert.equal(noLinks.htmlBody.indexOf('<a href='), -1);
+
+  const transcriptOnly = gas.buildDailyPracticeFeedbackEmail_('Sean', 'x.mp4', result, { transcriptUrl: 'https://drive.google.com/x' });
+  assert.equal(transcriptOnly.body.indexOf('Recording:'), -1);
+  assert.ok(transcriptOnly.body.indexOf('Transcript: https://drive.google.com/x') !== -1);
+  assert.equal(transcriptOnly.htmlBody.indexOf('Recording</a>'), -1);
+  assert.ok(transcriptOnly.htmlBody.indexOf('Transcript</a>') !== -1);
+});
+
+test('dailyPracticeSourceFileName_ strips the "— Transcript" suffix without appending "— Feedback" (unlike dailyPracticeFeedbackDocName_), recovering the original recording\'s filename', () => {
+  assert.equal(gas.dailyPracticeSourceFileName_('260903 Framework Explanation.mp4 — Transcript'), '260903 Framework Explanation.mp4');
+  assert.equal(gas.dailyPracticeSourceFileName_('260820_objection_practice.mp4 - Transcript'), '260820_objection_practice.mp4');
+});
+
 test('deliverDailyPracticeGrading_ CCs Kris and Tomás on every standalone feedback email, not just escalations (Kris\'s ask 01/09/2026 — a score-3 email had gone out to Bens with no CC at all)', () => {
   const repCfg = { name: 'Bens', email: 'bens@iconsofrealestate.com' };
   const result = { overall_score: 3 }; // above ESCALATE_AT_OR_BELOW (2) — must still be CC'd

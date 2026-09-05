@@ -260,7 +260,16 @@ function dailyPracticeScoreColor_(score) {
   return '#1a7a3c';
 }
 
-function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
+/**
+ * `links` is {recordingUrl, transcriptUrl} — either may be missing (a
+ * moved/deleted source file, or an old email built before this existed) and
+ * is simply omitted rather than shown as a broken link. Kris, 05/09/2026,
+ * looking at a 1/5 escalation with no way to verify it himself: "Include
+ * the link to the recording and transcript so I can easily check myself.
+ * This one needs checking. What is the link?" — there wasn't one.
+ */
+function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links) {
+  links = links || {};
   var subject = 'Practice Drill Feedback — ' + fileName;
   var focusLine = result.drill_type === 'close_ask'
     ? 'Drill: Asking for the money'
@@ -268,6 +277,9 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
       ? 'Drill: Framework explanation (' + result.framework_topic + ')'
       : 'Objection practiced: ' + result.objection_type;
   var techniqueLine = result.technique_used ? 'Yes — ' + result.technique_description : 'No';
+  var linkLines = [];
+  if (links.recordingUrl) linkLines.push('Recording: ' + links.recordingUrl);
+  if (links.transcriptUrl) linkLines.push('Transcript: ' + links.transcriptUrl);
   var body =
     'Hi ' + rep + ',\n\n' +
     'On today\'s practice drill ("' + fileName + '"):\n\n' +
@@ -278,6 +290,7 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
     'Technique used: ' + techniqueLine + '\n' +
     'Delivery: ' + result.delivery_quality + '\n' +
     'Score: ' + result.overall_score + '/5\n\n' +
+    (linkLines.length ? linkLines.join('\n') + '\n\n' : '') +
     '— This is an automated review of your practice drill. Drafted by AI; reply to Kris or Tomás with any issues.';
 
   // Kris's ask (29/08/2026): the plain-text version above reads as a wall of
@@ -308,6 +321,13 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
     '<li><strong>Score:</strong> <strong style="color:' + dailyPracticeScoreColor_(result.overall_score) + ';">' +
     escapeHtml_(String(result.overall_score)) + '/5</strong></li>' +
     '</ul>' +
+    (linkLines.length
+      ? '<p style="margin:12px 0 4px 0;">' +
+        (links.recordingUrl ? '<a href="' + links.recordingUrl + '">Recording</a>' : '') +
+        (links.recordingUrl && links.transcriptUrl ? ' &nbsp;|&nbsp; ' : '') +
+        (links.transcriptUrl ? '<a href="' + links.transcriptUrl + '">Transcript</a>' : '') +
+        '</p>'
+      : '') +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated review of your practice ' +
     'drill. Drafted by AI; reply to Kris or Tomás with any issues.</i></p>' +
     '</div>';
@@ -328,6 +348,20 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result) {
  */
 function dailyPracticeFeedbackDocName_(transcriptDocName) {
   return transcriptDocName.replace(/[—-]?\s*Transcript\s*$/i, '').trim() + ' — Feedback';
+}
+
+/**
+ * Same strip as dailyPracticeFeedbackDocName_, without appending " —
+ * Feedback" — this is the SOURCE video/recording's own name, per
+ * transcribe_daily_practice.py's convention ("<video name, extension
+ * included> — Transcript"). Used to look the source file back up so its
+ * link can go in the feedback email (Kris, 05/09/2026: "Include the link to
+ * the recording and transcript so I can easily check myself" — a real
+ * escalation-worthy grade had no way to verify without manually hunting
+ * through Drive).
+ */
+function dailyPracticeSourceFileName_(transcriptDocName) {
+  return transcriptDocName.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
 }
 
 /**
@@ -496,7 +530,9 @@ function buildAndMaybeGradeDailyPractice_(dryRun) {
 
       var text = getTranscriptText_(file);
       var result = gradeDailyPracticeTranscript_(rep, text, name);
-      var email = buildDailyPracticeFeedbackEmail_(rep, name, result);
+      var sourceFile = findDailyPracticeFileByName_(folder, dailyPracticeSourceFileName_(name));
+      var links = { transcriptUrl: file.getUrl(), recordingUrl: sourceFile ? sourceFile.getUrl() : null };
+      var email = buildDailyPracticeFeedbackEmail_(rep, name, result, links);
       var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
       var replyThreadId = findDailyPracticeFollowupThreadForFile_(rep, name);
 
@@ -1184,7 +1220,8 @@ function checkDailyPracticeComplianceRow_(row, sheet, now, dryRun) {
 
     var text = getTranscriptText_(transcriptFile);
     var result = gradeDailyPracticeTranscript_(row.rep, text, transcriptName);
-    var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result);
+    var links = { transcriptUrl: transcriptFile.getUrl(), recordingUrl: namedFile.getUrl() };
+    var email = buildDailyPracticeFeedbackEmail_(row.rep, transcriptName, result, links);
     var escalate = result.overall_score <= DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW;
     var delivered = deliverDailyPracticeGrading_(row.rep, repCfg, folder, transcriptName, result, email, escalate, dryRun, row.threadId);
     // Only mark 'graded' on an actual successful delivery — leaving the row
