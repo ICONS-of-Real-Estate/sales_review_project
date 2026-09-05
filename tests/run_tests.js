@@ -6316,3 +6316,215 @@ test('computeGhlReviewNoteSyncPlan_ logs the scan scope up front, so a normal mu
     gas.Logger.log = originalLog;
   }
 });
+
+// ---------------------------------------------------------------------------
+// GHL Note Sync revert (05/09/2026, Kris: "move forward with everything and
+// revert back Monday if Tomás doesn't like it" -- GHL has no account-level
+// backup/restore API, so this tracks exactly what runGhlNoteSync_ creates
+// and gives a precise, targeted undo instead of a generic "backup").
+// ---------------------------------------------------------------------------
+
+function fakeGhlNoteSyncLogSheet_(dataRows) {
+  const cellWrites = [];
+  return {
+    appendRow: (row) => dataRows.push(row),
+    getLastRow: () => dataRows.length + 1,
+    getRange: function (row, col, numRows) {
+      if (arguments.length >= 3) {
+        if (row === 1) return { setValues: () => ({ setFontWeight: () => {} }) };
+        return { getValues: () => dataRows };
+      }
+      return { setValue: (v) => cellWrites.push({ row: row, col: col, value: v }) };
+    },
+    setFrozenRows: () => {},
+    _cellWrites: cellWrites
+  };
+}
+
+function ghlNoteSyncLogRow(overrides) {
+  const row = new Array(gas.GHL_NOTE_SYNC_LOG_HEADERS.length).fill('');
+  row[gas.GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Reverted')] = false;
+  Object.keys(overrides).forEach((h) => { row[gas.GHL_NOTE_SYNC_LOG_HEADERS.indexOf(h)] = overrides[h]; });
+  return row;
+}
+
+test('logGhlNoteSyncEntry_ appends a row with row/prospect/contact/note ids and Reverted=false', () => {
+  const dataRows = [];
+  const sheet = fakeGhlNoteSyncLogSheet_(dataRows);
+  const original = gas.SpreadsheetApp;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.logGhlNoteSyncEntry_(42, 'Nicole Freed', 'contact-1', 'note-1');
+    assert.equal(dataRows.length, 1);
+    assert.equal(dataRows[0][1], 42);
+    assert.equal(dataRows[0][2], 'Nicole Freed');
+    assert.equal(dataRows[0][3], 'contact-1');
+    assert.equal(dataRows[0][4], 'note-1');
+    assert.equal(dataRows[0][5], false);
+  } finally {
+    gas.SpreadsheetApp = original;
+  }
+});
+
+test('logGhlNoteSyncEntry_ never throws even if the sheet write fails -- the real GHL write already succeeded and must not be undermined by a logging bug', () => {
+  const original = gas.SpreadsheetApp;
+  try {
+    gas.SpreadsheetApp = { openById: () => { throw new Error('boom'); } };
+    assert.doesNotThrow(() => gas.logGhlNoteSyncEntry_(1, 'X', 'c', 'n'));
+  } finally {
+    gas.SpreadsheetApp = original;
+  }
+});
+
+test('readGhlNoteSyncLogEntries_ parses rows into objects and respects the Reverted flag', () => {
+  const dataRows = [
+    ghlNoteSyncLogRow({ Row: 5, 'Prospect Name': 'A', 'Contact ID': 'c-1', 'Note ID': 'n-1' }),
+    ghlNoteSyncLogRow({ Row: 6, 'Prospect Name': 'B', 'Contact ID': 'c-2', 'Note ID': 'n-2', Reverted: true })
+  ];
+  const sheet = fakeGhlNoteSyncLogSheet_(dataRows);
+  const original = gas.SpreadsheetApp;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    const entries = gas.readGhlNoteSyncLogEntries_();
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].row, 5);
+    assert.equal(entries[0].reverted, false);
+    assert.equal(entries[1].row, 6);
+    assert.equal(entries[1].reverted, true);
+  } finally {
+    gas.SpreadsheetApp = original;
+  }
+});
+
+function withMockedGhlRevert_(dataRows, salesCallLogRows, mocks, fn) {
+  const originals = {
+    SpreadsheetApp: gas.SpreadsheetApp,
+    ghlDeleteContactNote_: gas.ghlDeleteContactNote_
+  };
+  const logSheet = fakeGhlNoteSyncLogSheet_(dataRows);
+  const salesSheet = fakeGhlNoteSyncSheet(salesCallLogRows);
+  const salesCellWrites = [];
+  salesSheet.getRange = (function (orig) {
+    return function (row, col, numRows, numCols) {
+      if (numRows !== undefined) return orig(row, col, numRows, numCols);
+      if (row === 1 && col === undefined) return { getValues: () => [ghlNoteSyncHeaders()] };
+      return { setValue: (v) => salesCellWrites.push({ row: row, col: col, value: v }) };
+    };
+  })(salesSheet.getRange);
+  gas.SpreadsheetApp = {
+    openById: () => ({
+      getSheetByName: (name) => (name === 'GHL Note Sync Log' ? logSheet : salesSheet)
+    })
+  };
+  Object.assign(gas, mocks);
+  try {
+    return fn(logSheet, salesCellWrites);
+  } finally {
+    Object.assign(gas, originals);
+  }
+}
+
+test('revertGhlNoteSync_ deletes the GHL note when a note id is on file, unchecks GHL Review Synced, and marks the log entry Reverted', () => {
+  const dataRows = [ghlNoteSyncLogRow({ Row: 2, 'Prospect Name': 'Nicole Freed', 'Contact ID': 'c-1', 'Note ID': 'n-1' })];
+  const salesCallLogRows = [ghlNoteSyncRow({ 'Prospect Name': 'Nicole Freed', 'GHL Review Synced': true })];
+  let deletedArgs = null;
+  withMockedGhlRevert_(dataRows, salesCallLogRows, {
+    ghlDeleteContactNote_: (contactId, noteId) => { deletedArgs = [contactId, noteId]; return { ok: true }; }
+  }, (logSheet, salesCellWrites) => {
+    gas.revertGhlNoteSync_();
+    assert.deepEqual(deletedArgs, ['c-1', 'n-1']);
+    const uncheck = salesCellWrites.find((w) => w.col === gas.SALES_CALL_LOG_HEADERS.indexOf('GHL Review Synced') + 1);
+    assert.equal(uncheck.value, false);
+    const revertedMark = logSheet._cellWrites.find((w) => w.col === gas.GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Reverted') + 1);
+    assert.equal(revertedMark.value, true);
+  });
+});
+
+test('revertGhlNoteSync_ uncheck-only (no delete call) when an entry has no note id on file', () => {
+  const dataRows = [ghlNoteSyncLogRow({ Row: 2, 'Prospect Name': 'No Note Id Guy', 'Contact ID': 'c-1', 'Note ID': '' })];
+  const salesCallLogRows = [ghlNoteSyncRow({ 'Prospect Name': 'No Note Id Guy', 'GHL Review Synced': true })];
+  let deleteCalls = 0;
+  withMockedGhlRevert_(dataRows, salesCallLogRows, {
+    ghlDeleteContactNote_: () => { deleteCalls++; return { ok: true }; }
+  }, (logSheet, salesCellWrites) => {
+    gas.revertGhlNoteSync_();
+    assert.equal(deleteCalls, 0);
+    const uncheck = salesCellWrites.find((w) => w.col === gas.SALES_CALL_LOG_HEADERS.indexOf('GHL Review Synced') + 1);
+    assert.equal(uncheck.value, false);
+  });
+});
+
+test('revertGhlNoteSync_ never re-processes an already-reverted entry', () => {
+  const dataRows = [ghlNoteSyncLogRow({ Row: 2, 'Prospect Name': 'Already Done', 'Contact ID': 'c-1', 'Note ID': 'n-1', Reverted: true })];
+  let deleteCalls = 0;
+  withMockedGhlRevert_(dataRows, [], {
+    ghlDeleteContactNote_: () => { deleteCalls++; return { ok: true }; }
+  }, () => {
+    gas.revertGhlNoteSync_();
+    assert.equal(deleteCalls, 0);
+  });
+});
+
+test('revertGhlNoteSync_ leaves an entry un-reverted (does not mark Reverted) when the GHL delete itself fails, so a re-run retries it', () => {
+  const dataRows = [ghlNoteSyncLogRow({ Row: 2, 'Prospect Name': 'Delete Fails Guy', 'Contact ID': 'c-1', 'Note ID': 'n-1' })];
+  const salesCallLogRows = [ghlNoteSyncRow({ 'Prospect Name': 'Delete Fails Guy', 'GHL Review Synced': true })];
+  withMockedGhlRevert_(dataRows, salesCallLogRows, {
+    ghlDeleteContactNote_: () => ({ ok: false, status: 500, body: 'server error' })
+  }, (logSheet) => {
+    gas.revertGhlNoteSync_();
+    assert.equal(logSheet._cellWrites.length, 0, 'Reverted must NOT be set true when the delete failed');
+  });
+});
+
+test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN, leaving the rest for a later run', () => {
+  const dataRows = [
+    ghlNoteSyncRow({ 'Prospect Name': 'Row A', 'Lead Quality Verdict': 'Qualified' }),
+    ghlNoteSyncRow({ 'Prospect Name': 'Row B', 'Lead Quality Verdict': 'Qualified' })
+  ];
+  const sheet = fakeGhlNoteSyncSheet(dataRows);
+  sheet.getRange = (function (orig) {
+    return function (row, col, numRows, numCols) {
+      if (numRows !== undefined) return orig(row, col, numRows, numCols);
+      if (row === 1 && col === undefined) return { getValues: () => [ghlNoteSyncHeaders()] };
+      return { setValue: () => {} };
+    };
+  })(sheet.getRange);
+
+  const originalEnabled = gas.GHL_NOTE_SYNC_CONFIG.ENABLED;
+  const originalMaxRows = gas.GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN;
+  const originalGhlCheckSetup = gas.ghlCheckSetup_;
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalUtilities = gas.Utilities;
+  const originalSearch = gas.ghlSearchContactByName_;
+  const originalPost = gas.ghlPostContactNote_;
+  let postCalls = 0;
+  try {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = true;
+    gas.GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN = 1;
+    gas.ghlCheckSetup_ = () => 'loc-1';
+    gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.ghlSearchContactByName_ = (locId, name) => ({ ok: true, contacts: [{ id: 'c-1', name: name }] });
+    gas.ghlPostContactNote_ = () => { postCalls++; return { ok: true, noteId: 'n-' + postCalls }; };
+
+    const originalLog = gas.Logger.log;
+    const lines = [];
+    gas.Logger.log = (msg) => lines.push(msg);
+    try {
+      gas.runGhlNoteSync_();
+    } finally {
+      gas.Logger.log = originalLog;
+    }
+
+    assert.equal(postCalls, 1, 'must only post the capped number of notes, not all planned ones');
+    assert.ok(lines.some((l) => l.indexOf('capped by GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN') !== -1));
+  } finally {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = originalEnabled;
+    gas.GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN = originalMaxRows;
+    gas.ghlCheckSetup_ = originalGhlCheckSetup;
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.Utilities = originalUtilities;
+    gas.ghlSearchContactByName_ = originalSearch;
+    gas.ghlPostContactNote_ = originalPost;
+  }
+});

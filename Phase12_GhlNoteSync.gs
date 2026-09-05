@@ -28,8 +28,50 @@
  */
 
 var GHL_NOTE_SYNC_CONFIG = {
-  ENABLED: false
+  ENABLED: false,
+
+  // Kris's ask (05/09/2026): "move forward with everything and revert back
+  // Monday if Tomás doesn't like it." A full GHL account backup/restore
+  // isn't a real API GHL offers, so instead: cap the first live run to a
+  // small batch, prove the note-sync-log + revertGhlNoteSync_ round trip
+  // actually works end to end against a handful of real notes, THEN raise
+  // this (or set it back to null) for the full run. null/0 = no limit.
+  MAX_ROWS_PER_RUN: null
 };
+
+var GHL_NOTE_SYNC_LOG_SHEET_NAME = 'GHL Note Sync Log';
+var GHL_NOTE_SYNC_LOG_HEADERS = ['Timestamp', 'Row', 'Prospect Name', 'Contact ID', 'Note ID', 'Reverted'];
+
+function getOrCreateGhlNoteSyncLogSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(GHL_NOTE_SYNC_LOG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(GHL_NOTE_SYNC_LOG_SHEET_NAME);
+    sheet.getRange(1, 1, 1, GHL_NOTE_SYNC_LOG_HEADERS.length).setValues([GHL_NOTE_SYNC_LOG_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+/**
+ * Durable record of exactly what runGhlNoteSync_ created — the actual
+ * safety net for "revert back Monday if Tomás doesn't like it," since GHL
+ * itself has no account-level backup/restore API. Without this, a targeted
+ * undo would be impossible: there'd be no way to tell "a note this sync
+ * created" apart from any other note on that contact. Best-effort — a
+ * logging failure must not block the real GHL write that already
+ * succeeded, so this is wrapped in its own try/catch (same policy as
+ * logLlmCallCost_, Phase2_CallScoring.gs).
+ */
+function logGhlNoteSyncEntry_(row, prospectName, contactId, noteId) {
+  try {
+    var sheet = getOrCreateGhlNoteSyncLogSheet_();
+    sheet.appendRow([new Date(), row, prospectName, contactId, noteId || '', false]);
+  } catch (e) {
+    log_('logGhlNoteSyncEntry_: failed to write a GHL Note Sync Log row (' + e + ') — the note was still posted; ' +
+      'this row just won\'t be automatically revertable by row number, only by finding it directly in GHL.');
+  }
+}
 
 // Same margin under Apps Script's 6-minute ceiling as GHL_SYNC_TIME_BUDGET_MS_
 // (Phase9_GhlSync.gs) — a full-sheet scan here costs up to 1 GHL search call
@@ -218,12 +260,20 @@ function runGhlNoteSync_() {
     return;
   }
 
+  var toPost = plan.toPost;
+  var limited = false;
+  if (GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN) {
+    limited = toPost.length > GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN;
+    toPost = toPost.slice(0, GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN);
+  }
+
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
   var col = getValidatedColumnMap_(sheet);
 
   var posted = 0;
-  plan.toPost.forEach(function (p) {
+  var postedWithoutNoteId = 0;
+  toPost.forEach(function (p) {
     var res = ghlPostContactNote_(p.contactId, p.noteBody);
     if (!res.ok) {
       log_('Row ' + p.row + ' "' + p.prospectName + '": POST note FAILED, HTTP ' + res.status +
@@ -231,12 +281,129 @@ function runGhlNoteSync_() {
       return;
     }
     sheet.getRange(p.row, col['GHL Review Synced']).setValue(true);
+    logGhlNoteSyncEntry_(p.row, p.prospectName, p.contactId, res.noteId);
     posted++;
-    log_('Row ' + p.row + ' "' + p.prospectName + '": review note posted to GHL.');
+    if (!res.noteId) postedWithoutNoteId++;
+    log_('Row ' + p.row + ' "' + p.prospectName + '": review note posted to GHL' +
+      (res.noteId ? ' (note id ' + res.noteId + ').' : ' — note id NOT returned by GHL, this one can\'t be precisely reverted.'));
   });
 
-  log_('runGhlNoteSync_() done — posted ' + posted + ' of ' + plan.toPost.length + ' planned review note(s).' +
+  log_('runGhlNoteSync_() done — posted ' + posted + ' of ' + toPost.length +
+    (limited ? (' (capped by GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN — ' + (plan.toPost.length - toPost.length) +
+      ' more planned row(s) not run this time, re-run to continue)') : '') + '.' +
+    (postedWithoutNoteId ? ' ' + postedWithoutNoteId + ' posted note(s) had no id returned by GHL — see the log lines above for which.' : '') +
     (plan.truncated ? ' PARTIAL scan — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewRevertGhlNoteSync() {
+  return previewRevertGhlNoteSync_();
+}
+
+/**
+ * Read-only. Reads the GHL Note Sync Log and reports exactly what
+ * revertGhlNoteSync() would undo: which notes it would delete from GHL and
+ * which Sales Call Log rows would get "GHL Review Synced" unchecked.
+ * Writes nothing.
+ */
+function previewRevertGhlNoteSync_() {
+  RUN_TAG = 'previewRevertGhlNoteSync_';
+  log_('PREVIEW MODE — read-only revert probe. Nothing will be deleted or unchecked.');
+
+  var entries = readGhlNoteSyncLogEntries_();
+  var pending = entries.filter(function (e) { return !e.reverted; });
+  if (!pending.length) {
+    log_('No un-reverted GHL Note Sync Log entries found — nothing to revert.');
+    return;
+  }
+
+  var withNoteId = 0, withoutNoteId = 0;
+  pending.forEach(function (e) {
+    if (e.noteId) {
+      withNoteId++;
+      log_('Row ' + e.row + ' "' + e.prospectName + '" -> would DELETE GHL note ' + e.noteId +
+        ' on contact ' + e.contactId + ', and uncheck GHL Review Synced.');
+    } else {
+      withoutNoteId++;
+      log_('Row ' + e.row + ' "' + e.prospectName + '" -> NO note id on file for this entry, cannot delete the ' +
+        'note itself — would still uncheck GHL Review Synced so it doesn\'t look falsely synced.');
+    }
+  });
+
+  log_('');
+  log_(pending.length + ' entry(ies) would be reverted (' + withNoteId + ' with a real delete, ' +
+    withoutNoteId + ' uncheck-only). Paste this whole log back to Claude before running the real revert.');
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function revertGhlNoteSync() {
+  return revertGhlNoteSync_();
+}
+
+/**
+ * LIVE WRITE (in the reverse direction). For every un-reverted GHL Note
+ * Sync Log entry: deletes the note from GHL (when a note id was captured),
+ * unchecks that row's "GHL Review Synced" (so it's eligible to be
+ * re-synced normally later if the fix goes back in), and marks the log
+ * entry Reverted so a second run never double-processes it. This is the
+ * whole point of logGhlNoteSyncEntry_ existing — GHL has no account-level
+ * backup/restore API, so a precise per-note undo of exactly what this
+ * codebase created is the real safety net instead.
+ */
+function revertGhlNoteSync_() {
+  RUN_TAG = 'revertGhlNoteSync_';
+
+  var entries = readGhlNoteSyncLogEntries_();
+  var pending = entries.filter(function (e) { return !e.reverted; });
+  if (!pending.length) {
+    log_('No un-reverted GHL Note Sync Log entries found — nothing to revert.');
+    return;
+  }
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  var col = getValidatedColumnMap_(sheet);
+  var logSheet = getOrCreateGhlNoteSyncLogSheet_();
+
+  var deleted = 0, uncheckOnly = 0, deleteFailed = 0;
+  pending.forEach(function (e) {
+    if (e.noteId) {
+      var res = ghlDeleteContactNote_(e.contactId, e.noteId);
+      if (!res.ok) {
+        deleteFailed++;
+        log_('Row ' + e.row + ' "' + e.prospectName + '": DELETE note FAILED, HTTP ' + res.status +
+          '. Body (first 500 chars): ' + String(res.body).slice(0, 500) + ' — leaving this entry un-reverted, re-run to retry.');
+        return;
+      }
+      deleted++;
+    } else {
+      uncheckOnly++;
+    }
+    sheet.getRange(e.row, col['GHL Review Synced']).setValue(false);
+    logSheet.getRange(e.logRow, GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Reverted') + 1).setValue(true);
+    log_('Row ' + e.row + ' "' + e.prospectName + '": reverted' + (e.noteId ? ' (note deleted from GHL).' : ' (uncheck-only, no note id on file).'));
+  });
+
+  log_('revertGhlNoteSync_() done — ' + deleted + ' note(s) deleted, ' + uncheckOnly + ' uncheck-only, ' +
+    deleteFailed + ' delete failure(s) left for a re-run.');
+}
+
+/** Reads every row of the GHL Note Sync Log into plain objects, including its own sheet row number (for writing "Reverted" back). */
+function readGhlNoteSyncLogEntries_() {
+  var sheet = getOrCreateGhlNoteSyncLogSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var rows = sheet.getRange(2, 1, lastRow - 1, GHL_NOTE_SYNC_LOG_HEADERS.length).getValues();
+  return rows.map(function (row, i) {
+    return {
+      logRow: i + 2,
+      row: row[GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Row')],
+      prospectName: row[GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Prospect Name')],
+      contactId: row[GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Contact ID')],
+      noteId: row[GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Note ID')],
+      reverted: isTruthyOutcome_(row[GHL_NOTE_SYNC_LOG_HEADERS.indexOf('Reverted')])
+    };
+  });
 }
 
 /**

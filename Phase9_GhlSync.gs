@@ -132,6 +132,34 @@ function ghlApiPost_(path, payload) {
 }
 
 /**
+ * DELETE against the GHL API — same self-diagnosing contract as
+ * ghlApiGet_/ghlApiPost_. Used only for reverting a note this codebase
+ * itself created (ghlDeleteContactNote_/revertGhlNoteSync_).
+ */
+function ghlApiDelete_(path) {
+  var token = getScriptSecret_(GHL_CONFIG.API_KEY_PROPERTY);
+  var url = GHL_CONFIG.API_BASE + path;
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'delete',
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: 'Bearer ' + token,
+      Version: GHL_CONFIG.API_VERSION,
+      Accept: 'application/json'
+    }
+  });
+  var status = resp.getResponseCode();
+  var body = resp.getContentText();
+  var json = null;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    // leave json null.
+  }
+  return { status: status, json: json, body: body, url: url };
+}
+
+/**
  * Confirms both Script Properties exist before any GHL call. Every entry
  * point below calls this first and bails with the same clear message
  * rather than each failing on a different obscure error.
@@ -523,6 +551,32 @@ function ghlGetContactNotes_(contactId) {
 function ghlPostContactNote_(contactId, body) {
   var res = ghlApiPost_('/contacts/' + encodeURIComponent(contactId) + '/notes', { body: body });
   if (res.status !== 200 && res.status !== 201) {
+    return { ok: false, status: res.status, body: res.body, url: res.url };
+  }
+  // Best-effort capture of the created note's id, so a caller can precisely
+  // delete THIS note later (see ghlDeleteContactNote_/revertGhlNoteSync_,
+  // Phase12_GhlNoteSync.gs) rather than needing a full account backup/
+  // restore GHL has no API for anyway. Shape unconfirmed until the first
+  // real live POST — this checks every plausible envelope
+  // (res.json.note.id / res.json.id) and returns null rather than guessing
+  // if neither is present, so the caller can tell "we don't have a
+  // targeted-delete handle for this one" honestly instead of silently
+  // assuming one exists.
+  var noteId = (res.json && ((res.json.note && res.json.note.id) || res.json.id)) || null;
+  return { ok: true, noteId: noteId };
+}
+
+/**
+ * DELETE one specific Note from one GHL contact — DELETE
+ * /contacts/{contactId}/notes/{noteId}. Only ever called on a note this
+ * codebase itself created (see revertGhlNoteSync_, Phase12_GhlNoteSync.gs)
+ * — never used to remove anything a human wrote. Best-effort guess at
+ * endpoint shape, same self-diagnosing contract as every other ghl*_
+ * function here.
+ */
+function ghlDeleteContactNote_(contactId, noteId) {
+  var res = ghlApiDelete_('/contacts/' + encodeURIComponent(contactId) + '/notes/' + encodeURIComponent(noteId));
+  if (res.status !== 200 && res.status !== 204) {
     return { ok: false, status: res.status, body: res.body, url: res.url };
   }
   return { ok: true };
