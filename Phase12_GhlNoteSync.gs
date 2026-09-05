@@ -114,8 +114,17 @@ function buildGhlReviewNoteBody_(rowData) {
  * contactNameLooksLikeQuery_, Phase9_GhlSync.gs), and returns what WOULD be
  * posted. Never writes. Shared by previewGhlNoteSync_ (logs it) and
  * runGhlNoteSync_ (applies it), so they can never disagree.
+ *
+ * maxToPlan is optional — when set, this STOPS SCANNING (not just slices
+ * the result) as soon as toPost.length reaches it. Real gap found live
+ * (05/09/2026): GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN used to only trim
+ * the finished plan in runGhlNoteSync_, so a "3-row test batch" still ran
+ * the full ~470-call, several-minutes scan first — defeating the entire
+ * point of capping a first live run small. Passing the cap in here instead
+ * means a capped run is actually fast and cheap, not just fewer posts at
+ * the end of the same expensive work.
  */
-function computeGhlReviewNoteSyncPlan_(locationId) {
+function computeGhlReviewNoteSyncPlan_(locationId, maxToPlan) {
   var stats = { scanned: 0, notScored: 0, alreadySynced: 0, noMatch: 0, ambiguous: 0, searchFailed: 0 };
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
@@ -194,6 +203,14 @@ function computeGhlReviewNoteSyncPlan_(locationId) {
     });
 
     toPost.push({ row: i + 2, prospectName: prospectName, contactId: candidates[0].id, noteBody: noteBody });
+
+    if (maxToPlan && toPost.length >= maxToPlan) {
+      truncated = true;
+      log_('computeGhlReviewNoteSyncPlan_: reached maxToPlan (' + maxToPlan + ') after ' + (i + 1) + '/' +
+        rows.length + ' row(s) — stopping the scan here rather than continuing to search rows that would ' +
+        'just be discarded. Re-run (or raise GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN) to plan/post the rest.');
+      break;
+    }
     Utilities.sleep(200); // polite pacing between rows, matching computeGhlSyncFixes_'s own convention
   }
 
@@ -218,7 +235,11 @@ function previewGhlNoteSync_() {
     return;
   }
 
-  var plan = computeGhlReviewNoteSyncPlan_(locationId);
+  // Passes the same MAX_ROWS_PER_RUN cap runGhlNoteSync_ will use, so the
+  // preview always shows exactly what the real run would do (same
+  // "preview and run can never disagree" contract computeGhlReviewNoteSyncPlan_
+  // already documents) — including stopping the scan itself early when capped.
+  var plan = computeGhlReviewNoteSyncPlan_(locationId, GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN);
   plan.toPost.forEach(function (p) {
     log_('Row ' + p.row + ' "' + p.prospectName + '" -> would post a review note to GHL contact ' + p.contactId + '.');
   });
@@ -228,7 +249,7 @@ function previewGhlNoteSync_() {
     plan.stats.alreadySynced + ' already synced, ' + plan.stats.noMatch + ' no GHL match, ' +
     plan.stats.ambiguous + ' ambiguous, ' + plan.stats.searchFailed + ' search failed.');
   log_(plan.toPost.length + ' review note(s) would be posted.');
-  if (plan.truncated) log_('PARTIAL SCAN — time budget hit. Re-run previewGhlNoteSync() to see the rest.');
+  if (plan.truncated) log_('PARTIAL SCAN — time budget or MAX_ROWS_PER_RUN cap hit. Re-run previewGhlNoteSync() to see the rest.');
   log_('Paste this whole log back to Claude before running the real sync.');
 }
 
@@ -258,18 +279,13 @@ function runGhlNoteSync_() {
     return;
   }
 
-  var plan = computeGhlReviewNoteSyncPlan_(locationId);
+  var plan = computeGhlReviewNoteSyncPlan_(locationId, GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN);
   if (!plan.toPost.length) {
     log_('No review notes need posting.' + (plan.truncated ? ' PARTIAL scan — re-run to continue.' : ''));
     return;
   }
 
   var toPost = plan.toPost;
-  var limited = false;
-  if (GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN) {
-    limited = toPost.length > GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN;
-    toPost = toPost.slice(0, GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN);
-  }
 
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
@@ -292,11 +308,9 @@ function runGhlNoteSync_() {
       (res.noteId ? ' (note id ' + res.noteId + ').' : ' — note id NOT returned by GHL, this one can\'t be precisely reverted.'));
   });
 
-  log_('runGhlNoteSync_() done — posted ' + posted + ' of ' + toPost.length +
-    (limited ? (' (capped by GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN — ' + (plan.toPost.length - toPost.length) +
-      ' more planned row(s) not run this time, re-run to continue)') : '') + '.' +
+  log_('runGhlNoteSync_() done — posted ' + posted + ' of ' + toPost.length + ' planned review note(s).' +
     (postedWithoutNoteId ? ' ' + postedWithoutNoteId + ' posted note(s) had no id returned by GHL — see the log lines above for which.' : '') +
-    (plan.truncated ? ' PARTIAL scan — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
+    (plan.truncated ? ' PARTIAL scan (time budget or MAX_ROWS_PER_RUN cap) — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
 }
 
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */

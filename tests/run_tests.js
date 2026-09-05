@@ -6476,7 +6476,7 @@ test('revertGhlNoteSync_ leaves an entry un-reverted (does not mark Reverted) wh
   });
 });
 
-test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN, leaving the rest for a later run', () => {
+test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN by stopping the SCAN itself early, not just slicing a finished plan (real bug found live 05/09/2026: a "3-row test batch" still ran the full ~470-call scan first, defeating the point of a small first live run)', () => {
   const dataRows = [
     ghlNoteSyncRow({ 'Prospect Name': 'Row A', 'Lead Quality Verdict': 'Qualified' }),
     ghlNoteSyncRow({ 'Prospect Name': 'Row B', 'Lead Quality Verdict': 'Qualified' })
@@ -6498,13 +6498,14 @@ test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN, l
   const originalSearch = gas.ghlSearchContactByName_;
   const originalPost = gas.ghlPostContactNote_;
   let postCalls = 0;
+  let searchCalls = 0;
   try {
     gas.GHL_NOTE_SYNC_CONFIG.ENABLED = true;
     gas.GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN = 1;
     gas.ghlCheckSetup_ = () => 'loc-1';
     gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.ghlSearchContactByName_ = (locId, name) => ({ ok: true, contacts: [{ id: 'c-1', name: name }] });
+    gas.ghlSearchContactByName_ = (locId, name) => { searchCalls++; return { ok: true, contacts: [{ id: 'c-1', name: name }] }; };
     gas.ghlPostContactNote_ = () => { postCalls++; return { ok: true, noteId: 'n-' + postCalls }; };
 
     const originalLog = gas.Logger.log;
@@ -6516,8 +6517,9 @@ test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN, l
       gas.Logger.log = originalLog;
     }
 
+    assert.equal(searchCalls, 1, 'must stop searching GHL after the cap is reached, not scan every row first');
     assert.equal(postCalls, 1, 'must only post the capped number of notes, not all planned ones');
-    assert.ok(lines.some((l) => l.indexOf('capped by GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('reached maxToPlan (1)') !== -1));
   } finally {
     gas.GHL_NOTE_SYNC_CONFIG.ENABLED = originalEnabled;
     gas.GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN = originalMaxRows;
