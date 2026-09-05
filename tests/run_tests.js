@@ -7499,3 +7499,64 @@ test('resolveGhlAssigneeLabel_ falls back to a clearly-labeled raw ID when the l
   assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', null), 'Unknown user (j3B1N9nwTDvgLyLgbcjI)');
 });
 
+// ---------------------------------------------------------------------------
+// One-time repair (06/09/2026): Tomás, live, on a raw-ID "Unrecognized
+// assignee" row: "how the fuck can he answer this?" — rows written before
+// resolveGhlAssigneeLabel_ existed still show the bare GHL user ID.
+// repairCrmOrganizationReviewAssigneeNames_ fixes those Finding cells in
+// place rather than re-scanning (which would just add duplicate rows,
+// since previewCrmOrganizationReview_ has no dedupe-by-content check).
+// ---------------------------------------------------------------------------
+
+test('parseLegacyUnrecognizedAssigneeFinding_ splits the old quoted-raw-ID shape into {id, rest}', () => {
+  const parsed = gas.parseLegacyUnrecognizedAssigneeFinding_(
+    '"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.id, 'wEL0kebR7naWq9aTx7CW');
+  assert.equal(parsed.rest, ' is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+});
+
+test('parseLegacyUnrecognizedAssigneeFinding_ returns null for an already-resolved Finding — must not double-repair or corrupt it', () => {
+  assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'), null);
+});
+
+test('parseLegacyUnrecognizedAssigneeFinding_ returns null for a "Pipeline health" Finding — must never touch the other category', () => {
+  assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"'), null);
+});
+
+test('repairCrmOrganizationReviewAssigneeNames_ rewrites only legacy raw-ID Finding cells, leaving Pipeline health and already-resolved rows untouched', () => {
+  const written = { value: null };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(col, 3); // Finding column
+      return {
+        getValues: () => [
+          ['"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'],
+          ['"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"'],
+          ['Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)']
+        ],
+        setValues: (vals) => { written.value = vals; }
+      };
+    }
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalGhlCheckSetup = gas.ghlCheckSetup_;
+  const originalFetchUsers = gas.fetchGhlLocationUsers_;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet }) };
+  gas.ghlCheckSetup_ = () => 'loc123';
+  gas.fetchGhlLocationUsers_ = () => [{ id: 'wEL0kebR7naWq9aTx7CW', name: 'Joana Peixe' }];
+  try {
+    gas.repairCrmOrganizationReviewAssigneeNames_();
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.ghlCheckSetup_ = originalGhlCheckSetup;
+    gas.fetchGhlLocationUsers_ = originalFetchUsers;
+  }
+  assert.ok(written.value, 'the Finding column should have been written back');
+  assert.equal(written.value[0][0], 'Joana Peixe (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+  assert.equal(written.value[1][0], '"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"');
+  assert.equal(written.value[2][0], 'Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+});
+

@@ -283,3 +283,75 @@ function previewCrmOrganizationReview_() {
     '(Phase13_LeadReconciliation.gs) — found for free while matching leads to GHL, not recomputed here.');
   log_('Nothing in GHL was changed. Tomás ticks Approve or Reject per row — that decision is his.');
 }
+
+/**
+ * Matches the OLD "Unrecognized assignee" Finding text (before
+ * resolveGhlAssigneeLabel_ existed): the raw GHL user ID, quoted, as the
+ * whole subject — e.g. '"wEL0kebR7naWq9aTx7CW" is assigned 48 open
+ * opportunity(ies) but is not in CONFIG.REPS...'. Group 1 is the ID, group
+ * 2 is everything from " is assigned" onward, kept verbatim so the repair
+ * below only ever changes the subject, never the rest of the sentence.
+ */
+var CRM_ORG_REVIEW_LEGACY_UNRECOGNIZED_ASSIGNEE_PATTERN_ = /^"([^"]+)"(\s+is assigned .*)$/;
+
+/**
+ * Pure. Splits an old-format "Unrecognized assignee" Finding cell into
+ * {id, rest}, or returns null if it doesn't match that exact legacy shape
+ * (already resolved to a name, or a different category entirely — e.g.
+ * "Pipeline health" rows, which this must never touch).
+ */
+function parseLegacyUnrecognizedAssigneeFinding_(finding) {
+  var m = CRM_ORG_REVIEW_LEGACY_UNRECOGNIZED_ASSIGNEE_PATTERN_.exec(String(finding || ''));
+  if (!m) return null;
+  return { id: m[1], rest: m[2] };
+}
+
+/** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
+function repairCrmOrganizationReviewAssigneeNames() {
+  return repairCrmOrganizationReviewAssigneeNames_();
+}
+
+/**
+ * One-time repair (06/09/2026). Tomás, live, looking at a raw GHL user ID
+ * with no name attached: "how the fuck can he answer this?" — the "View
+ * Users" scope fix (fetchGhlLocationUsers_/resolveGhlAssigneeLabel_, this
+ * file) only affects NEW findings from here on; rows already written by
+ * the old code still show the bare ID. Re-running
+ * previewCrmOrganizationReview_ would not fix those — it has no dedupe
+ * check against already-written findings (unlike Phase13's dedupe-by-key),
+ * so it would just add a SECOND row for the same finding instead of fixing
+ * the first one.
+ *
+ * This instead rewrites ONLY the Finding cell of rows matching the exact
+ * old shape, in place — no new rows, no re-scan of GHL opportunities, just
+ * one GET /users/ call (same as fetchGhlLocationUsers_ uses elsewhere) to
+ * resolve every ID already sitting in the sheet. Safe to run more than
+ * once — an already-resolved row simply won't match the legacy pattern and
+ * is left alone. Nothing in GHL is changed.
+ */
+function repairCrmOrganizationReviewAssigneeNames_() {
+  RUN_TAG = 'repairCrmOrganizationReviewAssigneeNames_';
+  var locationId = ghlCheckSetup_();
+  var userNameLookup = buildGhlUserNameLookup_(fetchGhlLocationUsers_(locationId));
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(CRM_ORGANIZATION_REVIEW_SHEET_NAME_);
+  if (!sheet) { log_('"' + CRM_ORGANIZATION_REVIEW_SHEET_NAME_ + '" does not exist yet — nothing to repair.'); return; }
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows — nothing to repair.'); return; }
+
+  var findings = sheet.getRange(2, 3, lastRow - 1, 1).getValues(); // Finding column (C)
+  var fixedCount = 0;
+  for (var r = 0; r < findings.length; r++) {
+    var parsed = parseLegacyUnrecognizedAssigneeFinding_(findings[r][0]);
+    if (!parsed) continue;
+    findings[r][0] = resolveGhlAssigneeLabel_(parsed.id, userNameLookup) + parsed.rest;
+    fixedCount++;
+  }
+  if (fixedCount) {
+    sheet.getRange(2, 3, findings.length, 1).setValues(findings);
+  }
+  log_('Fixed ' + fixedCount + ' row(s) — resolved the raw GHL user ID into a name (or "Unknown user (id)" ' +
+    'if the lookup had nothing for it, e.g. missing scope or a deactivated user).');
+  log_('Nothing else on the sheet was touched, and nothing in GHL was changed.');
+}
