@@ -2,7 +2,7 @@
 
 > **Status: design only. No phase code has been changed.** This document
 > exists to be reviewed by Kris, Tomás, Joana and Hazel *before* anything is
-> built, because it contains two findings that change what "GHL is the
+> built, because it contains one finding that changes what "GHL is the
 > system of record" can actually mean.
 >
 > Companion to `GHL_PIPELINE_MAP.md` (what's in the CRM) and
@@ -22,11 +22,11 @@ The short version of the answer:
    state, outcome, no-shows, who owns the lead. GHL knows all of it natively;
    the sheet only knows it because a human typed it in. This part should
    move, and it's the part that gets everyone off spreadsheet maintenance.
-2. **Per-call review history cannot live in GHL** — not because of our
-   integration, but because of GHL's data model (§2) and because the read/
-   write volume doesn't fit through an API inside Apps Script's execution
-   limits (§3). It needs a real database. One already exists and is already
-   deployed (§4).
+2. **Per-call review history cannot live in GHL's structured fields** — not
+   because of our integration or any volume limit, but because of GHL's data
+   model: it stores one card per person, and we need one row per call (§2).
+   That history needs somewhere with rows. One such place already exists and
+   is already deployed (§4).
 3. **Even after the "Sales Call Log" tab is retired, the spreadsheet file
    itself has to survive** — seven other script-owned tabs live in it (§7).
 
@@ -48,10 +48,28 @@ Only **7 of the 12** phase files touch the Sales Call Log at all. Phases 6,
 7 and 8 are self-contained on Drive/Gmail plus their own tabs — they need no
 data migration whatsoever.
 
-## 2. Finding 1 — grain mismatch: GHL has no per-call object
+## 2. The one real blocker: GHL has no per-call record
 
-**The Sales Call Log's grain is one row per call. GHL's grain is one record
-per contact, and one per opportunity.** Neither is one-per-call.
+**In plain terms: the spreadsheet stores one line per call. GHL stores one
+card per person.**
+
+Take Ward Frederick. He has had 4 calls with us. In the spreadsheet that's 4
+lines, each with its own score. On his GHL contact card there is one box
+called "Call Quality Score" — write call 2's score into it and call 1's is
+gone; write call 3 and call 2's is gone. At the end you have one number, and
+no way to see that he went 2/5 → 3/5 → 4/5.
+
+That progression is the entire coaching product. It's what the Monday
+scorecard compares ("this week vs. your 4-week average"), what the weekly
+calibration checks, and what every trend on the dashboard draws.
+
+Note this is **not** a problem with the review notes — a contact can hold as
+many notes as you like, which is exactly why the Phase 12 sync works. It only
+affects **structured, sortable fields**.
+
+In the system's own terms: the Sales Call Log's grain is one row per call;
+GHL's grain is one record per contact plus one per opportunity. Neither is
+one-per-call.
 
 This is not theoretical. From the real Phase 12 sync run on 05/09/2026 that
 posted 306 review notes:
@@ -83,37 +101,47 @@ protect against: **you cannot revert data that was never recorded.**
 | **GHL Custom Objects** | ✅ *if available* | The only way GHL itself could be the store. Availability unverified — Gate 1, §5. |
 | A real database | ✅ | Works today. §4. |
 
-## 3. Finding 2 — the API volume doesn't fit
+## 3. Volume — a batching problem, not a blocker
 
-Even if Gate 1 comes back "yes, Custom Objects exist," the access *pattern*
-is the harder problem. Measured from the code as it stands:
+An earlier draft of this document called API volume a second blocker. **That
+was wrong, and Kris was right to push back on it** (05/09/2026: *"just run it
+for a few days"*). Recording the corrected version, because the numbers still
+matter for how the work is built — just not for whether it's possible.
 
-**Writes.** `writeScoreToRow_` (`Phase2_CallScoring.gs:1480-1554`) performs
-**up to 23 separate single-cell writes per scored call**. A full rescore
-covers ~470 rows. Against a spreadsheet that's free. Against a REST API:
+The scary-sounding figure is a **one-off backfill**, not the steady state:
 
-- naive port: 470 × 23 ≈ **10,800 API calls**, ≈ 54 minutes at ~0.3s each
-- best case, batched to one update per row: **470 calls**, ≈ 2.5 minutes
-- **Apps Script's hard execution ceiling is 6 minutes.**
+- `writeScoreToRow_` (`Phase2_CallScoring.gs:1480-1554`) does up to 23
+  single-cell writes per scored call. A **full rescore** covers ~470 rows —
+  naively ~10,800 API calls, batched to one update per row ~470.
+- Apps Script's execution ceiling is 6 minutes, so that does not fit in
+  **one** run.
 
-`rescoreAllCalls_` already runs against a 5-minute self-imposed budget
-(`RESCORE_ALL_TIME_BUDGET_MS_`) and only survives by writing `Rubric Version`
-back per row and re-reading it as a resume marker. Add per-row HTTP and that
-headroom is gone.
+But nothing requires it to fit in one run, and this codebase already solves
+exactly this. `rescoreAllCalls_` is resumable by design — it writes
+`Rubric Version` per row and re-reads it as a skip marker, under a 5-minute
+budget (`RESCORE_ALL_TIME_BUDGET_MS_`). Phase 12 shipped the same pattern
+today (`MAX_ROWS_PER_RUN`, `GHL_NOTE_SYNC_TIME_BUDGET_MS_`) and pushed **306
+real notes through in batches**. A backfill that takes a few days of trigger
+firings is a normal outcome here, not a failure.
 
-**Reads.** There are ~9 distinct full-sheet scanners across the phases, and
-the daily compliance run alone does **6 full `getDataRange()` scans** (three
-reps × two passes each, `Phase1_ComplianceCheck.gs:637` via `:385`/`:405`).
-Each is one Sheets call today. Each becomes paged CRM fetches tomorrow.
+**Steady state is trivial**: a handful of newly scored calls per day, 23
+field writes each. Nobody notices.
 
-We already have a live data point: the Phase 12 note sync needed ~2 minutes
-just to resolve 470 rows to contacts at one search per row, and the full run
-took ~6 minutes wall-clock. That's *one* phase doing *one* pass.
+What survives from that earlier draft, as real but manageable engineering
+constraints rather than blockers:
 
-**Conclusion: a CRM REST API cannot be the direct read/write path for eight
-phases running on overlapping 4-hour triggers inside Apps Script.** Whatever
-the system of record is, the phases need a **local, bulk-readable store** in
-front of it. That is an architectural constraint, not a preference.
+1. **Reads should come from a bulk-readable local store, not per-row API
+   calls.** There are ~9 full-sheet scanners across the phases, and the daily
+   compliance run alone does 6 full `getDataRange()` scans
+   (`Phase1_ComplianceCheck.gs:637` via `:385`/`:405`). Those are cheap
+   against a sheet or a database and expensive against a paged CRM API. This
+   is an argument for the shape in §4 — it is not an argument against GHL.
+2. **GHL's rate limits have never been measured against this account.** Worth
+   establishing the real ceiling before eight phases fan out per-row calls on
+   overlapping 4-hour triggers. Cheap to find out; currently unknown.
+3. **Resolve contacts once, not every run** — see F1 (§6). The note sync
+   needed ~2 minutes just to name-match 470 rows. Storing the contact ID
+   turns that into a lookup.
 
 ## 4. What this means — the recommended shape
 
@@ -371,8 +399,9 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
 
 1. **Silent history loss** if contact custom fields get used as the store
    (§2). Mitigation: answer Gate 1 honestly *before* designing fields.
-2. **Volume** (§3). Mitigation: a local bulk-readable store; never per-row
-   HTTP inside a phase loop.
+2. **Backfills taking multiple runs** (§3) — expected, not a failure. Build
+   them time-budgeted and resumable, as `rescoreAllCalls_` and Phase 12
+   already are. Separately: GHL's rate limits are still unmeasured.
 3. **Scope creep from GHL's own data.** GHL is not curated: ~2,309
    opportunities, 373 no-shows in one pipeline alone, and unclassified
    callers (Gate 3). Every phase needs an explicit filter or Phase 2 starts
