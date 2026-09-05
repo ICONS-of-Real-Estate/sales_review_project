@@ -145,10 +145,19 @@ function buildGhlUserNameLookup_(users) {
   return lookup;
 }
 
-/** Pure. Resolves one assignee ID to a human name, falling back to a clearly-labeled ID when the lookup has nothing (missing scope, or a user GHL itself doesn't return, e.g. a deactivated one). */
+/**
+ * Pure. Resolves one assignee ID to a human name, falling back to a
+ * clearly-labeled ID when the lookup has nothing (missing scope, or a user
+ * GHL itself doesn't return, e.g. a deactivated one). Kris, 06/09/2026,
+ * looking at a resolved name still carrying its raw ID in parentheses:
+ * "Don't need the big long number. No one knows what that is" — once a
+ * real name is known, the ID is pure noise and is dropped entirely; it's
+ * kept ONLY in the fallback case, where it's the one thing a human could
+ * actually use to go look the user up themselves in GHL.
+ */
 function resolveGhlAssigneeLabel_(assigneeId, userNameLookup) {
   var name = userNameLookup && userNameLookup[assigneeId];
-  return name ? (name + ' (' + assigneeId + ')') : ('Unknown user (' + assigneeId + ')');
+  return name || ('Unknown user (' + assigneeId + ')');
 }
 
 var CRM_ORGANIZATION_REVIEW_SHEET_NAME_ = 'CRM Organization Review';
@@ -285,41 +294,55 @@ function previewCrmOrganizationReview_() {
 }
 
 /**
- * Two shapes of "Unrecognized assignee" Finding text this repair needs to
- * retry, both from before the GHL "View Users" scope was actually granted
- * (confirmed live 06/09/2026 — the first repair run hit HTTP 401 and every
- * row fell back to the second shape below):
- *   1. LEGACY — the OLD text, before resolveGhlAssigneeLabel_ existed at
- *      all: the raw GHL user ID, quoted, as the whole subject — e.g.
- *      '"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies)...'.
- *   2. UNKNOWN_FALLBACK — resolveGhlAssigneeLabel_'s own fallback when the
- *      user lookup has nothing for that ID (missing scope, or a
- *      deactivated user) — e.g. 'Unknown user (wEL0kebR7naWq9aTx7CW) is
- *      assigned 48 open opportunity(ies)...'. Retrying this shape is what
- *      makes it safe to run this repair BEFORE the scope is granted (falls
- *      back cleanly, as it just did) and AGAIN after, and have the second
- *      run actually fix what the first one couldn't.
- * Each pattern's group 1 is the ID, group 2 is everything from " is
- * assigned" onward, kept verbatim so the repair below only ever changes the
- * subject, never the rest of the sentence.
+ * Pure. Given one "Unrecognized assignee" Finding cell, returns the text it
+ * SHOULD read given the current `userNameLookup` — or null if this cell
+ * isn't that kind of finding at all (a different category, e.g. "Pipeline
+ * health") or already reads exactly right.
+ *
+ * Three shapes, in order, each from a real state this data has actually
+ * been in live (06/09/2026):
+ *   1. LEGACY — before resolveGhlAssigneeLabel_ existed at all: the raw ID,
+ *      quoted, as the whole subject — e.g. '"wEL0...CW" is assigned 48
+ *      open opportunity(ies)...'. Needs a fresh lookup to resolve.
+ *   2. UNKNOWN_FALLBACK — resolveGhlAssigneeLabel_'s own fallback from a
+ *      run where the lookup had nothing for that ID (missing scope, as
+ *      happened on the very first repair attempt) — e.g. 'Unknown user
+ *      (wEL0...CW) is assigned...'. Also needs a fresh lookup — this is
+ *      what makes it safe to run the repair BEFORE the scope is granted
+ *      (falls back cleanly) and AGAIN after, and have the second run
+ *      actually fix what the first one couldn't.
+ *   3. RESOLVED_WITH_ID — a real name was already found, but (before
+ *      resolveGhlAssigneeLabel_ dropped the ID entirely — Kris, 06/09/2026:
+ *      "Don't need the big long number. No one knows what that is") still
+ *      carried it in parentheses — e.g. 'Piero Bengoa (qd9X...IV) is
+ *      assigned...'. This is a pure text edit: the name is already
+ *      correct, so it's kept AS-IS and only the "(id)" suffix is dropped —
+ *      deliberately never re-derived from userNameLookup, so an
+ *      already-good name can never be downgraded to "Unknown user" by a
+ *      later run whose user fetch happens to come back incomplete
+ *      (missing scope again, a flaky call, pagination).
  */
-var CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_ = [
-  /^"([^"]+)"(\s+is assigned .*)$/,
-  /^Unknown user \(([^)]+)\)(\s+is assigned .*)$/
-];
-
-/**
- * Pure. Splits an unresolved "Unrecognized assignee" Finding cell (either
- * shape above) into {id, rest}, or returns null if it doesn't match either
- * — already resolved to a real name, or a different category entirely
- * (e.g. "Pipeline health" rows, which this must never touch).
- */
-function parseLegacyUnrecognizedAssigneeFinding_(finding) {
+function repairedUnrecognizedAssigneeFinding_(finding, userNameLookup) {
   var text = String(finding || '');
-  for (var i = 0; i < CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_.length; i++) {
-    var m = CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_[i].exec(text);
-    if (m) return { id: m[1], rest: m[2] };
+
+  var legacy = /^"([^"]+)"(\s+is assigned .*)$/.exec(text);
+  if (legacy) {
+    var resolvedLegacy = resolveGhlAssigneeLabel_(legacy[1], userNameLookup) + legacy[2];
+    return resolvedLegacy === text ? null : resolvedLegacy;
   }
+
+  var unknown = /^Unknown user \(([^)]+)\)(\s+is assigned .*)$/.exec(text);
+  if (unknown) {
+    var resolvedUnknown = resolveGhlAssigneeLabel_(unknown[1], userNameLookup) + unknown[2];
+    return resolvedUnknown === text ? null : resolvedUnknown;
+  }
+
+  // Any other "<label> (id) is assigned ..." shape still carrying an ID —
+  // by elimination (checked above) the label isn't "Unknown user", so this
+  // is case 3: a real name that just needs the ID dropped, no lookup used.
+  var resolvedWithId = /^(.+) \([^)]+\)(\s+is assigned .*)$/.exec(text);
+  if (resolvedWithId) return resolvedWithId[1] + resolvedWithId[2];
+
   return null;
 }
 
@@ -329,22 +352,20 @@ function repairCrmOrganizationReviewAssigneeNames() {
 }
 
 /**
- * One-time repair (06/09/2026). Tomás, live, looking at a raw GHL user ID
- * with no name attached: "how the fuck can he answer this?" — the "View
- * Users" scope fix (fetchGhlLocationUsers_/resolveGhlAssigneeLabel_, this
- * file) only affects NEW findings from here on; rows already written by
- * the old code still show the bare ID. Re-running
- * previewCrmOrganizationReview_ would not fix those — it has no dedupe
- * check against already-written findings (unlike Phase13's dedupe-by-key),
- * so it would just add a SECOND row for the same finding instead of fixing
- * the first one.
+ * One-time repair (06/09/2026, extended same day after Kris's "don't need
+ * the big long number" follow-up). Rows already written to the sheet won't
+ * pick up a resolveGhlAssigneeLabel_ format change on their own — re-running
+ * previewCrmOrganizationReview_ wouldn't fix them either, since it has no
+ * dedupe check against already-written findings (unlike Phase13's
+ * dedupe-by-key) and would just add a SECOND row for the same finding.
  *
- * This instead rewrites ONLY the Finding cell of rows matching the exact
- * old shape, in place — no new rows, no re-scan of GHL opportunities, just
- * one GET /users/ call (same as fetchGhlLocationUsers_ uses elsewhere) to
- * resolve every ID already sitting in the sheet. Safe to run more than
- * once — an already-resolved row simply won't match the legacy pattern and
- * is left alone. Nothing in GHL is changed.
+ * This instead rewrites ONLY the Finding cell of "Unrecognized assignee"
+ * rows still needing a change (see repairedUnrecognizedAssigneeFinding_),
+ * in place — no new rows, no re-scan of GHL opportunities, just one
+ * GET /users/ call (same as fetchGhlLocationUsers_ uses elsewhere; a
+ * dedicated GHL_PIPELINE_MAP name it's an established pattern for by now).
+ * Safe to run more than once — a row that already reads correctly is left
+ * untouched. Nothing in GHL is changed.
  */
 function repairCrmOrganizationReviewAssigneeNames_() {
   RUN_TAG = 'repairCrmOrganizationReviewAssigneeNames_';
@@ -360,15 +381,16 @@ function repairCrmOrganizationReviewAssigneeNames_() {
   var findings = sheet.getRange(2, 3, lastRow - 1, 1).getValues(); // Finding column (C)
   var fixedCount = 0;
   for (var r = 0; r < findings.length; r++) {
-    var parsed = parseLegacyUnrecognizedAssigneeFinding_(findings[r][0]);
-    if (!parsed) continue;
-    findings[r][0] = resolveGhlAssigneeLabel_(parsed.id, userNameLookup) + parsed.rest;
+    var newText = repairedUnrecognizedAssigneeFinding_(findings[r][0], userNameLookup);
+    if (newText === null) continue;
+    findings[r][0] = newText;
     fixedCount++;
   }
   if (fixedCount) {
     sheet.getRange(2, 3, findings.length, 1).setValues(findings);
   }
-  log_('Fixed ' + fixedCount + ' row(s) — resolved the raw GHL user ID into a name (or "Unknown user (id)" ' +
-    'if the lookup had nothing for it, e.g. missing scope or a deactivated user).');
+  log_('Fixed ' + fixedCount + ' row(s) — resolved a raw GHL user ID into a name where possible, and dropped ' +
+    'the "(id)" suffix from names already resolved. Anything still unresolved reads "Unknown user (id)" so ' +
+    'it can still be looked up by hand.');
   log_('Nothing else on the sheet was touched, and nothing in GHL was changed.');
 }

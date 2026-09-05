@@ -7489,52 +7489,69 @@ test('buildGhlUserNameLookup_ returns an empty lookup for null/empty input rathe
   assert.equal(Object.keys(gas.buildGhlUserNameLookup_([])).length, 0);
 });
 
-test('resolveGhlAssigneeLabel_ resolves a known ID to "Name (id)"', () => {
+test('resolveGhlAssigneeLabel_ resolves a known ID to the bare name — no ID suffix (Kris, 06/09/2026: "Don\'t need the big long number. No one knows what that is")', () => {
   const lookup = { j3B1N9nwTDvgLyLgbcjI: 'Sean Church' };
-  assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', lookup), 'Sean Church (j3B1N9nwTDvgLyLgbcjI)');
+  assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', lookup), 'Sean Church');
 });
 
-test('resolveGhlAssigneeLabel_ falls back to a clearly-labeled raw ID when the lookup has nothing for it (missing scope, or a user GHL didn\'t return)', () => {
+test('resolveGhlAssigneeLabel_ falls back to a clearly-labeled raw ID when the lookup has nothing for it (missing scope, or a user GHL didn\'t return) — the ID is kept ONLY here, since it\'s the one case a human could actually use it to look the user up', () => {
   assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', {}), 'Unknown user (j3B1N9nwTDvgLyLgbcjI)');
   assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', null), 'Unknown user (j3B1N9nwTDvgLyLgbcjI)');
 });
 
 // ---------------------------------------------------------------------------
-// One-time repair (06/09/2026): Tomás, live, on a raw-ID "Unrecognized
-// assignee" row: "how the fuck can he answer this?" — rows written before
-// resolveGhlAssigneeLabel_ existed still show the bare GHL user ID.
-// repairCrmOrganizationReviewAssigneeNames_ fixes those Finding cells in
-// place rather than re-scanning (which would just add duplicate rows,
-// since previewCrmOrganizationReview_ has no dedupe-by-content check).
+// One-time repair (06/09/2026, extended same day): Tomás, live, on a raw-ID
+// "Unrecognized assignee" row: "how the fuck can he answer this?" — rows
+// written before resolveGhlAssigneeLabel_ existed still show the bare GHL
+// user ID. Then Kris, on a row that WAS resolved but still showed the ID in
+// parentheses: "Don't need the big long number. No one knows what that is."
+// repairedUnrecognizedAssigneeFinding_ handles all three shapes this data
+// has actually been in live; repairCrmOrganizationReviewAssigneeNames_
+// applies it in place rather than re-scanning (which would just add
+// duplicate rows, since previewCrmOrganizationReview_ has no
+// dedupe-by-content check).
 // ---------------------------------------------------------------------------
 
-test('parseLegacyUnrecognizedAssigneeFinding_ splits the old quoted-raw-ID shape into {id, rest}', () => {
-  const parsed = gas.parseLegacyUnrecognizedAssigneeFinding_(
-    '"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'
+test('repairedUnrecognizedAssigneeFinding_ resolves the legacy quoted-raw-ID shape to a bare name, dropping the ID entirely', () => {
+  const lookup = { wEL0kebR7naWq9aTx7CW: 'Joana Peixe' };
+  const result = gas.repairedUnrecognizedAssigneeFinding_(
+    '"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
+    lookup
   );
-  assert.ok(parsed);
-  assert.equal(parsed.id, 'wEL0kebR7naWq9aTx7CW');
-  assert.equal(parsed.rest, ' is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+  assert.equal(result, 'Joana Peixe is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
 });
 
-test('parseLegacyUnrecognizedAssigneeFinding_ returns null for an already-resolved Finding — must not double-repair or corrupt it', () => {
-  assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'), null);
-});
-
-test('parseLegacyUnrecognizedAssigneeFinding_ also matches the "Unknown user (id)" fallback shape — real bug found live 06/09/2026: the GHL Users scope was still missing on the first repair run, so every row fell back to this shape instead of the original quoted-ID one, and needs to be retried once the scope is granted', () => {
-  const parsed = gas.parseLegacyUnrecognizedAssigneeFinding_(
-    'Unknown user (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'
+test('repairedUnrecognizedAssigneeFinding_ retries the "Unknown user (id)" fallback shape once a name becomes available', () => {
+  const lookup = { wEL0kebR7naWq9aTx7CW: 'Joana Peixe' };
+  const result = gas.repairedUnrecognizedAssigneeFinding_(
+    'Unknown user (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
+    lookup
   );
-  assert.ok(parsed);
-  assert.equal(parsed.id, 'wEL0kebR7naWq9aTx7CW');
-  assert.equal(parsed.rest, ' is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+  assert.equal(result, 'Joana Peixe is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
 });
 
-test('parseLegacyUnrecognizedAssigneeFinding_ returns null for a "Pipeline health" Finding — must never touch the other category', () => {
-  assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"'), null);
+test('repairedUnrecognizedAssigneeFinding_ returns null for "Unknown user (id)" when the lookup still has nothing — no needless rewrite', () => {
+  assert.equal(gas.repairedUnrecognizedAssigneeFinding_(
+    'Unknown user (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
+    {}
+  ), null);
 });
 
-test('repairCrmOrganizationReviewAssigneeNames_ rewrites only legacy raw-ID Finding cells, leaving Pipeline health and already-resolved rows untouched', () => {
+test('repairedUnrecognizedAssigneeFinding_ strips a lingering "(id)" from an already-resolved real name WITHOUT touching the lookup — an incomplete later fetch must never downgrade a good name to "Unknown user"', () => {
+  const result = gas.repairedUnrecognizedAssigneeFinding_(
+    'Piero Bengoa (qd9XH799VItEYafFdXIV) is assigned 31 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
+    {} // deliberately empty/incomplete — must not matter for this shape
+  );
+  assert.equal(result, 'Piero Bengoa is assigned 31 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+});
+
+test('repairedUnrecognizedAssigneeFinding_ returns null for a "Pipeline health" Finding — must never touch the other category', () => {
+  assert.equal(gas.repairedUnrecognizedAssigneeFinding_(
+    '"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"', {}
+  ), null);
+});
+
+test('repairCrmOrganizationReviewAssigneeNames_ rewrites legacy and lingering-ID Finding cells, leaving Pipeline health rows untouched', () => {
   const written = { value: null };
   const fakeSheet = {
     getLastRow: () => 4,
@@ -7544,7 +7561,7 @@ test('repairCrmOrganizationReviewAssigneeNames_ rewrites only legacy raw-ID Find
         getValues: () => [
           ['"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'],
           ['"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"'],
-          ['Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)']
+          ['Piero Bengoa (qd9XH799VItEYafFdXIV) is assigned 31 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)']
         ],
         setValues: (vals) => { written.value = vals; }
       };
@@ -7555,6 +7572,8 @@ test('repairCrmOrganizationReviewAssigneeNames_ rewrites only legacy raw-ID Find
   const originalFetchUsers = gas.fetchGhlLocationUsers_;
   gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet }) };
   gas.ghlCheckSetup_ = () => 'loc123';
+  // Deliberately does NOT include Piero Bengoa's ID — proves case 3 (an
+  // already-resolved name) never depends on this fetch coming back complete.
   gas.fetchGhlLocationUsers_ = () => [{ id: 'wEL0kebR7naWq9aTx7CW', name: 'Joana Peixe' }];
   try {
     gas.repairCrmOrganizationReviewAssigneeNames_();
@@ -7564,8 +7583,8 @@ test('repairCrmOrganizationReviewAssigneeNames_ rewrites only legacy raw-ID Find
     gas.fetchGhlLocationUsers_ = originalFetchUsers;
   }
   assert.ok(written.value, 'the Finding column should have been written back');
-  assert.equal(written.value[0][0], 'Joana Peixe (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+  assert.equal(written.value[0][0], 'Joana Peixe is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
   assert.equal(written.value[1][0], '"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"');
-  assert.equal(written.value[2][0], 'Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+  assert.equal(written.value[2][0], 'Piero Bengoa is assigned 31 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
 });
 
