@@ -1,40 +1,37 @@
 # GHL_MIGRATION_PLAN.md — moving off the spreadsheet, onto GoHighLevel
 
-> **Status: design only. No phase code has been changed.** This document
-> exists to be reviewed by Kris, Tomás, Joana and Hazel *before* anything is
-> built, because it contains one open question that changes what "GHL is the
-> system of record" can actually mean — and one cheap probe that settles it.
+> **Target, set by Kris 05/09/2026: EVERYTHING in GHL.** *"I want EVERYTHING
+> in GHL! It is a full CRM and can store everything!"* This document is the
+> build plan for that. It is not an evaluation of whether to do it — that's
+> decided. No phase code has been changed yet.
+>
+> For Kris, Tomás, Joana and Hazel to review before the build starts.
 >
 > Companion to `GHL_PIPELINE_MAP.md` (what's in the CRM) and
 > `SYSTEM_OVERVIEW.md` (what the Apps Script system does). Read both first.
 > Written 05/09/2026.
 
-## 0. What was asked for
+## 0. The target
 
-Kris, 05/09/2026: *"how do we move away from spreadsheets and to full GHL
-integration?"* — with one hard constraint carried over from the Phase 12
-note-sync work shipped the same day: **everything logged, everything
-undoable.**
+**Everything lives in GHL. The Sales Call Log spreadsheet stops existing as
+anything anyone maintains.** Lead state, call outcomes, no-shows, and the AI
+review of every call — all of it in the CRM the team already works in.
 
-The short version of the answer:
+That is achievable. The one thing still to determine is *which GHL object*
+carries a call review, and there are two viable answers — §2. A single
+read-only probe picks between them; it does not gate whether the migration
+happens.
 
-1. **Most of what the spreadsheet holds, GHL already holds better** — lead
-   state, outcome, no-shows, who owns the lead. GHL knows all of it natively;
-   the sheet only knows it because a human typed it in. This part should
-   move, and it's the part that gets everyone off spreadsheet maintenance.
-2. **Where per-call review scores live is genuinely open** (§2). GHL logs
-   every call, SMS and email against a lead, so per-call history clearly
-   exists there. What is unverified is whether *our* 23 scored fields can
-   attach to one of those per-event objects, or only to the contact record
-   (where they'd hold one value per person). `previewGhlPerCallObjects()`
-   answers it in one read-only run. Everything below is provisional until
-   it does.
-3. **Even after the "Sales Call Log" tab is retired, the spreadsheet file
-   itself has to survive** — seven other script-owned tabs live in it (§7).
+Two constraints carried in from the Phase 12 work shipped the same day:
 
-So the achievable target is not "GHL replaces the spreadsheet." It's
-**"GHL owns the lead; a database owns the call reviews; nobody maintains a
-spreadsheet by hand."** That does deliver what Kris actually asked for.
+- **Everything logged, everything undoable** (§8).
+- **Nothing moves in one big cutover** — per phase, up a four-stage ladder,
+  each stage its own flag (§9).
+
+Two things genuinely need a human answer before Phase 2 can move, and both
+are business questions rather than technical ones — whose calls are in scope
+now that GHL shows callers our system has never modelled, and what happens to
+leads that legitimately never entered GHL. §5.
 
 ## 1. Where the data lives today
 
@@ -50,79 +47,66 @@ Only **7 of the 12** phase files touch the Sales Call Log at all. Phases 6,
 7 and 8 are self-contained on Drive/Gmail plus their own tabs — they need no
 data migration whatsoever.
 
-## 2. The open question: where do per-call scores hang?
+## 2. Which GHL object holds a call review
 
-> **Correction, 05/09/2026.** An earlier draft of this section asserted that
-> "GHL has no per-call record" and called it a blocker. That was wrong, and
-> Kris was right to reject it: *"If you call a lead 10 times, it is logged in
-> GHL. Same with SMS. Same with Email!"* GHL plainly stores many events per
-> contact — calls, messages, appointments, notes. The reasoning behind that
-> claim generalised from one narrow fact about *contact custom fields* to all
-> of GHL, and it was never verified. This section now states what is actually
-> known, what isn't, and how to settle it.
+> **Correction, 05/09/2026.** An earlier draft claimed GHL "has no per-call
+> record" and called it a blocker. That was wrong and Kris rejected it
+> correctly: *"If you call a lead 10 times, it is logged in GHL. Same with
+> SMS. Same with Email!"* GHL stores many events per contact. The claim
+> generalised from one narrow fact — that a *contact custom field* holds one
+> value per contact — to all of GHL, without checking. Retracted.
 
-**What is true and verified:** a *contact custom field* holds one value per
-contact. Take Ward Frederick — 4 calls with us (rows 111, 195, 207, 221). In
-the spreadsheet that's 4 lines with 4 scores. If `Call Quality Score` is a
-field on his contact record, there is one box: write call 2's score and call
-1's is gone. You end with one number and no way to see he went 2/5 → 3/5 →
-4/5 — which is the entire coaching product, and what the Monday scorecard,
-the weekly calibration and every dashboard trend are built on.
+The real question is mechanical: our review carries 23 scored fields per
+call, so those fields need to hang off something that exists **once per
+call**. Two options, and both put everything in GHL:
 
-**What is NOT established:** that contact fields are the only option. GHL
-logs every call, SMS, email, appointment and note against the contact. The
-real question — never actually checked — is whether any of those per-event
-objects can carry **our** custom fields, or whether custom fields attach only
-to contacts and opportunities.
+**Option A — a Custom Object ("Call Review").** One record per call, related
+to the contact, with our 23 fields as real, sortable, filterable CRM fields.
+This is the clean answer: reviews appear natively in GHL, reps can filter on
+them, and GHL is unambiguously the system of record. Available on some GHL
+plans; whether it's on this one is what the probe checks.
 
-**How it gets settled:** `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`),
-a read-only probe added 05/09/2026. GHL returns a `model` on every custom
-field definition, naming the object type it attaches to. That list is the
-answer:
+**Option B — the note we already write, with a machine-readable payload.**
+Phase 12 already posts one note per call and a contact holds unlimited notes
+— that's per-call storage in GHL, working in production today. Add a
+structured block to the note body (the human-readable review stays exactly as
+it is now; the payload rides alongside it), and the phases read their data
+back by fetching the contact's notes and parsing it. Less pretty than Option
+A, fully functional, and needs nothing from GHL that isn't already proven to
+work.
 
-- if it includes a **call / appointment / custom-object** model → structured
-  per-call scores can live in GHL, and GHL can be the system of record
-  outright;
-- if it's only **contact / opportunity** → per-call scores need a store with
-  rows (§4), and GHL keeps the notes plus a "latest review" on the card.
+**Either way GHL holds everything and the spreadsheet dies.** The difference
+is whether the scores are first-class CRM fields or a payload we parse.
 
-The probe also checks for **custom object schemas** (`GET /objects/`), which
-would be the cleanest answer of all: a purpose-built "Call Review" record per
-call. Until it has been run, everything downstream in this document that
-assumes an answer is provisional.
+**The probe:** `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`, read-only,
+added 05/09/2026). GHL returns a `model` on every custom field definition
+naming the object it attaches to; that list plus `GET /objects/` says whether
+Option A is available. It also dumps what GHL already logs natively per event
+on a real contact. Full status and body logged on any non-2xx, so a wrong
+endpoint guess reports itself — the same self-diagnosing contract that
+settled both the Notes endpoint and the `contacts.write` scope.
 
-Note the review **notes** are unaffected either way — a contact holds as many
-as you like, which is exactly why the Phase 12 sync works. This only concerns
-**structured, sortable, reportable fields**.
+### What each option costs to read back
 
-For scale, from the real Phase 12 run on 05/09/2026 that posted 306 notes:
+The one thing to design around either way: a weekly scorecard needs *this
+week's* calls, not all of them. Under Option A that's a filtered query.
+Under Option B it's fetching notes for the contacts involved in this week's
+calls. Both are fine at this volume; both are a reason to keep the contact ID
+on hand rather than re-matching by name every run (F1, §6).
 
-- **Ward Frederick** — rows 111, 195, 207, 221 (4 calls)
-- **Deme Mekras** — rows 37, 136, 209, 212 (4 calls)
-- **Dertrez Pressley** — rows 177, 203, 205 (3 calls)
-- **Sammy Lyon** — rows 13, 28, 275 (3 calls)
+### For scale — how many calls per contact
 
-306 notes went to materially fewer than 306 people. So if `Call Quality
-Score` becomes a **contact custom field**, Ward Frederick's four calls
-collapse to one number — and the other three aren't overwritten-and-
-recoverable, they are *never written at all*. That silently breaks:
+From the real Phase 12 run on 05/09/2026 that posted 306 notes:
 
-- Phase 5's weekly scorecard (this week vs. rolling 4-week average)
-- Phase 2's weekly calibration against Kris's manual verdicts
-- Phase 2's regression-drift baseline
-- the dashboard's score-over-time trend
-- any future "is the coaching actually working" measurement
+- **Ward Frederick** — 4 calls
+- **Deme Mekras** — 4 calls
+- **Dertrez Pressley** — 3 calls
+- **Sammy Lyon** — 3 calls
 
-And it breaks in the one way the "everything can be undone" rule cannot
-protect against: **you cannot revert data that was never recorded.**
-
-| Approach | Keeps per-call history? | Verdict |
-|---|---|---|
-| Contact custom fields | ❌ latest-only | Good as a *display* of the most recent review. Never as the store. |
-| Opportunity custom fields | ❌ per-deal | Same problem, one level up. |
-| Notes (live since 05/09) | ✅ many per contact | Human-readable only — a scorecard can't average HTML. |
-| **GHL Custom Objects** | ✅ *if available* | The only way GHL itself could be the store. Availability unverified — Gate 1, §5. |
-| A real database | ✅ | Works today. §4. |
+306 notes went to materially fewer than 306 people, which is precisely why
+the scores can't sit on the contact record itself: one box per person would
+keep only the latest, and a rep going 2/5 → 3/5 → 4/5 is the thing the whole
+coaching loop measures.
 
 ## 3. Volume — a batching problem, not a blocker
 
@@ -166,41 +150,39 @@ constraints rather than blockers:
    needed ~2 minutes just to name-match 470 rows. Storing the contact ID
    turns that into a lookup.
 
-## 4. What this means — the recommended shape
+## 4. The target shape, concretely
 
-- **GHL is the system of record for the lead**: contact, email, phone, owner,
-  pipeline stage, outcome disposition, appointments, no-shows,
-  conversations. It already is. We stop duplicating it into a sheet by hand.
-  *This is the part that ends spreadsheet maintenance.*
-- **GHL is the human-facing surface for call reviews**: one note per call
-  (already live), plus contact-level "latest review" fields so a rep sees
-  current state without opening a note.
-- **A real database is the system of record for per-call review history** —
-  all 23 scored dimensions, one row per call, forever.
+Everything below lives in GHL when this is done.
 
-For that database, the strong recommendation is to **promote the existing
-`dashboard.db`** rather than invent something. It already exists, runs on the
-team's own OVH server, has a schema matching all 39 columns, has 76 tests,
-syncs every 10 minutes, and is already what every human actually looks at.
-Today it's a read-only mirror (`sync.py` pulls from the sheet with a
-read-only service account); promoting it means giving it a write path and
-reversing the direction of that sync.
+| What | Where it goes in GHL |
+|---|---|
+| Contact, email, phone, owner | contact record — **already there** |
+| Pipeline stage, outcome, no-shows | opportunity stage — **already there**, stops being typed into a sheet (F2) |
+| The human-readable call review | contact note, one per call — **already live** (Phase 12) |
+| The 23 scored fields per call | Call Review custom object (Option A) or note payload (Option B) — §2 |
+| "Latest review" at a glance | contact custom fields, refreshed each time a call is scored |
+| Which calls are still unscored / unmatched | contact + opportunity state, plus our own sync logs |
 
-That is a smaller, safer change than modelling per-call records inside a CRM
-that may not support them — and it satisfies the actual ask, because nobody
-is maintaining a spreadsheet either way.
+Things that are **ours, not the lead's** — `Match Method`, `Queue Age`,
+`Rubric Version`, `Reviewed By`, `Kris Manual Review Verdict`, the eight
+free-text `Gaps` columns — ride along with the call review record (Option A)
+or its payload (Option B). They're pipeline provenance, so they belong with
+the review, not on the contact card where they'd clutter it for reps.
 
-**If Gate 1 says Custom Objects *are* available**, that's still worth doing
-for a subset — it would put the scored review on the contact timeline where
-reps live. But it doesn't remove the need for a bulk-readable local store
-(§3), so it's an addition, not an alternative.
+**The dashboard** then reads GHL instead of the sheet. `sync.py` currently
+pulls four tabs into `dashboard.db` with a read-only Sheets service account;
+it becomes a GHL pull instead. `dashboard.db` stays exactly what it is today
+— a **disposable local cache** that makes the dashboard fast and keeps us off
+per-page API calls. It is not a second source of truth; delete it and it
+rebuilds from GHL.
 
-## 5. Decision gates — answer before any phase code is touched
+## 5. Open questions
 
-Each of these changes the plan materially. Three are cheap read-only probes.
+None of these stop the migration. Three are read-only probes we run
+ourselves; two need a human answer before Phase 2 moves.
 
-**Gate 1 — Which GHL objects can carry our custom fields?**
-The fork in the road (§2). **Built and ready to run:**
+**Q1 — Option A or Option B?** (§2)
+**Probe built and ready to run:**
 `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`) — read-only. Reports every
 custom field definition grouped by the object `model` it attaches to, probes
 `GET /objects/` for custom object schemas, and dumps what GHL already logs
@@ -210,12 +192,12 @@ reports itself rather than failing silently (GHL's docs are egress-blocked
 from the dev sandbox, exactly as they were for the Notes and contacts.write
 work — both of which were settled this way). *One run.*
 
-**Gate 2 — Is the custom-fields scope actually granted?**
+**Q2 — Is the custom-fields scope actually granted?**
 `GET /locations/{id}/customFields` returned 401 on 05/09/2026; Kris was
 adding the scope as of this writing. Re-run
 `previewGhlNotesAndCustomFields()` to confirm. Blocks every field write.
 
-**Gate 3 — Whose calls are in scope?**
+**Q3 — Whose calls are in scope?** *(needs a human answer)*
 `GHL_PIPELINE_MAP.md` §C: GHL shows sources naming **Bruno, Simon, Ty** and
 six assignee initials (SC, JP, BO, PC, KD, AA), none in `CONFIG.REPS`
 (Bens, Joana, Sean, Tomás). While the sheet is the source they're invisible.
@@ -223,22 +205,28 @@ six assignee initials (SC, JP, BO, PC, KD, AA), none in `CONFIG.REPS`
 must say: scored, ignored, or scored-but-not-emailed.
 *Owner: Kris/Tomás. Blocks Phases 1 and 2.*
 
-**Gate 4 — What about leads GHL doesn't have?**
+**Q4 — Leads that aren't in GHL yet** *(needs a human answer)*
 Confirmed (`GHL_PIPELINE_MAP.md` §E, Tomás 28/08/2026): Lucy Quiñones,
 Chelsea Fernandez, Monique Lewis and Salisia Murray are real leads whose
 history lives outside GHL — the podcast-guest route, or nowhere formal.
-**GHL is not a complete record of calls and never will be.** Any design must
-keep a first-class path for no-GHL-match calls, or they stop existing.
+Under "everything in GHL" the answer is straightforward: **create them as GHL
+contacts.** That makes GHL complete, which is the goal. It's a write, so it
+needs the same log-and-revert treatment as everything else (§8), and someone
+should confirm we actually want 2024-era dead leads imported rather than left
+behind. Whatever we decide, the sync must report "not found in GHL" as its
+own distinct outcome and never silently drop the call.
 *Owner: Kris/Tomás. Blocks Phase 2.*
 
-**Gate 5 — Does blank-vs-FALSE survive?**
+**Q5 — Does blank-vs-FALSE survive?**
 All 12 `Flag:` columns rely on a **three-state** convention: blank means "not
 applicable / no signal", FALSE means "judged and failed". This is load-bearing
 in `trainingElementFlagsForRow_` (`Phase1:2960`) and `isExplicitlyFalse_`
 (`Phase5:74`), and it's why blank rows aren't counted as failures in any
-scorecard. Most CRM boolean fields have two states. Whatever store is chosen
-must preserve three, or every "not applicable" silently becomes a failure.
-*Engineering decision, but Kris/Tomás should know it exists.*
+scorecard. Most CRM boolean fields have two states. Under Option A the field
+type must preserve three (or a companion "not applicable" value); under
+Option B the payload preserves it for free. Otherwise every "not applicable"
+silently becomes a recorded failure.
+*Engineering decision — flagged so it isn't discovered later.*
 
 ## 6. Foundations — before any phase moves
 
@@ -281,13 +269,20 @@ has ever produced. That's a correction, not a regression — but the numbers
 are **not comparable across the cutover** and everyone reading them needs to
 know the date it changed.
 
-### F3. Stand up the per-call store
+### F3. Build the call-review record in GHL
 
-Depends on Gates 1 and 5. Either define the GHL Custom Object, or give
-`dashboard.db` a write path and reverse the sync direction. **No phase moves
-until this exists**, because "read from GHL instead of the sheet" is
-meaningless for the 23 scored columns until there is somewhere for them to
-live.
+Depends on Q1 and Q5. Under **Option A**: define the Call Review custom
+object and its 23 fields, and a `ghlCreateCallReview_()` alongside the
+existing `ghlPostContactNote_()`. Under **Option B**: extend
+`buildGhlReviewNoteBody_()` (`Phase12_GhlNoteSync.gs`) to append a
+machine-readable payload after the human-readable review, plus a parser that
+reads it back. Either way it lands in Phase 12, which already resolves the
+contact and posts per call — this is an extension of working production code,
+not a new integration.
+
+**No phase moves off the sheet until this exists**, because "read from GHL
+instead of the sheet" is meaningless for the 23 scored fields until they're
+in GHL.
 
 ### F4. Replace row-index identity
 
@@ -302,14 +297,20 @@ in more places than anyone would guess:
 - **`salesCallLogRowLink_` (`Phase2:4825`) builds `#gid=…&range=A{n}` deep
   links that are emailed to Kris and Tomás** — a user-visible dependency
 
-Every record needs a stable ID of its own before any of that can move, and
-the emailed links need a replacement destination (a GHL contact URL, or a
-dashboard URL) or reviewing a flagged call gets worse, not better.
+Every record needs a stable ID of its own before any of that can move. The
+GHL call-review record id (Option A) or the note id (Option B) becomes that
+key — Phase 12 already captures note ids and logs them, so the mechanism
+exists. The emailed row links become **GHL contact URLs**, which is an
+upgrade: clicking a flagged call takes a reviewer to the lead in the CRM
+instead of to a spreadsheet row.
 
-## 7. The spreadsheet file survives even if the tab doesn't
+## 7. The other tabs need somewhere to go too
 
-Retiring the *Sales Call Log tab* is not the same as retiring the
-*spreadsheet*. Seven other tabs live in the same file and are load-bearing:
+"Everything in GHL" has to account for these, not just the Sales Call Log
+tab. Ten other tabs live in the same spreadsheet and are load-bearing. Some
+have an obvious GHL home; some are internal engineering telemetry that a CRM
+is the wrong place for, and those should move to the dashboard's database
+rather than clutter GHL:
 
 | Tab | Owner | Notes |
 |---|---|---|
@@ -327,6 +328,17 @@ Retiring the *Sales Call Log tab* is not the same as retiring the
 
 Plus the compliance backlog, which lives in **Script Properties**, not a tab
 at all (`Phase1:809`).
+
+**Suggested destinations** (worth a decision, not assumed):
+
+| Tab | Goes to | Why |
+|---|---|---|
+| `Objection Playbook`, `Manual Review Guide` | stay as documents | human-authored reference, edited by Tomás — a CRM is the wrong tool |
+| `Handoff Briefs Sent`, `Lead Confirmation Reminders Sent` | **GHL** — a marker on the contact/appointment | they're per-lead facts ("we already emailed about this booking") |
+| `Scorecard History` | dashboard DB | per-rep-per-week reporting, not lead data |
+| `LLM Cost Log`, `Regression Baseline` | dashboard DB | engineering telemetry, no business meaning in a CRM |
+| `Training Assignments`, `Daily Practice Follow-ups`, `Reply Tracker` | dashboard DB | per-**rep** state; reps are GHL users, not contacts, so there's no natural contact record to hang them on |
+| `Icons Podcast Recordings` | **GHL** eventually | it's Bens's lead tracker; it duplicates what GHL contacts do — but it's **his** working system, so migrating it is a conversation with him, not a code change |
 
 **Footgun:** `resolveSheet_` (`Phase1:1333-1343`) silently falls back to
 `CONFIG.SHARED_LOG_TAB_CANDIDATES` and then to **the first sheet in the
@@ -423,20 +435,23 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
 
 ## 12. Risks, in the order they're likely to bite
 
-1. **Silent history loss** if contact custom fields get used as the store
-   (§2). Mitigation: answer Gate 1 honestly *before* designing fields.
+1. **Silent history loss** if the 23 scored fields end up on the *contact*
+   record rather than a per-call record (§2) — a lead's earlier calls just
+   stop existing, and unwritten data can't be reverted. Mitigation: settle
+   Q1 before designing fields, and never put a score on the contact except
+   as an explicitly-labelled "latest".
 2. **Backfills taking multiple runs** (§3) — expected, not a failure. Build
    them time-budgeted and resumable, as `rescoreAllCalls_` and Phase 12
    already are. Separately: GHL's rate limits are still unmeasured.
 3. **Scope creep from GHL's own data.** GHL is not curated: ~2,309
    opportunities, 373 no-shows in one pipeline alone, and unclassified
-   callers (Gate 3). Every phase needs an explicit filter or Phase 2 starts
+   callers (Q3). Every phase needs an explicit filter or Phase 2 starts
    trying to score no-shows that have no transcript.
 4. **Name-match errors becoming permanent.** Today a bad match misplaces a
    note (annoying, deletable). Once matches drive scoring and emails, a bad
    match sends a rep someone else's review. F1 plus a human eyeball is the
    mitigation.
-5. **Blank-vs-FALSE collapsing** (Gate 5) — turns every "not applicable" into
+5. **Blank-vs-FALSE collapsing** (Q5) — turns every "not applicable" into
    a recorded failure, quietly, across 12 columns.
 6. **Numbers changing under people's feet** (F2). Not a bug, but it must be
    announced with a date.
@@ -448,30 +463,38 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
 
 ## 13. Recommended sequence
 
-**This week — no phase code changes at all:**
-1. Gate 2 — confirm the custom-fields scope (Kris, in progress).
-2. Gate 1 — run `previewGhlPerCallObjects()`. **This is the fork in the
-   road, and it is already written.**
-3. F1 — add column AN, backfill contact IDs mostly free from the note-sync log.
-4. Put Gates 3 and 4 to Kris/Tomás as real questions with a deadline.
-5. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes
+**Now — nothing destructive, no phase moves off the sheet yet:**
+1. Q2 — confirm the custom-fields scope (Kris, in progress).
+2. Q1 — run `previewGhlPerCallObjects()`. Picks Option A or B. **Written and
+   ready.**
+3. F1 — add column AN, backfill contact IDs mostly free from the note-sync
+   log.
+4. F3 — build the call-review record in GHL, whichever option Q1 picks. This
+   is the real "everything in GHL" step: from here on, every newly scored
+   call lands in the CRM in full.
+5. Put Q3 and Q4 to Tomás.
+6. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes
    every later step fail loudly instead of quietly.
 
-**Once Gates 1 and 5 are answered:**
-6. F3 — stand up the per-call store.
-7. F4 — stable record IDs, and a replacement for the emailed row links.
+**Then:**
+7. F4 — stable record IDs, and GHL contact URLs replacing the emailed
+   spreadsheet row links.
 8. F2 — `GHL Sync Log`, then flip `GHL_CONFIG.ENABLED`. First column that
-   stops needing a human.
+   stops needing a human to type it.
+9. Backfill the ~470 historical calls into GHL, batched and resumable —
+   expect it to run over several days of trigger firings, exactly like the
+   306-note sync did.
 
 **Then per phase, up the ladder in §9, in the order in §10** — the three
 zero-burden phases need nothing, the two never-enabled phases (4, 10) are
 free practice, and Phase 2 goes last.
 
-## 14. What this does not commit to
+## 14. Status
 
-- **No timeline.** Gate 1 changes the shape of the work enough that
-  estimating before answering it would be guessing.
-- **No claim that GHL becomes the complete record of calls.** Gate 4 says it
-  can't be.
-- **No code.** Nothing in the twelve phases has been modified to produce this
-  document.
+- **The target is settled**: everything in GHL, spreadsheet retired.
+- **Open**: whether call reviews become custom-object records or note
+  payloads (Q1 — one probe away), and the two questions for Tomás (Q3, Q4).
+- **No timeline yet.** Q1 changes how much work F3 is; estimating before it
+  is answered would be guessing.
+- **No phase code changed.** The only code added so far is the read-only
+  probe (`previewGhlPerCallObjects()`, `Phase9_GhlSync.gs`).
