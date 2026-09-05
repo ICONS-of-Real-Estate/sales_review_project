@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Review — Sales Review Dashboard{% endblock %}
+{% block content %}
+<h1>CRM &amp; Lead Review</h1>
+<p class="muted">
+  Pick a queue below. Each is one item at a time with big Approve/Reject
+  buttons that write straight back to the spreadsheet — nothing here ever
+  touches GHL.
+</p>
+<div class="stat-row">
+  <a href="/review/crm" class="stat {{ 'warn' if crm_count else '' }}">
+    <div class="value">{{ crm_count }}</div>
+    <div class="label">CRM findings pending review</div>
+  </a>
+  <a href="/review/leads" class="stat {{ 'warn' if lead_candidate_count else '' }}">
+    <div class="value">{{ lead_candidate_count }}</div>
+    <div class="label">Leads pending review (Candidates){% if lead_count > lead_candidate_count %}, {{ lead_count }} total incl. noise{% endif %}</div>
+  </a>
+</div>
+{% endblock %}

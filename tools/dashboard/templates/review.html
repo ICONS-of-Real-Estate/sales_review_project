@@ -1,27 +1,36 @@
 {% extends "base.html" %}
 {% block title %}Review — Sales Review Dashboard{% endblock %}
 {% block content %}
-<h1>CRM &amp; Lead Review</h1>
+<h1>{{ 'CRM Review' if review_type == 'crm' else 'Lead Review' }}</h1>
 <p class="muted">
-  One finding at a time — Approve/Reject (or Real Lead/Not a real lead) writes
-  straight back to the spreadsheet. Nothing here ever touches GHL.
+  {% if review_type == 'crm' %}
+    Pipeline-health and unrecognized-assignee findings — Approve/Reject writes
+    straight back to the spreadsheet. Nothing here ever touches GHL.
+  {% else %}
+    One lead at a time — Real lead/Not a real lead writes straight back to the
+    spreadsheet. Nothing here ever touches GHL.
+  {% endif %}
 </p>
+<p><a href="/review">&larr; Back to Review overview</a></p>
+
+{% if review_type == 'leads' %}
 <div class="review-toggle">
-  <a href="/review?only_candidates=1" class="{{ 'active' if only_candidates != '0' else '' }}">Candidates only</a>
-  <a href="/review?only_candidates=0" class="{{ 'active' if only_candidates == '0' else '' }}">Show everything (incl. noise)</a>
+  <a href="/review/leads?only_candidates=1" class="{{ 'active' if only_candidates != '0' else '' }}">Candidates only</a>
+  <a href="/review/leads?only_candidates=0" class="{{ 'active' if only_candidates == '0' else '' }}">Show everything (incl. noise)</a>
 </div>
+{% endif %}
 
 {% if cards %}
   {% set card = cards[0] %}
   <div class="review-remaining">
     {{ total_pending }} left to review
-    {% if only_candidates != '0' and total_all_pending > total_pending %}
+    {% if review_type == 'leads' and only_candidates != '0' and total_all_pending > total_pending %}
       ({{ total_all_pending - total_pending }} more filtered out as likely noise —
-      <a href="/review?only_candidates=0">show everything</a>)
+      <a href="/review/leads?only_candidates=0">show everything</a>)
     {% endif %}
   </div>
   <div class="review-card">
-    {% if card.card_type == 'crm' %}
+    {% if review_type == 'crm' %}
       <div class="review-category">{{ card.category }}</div>
       <h2 style="margin-top:0.25rem;">{{ card.finding }}</h2>
       {% if card.evidence %}<p class="muted">{{ card.evidence }}</p>{% endif %}
@@ -38,23 +47,23 @@
       {% if card.ambiguous_matches %}<p>Possible GHL matches: {{ card.ambiguous_matches }}</p>{% endif %}
     {% endif %}
     <form method="post" action="/review/decide" class="review-actions">
-      <input type="hidden" name="table" value="{{ card.table }}">
+      <input type="hidden" name="table" value="{{ 'crm_organization_review' if review_type == 'crm' else 'lead_reconciliation' }}">
       <input type="hidden" name="sheet_row" value="{{ card.sheet_row }}">
-      <input type="hidden" name="only_candidates" value="{{ only_candidates }}">
+      {% if review_type == 'leads' %}<input type="hidden" name="only_candidates" value="{{ only_candidates }}">{% endif %}
       <button type="submit" name="decision" value="approve" class="review-btn review-btn-green">
-        {{ 'Approve' if card.card_type == 'crm' else 'Real lead' }}
+        {{ 'Approve' if review_type == 'crm' else 'Real lead' }}
       </button>
       <button type="submit" name="decision" value="reject" class="review-btn review-btn-red">
-        {{ 'Reject' if card.card_type == 'crm' else 'Not a lead' }}
+        {{ 'Reject' if review_type == 'crm' else 'Not a lead' }}
       </button>
     </form>
   </div>
 {% else %}
-  <p>Nothing left to review{{ '' if only_candidates == '0' else ' in Candidates view' }}. 🎉</p>
-  {% if only_candidates != '0' and total_all_pending > 0 %}
+  <p>Nothing left to review{{ '' if review_type == 'crm' or only_candidates == '0' else ' in Candidates view' }}. 🎉</p>
+  {% if review_type == 'leads' and only_candidates != '0' and total_all_pending > 0 %}
     <p class="muted">
       {{ total_all_pending }} more filtered out as likely noise —
-      <a href="/review?only_candidates=0">show everything</a> to check them anyway.
+      <a href="/review/leads?only_candidates=0">show everything</a> to check them anyway.
     </p>
   {% endif %}
 {% endif %}

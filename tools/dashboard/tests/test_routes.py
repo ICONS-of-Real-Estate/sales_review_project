@@ -331,43 +331,76 @@ def _insert_lead_row(conn, sheet_row=2, real_lead=0, not_real_lead=0, likely_noi
     )
 
 
-def test_review_page_renders_on_empty_db(client, db_path):
+def test_review_index_renders_on_empty_db(client, db_path):
     resp = client.get("/review")
+    assert resp.status_code == 200
+    assert "0" in resp.text
+
+
+def test_review_index_shows_counts_for_both_queues(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2)
+    _insert_crm_row(conn, sheet_row=3)
+    _insert_lead_row(conn, sheet_row=2)
+    conn.commit()
+    resp = client.get("/review")
+    assert resp.status_code == 200
+    assert "CRM findings pending review" in resp.text
+    assert "Leads pending review" in resp.text
+
+
+def test_review_crm_page_renders_on_empty_db(client, db_path):
+    resp = client.get("/review/crm")
     assert resp.status_code == 200
     assert "Nothing left to review" in resp.text
 
 
-def test_review_page_shows_first_undecided_crm_finding(client, db_path, conn):
+def test_review_crm_page_shows_first_undecided_finding(client, db_path, conn):
     _insert_crm_row(conn, sheet_row=2, finding="Cold Calling 2 is 100% stuck")
     conn.commit()
-    resp = client.get("/review")
+    resp = client.get("/review/crm")
     assert resp.status_code == 200
     assert "Cold Calling 2 is 100% stuck" in resp.text
     assert "1 left to review" in resp.text
 
 
-def test_review_page_skips_already_decided_rows(client, db_path, conn):
+def test_review_crm_page_skips_already_decided_rows(client, db_path, conn):
     _insert_crm_row(conn, sheet_row=2, finding="Already approved", approve=1)
     _insert_crm_row(conn, sheet_row=3, finding="Still pending")
     conn.commit()
-    resp = client.get("/review")
+    resp = client.get("/review/crm")
     assert "Still pending" in resp.text
     assert "Already approved" not in resp.text
 
 
-def test_review_page_candidates_view_filters_out_noise_by_default(client, db_path, conn):
+def test_review_leads_page_renders_on_empty_db(client, db_path):
+    resp = client.get("/review/leads")
+    assert resp.status_code == 200
+    assert "Nothing left to review" in resp.text
+
+
+def test_review_leads_page_candidates_view_filters_out_noise_by_default(client, db_path, conn):
     _insert_lead_row(conn, sheet_row=2, name="Noise Lead", likely_noise=1, noise_reason="newsletter, not a lead")
     conn.commit()
-    resp = client.get("/review")
+    resp = client.get("/review/leads")
     assert "Nothing left to review" in resp.text
     assert "more filtered out as likely noise" in resp.text
 
 
-def test_review_page_show_everything_includes_noise(client, db_path, conn):
+def test_review_leads_page_show_everything_includes_noise(client, db_path, conn):
     _insert_lead_row(conn, sheet_row=2, name="Noise Lead", likely_noise=1, noise_reason="newsletter, not a lead")
     conn.commit()
-    resp = client.get("/review?only_candidates=0")
+    resp = client.get("/review/leads?only_candidates=0")
     assert "Noise Lead" in resp.text
+
+
+def test_review_crm_page_ignores_lead_reconciliation_rows(client, db_path, conn):
+    """The whole point of the split (Kris, 06/09/2026): a pending lead must
+    never show up on the CRM queue, and vice versa."""
+    _insert_lead_row(conn, sheet_row=2, name="Some Lead")
+    conn.commit()
+    resp = client.get("/review/crm")
+    assert "Some Lead" not in resp.text
+    assert "Nothing left to review" in resp.text
 
 
 def test_review_decide_approve_writes_to_sheet_and_updates_mirror(client, db_path, conn, monkeypatch):
@@ -385,6 +418,7 @@ def test_review_decide_approve_writes_to_sheet_and_updates_mirror(client, db_pat
         follow_redirects=False,
     )
     assert resp.status_code == 303
+    assert resp.headers["location"] == "/review/crm"
     assert calls == [("crm_organization_review", 2, True)]
 
     row = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
@@ -402,8 +436,17 @@ def test_review_decide_reject_updates_lead_reconciliation_columns(client, db_pat
         follow_redirects=False,
     )
     assert resp.status_code == 303
+    assert resp.headers["location"] == "/review/leads?only_candidates=1"
     row = conn.execute("SELECT real_lead, not_real_lead FROM lead_reconciliation WHERE sheet_row = 9").fetchone()
     assert row == (0, 1)
+
+
+def test_review_decide_unknown_table_is_rejected(client, db_path):
+    resp = client.post(
+        "/review/decide",
+        data={"table": "some_typo", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+    )
+    assert resp.status_code == 400
 
 
 def test_review_decide_surfaces_sheet_write_failure_instead_of_pretending_success(client, db_path, conn, monkeypatch):

@@ -1143,36 +1143,73 @@ def leads_api(verdict: str = "", failure_mode: str = "", rep: str = ""):
 # interface: one finding/lead at a time, two big buttons, writes straight
 # back to the sheet via sheets_write.py. "Undecided" = neither checkbox
 # ticked yet in the mirrored table.
-def review_queue_rows():
+#
+# Kris, 06/09/2026, after trying it: "Should we not split into two? CRM
+# review and then lead review" — a single combined queue meant the 13 CRM
+# findings always came first (see review_queue_rows below, unchanged
+# ordering) and the "Show everything" noise toggle looked like it did
+# nothing, since it only affects leads further down a queue you can't see
+# yet. Split into two separate queues/pages instead: /review/crm (13 items,
+# no noise concept) and /review/leads (477, with its own noise toggle) — a
+# landing page at /review just shows both counts and links to each.
+def crm_review_pending_rows():
     conn = get_conn()
-    crm_rows = conn.execute(
+    rows = conn.execute(
         "SELECT sheet_row, timestamp, category, finding, evidence, suggested_action "
         "FROM crm_organization_review WHERE approve = 0 AND reject = 0 ORDER BY sheet_row"
     ).fetchall()
-    lead_rows = conn.execute(
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def lead_review_pending_rows():
+    conn = get_conn()
+    rows = conn.execute(
         "SELECT sheet_row, timestamp, name, email, status, sources, likely_noise, "
         "noise_reason, ambiguous_matches, dedupe_key FROM lead_reconciliation "
         "WHERE real_lead = 0 AND not_real_lead = 0 ORDER BY likely_noise ASC, sheet_row"
     ).fetchall()
     conn.close()
-
-    cards = []
-    for r in crm_rows:
-        d = dict(r)
-        d["table"] = "crm_organization_review"
-        d["card_type"] = "crm"
-        cards.append(d)
-    for r in lead_rows:
-        d = dict(r)
-        d["table"] = "lead_reconciliation"
-        d["card_type"] = "lead"
-        cards.append(d)
-    return cards
+    return [dict(r) for r in rows]
 
 
 @app.get("/review", response_class=HTMLResponse)
-def review_page(request: Request, only_candidates: str = "1"):
-    cards = review_queue_rows()
+def review_index(request: Request):
+    crm_pending = crm_review_pending_rows()
+    lead_pending = lead_review_pending_rows()
+    lead_candidates = [r for r in lead_pending if not r.get("likely_noise")]
+    return render(
+        request,
+        "review_index.html",
+        {
+            "active_page": "review",
+            "freshness": freshness_status(),
+            "crm_count": len(crm_pending),
+            "lead_count": len(lead_pending),
+            "lead_candidate_count": len(lead_candidates),
+        },
+    )
+
+
+@app.get("/review/crm", response_class=HTMLResponse)
+def review_crm_page(request: Request):
+    cards = crm_review_pending_rows()
+    return render(
+        request,
+        "review.html",
+        {
+            "active_page": "review",
+            "freshness": freshness_status(),
+            "review_type": "crm",
+            "cards": cards,
+            "total_pending": len(cards),
+        },
+    )
+
+
+@app.get("/review/leads", response_class=HTMLResponse)
+def review_leads_page(request: Request, only_candidates: str = "1"):
+    cards = lead_review_pending_rows()
     total_all = len(cards)
     if only_candidates != "0":
         # "Candidates" mirrors the same noise filter Phase13's own
@@ -1180,19 +1217,28 @@ def review_page(request: Request, only_candidates: str = "1"):
         # sender addresses, newsletters, recording filenames) — advisory
         # only there, and the same here: still just a default view, never a
         # decision, so "Show everything" always stays one click away.
-        cards = [c for c in cards if c["card_type"] != "lead" or not c.get("likely_noise")]
+        cards = [c for c in cards if not c.get("likely_noise")]
     return render(
         request,
         "review.html",
         {
             "active_page": "review",
             "freshness": freshness_status(),
+            "review_type": "leads",
             "cards": cards,
             "total_pending": len(cards),
             "total_all_pending": total_all,
             "only_candidates": only_candidates,
         },
     )
+
+
+# table -> the page to send the reviewer back to after a decision, and the
+# local-mirror columns that decision updates (see review_decide below).
+_REVIEW_TABLE_INFO = {
+    "crm_organization_review": {"back_url": "/review/crm", "approve_col": "approve", "reject_col": "reject"},
+    "lead_reconciliation": {"back_url": "/review/leads", "approve_col": "real_lead", "reject_col": "not_real_lead"},
+}
 
 
 @app.post("/review/decide")
@@ -1203,6 +1249,11 @@ def review_decide(
     decision: str = Form(...),
     only_candidates: str = Form("1"),
 ):
+    info = _REVIEW_TABLE_INFO.get(table)
+    if info is None:
+        return HTMLResponse(f"<p>Unknown review table {table!r}.</p>", status_code=400)
+
+    back_url = info["back_url"] + (f"?only_candidates={only_candidates}" if table == "lead_reconciliation" else "")
     approve = decision == "approve"
     try:
         sheets_write.write_decision(table, sheet_row, approve)
@@ -1213,7 +1264,7 @@ def review_decide(
         # thing this whole page exists to do.
         return HTMLResponse(
             f"<p>Could not save that decision to the spreadsheet: {e}</p>"
-            f"<p><a href='/review?only_candidates={only_candidates}'>Back to Review</a></p>",
+            f"<p><a href='{back_url}'>Back to Review</a></p>",
             status_code=500,
         )
 
@@ -1221,20 +1272,14 @@ def review_decide(
     # in the queue for the next click — sync.py's next scheduled cycle will
     # overwrite this with the same values read back from the sheet anyway.
     conn = get_conn()
-    if table == "crm_organization_review":
-        conn.execute(
-            "UPDATE crm_organization_review SET approve = ?, reject = ? WHERE sheet_row = ?",
-            (int(approve), int(not approve), sheet_row),
-        )
-    elif table == "lead_reconciliation":
-        conn.execute(
-            "UPDATE lead_reconciliation SET real_lead = ?, not_real_lead = ? WHERE sheet_row = ?",
-            (int(approve), int(not approve), sheet_row),
-        )
+    conn.execute(
+        f"UPDATE {table} SET {info['approve_col']} = ?, {info['reject_col']} = ? WHERE sheet_row = ?",
+        (int(approve), int(not approve), sheet_row),
+    )
     conn.commit()
     conn.close()
 
-    return RedirectResponse(url=f"/review?only_candidates={only_candidates}", status_code=303)
+    return RedirectResponse(url=back_url, status_code=303)
 
 
 @app.get("/healthz")
