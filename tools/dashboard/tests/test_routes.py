@@ -666,3 +666,60 @@ def test_review_undo_all_reports_partial_failure_and_leaves_that_row_active(clie
     assert statuses == {2: 1, 3: 0}  # row 2 undone, row 3's failure left it active
     row3 = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 3").fetchone()
     assert row3 == (1, 0)  # untouched since its undo failed
+
+
+# ---------------------------------------------------------------------------
+# lead_related_calls / /review/leads — Kris, 06/09/2026: "Need information
+# on the leads too. He can't make a decision on this." A bare name and a
+# "Sales Call Log:3" source citation isn't enough context — pull the actual
+# matching call(s) from sales_call_log so Tomás can recognize who it is.
+# ---------------------------------------------------------------------------
+
+
+def test_lead_related_calls_matches_case_and_whitespace_insensitively(client, db_path, conn):
+    insert_call(conn, prospect_name="  Lucy Quinones  ", rep="Sean", call_date="03/03/2026")
+    conn.commit()
+    calls = app_module.lead_related_calls("lucy quinones")
+    assert len(calls) == 1
+    assert calls[0]["rep"] == "Sean"
+
+
+def test_lead_related_calls_returns_empty_for_blank_name(client, db_path):
+    assert app_module.lead_related_calls("") == []
+    assert app_module.lead_related_calls(None) == []
+
+
+def test_lead_related_calls_returns_empty_when_nothing_matches(client, db_path, conn):
+    insert_call(conn, prospect_name="Someone Else")
+    conn.commit()
+    assert app_module.lead_related_calls("Lucy Quinones") == []
+
+
+def test_lead_related_calls_sorts_most_recent_first(client, db_path, conn):
+    insert_call(conn, prospect_name="Repeat Caller", call_date="01/01/2026", rep="Alice")
+    insert_call(conn, prospect_name="Repeat Caller", call_date="15/03/2026", rep="Bob")
+    conn.commit()
+    calls = app_module.lead_related_calls("Repeat Caller")
+    assert [c["rep"] for c in calls] == ["Bob", "Alice"]
+
+
+def test_review_leads_page_shows_related_call_context_for_the_visible_card(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Lucy Quinones")
+    insert_call(
+        conn, prospect_name="Lucy Quinones", rep="Sean", call_date="03/03/2026",
+        call_type="Sales Call", outcome_disposition="Follow-up", call_quality_score=4,
+        ai_feedback_summary="Distinctive feedback text for this call.",
+    )
+    conn.commit()
+    resp = client.get("/review/leads")
+    assert resp.status_code == 200
+    assert "call(s) in the Sales Call Log for this name" in resp.text
+    assert "Sean" in resp.text
+    assert "Distinctive feedback text for this call." in resp.text
+
+
+def test_review_leads_page_shows_fallback_message_when_no_related_call_found(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Nobody Anywhere")
+    conn.commit()
+    resp = client.get("/review/leads")
+    assert "No matching Sales Call Log entry found" in resp.text

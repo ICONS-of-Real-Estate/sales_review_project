@@ -1174,6 +1174,33 @@ def lead_review_pending_rows():
     return [dict(r) for r in rows]
 
 
+def lead_related_calls(name):
+    """Kris, 06/09/2026: "Need information on the leads too. He can't make a
+    decision on this" — a bare name and a "Sales Call Log:3" source citation
+    isn't enough for Tomás to recognize who someone is. Pulls the actual
+    call(s) already mirrored in sales_call_log for this name (case/whitespace
+    -insensitive, since that's exactly how Phase13's own dedupe key folds
+    names) so the review card can show call date, rep, type, outcome, score,
+    and the AI's own summary — the context a human actually needs to decide
+    "real lead" or "not a lead." Best-effort: matched by name text, not a
+    stable row id (Phase13's lead.sourceRow isn't mirrored here), so a lead
+    whose name doesn't exactly match its own Sales Call Log row (a rename, a
+    typo fixed later) simply shows no related calls rather than a wrong one."""
+    if not name or not name.strip():
+        return []
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT call_date, rep, call_type, outcome_disposition, call_quality_score, "
+        "ai_feedback_summary, transcript_url FROM sales_call_log "
+        "WHERE LOWER(TRIM(prospect_name)) = LOWER(TRIM(?))",
+        (name,),
+    ).fetchall()
+    conn.close()
+    calls = [dict(r) for r in rows]
+    calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
+    return calls
+
+
 @app.get("/review", response_class=HTMLResponse)
 def review_index(request: Request):
     crm_pending = crm_review_pending_rows()
@@ -1219,6 +1246,10 @@ def review_leads_page(request: Request, only_candidates: str = "1"):
         # only there, and the same here: still just a default view, never a
         # decision, so "Show everything" always stays one click away.
         cards = [c for c in cards if not c.get("likely_noise")]
+    if cards:
+        # Only the visible card needs its related calls looked up — no
+        # point querying for the other 500 that aren't on screen yet.
+        cards[0]["related_calls"] = lead_related_calls(cards[0].get("name"))
     return render(
         request,
         "review.html",

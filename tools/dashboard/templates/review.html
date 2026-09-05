@@ -45,6 +45,26 @@
       </h2>
       {% if card.sources %}<p class="muted">Sources: {{ card.sources }}</p>{% endif %}
       {% if card.ambiguous_matches %}<p>Possible GHL matches: {{ card.ambiguous_matches }}</p>{% endif %}
+      {% if card.related_calls %}
+        <div class="review-related-calls">
+          <div class="review-category" style="margin-bottom:0.5rem;">
+            {{ card.related_calls|length }} call(s) in the Sales Call Log for this name
+          </div>
+          {% for c in card.related_calls %}
+            <div class="review-related-call">
+              <div>
+                <strong>{{ c.call_date or '(no date)' }}</strong> — {{ c.rep or '(no rep)' }} — {{ c.call_type or '(no type)' }}
+                {% if c.outcome_disposition %} — {{ c.outcome_disposition }}{% endif %}
+                {% if c.call_quality_score is not none %} — Score: {{ c.call_quality_score }}/5{% endif %}
+              </div>
+              {% if c.ai_feedback_summary %}<p class="muted">{{ c.ai_feedback_summary }}</p>{% endif %}
+              {% if c.transcript_url %}<p><a href="{{ c.transcript_url }}" target="_blank" rel="noopener">Transcript</a></p>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% elif card.name %}
+        <p class="muted">No matching Sales Call Log entry found for this name — check Sources above manually.</p>
+      {% endif %}
     {% endif %}
     <form method="post" action="/review/decide" class="review-actions">
       <input type="hidden" name="table" value="{{ 'crm_organization_review' if review_type == 'crm' else 'lead_reconciliation' }}">
