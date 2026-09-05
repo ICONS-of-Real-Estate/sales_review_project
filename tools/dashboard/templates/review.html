@@ -4,12 +4,20 @@
 <h1>{{ 'CRM Review' if review_type == 'crm' else 'Lead Review' }}</h1>
 <p class="muted">
   {% if review_type == 'crm' %}
-    Pipeline-health and unrecognized-assignee findings — Approve/Reject writes
-    straight back to the spreadsheet. Nothing here ever touches GHL.
+    Pipeline-health and unrecognized-assignee findings.
   {% else %}
-    One lead at a time — Real lead/Not a real lead writes straight back to the
-    spreadsheet. Nothing here ever touches GHL.
+    One lead at a time.
   {% endif %}
+</p>
+<p class="review-disclaimer">
+  <strong>{{ 'Approve/Reject' if review_type == 'crm' else 'Real lead/Not a lead' }} only records your decision</strong>
+  — it ticks a checkbox on the spreadsheet, nothing more. It does
+  {% if review_type == 'crm' %}
+    <strong>not</strong> reassign any opportunity, add anyone to the rep list, or change anything in GHL.
+  {% else %}
+    <strong>not</strong> create, edit, or touch any contact in GHL.
+  {% endif %}
+  Any real fix still has to be made by hand, separately, wherever it actually needs to happen.
 </p>
 <p><a href="/review">&larr; Back to Review overview</a></p>
 
