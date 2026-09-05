@@ -221,7 +221,7 @@ function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase7:daily_practice');
       var parsed = stripFencesAndParseJson_(raw);
       if (!isValidDailyPracticeSchema_(parsed)) throw new Error('Parsed JSON missing required fields.');
       return parsed;

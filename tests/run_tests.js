@@ -2511,21 +2511,35 @@ test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coac
 
 test('reviewTrainingCallTranscript_\'s parse-failure fallback carries a tomas_coaching stub, so buildTomasCoachingFeedbackEmail_ never sees an undefined field', () => {
   gas.Utilities = { formatDate: realFormatDate };
-  gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
-  gas.callKimiJudge_ = () => 'not json';
-  const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
-  assert.ok(result.tomas_coaching, 'fallback must include a tomas_coaching object');
-  assert.equal(result.tomas_coaching.grounded_in_real_data, false);
-  assert.equal(result.tomas_coaching.gave_concrete_next_focus, false);
-  assert.equal(typeof result.tomas_coaching.coaching_feedback_summary, 'string');
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
+    gas.callKimiJudge_ = () => 'not json';
+    const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
+    assert.ok(result.tomas_coaching, 'fallback must include a tomas_coaching object');
+    assert.equal(result.tomas_coaching.grounded_in_real_data, false);
+    assert.equal(result.tomas_coaching.gave_concrete_next_focus, false);
+    assert.equal(typeof result.tomas_coaching.coaching_feedback_summary, 'string');
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
 });
 
 test('reviewTrainingCallTranscript_\'s parse-failure fallback carries manual_review_recommended: true, so callers can tell it apart from a real score', () => {
   gas.Utilities = { formatDate: realFormatDate };
-  gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
-  gas.callKimiJudge_ = () => 'not json';
-  const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
-  assert.equal(result.manual_review_recommended, true);
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
+    gas.callKimiJudge_ = () => 'not json';
+    const result = gas.reviewTrainingCallTranscript_('Sean', 'transcript text', '260825');
+    assert.equal(result.manual_review_recommended, true);
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
 });
 
 test('buildTomasCoachingFeedbackEmail_ shows a "review unavailable" notice instead of misleading red badges when the judge never actually scored the call (real bug 02/09/2026, Tomás: parse failure rendered as "Grounded in real calls: No" / "Concrete next focus set: No", reading as genuine negative feedback on his facilitation)', () => {
@@ -6107,4 +6121,177 @@ test('runGhlNoteSync_ posts the note and marks "GHL Review Synced" true on a rea
 
 test('STANDING_AUTOMATION_HANDLERS_ includes runGhlNoteSync_ (Phase 12) -- a missing handler here gets silently swept as an orphan by installAllReadyTriggers_', () => {
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') !== -1);
+});
+
+// ---------------------------------------------------------------------------
+// callKimiJudge_ rename fallback + LLM Cost Log (05/09/2026, external review:
+// "LITELLM_PROXY_URL pointing at api.moonshot.ai... will burn someone
+// eventually" + "zero cost/token visibility into Kimi calls")
+// ---------------------------------------------------------------------------
+
+function fakePropertiesServiceStore_(store) {
+  return { getScriptProperties: () => ({ getProperty: (k) => (store[k] !== undefined ? store[k] : null) }) };
+}
+
+test('getScriptSecretWithFallback_ prefers the new property name when both are set', () => {
+  const original = gas.PropertiesService;
+  try {
+    gas.PropertiesService = fakePropertiesServiceStore_({ NEW_NAME: 'new-value', OLD_NAME: 'old-value' });
+    assert.equal(gas.getScriptSecretWithFallback_('NEW_NAME', 'OLD_NAME'), 'new-value');
+  } finally {
+    gas.PropertiesService = original;
+  }
+});
+
+test('getScriptSecretWithFallback_ falls back to the legacy property name when the new one is not set yet, so renaming PHASE2_CONFIG in code cannot break production before the live Script Properties are renamed too', () => {
+  const original = gas.PropertiesService;
+  const originalLog = gas.Logger.log;
+  const lines = [];
+  gas.Logger.log = (msg) => lines.push(msg);
+  try {
+    gas.PropertiesService = fakePropertiesServiceStore_({ OLD_NAME: 'old-value' });
+    assert.equal(gas.getScriptSecretWithFallback_('NEW_NAME', 'OLD_NAME'), 'old-value');
+    assert.ok(lines.some((l) => l.indexOf('Using legacy Script Property "OLD_NAME"') !== -1));
+  } finally {
+    gas.PropertiesService = original;
+    gas.Logger.log = originalLog;
+  }
+});
+
+test('getScriptSecretWithFallback_ throws a clear error naming BOTH property names when neither is set', () => {
+  const original = gas.PropertiesService;
+  try {
+    gas.PropertiesService = fakePropertiesServiceStore_({});
+    assert.throws(() => gas.getScriptSecretWithFallback_('NEW_NAME', 'OLD_NAME'), /"NEW_NAME".*"OLD_NAME"/);
+  } finally {
+    gas.PropertiesService = original;
+  }
+});
+
+function fakeLlmCostLogSheet_() {
+  const appended = [];
+  return { appendRow: (row) => appended.push(row), _appended: appended };
+}
+
+test('logLlmCallCost_ appends a row with caller/outcome/model/token counts, including cached_tokens when Moonshot reports prompt caching', () => {
+  const sheet = fakeLlmCostLogSheet_();
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.logLlmCallCost_('phase2:sean', 'success', { prompt_tokens: 1000, completion_tokens: 50, total_tokens: 1050, prompt_tokens_details: { cached_tokens: 900 } });
+    assert.equal(sheet._appended.length, 1);
+    const row = sheet._appended[0];
+    assert.equal(row[1], 'phase2:sean');
+    assert.equal(row[2], 'success');
+    assert.equal(row[4], 1000);
+    assert.equal(row[5], 50);
+    assert.equal(row[6], 1050);
+    assert.equal(row[7], 900);
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+test('logLlmCallCost_ never throws even if the sheet write itself fails -- a logging bug must not become a scoring outage', () => {
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalLog = gas.Logger.log;
+  gas.Logger.log = () => {};
+  try {
+    gas.SpreadsheetApp = { openById: () => { throw new Error('boom'); } };
+    assert.doesNotThrow(() => gas.logLlmCallCost_('phase2:sean', 'success', null));
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.Logger.log = originalLog;
+  }
+});
+
+test('logLlmCallCost_ creates the "LLM Cost Log" tab with its headers if the tab does not exist yet', () => {
+  const sheet = fakeLlmCostLogSheet_();
+  let insertedName = null;
+  const headerWrites = [];
+  sheet.getRange = (r, c, nr, nc) => ({
+    setValues: (vals) => { headerWrites.push(vals); return { setFontWeight: () => {} }; }
+  });
+  sheet.setFrozenRows = () => {};
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  try {
+    gas.SpreadsheetApp = {
+      openById: () => ({
+        getSheetByName: () => null,
+        insertSheet: (name) => { insertedName = name; return sheet; }
+      })
+    };
+    gas.logLlmCallCost_('phase2:sean', 'success', null);
+    assert.equal(insertedName, 'LLM Cost Log');
+    assert.deepEqual(headerWrites[0][0], gas.LLM_COST_LOG_HEADERS);
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+function fakeUrlFetchAppJsonResponse_(status, jsonBody) {
+  return {
+    fetch: () => ({
+      getResponseCode: () => status,
+      getContentText: () => JSON.stringify(jsonBody)
+    })
+  };
+}
+
+function withMockedCallKimiJudge_(props, fetchResponse, fn) {
+  const originals = {
+    PropertiesService: gas.PropertiesService,
+    UrlFetchApp: gas.UrlFetchApp,
+    SpreadsheetApp: gas.SpreadsheetApp,
+    Logger: gas.Logger
+  };
+  const costLogRows = [];
+  const sheet = { appendRow: (row) => costLogRows.push(row) };
+  gas.PropertiesService = fakePropertiesServiceStore_(props);
+  gas.UrlFetchApp = fetchResponse;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+  gas.Logger = { log: () => {} };
+  try {
+    return fn(costLogRows);
+  } finally {
+    Object.assign(gas, originals);
+  }
+}
+
+test('callKimiJudge_ logs a "success" LLM Cost Log row with real usage tokens and returns the content', () => {
+  withMockedCallKimiJudge_(
+    { MOONSHOT_API_URL: 'https://api.moonshot.ai/v1/chat/completions', MOONSHOT_API_KEY: 'sk-test' },
+    fakeUrlFetchAppJsonResponse_(200, { choices: [{ message: { content: '{"ok":true}' } }], usage: { prompt_tokens: 500, completion_tokens: 20, total_tokens: 520 } }),
+    (costLogRows) => {
+      const result = gas.callKimiJudge_('system', 'user', 'phase2:sean');
+      assert.equal(result, '{"ok":true}');
+      assert.equal(costLogRows.length, 1);
+      assert.equal(costLogRows[0][1], 'phase2:sean');
+      assert.equal(costLogRows[0][2], 'success');
+      assert.equal(costLogRows[0][5], 20);
+    }
+  );
+});
+
+test('callKimiJudge_ logs an "empty_content" LLM Cost Log row (capturing usage, e.g. a high completion_tokens burn) and still throws, rather than silently succeeding on a thinking-mode budget burn', () => {
+  withMockedCallKimiJudge_(
+    { MOONSHOT_API_URL: 'https://api.moonshot.ai/v1/chat/completions', MOONSHOT_API_KEY: 'sk-test' },
+    fakeUrlFetchAppJsonResponse_(200, { choices: [{ message: { content: '' } }], usage: { prompt_tokens: 500, completion_tokens: 4000, total_tokens: 4500 } }),
+    (costLogRows) => {
+      assert.throws(() => gas.callKimiJudge_('system', 'user', 'phase2:sean'), gas.LlmTransportError_);
+      assert.equal(costLogRows.length, 1);
+      assert.equal(costLogRows[0][2], 'empty_content');
+      assert.equal(costLogRows[0][5], 4000, 'the huge completion_tokens count -- the thinking-mode-burn signature -- must still be captured');
+    }
+  );
+});
+
+test('callKimiJudge_ still works when only the LEGACY LITELLM_* Script Properties are set (pre-rename Script Properties, freshly-renamed code)', () => {
+  withMockedCallKimiJudge_(
+    { LITELLM_PROXY_URL: 'https://api.moonshot.ai/v1/chat/completions', LITELLM_API_KEY: 'sk-test' },
+    fakeUrlFetchAppJsonResponse_(200, { choices: [{ message: { content: '{"ok":true}' } }], usage: {} }),
+    () => {
+      assert.equal(gas.callKimiJudge_('system', 'user'), '{"ok":true}');
+    }
+  );
 });

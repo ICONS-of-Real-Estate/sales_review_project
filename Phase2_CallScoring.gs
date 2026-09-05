@@ -86,10 +86,20 @@
 
 var PHASE2_CONFIG = {
   // Set via: Project Settings → Script Properties (never hardcode a key here).
-  // Despite the property names, this now points straight at Moonshot's own
-  // API (no proxy) — see file-header note above.
-  PROXY_URL_PROPERTY: 'LITELLM_PROXY_URL', // set to https://api.moonshot.ai/v1/chat/completions
-  API_KEY_PROPERTY: 'LITELLM_API_KEY',     // set to your real Moonshot API key (sk-...)
+  // Real names as of 05/09/2026 — renamed from LITELLM_PROXY_URL/
+  // LITELLM_API_KEY (external review: that naming "will burn someone
+  // eventually... debugging why 'the proxy' is down" — no proxy has ever
+  // been involved, see file header). getScriptSecretWithFallback_ below
+  // still accepts the OLD property names too, so this rename is safe to
+  // deploy before the Script Properties themselves are renamed in the Apps
+  // Script UI (Script Properties are runtime storage, clasp push never
+  // touches them — CLAUDE.md) — nothing breaks either order. Once you've
+  // added MOONSHOT_API_URL/MOONSHOT_API_KEY under Project Settings with the
+  // same real values, the old LITELLM_* properties can be deleted.
+  PROXY_URL_PROPERTY: 'MOONSHOT_API_URL', // set to https://api.moonshot.ai/v1/chat/completions
+  API_KEY_PROPERTY: 'MOONSHOT_API_KEY',   // set to your real Moonshot API key (sk-...)
+  LEGACY_PROXY_URL_PROPERTY: 'LITELLM_PROXY_URL', // fallback only — see above
+  LEGACY_API_KEY_PROPERTY: 'LITELLM_API_KEY',     // fallback only — see above
 
   MODEL_NAME: 'kimi-k3', // confirmed against platform.kimi.ai/playground 20/08/2026 — no "moonshot/" prefix, that was LiteLLM-only routing syntax.
 
@@ -199,6 +209,27 @@ function getScriptSecret_(propName) {
   var v = PropertiesService.getScriptProperties().getProperty(propName);
   if (!v) throw new Error('Missing Script Property "' + propName + '" — set it under Project Settings before scoring.');
   return v;
+}
+
+/**
+ * Same contract as getScriptSecret_, but tries preferredName first and
+ * falls back to legacyName only if preferredName isn't set yet — lets the
+ * 05/09/2026 LITELLM_*->MOONSHOT_* rename land in code without requiring the
+ * live Script Properties to be renamed in lockstep. Logs a one-time-per-run
+ * nudge when it actually had to fall back, so the migration doesn't stay
+ * invisible forever.
+ */
+function getScriptSecretWithFallback_(preferredName, legacyName) {
+  var v = PropertiesService.getScriptProperties().getProperty(preferredName);
+  if (v) return v;
+  v = PropertiesService.getScriptProperties().getProperty(legacyName);
+  if (v) {
+    log_('Using legacy Script Property "' + legacyName + '" — add "' + preferredName +
+      '" with the same value under Project Settings, then delete "' + legacyName + '".');
+    return v;
+  }
+  throw new Error('Missing Script Property "' + preferredName + '" (or legacy "' + legacyName +
+    '") — set it under Project Settings before scoring.');
 }
 
 /**
@@ -369,11 +400,61 @@ function handleJudgeRetryError_(e, attempt, maxRetries) {
   Utilities.sleep(Math.min(30000, 1000 * Math.pow(2, attempt)));
 }
 
-function callKimiJudge_(systemPrompt, userPrompt) {
+var LLM_COST_LOG_SHEET_NAME = 'LLM Cost Log';
+var LLM_COST_LOG_HEADERS = ['Timestamp', 'Caller', 'Outcome', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Cached Tokens'];
+
+function getOrCreateLlmCostLogSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(LLM_COST_LOG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(LLM_COST_LOG_SHEET_NAME);
+    sheet.getRange(1, 1, 1, LLM_COST_LOG_HEADERS.length).setValues([LLM_COST_LOG_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+/**
+ * Best-effort append-only log of every callKimiJudge_ invocation — added
+ * 05/09/2026 per an external review flagging that this codebase had zero
+ * cost/token visibility into Kimi calls (unlike a sibling project's "LLM
+ * Cost Log"). Never throws and never blocks scoring even if the write
+ * itself fails — a logging bug must not become a scoring outage, so this
+ * is wrapped in its own try/catch rather than trusting every caller to do
+ * that. `usage` is Moonshot's raw OpenAI-compatible usage object when one
+ * came back (prompt_tokens/completion_tokens/total_tokens, sometimes
+ * prompt_tokens_details.cached_tokens) — null on failures before any
+ * response body was even parseable.
+ */
+function logLlmCallCost_(callerLabel, outcome, usage) {
+  try {
+    var sheet = getOrCreateLlmCostLogSheet_();
+    var cached = usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens;
+    sheet.appendRow([
+      new Date(),
+      callerLabel || 'unknown',
+      outcome,
+      PHASE2_CONFIG.MODEL_NAME,
+      usage ? usage.prompt_tokens : '',
+      usage ? usage.completion_tokens : '',
+      usage ? usage.total_tokens : '',
+      cached || ''
+    ]);
+  } catch (e) {
+    log_('logLlmCallCost_: failed to write an LLM Cost Log row (' + e + ') — not fatal, continuing.');
+  }
+}
+
+/**
+ * callerLabel is optional (defaults to 'unknown') — a short string
+ * identifying which rubric variant/phase is calling, purely for
+ * logLlmCallCost_'s attribution. Never changes scoring behavior.
+ */
+function callKimiJudge_(systemPrompt, userPrompt, callerLabel) {
   var url, key;
   try {
-    url = getScriptSecret_(PHASE2_CONFIG.PROXY_URL_PROPERTY);
-    key = getScriptSecret_(PHASE2_CONFIG.API_KEY_PROPERTY);
+    url = getScriptSecretWithFallback_(PHASE2_CONFIG.PROXY_URL_PROPERTY, PHASE2_CONFIG.LEGACY_PROXY_URL_PROPERTY);
+    key = getScriptSecretWithFallback_(PHASE2_CONFIG.API_KEY_PROPERTY, PHASE2_CONFIG.LEGACY_API_KEY_PROPERTY);
   } catch (e) {
     throw new LlmTransportError_(String(e));
   }
@@ -413,7 +494,18 @@ function callKimiJudge_(systemPrompt, userPrompt) {
   }
   var content = body && body.choices && body.choices[0] && body.choices[0].message &&
     body.choices[0].message.content;
-  if (!content) throw new LlmTransportError_('LiteLLM response had no choices[0].message.content.');
+  if (!content) {
+    // Real Kimi failure mode (external review, 05/09/2026): "thinking" mode
+    // can burn the whole completion-token budget and return HTTP 200 with a
+    // parseable envelope but an EMPTY message.content. Logging usage here,
+    // even though this is about to throw, is what actually diagnoses that
+    // pattern — a high completion_tokens count paired with empty content is
+    // the signature, distinguishable in the LLM Cost Log from a genuine
+    // transport/API failure where no usage exists at all.
+    logLlmCallCost_(callerLabel, 'empty_content', body && body.usage);
+    throw new LlmTransportError_('LiteLLM response had no choices[0].message.content.');
+  }
+  logLlmCallCost_(callerLabel, 'success', body.usage);
   return content;
 }
 
@@ -841,7 +933,7 @@ function scoreTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:shared');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required fields.');
       return parsed;
@@ -1694,7 +1786,7 @@ function scoreBensTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:bens');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidBensJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Bens-rubric fields.');
       return parsed;
@@ -1868,7 +1960,7 @@ function scoreQcTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:qc');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidQcJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required QC-rubric fields.');
       return parsed;
@@ -2107,7 +2199,7 @@ function scoreDiscoveryTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:discovery');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidDiscoveryJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Discovery-rubric fields.');
       return parsed;
@@ -2880,7 +2972,7 @@ function scoreSeanTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:sean');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidSeanJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Sean-rubric fields.');
       return parsed;
@@ -3764,7 +3856,7 @@ function scoreTomasTranscript_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase2:tomas');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidTomasJudgeSchema_(parsed)) throw new Error('Parsed JSON missing required Tomás-rubric fields.');
       return parsed;

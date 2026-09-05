@@ -127,7 +127,7 @@ function classifyReply_(fromEmail, subject, bodyText) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object.';
     try {
-      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase8:reply_classify');
       lastRaw = raw;
       var parsed = stripFencesAndParseJson_(raw);
       if (!isValidReplyClassifierSchema_(parsed)) throw new Error('Missing required fields.');

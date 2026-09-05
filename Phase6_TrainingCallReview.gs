@@ -283,7 +283,7 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      var raw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase6:training_review');
       var parsed = stripFencesAndParseJson_(raw);
       if (!isValidTrainingReviewSchema_(parsed)) throw new Error('Parsed JSON missing required fields.');
       return parsed;

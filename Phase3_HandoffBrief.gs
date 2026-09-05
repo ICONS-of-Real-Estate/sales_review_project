@@ -140,7 +140,7 @@ function generateHandoffBrief_(ctx) {
       ? userPrompt
       : userPrompt + '\n\nYour previous reply did not parse as JSON. Return ONLY the raw JSON object — no markdown fences, no commentary.';
     try {
-      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt);
+      lastRaw = callKimiJudge_(systemPrompt, promptForThisAttempt, 'phase3:handoff_brief');
       var parsed = stripFencesAndParseJson_(lastRaw);
       if (!isValidHandoffBriefSchema_(parsed)) throw new Error('Parsed JSON missing required handoff-brief fields.');
       return parsed;
