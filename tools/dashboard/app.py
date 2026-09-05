@@ -1377,14 +1377,24 @@ def review_decisions_log_rows():
 
 
 @app.get("/review/history", response_class=HTMLResponse)
-def review_history_page(request: Request, message: str = ""):
+def review_history_page(request: Request, message: str = "", show_undone: str = "0"):
+    all_decisions = review_decisions_log_rows()
+    undone_count = sum(1 for d in all_decisions if d["undone"])
+    # Kris, 06/09/2026: "Make the undone actually disappear" — an undone
+    # decision has already been reverted on the spreadsheet, so leaving it
+    # visible here just clutters the list with entries there's nothing left
+    # to do with. Hidden by default; still reachable via the toggle below
+    # for anyone who wants to confirm something really was undone.
+    decisions = all_decisions if show_undone == "1" else [d for d in all_decisions if not d["undone"]]
     return render(
         request,
         "review_history.html",
         {
             "active_page": "review",
             "freshness": freshness_status(),
-            "decisions": review_decisions_log_rows(),
+            "decisions": decisions,
+            "undone_count": undone_count,
+            "show_undone": show_undone,
             "message": message,
         },
     )

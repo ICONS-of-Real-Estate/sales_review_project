@@ -553,6 +553,46 @@ def test_review_history_page_lists_logged_decisions(client, db_path, conn):
     assert "kris@iconsofrealestate.com" in resp.text
 
 
+def test_review_history_page_hides_undone_decisions_by_default(client, db_path, conn):
+    """Kris, 06/09/2026: "Make the undone actually disappear" — an undone
+    decision has already been reverted on the spreadsheet, so it's just
+    clutter in the default view."""
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Undone Finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 1)"
+    )
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 3, 'approve', 'Active Finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)"
+    )
+    conn.commit()
+    resp = client.get("/review/history")
+    assert "Active Finding" in resp.text
+    assert "Undone Finding" not in resp.text
+    assert "Show undone too (1)" in resp.text
+
+
+def test_review_history_page_show_undone_reveals_them_again(client, db_path, conn):
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Undone Finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 1)"
+    )
+    conn.commit()
+    resp = client.get("/review/history?show_undone=1")
+    assert "Undone Finding" in resp.text
+
+
+def test_review_history_page_empty_state_mentions_hidden_undone_count(client, db_path, conn):
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Undone Finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 1)"
+    )
+    conn.commit()
+    resp = client.get("/review/history")
+    assert "Nothing active" in resp.text
+    assert "1 undone decision(s) hidden" in resp.text
+
+
 def test_review_undo_clears_sheet_and_mirror_and_marks_log_undone(client, db_path, conn, monkeypatch):
     _insert_crm_row(conn, sheet_row=2, approve=1, reject=0)
     cur = conn.execute(

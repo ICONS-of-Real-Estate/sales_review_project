@@ -10,6 +10,13 @@
 
 {% if message %}<p class="review-history-message">{{ message }}</p>{% endif %}
 
+<div class="review-toggle">
+  <a href="/review/history?show_undone=0" class="{{ 'active' if show_undone != '1' else '' }}">Active only</a>
+  <a href="/review/history?show_undone=1" class="{{ 'active' if show_undone == '1' else '' }}">
+    Show undone too{% if undone_count %} ({{ undone_count }}){% endif %}
+  </a>
+</div>
+
 {% set pending = decisions | selectattr('undone', 'equalto', 0) | list %}
 {% if pending %}
 <form method="post" action="/review/undo_all">
@@ -46,7 +53,13 @@
     </tr>
     {% endfor %}
     {% if not decisions %}
-    <tr><td colspan="7" class="muted">No decisions made yet.</td></tr>
+    <tr><td colspan="7" class="muted">
+      {% if show_undone != '1' and undone_count %}
+        Nothing active — {{ undone_count }} undone decision(s) hidden. <a href="/review/history?show_undone=1">Show undone too</a>
+      {% else %}
+        No decisions made yet.
+      {% endif %}
+    </td></tr>
     {% endif %}
   </tbody>
 </table>
