@@ -7075,3 +7075,79 @@ test('rankTrainingPriorities_ ranks the new "delivery" element same as any other
   assert.equal(ranking[0].key, 'discovery');
   assert.equal(ranking[4].key, 'delivery', 'delivery has zero failures here and, appended last, sorts last among the ties');
 });
+
+// ---------------------------------------------------------------------------
+// Real bug found live (05/09/2026): Bens's daily practice drill got graded
+// and coached as if he were "asking for the money," which is never his job
+// — he books a QC/Sales Call for someone else on the team. Kris: "Bens is
+// lead generation... He never asks for the money. Joana, Sean, Tomas ask
+// for the money! NOT Bens."
+// ---------------------------------------------------------------------------
+
+test('buildDailyPracticeSystemPrompt_ uses Bens\'s real skill ("asking for the appointment") instead of hardcoding "ASKING FOR THE MONEY" for every rep', () => {
+  const bensPrompt = gas.buildDailyPracticeSystemPrompt_('Bens');
+  assert.ok(bensPrompt.indexOf('ASKING FOR THE APPOINTMENT') !== -1,
+    'Bens\'s prompt must name his real skill, not money');
+  assert.equal(bensPrompt.indexOf('ASKING FOR THE MONEY'), -1,
+    'Bens must never be told to grade against a money-closing skill he doesn\'t have');
+  assert.ok(bensPrompt.indexOf('book the next concrete step') !== -1,
+    'Bens\'s skill description (booking a QC/Sales Call) must come from trainingReviewRoleFor_, not be invented here');
+});
+
+test('buildDailyPracticeSystemPrompt_ still says "ASKING FOR THE MONEY" for a rep with no custom role (Sean/Joana) — the fix must not remove the real skill for the reps it DOES apply to', () => {
+  const seanPrompt = gas.buildDailyPracticeSystemPrompt_('Sean');
+  assert.ok(seanPrompt.indexOf('ASKING FOR THE MONEY') !== -1);
+});
+
+test('buildDailyPracticeFeedbackEmail_ labels a close_ask drill "Asking for the appointment" for Bens, not "Asking for the money"', () => {
+  const result = {
+    drill_type: 'close_ask', objection_type: 'n/a', technique_used: true, technique_description: 'x',
+    delivery_quality: 'confident', overall_score: 4, sharpen_next: 'x', feedback_summary: '"x" — good.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Bens', '260902_objection_practice.mp4', result);
+  assert.ok(email.body.indexOf('Drill: Asking for the appointment') !== -1);
+  assert.equal(email.body.indexOf('Asking for the money'), -1);
+});
+
+test('buildDailyPracticeFeedbackEmail_ still labels a close_ask drill "Asking for the money" for a rep with no custom role', () => {
+  const result = {
+    drill_type: 'close_ask', objection_type: 'n/a', technique_used: true, technique_description: 'x',
+    delivery_quality: 'confident', overall_score: 4, sharpen_next: 'x', feedback_summary: '"x" — good.'
+  };
+  const email = gas.buildDailyPracticeFeedbackEmail_('Sean', '260902_objection_practice.mp4', result);
+  assert.ok(email.body.indexOf('Drill: Asking for the money') !== -1);
+});
+
+// ---------------------------------------------------------------------------
+// The weekly training rotation (Discovery / Framework & Delivery / Closing &
+// Objection Handling) is a team-wide curriculum for the reps who actually
+// close (Joana, Sean) — Kris, 05/09/2026, correcting an assumption baked
+// into the rotation the same day it shipped: "Remember this only applies to
+// Joana, Sean NOT Bens." Bens never asks for money and never explains the
+// framework (trainingReviewRoleFor_), so two of the three scheduled weeks
+// aren't his job at all.
+// ---------------------------------------------------------------------------
+
+test('legacyTrainingFocusFromRanking_ picks the single worst-ranked element, same as the pre-rotation rule, with no schedule attached', () => {
+  const ranking = [
+    { label: 'Discovery', failed: 3, scored: 4, failedCalls: ['a', 'b', 'c'] },
+    { label: 'Objection handling', failed: 1, scored: 4, failedCalls: ['d'] }
+  ];
+  const focus = gas.legacyTrainingFocusFromRanking_(ranking);
+  assert.equal(focus.label, 'Discovery');
+  assert.equal(focus.failed, 3);
+  assert.equal(focus.isUrgentOverride, false);
+  assert.equal(focus.scheduleLabel, null);
+});
+
+test('legacyTrainingFocusFromRanking_ handles an empty ranking (no calls last week) without throwing', () => {
+  const focus = gas.legacyTrainingFocusFromRanking_([]);
+  assert.equal(focus.failed, 0);
+  assert.deepEqual(Array.from(focus.failedCalls), []);
+});
+
+test('TRAINING_REVIEW_ROLE_ has no entry for Sean/Joana, only Bens — this is the exact flag buildAndMaybeSendPlaybookReview_ uses to decide who gets the team rotation vs. the legacy per-rep worst-element rule', () => {
+  assert.ok(gas.TRAINING_REVIEW_ROLE_.Bens, 'Bens must have a custom role entry');
+  assert.equal(gas.TRAINING_REVIEW_ROLE_.Sean, undefined, 'Sean must use the team rotation (no custom role entry)');
+  assert.equal(gas.TRAINING_REVIEW_ROLE_.Joana, undefined, 'Joana must use the team rotation (no custom role entry)');
+});

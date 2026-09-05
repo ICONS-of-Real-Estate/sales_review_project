@@ -107,29 +107,44 @@ var DAILY_PRACTICE_CONFIG = {
   }
 };
 
-function buildDailyPracticeSystemPrompt_() {
+/**
+ * Role-aware, same distinction Phase 6's training-call review already draws
+ * (trainingReviewRoleFor_, Phase6_TrainingCallReview.gs) — real bug found
+ * live (05/09/2026, Bens's "260902_objection_practice" feedback): this
+ * prompt used to hardcode "ASKING FOR THE MONEY" / "go straight to payment"
+ * for EVERY rep, so Bens's close_ask drill got graded and coached as if he
+ * were closing for cash. Kris: "Bens is lead generation... From either he
+ * is either booking a QC or a Sales call. He never asks for the money.
+ * Joana, Sean, Tomas ask for the money! NOT Bens." Framework explanation
+ * stays generically described below (Bens never gets assigned that lane at
+ * all — role.drillsFramework gates it upstream in
+ * sendDailyPracticeReminders_/Phase 6 — so no role text is needed for it
+ * here).
+ */
+function buildDailyPracticeSystemPrompt_(rep) {
+  var role = trainingReviewRoleFor_(rep);
+  var closeAskLabel = role.closeAskSkillLabel.toUpperCase();
   return [
     'You are grading a rep\'s SOLO PRACTICE DRILL — not a real sales call. There is no lead on this',
     'recording; the rep is practicing alone or role-playing both sides to rehearse one of our three named',
     'skills. First decide which one this drill is:',
     '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise, isolate it as the',
     '    one thing standing in the way, then repeat/confirm that back before answering it.',
-    '  ASKING FOR THE MONEY = a direct line, e.g. "Ready to get started?" — not a soft/open question. Ideally',
-    '    asked MORE THAN ONCE: ask it, then whatever comes back is either another objection (loop back into',
-    '    Agree/Isolate/Repeat, then ask again) or a yes (go straight to payment).',
+    '  ' + closeAskLabel + ' = ' + role.closeAskSkillDescription,
     '  FRAMEWORK EXPLANATION = proactively and specifically walking through all three pieces of our value',
     '    proposition: how the podcast helps RECRUIT AGENTS, how it builds #1-PODCAST-IN-YOUR-CITY authority,',
     '    and how it helps SELL MORE HOUSES — heads off objections before a lead who never understood the',
     '    offer raises them (25/08/2026, per Kris).',
     '',
     'If drill_type is "close_ask", answer, in order:',
-    '1. Did they use the direct line (or a clear equivalent) rather than a soft/open question? Quote it.',
+    '1. Did they use the direct line (or a clear equivalent) for ' + role.closeAskSkillLabel +
+      ' rather than a soft/open question? Quote it.',
     '2. Did they ask more than once — i.e. handle whatever came back (objection or hesitation) and ask',
     '   again, rather than asking once and moving on?',
     '3. Delivery: confident and natural, or hesitant/reading off a script woodenly?',
     '4. What is the single most specific thing to sharpen before their next live call?',
-    'Score anchors for overall_score (1-5) on a close_ask drill:',
-    '5 = direct line used, asked more than once with a real branch (objection-loop or payment), confident.',
+    'Score anchors for overall_score (1-5) on a close_ask drill (' + role.closeAskSkillLabel + '):',
+    '5 = direct line used, asked more than once with a real branch, confident.',
     '4 = direct line used and repeated, but delivery or the branch handling was a little off.',
     '3 = direct line used once, but no repeat attempt after the first response.',
     '2 = only a soft/open question substituted for the direct ask — no real close-ask practiced.',
@@ -213,7 +228,7 @@ function isValidDailyPracticeSchema_(obj) {
 
 /** Same retry/manual-review shape as scoreTranscript_ (Phase2), against the daily-practice drill rubric above. */
 function gradeDailyPracticeTranscript_(rep, transcriptText, fileName) {
-  var systemPrompt = buildDailyPracticeSystemPrompt_();
+  var systemPrompt = buildDailyPracticeSystemPrompt_(rep);
   var userPrompt = buildDailyPracticeUserPrompt_(rep, transcriptText, fileName);
 
   for (var attempt = 0; attempt <= (PHASE2_CONFIG.MAX_PARSE_RETRIES || 1); attempt++) {
@@ -271,8 +286,9 @@ function dailyPracticeScoreColor_(score) {
 function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links) {
   links = links || {};
   var subject = 'Practice Drill Feedback — ' + fileName;
+  var closeAskLabel = trainingReviewRoleFor_(rep).closeAskSkillLabel;
   var focusLine = result.drill_type === 'close_ask'
-    ? 'Drill: Asking for the money'
+    ? 'Drill: ' + closeAskLabel.charAt(0).toUpperCase() + closeAskLabel.slice(1)
     : result.drill_type === 'framework'
       ? 'Drill: Framework explanation (' + result.framework_topic + ')'
       : 'Objection practiced: ' + result.objection_type;

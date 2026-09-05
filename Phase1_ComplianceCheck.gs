@@ -3058,6 +3058,26 @@ function pickWeeklyTrainingFocus_(ranking, schedule) {
 }
 
 /**
+ * The pre-rotation rule (03/09/2026: "the worst becomes the week's focus"),
+ * kept for reps the team-wide schedule doesn't fit — currently Bens, whose
+ * role never scores 'framework' or a money-style 'ask' at all, so those two
+ * naturally sort last with scored:0 and never win here; no extra filtering
+ * needed. Same return shape as pickWeeklyTrainingFocus_ so both can feed
+ * buildPlaybookReviewNewMaterialEmail_ interchangeably.
+ */
+function legacyTrainingFocusFromRanking_(ranking) {
+  var top = (ranking && ranking.length) ? ranking[0] : null;
+  return {
+    label: top ? top.label : 'Objection handling',
+    failed: top ? top.failed : 0,
+    scored: top ? top.scored : 0,
+    failedCalls: top ? top.failedCalls : [],
+    isUrgentOverride: false,
+    scheduleLabel: null
+  };
+}
+
+/**
  * Reads one Sales Call Log row into the four-element shape
  * rankTrainingPriorities_ works on. A cell that isn't an actual boolean is
  * "no signal" (null) — NOT a pass and NOT a failure. Three separate things
@@ -3214,13 +3234,32 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
     });
 
     var ranking = rankTrainingPriorities_(calls);
-    var focus = pickWeeklyTrainingFocus_(ranking, schedule);
+    // Kris's ask (05/09/2026), correcting an assumption baked into the
+    // rotation the same day it shipped: "Discovery -> Framework & Delivery
+    // -> Closing & Objection Handling... this only applies to Joana, Sean
+    // NOT Bens." Bens never asks for money (he books a QC/Sales Call for
+    // someone else — trainingReviewRoleFor_, Phase6_TrainingCallReview.gs —
+    // "Bens is lead generation... he never asks for the money") and never
+    // explains the framework himself (role.drillsFramework === false), so
+    // two of the three scheduled topics are simply not his job. Only a rep
+    // with NO custom TRAINING_REVIEW_ROLE_ entry (currently Joana and Sean)
+    // gets the team-wide schedule; anyone with one falls back to the
+    // pre-rotation rule (worst single element that's actually applicable to
+    // them — framework/ask naturally sort last for Bens since they're never
+    // scored on his calls, so this needs no extra filtering of its own).
+    var usesTeamRotation = !TRAINING_REVIEW_ROLE_[repCfg.name];
+    var focus = usesTeamRotation
+      ? pickWeeklyTrainingFocus_(ranking, schedule)
+      : legacyTrainingFocusFromRanking_(ranking);
     var flagged = focus.failed ? focus.failedCalls : [];
 
     if (forcePreview) {
       log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
-        windowLabel + '). Scheduled topic: ' + schedule.label + '. Focus: ' + focus.label +
-        (focus.isUrgentOverride ? ' [URGENT OVERRIDE — outside this week\'s schedule]' : '') +
+        windowLabel + '). ' +
+        (usesTeamRotation
+          ? 'Scheduled topic: ' + schedule.label + '. Focus: ' + focus.label +
+            (focus.isUrgentOverride ? ' [URGENT OVERRIDE — outside this week\'s schedule]' : '')
+          : 'Not on the team rotation (' + repCfg.name + '\'s role) — focus: ' + focus.label) +
         '. All elements: ' + ranking.map(function (r) {
           return r.label + ' ' + r.failed + '/' + r.scored;
         }).join(', ') + '.');
@@ -3229,7 +3268,7 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
 
     var sent = flagged.length
       ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
-      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule);
+      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
