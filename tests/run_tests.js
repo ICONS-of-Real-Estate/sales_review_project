@@ -7321,6 +7321,64 @@ test('collectLeadsFromRows_ with no name column (nameIdx -1) leaves the lead\'s 
 });
 
 // ---------------------------------------------------------------------------
+// One-time repair (05/09/2026): the fix above stopped NEW rows getting the
+// relay's From header as their Name, but review-sheet rows from BEFORE the
+// fix already had it, keyed on the (already-correct) email — so a plain
+// re-run skips them as "already listed" instead of fixing the bad Name.
+// leadReconciliationNameLooksLikeReplyRelay_ is the pure detector behind
+// repairLeadReconciliationReplyTrackerNames_, confirmed live: it found 477
+// leads to review but only wrote 34 new rows, since ~440 already existed
+// under the same email key with the stale garbage Name.
+// ---------------------------------------------------------------------------
+
+test('leadReconciliationNameLooksLikeReplyRelay_ flags a Name cell holding the outreach relay\'s raw From header', () => {
+  assert.equal(gas.leadReconciliationNameLooksLikeReplyRelay_("'Joana Peixe' via Network <network@ardorseo.com>"), true);
+  assert.equal(gas.leadReconciliationNameLooksLikeReplyRelay_('Network <network@ardorseo.com>'), true);
+});
+
+test('leadReconciliationNameLooksLikeReplyRelay_ leaves a real lead\'s name alone', () => {
+  assert.equal(gas.leadReconciliationNameLooksLikeReplyRelay_('Craig Sanger'), false);
+  assert.equal(gas.leadReconciliationNameLooksLikeReplyRelay_(''), false);
+  assert.equal(gas.leadReconciliationNameLooksLikeReplyRelay_(null), false);
+});
+
+test('repairLeadReconciliationReplyTrackerNames_ blanks only the relay-header Name cells, leaving real names untouched, and skips a sheet that does not exist yet', () => {
+  let written = null;
+  const fakeAllSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(row, 2);
+      assert.equal(col, 2); // Name column
+      assert.equal(numRows, 3);
+      assert.equal(numCols, 1);
+      return {
+        getValues: () => [
+          ["'Joana Peixe' via Network <network@ardorseo.com>"],
+          ['Craig Sanger'],
+          ['Network <network@ardorseo.com>']
+        ],
+        setValues: (vals) => { written = vals; }
+      };
+    }
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = {
+    openById: () => ({
+      getSheetByName: (name) => (name === 'Lead Reconciliation - All' ? fakeAllSheet : null)
+    })
+  };
+  try {
+    gas.repairLeadReconciliationReplyTrackerNames_();
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+  assert.ok(written, 'the Name column should have been written back');
+  assert.equal(written[0][0], '');
+  assert.equal(written[1][0], 'Craig Sanger');
+  assert.equal(written[2][0], '');
+});
+
+// ---------------------------------------------------------------------------
 // Phase 15 — CRM organization review (Phase15_CrmOrganizationReview.gs).
 // Read-only-against-GHL tool building an approve/reject sheet for Tomás's
 // Monday CRM organization session with Joana.

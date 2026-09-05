@@ -559,3 +559,71 @@ function previewLeadReconciliation_() {
     '"Not a real lead" per row on either sheet — that decision is theirs, this script only surfaces the list.');
   return results;
 }
+
+/**
+ * Pure. True when a review-sheet Name cell is really the Reply Tracker
+ * outreach relay's own raw From header, not a real lead's name.
+ * Phase8_ReplyTracker.gs documents that header as ALWAYS containing
+ * REPLY_TRACKER_CONFIG.FORWARD_ADDRESS ('network@ardorseo.com') regardless
+ * of who the real lead is — that's the one substring guaranteed to be in
+ * every bad Name cell this wrote, before nameColumns for Reply Tracker was
+ * fixed to [] above.
+ */
+function leadReconciliationNameLooksLikeReplyRelay_(name) {
+  return /ardorseo\.com/i.test(String(name || ''));
+}
+
+/** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
+function repairLeadReconciliationReplyTrackerNames() {
+  return repairLeadReconciliationReplyTrackerNames_();
+}
+
+/**
+ * One-time repair (05/09/2026). Before the Reply Tracker's nameColumns bug
+ * was fixed above, ~470 real leads got written to the review sheets with
+ * their Name column showing the outreach relay's own raw From header
+ * (always containing 'network@ardorseo.com') instead of being left blank —
+ * even though their Dedupe Key (email-based) was already correct. That
+ * means a plain re-run of previewLeadReconciliation_ just skips those rows
+ * as "already listed" rather than fixing the bad Name — confirmed live:
+ * the first post-fix run found 477 leads to review but wrote only 34 new
+ * rows, because most of the 477 already had a row under the same email key.
+ *
+ * This blanks the Name column directly on any row that still shows the
+ * relay text, on both review sheets, so they read the way a correct run
+ * would have written them (blank name, real email) — without re-running
+ * any GHL search and without touching Email, Status, Sources, or Dedupe
+ * Key. Nothing in GHL is touched either. Safe to run more than once — rows
+ * already fixed are simply skipped.
+ */
+function repairLeadReconciliationReplyTrackerNames_() {
+  RUN_TAG = 'repairLeadReconciliationReplyTrackerNames_';
+  var sheetNames = [LEAD_RECONCILIATION_REVIEW_SHEET_ALL_, LEAD_RECONCILIATION_REVIEW_SHEET_CANDIDATES_];
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var totalFixed = 0;
+
+  sheetNames.forEach(function (sheetName) {
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) { log_('"' + sheetName + '" does not exist yet — nothing to repair.'); return; }
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) { log_('"' + sheetName + '" has no data rows — nothing to repair.'); return; }
+
+    var names = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+    var fixedCount = 0;
+    for (var r = 0; r < names.length; r++) {
+      if (leadReconciliationNameLooksLikeReplyRelay_(names[r][0])) {
+        names[r][0] = '';
+        fixedCount++;
+      }
+    }
+    if (fixedCount) {
+      sheet.getRange(2, 2, names.length, 1).setValues(names);
+    }
+    log_('"' + sheetName + '": fixed ' + fixedCount + ' row(s) — blanked the relay address out of the Name column.');
+    totalFixed += fixedCount;
+  });
+
+  log_('Done. ' + totalFixed + ' row(s) total repaired across both sheets. Email, Status, Sources, and Dedupe ' +
+    'Key were left untouched, and nothing in GHL was changed. Re-run previewLeadReconciliation after this to ' +
+    'pick up anything genuinely new.');
+}
