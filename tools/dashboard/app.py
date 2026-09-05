@@ -1155,10 +1155,18 @@ def leads_api(verdict: str = "", failure_mode: str = "", rep: str = ""):
 # landing page at /review just shows both counts and links to each.
 def crm_review_pending_rows():
     conn = get_conn()
+    # Real bug found live (06/09/2026): needs_more_info was added via ALTER
+    # TABLE to an already-populated table (_add_column_if_missing, sync.py)
+    # — SQLite sets that column to NULL on every pre-existing row, not 0,
+    # and "NULL = 0" is never true in SQL. Every already-written finding
+    # silently vanished from the queue after the app restarted, before the
+    # next sync cycle overwrote NULL with a real 0/1 read from the Sheet.
+    # COALESCE(..., 0) treats "never set" the same as "explicitly false"
+    # so this can't happen again on the next column ever added the same way.
     rows = conn.execute(
         "SELECT sheet_row, timestamp, category, finding, evidence, suggested_action "
         "FROM crm_organization_review "
-        "WHERE approve = 0 AND reject = 0 AND needs_more_info = 0 ORDER BY sheet_row"
+        "WHERE approve = 0 AND reject = 0 AND COALESCE(needs_more_info, 0) = 0 ORDER BY sheet_row"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1169,7 +1177,7 @@ def lead_review_pending_rows():
     rows = conn.execute(
         "SELECT sheet_row, timestamp, name, email, status, sources, likely_noise, "
         "noise_reason, ambiguous_matches, dedupe_key FROM lead_reconciliation "
-        "WHERE real_lead = 0 AND not_real_lead = 0 AND needs_more_info = 0 "
+        "WHERE real_lead = 0 AND not_real_lead = 0 AND COALESCE(needs_more_info, 0) = 0 "
         "ORDER BY likely_noise ASC, sheet_row"
     ).fetchall()
     conn.close()

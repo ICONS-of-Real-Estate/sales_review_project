@@ -365,6 +365,30 @@ def test_review_crm_page_shows_first_undecided_finding(client, db_path, conn):
     assert "1 left to review" in resp.text
 
 
+def test_review_pages_treat_a_null_needs_more_info_as_pending_not_excluded(client, db_path, conn):
+    """Real bug found live (06/09/2026): needs_more_info was added via ALTER
+    TABLE to an already-populated production database — SQLite sets that
+    column to NULL on every pre-existing row, not 0, and a plain
+    "needs_more_info = 0" WHERE clause silently excluded every one of them
+    (NULL never equals 0 in SQL) until the next sync overwrote it. A row
+    that predates the column entirely must still show up as pending."""
+    conn.execute(
+        "INSERT INTO crm_organization_review "
+        "(sheet_row, timestamp, category, finding, evidence, suggested_action, approve, reject, dedupe_key) "
+        "VALUES (2, '9/6/2026', 'Pipeline health', 'Predates the column', 'e', 'a', 0, 0, 'pipeline:predates')"
+    )
+    conn.execute(
+        "INSERT INTO lead_reconciliation "
+        "(sheet_row, timestamp, name, email, status, sources, likely_noise, real_lead, not_real_lead, dedupe_key) "
+        "VALUES (2, '9/6/2026', 'Predates The Column', '', 'not_found', 'a', 0, 0, 0, 'name:predates the column')"
+    )
+    conn.commit()
+    resp = client.get("/review/crm")
+    assert "Predates the column" in resp.text
+    resp = client.get("/review/leads")
+    assert "Predates The Column" in resp.text
+
+
 def test_review_crm_page_shows_pipeline_health_specific_decision_meaning(client, db_path, conn):
     """Kris, 06/09/2026: "The message on EVERY approve/deny needs to be
     crystal fucking clear so Tomas can make a decision" — a top-of-page
