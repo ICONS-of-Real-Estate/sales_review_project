@@ -6700,3 +6700,74 @@ test('buildLeadReconciliationSummary_ omits the PARTIAL RUN warning on a complet
   const summary = gas.buildLeadReconciliationSummary_([{ status: 'found' }], 1, 1, false);
   assert.ok(summary.indexOf('PARTIAL RUN') === -1);
 });
+
+// ---------------------------------------------------------------------------
+// Phase 14 — GHL stage triage (Phase14_GhlStageTriage.gs). Suggests a
+// resolution for stale, non-terminal GHL opportunities so Tomás/Joana can
+// approve or reject instead of us guessing or writing to GHL automatically.
+// ---------------------------------------------------------------------------
+
+test('ghlOpportunityStaleDays_ computes whole days since updatedAt, and prefers updatedAt over lastStatusChangeAt/dateAdded', () => {
+  const now = new Date('2026-09-05T00:00:00Z').getTime();
+  const days = gas.ghlOpportunityStaleDays_({ updatedAt: '2026-08-15T00:00:00Z' }, now);
+  assert.equal(days, 21);
+});
+
+test('ghlOpportunityStaleDays_ falls back to lastStatusChangeAt then dateAdded when updatedAt is missing', () => {
+  const now = new Date('2026-09-05T00:00:00Z').getTime();
+  assert.equal(gas.ghlOpportunityStaleDays_({ lastStatusChangeAt: '2026-09-01T00:00:00Z' }, now), 4);
+  assert.equal(gas.ghlOpportunityStaleDays_({ dateAdded: '2026-09-04T00:00:00Z' }, now), 1);
+});
+
+test('ghlOpportunityStaleDays_ returns null (not a crash or a false "0 days") when no date field exists or is unparseable', () => {
+  const now = Date.now();
+  assert.equal(gas.ghlOpportunityStaleDays_({}, now), null);
+  assert.equal(gas.ghlOpportunityStaleDays_({ updatedAt: 'not-a-date' }, now), null);
+});
+
+test('ghlStageIsTerminal_ matches "Closed Won"/"Closed lost" case-insensitively and rejects a normal in-flight stage', () => {
+  assert.equal(gas.ghlStageIsTerminal_('Closed Won'), true);
+  assert.equal(gas.ghlStageIsTerminal_('Closed lost'), true);
+  assert.equal(gas.ghlStageIsTerminal_('Sales Call - Booked'), false);
+});
+
+test('buildGhlStageTriageSuggestion_ says leave-as-is when a real future appointment exists, even on a very stale stage', () => {
+  const s = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Sales Call - Booked', staleDays: 60, activity: { hasFutureAppointment: true }
+  });
+  assert.ok(/Leave as-is/.test(s.action));
+});
+
+test('buildGhlStageTriageSuggestion_ flags a stale "Booked" stage with zero activity as likely no-show/dead — the largest documented blind spot (GHL_PIPELINE_MAP.md)', () => {
+  const s = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Qualification Call Booked', staleDays: 45, activity: {}
+  });
+  assert.ok(/No-Show|Not Taken|re-engage/.test(s.action));
+  assert.ok(/45 day/.test(s.reasoning));
+});
+
+test('buildGhlStageTriageSuggestion_ distinguishes "has real activity but stalled" from "no activity at all found" so the reasoning is never a guess', () => {
+  const withActivity = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Dial 1', staleDays: 30, activity: { lastNoteDate: '2026-08-20' }
+  });
+  const withoutActivity = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Dial 1', staleDays: 30, activity: {}
+  });
+  assert.ok(/has activity, but stalled/.test(withActivity.action));
+  assert.ok(withActivity.reasoning.indexOf('2026-08-20') !== -1);
+  assert.ok(/no activity found at all/.test(withoutActivity.action));
+});
+
+test('buildGhlStageTriageSuggestion_ picks the MORE RECENT of note vs conversation date when both exist', () => {
+  const s = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Dial 1', staleDays: 30,
+    activity: { lastNoteDate: '2026-07-01', lastConversationDate: '2026-08-15' }
+  });
+  assert.ok(s.reasoning.indexOf('2026-08-15') !== -1);
+});
+
+test('ghlStageTriageAlreadyDecided_ recognizes an opportunity id already on the sheet, so a re-run never re-suggests or duplicates a row a human already decided on', () => {
+  assert.equal(gas.ghlStageTriageAlreadyDecided_(['opp1', 'opp2'], 'opp2'), true);
+  assert.equal(gas.ghlStageTriageAlreadyDecided_(['opp1', 'opp2'], 'opp3'), false);
+  assert.equal(gas.ghlStageTriageAlreadyDecided_([], 'opp1'), false);
+});
