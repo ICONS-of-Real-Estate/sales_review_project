@@ -285,25 +285,42 @@ function previewCrmOrganizationReview_() {
 }
 
 /**
- * Matches the OLD "Unrecognized assignee" Finding text (before
- * resolveGhlAssigneeLabel_ existed): the raw GHL user ID, quoted, as the
- * whole subject — e.g. '"wEL0kebR7naWq9aTx7CW" is assigned 48 open
- * opportunity(ies) but is not in CONFIG.REPS...'. Group 1 is the ID, group
- * 2 is everything from " is assigned" onward, kept verbatim so the repair
- * below only ever changes the subject, never the rest of the sentence.
+ * Two shapes of "Unrecognized assignee" Finding text this repair needs to
+ * retry, both from before the GHL "View Users" scope was actually granted
+ * (confirmed live 06/09/2026 — the first repair run hit HTTP 401 and every
+ * row fell back to the second shape below):
+ *   1. LEGACY — the OLD text, before resolveGhlAssigneeLabel_ existed at
+ *      all: the raw GHL user ID, quoted, as the whole subject — e.g.
+ *      '"wEL0kebR7naWq9aTx7CW" is assigned 48 open opportunity(ies)...'.
+ *   2. UNKNOWN_FALLBACK — resolveGhlAssigneeLabel_'s own fallback when the
+ *      user lookup has nothing for that ID (missing scope, or a
+ *      deactivated user) — e.g. 'Unknown user (wEL0kebR7naWq9aTx7CW) is
+ *      assigned 48 open opportunity(ies)...'. Retrying this shape is what
+ *      makes it safe to run this repair BEFORE the scope is granted (falls
+ *      back cleanly, as it just did) and AGAIN after, and have the second
+ *      run actually fix what the first one couldn't.
+ * Each pattern's group 1 is the ID, group 2 is everything from " is
+ * assigned" onward, kept verbatim so the repair below only ever changes the
+ * subject, never the rest of the sentence.
  */
-var CRM_ORG_REVIEW_LEGACY_UNRECOGNIZED_ASSIGNEE_PATTERN_ = /^"([^"]+)"(\s+is assigned .*)$/;
+var CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_ = [
+  /^"([^"]+)"(\s+is assigned .*)$/,
+  /^Unknown user \(([^)]+)\)(\s+is assigned .*)$/
+];
 
 /**
- * Pure. Splits an old-format "Unrecognized assignee" Finding cell into
- * {id, rest}, or returns null if it doesn't match that exact legacy shape
- * (already resolved to a name, or a different category entirely — e.g.
- * "Pipeline health" rows, which this must never touch).
+ * Pure. Splits an unresolved "Unrecognized assignee" Finding cell (either
+ * shape above) into {id, rest}, or returns null if it doesn't match either
+ * — already resolved to a real name, or a different category entirely
+ * (e.g. "Pipeline health" rows, which this must never touch).
  */
 function parseLegacyUnrecognizedAssigneeFinding_(finding) {
-  var m = CRM_ORG_REVIEW_LEGACY_UNRECOGNIZED_ASSIGNEE_PATTERN_.exec(String(finding || ''));
-  if (!m) return null;
-  return { id: m[1], rest: m[2] };
+  var text = String(finding || '');
+  for (var i = 0; i < CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_.length; i++) {
+    var m = CRM_ORG_REVIEW_UNRESOLVED_ASSIGNEE_PATTERNS_[i].exec(text);
+    if (m) return { id: m[1], rest: m[2] };
+  }
+  return null;
 }
 
 /** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */

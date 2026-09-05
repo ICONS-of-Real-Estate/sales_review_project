@@ -7521,6 +7521,15 @@ test('parseLegacyUnrecognizedAssigneeFinding_ returns null for an already-resolv
   assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('Sean Church (j3B1N9nwTDvgLyLgbcjI) is assigned 5 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'), null);
 });
 
+test('parseLegacyUnrecognizedAssigneeFinding_ also matches the "Unknown user (id)" fallback shape — real bug found live 06/09/2026: the GHL Users scope was still missing on the first repair run, so every row fell back to this shape instead of the original quoted-ID one, and needs to be retried once the scope is granted', () => {
+  const parsed = gas.parseLegacyUnrecognizedAssigneeFinding_(
+    'Unknown user (wEL0kebR7naWq9aTx7CW) is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)'
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.id, 'wEL0kebR7naWq9aTx7CW');
+  assert.equal(parsed.rest, ' is assigned 48 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
+});
+
 test('parseLegacyUnrecognizedAssigneeFinding_ returns null for a "Pipeline health" Finding — must never touch the other category', () => {
   assert.equal(gas.parseLegacyUnrecognizedAssigneeFinding_('"Cold Calling 2" — 100% of open opportunities (100 of 100) sit in one stage: "Qualification Call Booked"'), null);
 });
