@@ -7320,3 +7320,89 @@ test('collectLeadsFromRows_ with no name column (nameIdx -1) leaves the lead\'s 
   assert.equal(leads[0].email, 'realagent@example.com');
 });
 
+// ---------------------------------------------------------------------------
+// Phase 15 — CRM organization review (Phase15_CrmOrganizationReview.gs).
+// Read-only-against-GHL tool building an approve/reject sheet for Tomás's
+// Monday CRM organization session with Joana.
+// ---------------------------------------------------------------------------
+
+test('classifyPipelineStageConcentration_ flags a pipeline where one stage holds the large majority of open opportunities', () => {
+  const config = { STUCK_STAGE_SHARE_THRESHOLD: 0.7, MIN_OPPORTUNITIES_TO_FLAG: 20 };
+  const stageCounts = { 'Attempted Contact': 29, 'Booked': 1 };
+  const result = gas.classifyPipelineStageConcentration_('Cold Calling 2', stageCounts, config);
+  assert.ok(result);
+  assert.equal(result.pipelineName, 'Cold Calling 2');
+  assert.equal(result.topStage, 'Attempted Contact');
+  assert.equal(result.topCount, 29);
+  assert.equal(result.total, 30);
+  assert.equal(result.sharePct, 97);
+});
+
+test('classifyPipelineStageConcentration_ returns null when no single stage dominates', () => {
+  const config = { STUCK_STAGE_SHARE_THRESHOLD: 0.7, MIN_OPPORTUNITIES_TO_FLAG: 20 };
+  const stageCounts = { 'Attempted Contact': 10, 'Booked': 10, 'Follow-up': 10 };
+  assert.equal(gas.classifyPipelineStageConcentration_('Healthy Pipeline', stageCounts, config), null);
+});
+
+test('classifyPipelineStageConcentration_ returns null when total opportunities is below the flag threshold, even at 100% concentration — a lopsided percentage off 3 leads isn\'t a real signal', () => {
+  const config = { STUCK_STAGE_SHARE_THRESHOLD: 0.7, MIN_OPPORTUNITIES_TO_FLAG: 20 };
+  const stageCounts = { 'Booked': 3 };
+  assert.equal(gas.classifyPipelineStageConcentration_('Tiny Pipeline', stageCounts, config), null);
+});
+
+test('classifyUnknownAssignees_ excludes CONFIG.REPS and the known-old-reps list (Bruno/Simon/Ty), flagging only genuinely unrecognized names', () => {
+  const knownNames = gas.knownGhlAssigneeNames_();
+  const repName = gas.CONFIG.REPS[0].name;
+  const assigneeCounts = {};
+  assigneeCounts[repName] = 5;
+  assigneeCounts['Bruno'] = 2;
+  assigneeCounts['KD'] = 14;
+  const unknown = gas.classifyUnknownAssignees_(assigneeCounts, knownNames);
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].name, 'KD');
+  assert.equal(unknown[0].count, 14);
+});
+
+test('classifyUnknownAssignees_ sorts unrecognized assignees by open-opportunity count, most first', () => {
+  const unknown = gas.classifyUnknownAssignees_({ 'SC': 3, 'JP': 14, 'BO': 8 }, {});
+  assert.equal(Array.from(unknown).map((a) => a.name).join(','), 'JP,BO,SC');
+});
+
+test('classifyUnknownAssignees_ skips blank/whitespace-only assignee values', () => {
+  const unknown = gas.classifyUnknownAssignees_({ '': 4, '   ': 2, 'KD': 1 }, {});
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].name, 'KD');
+  assert.equal(unknown[0].count, 1);
+});
+
+test('nextCrmOrganizationReviewWriteRow_ finds the real next row by content in the Finding column, not sheet.getLastRow() alone — same checkbox/getLastRow() bug class fixed in Phase14_GhlStageTriage.gs', () => {
+  const values = { 2: [''], 3: [''] };
+  const fakeSheet = {
+    getLastRow: () => 3,
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(col, 3); // Finding column
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  assert.equal(gas.nextCrmOrganizationReviewWriteRow_(fakeSheet), 2);
+});
+
+test('nextCrmOrganizationReviewWriteRow_ writes immediately after the last row that actually has a Finding', () => {
+  const values = { 2: ['finding-a'], 3: ['finding-b'], 4: [''] };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows) => {
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  assert.equal(gas.nextCrmOrganizationReviewWriteRow_(fakeSheet), 4);
+});
+
+test('nextCrmOrganizationReviewWriteRow_ returns row 2 for a brand-new sheet with no data rows at all', () => {
+  assert.equal(gas.nextCrmOrganizationReviewWriteRow_({ getLastRow: () => 1 }), 2);
+});
+
