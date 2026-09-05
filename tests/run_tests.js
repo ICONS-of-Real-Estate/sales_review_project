@@ -530,8 +530,14 @@ test('runDailyComplianceCheck skips entirely on a weekend (business timezone) ra
   const originalUtilities = gas.Utilities;
   const originalLockService = gas.LockService;
   const originalLog = gas.Logger.log;
+  const originalEnabled = gas.COMPLIANCE_CHECK_CONFIG.ENABLED;
   const lines = [];
   try {
+    // Re-enabled just for this test: COMPLIANCE_CHECK_CONFIG.ENABLED is
+    // false by default (05/09/2026, Kris: "We don't want any trackers.
+    // Everything in GHL") — this test targets the weekday-skip logic
+    // beneath that gate, not the gate itself.
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = true;
     gas.Utilities = { formatDate: (d, tz, pattern) => (pattern === 'EEE' ? 'Sun' : realFormatDate(d, tz, pattern)) };
     // LockService is the very next thing touched after the weekday check —
     // making it throw proves the function exits before any real work
@@ -546,6 +552,27 @@ test('runDailyComplianceCheck skips entirely on a weekend (business timezone) ra
     gas.Utilities = originalUtilities;
     gas.LockService = originalLockService;
     gas.Logger.log = originalLog;
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = originalEnabled;
+  }
+});
+
+test('runDailyComplianceCheck skips entirely when COMPLIANCE_CHECK_CONFIG.ENABLED is false (Kris, 05/09/2026: "We need to stop this email... We don\'t want any trackers. Everything in GHL") — a real nag had linked Bens\'s tracker to Joana', () => {
+  const originalLockService = gas.LockService;
+  const originalLog = gas.Logger.log;
+  const originalEnabled = gas.COMPLIANCE_CHECK_CONFIG.ENABLED;
+  const lines = [];
+  try {
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = false;
+    gas.LockService = { getScriptLock: () => { throw new Error('must not attempt to acquire the lock while disabled'); } };
+    gas.Logger.log = (msg) => lines.push(msg);
+
+    gas.runDailyComplianceCheck();
+
+    assert.match(lines.join('\n'), /ENABLED is false/);
+  } finally {
+    gas.LockService = originalLockService;
+    gas.Logger.log = originalLog;
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = originalEnabled;
   }
 });
 

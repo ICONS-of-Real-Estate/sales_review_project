@@ -237,6 +237,23 @@ function log_(msg) {
 }
 
 /**
+ * Kris, 05/09/2026, looking at a real compliance nag sent to Joana that
+ * linked Bens's "Icons Podcast Recordings" tracker instead of hers: "We
+ * need to stop this email. It doesn't make sense sending Bens tracker. We
+ * don't want any trackers. Everything in GHL." This is the whole
+ * tracker-nagging system this phase exists for, not just the one link bug
+ * — consistent with GHL_MIGRATION_PLAN.md's target (GHL owns the lead;
+ * reps stop maintaining a tracker by hand). Gating the entry point off
+ * rather than deleting the phase: the backlog/matching logic underneath
+ * may still be worth something once/if a GHL-driven replacement lands, and
+ * an ENABLED flag is the same reversible off-switch every other phase in
+ * this codebase already uses.
+ */
+var COMPLIANCE_CHECK_CONFIG = {
+  ENABLED: false // Set false 05/09/2026 per Kris's explicit ask above — no code deleted, just switched off.
+};
+
+/**
  * Daily close-of-business check (trigger: 18:00 business time).
  * Evaluates the calls that happened TODAY in the business timezone — at
  * 18:00 the workday is over, so "today so far" IS the full business day.
@@ -245,6 +262,12 @@ function log_(msg) {
  */
 function runDailyComplianceCheck() {
   RUN_TAG = 'runDailyComplianceCheck';
+
+  if (!COMPLIANCE_CHECK_CONFIG.ENABLED) {
+    log_('runDailyComplianceCheck: COMPLIANCE_CHECK_CONFIG.ENABLED is false — tracker-nag emails are ' +
+      'switched off (Kris, 05/09/2026: "We don\'t want any trackers. Everything in GHL."). Skipping.');
+    return;
+  }
 
   // Kris's ask (30/08/2026): weekday-only — the trigger itself
   // (installDailyTriggerCore_) fires every single day via everyDays(1),
