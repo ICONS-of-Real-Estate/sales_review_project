@@ -32,7 +32,8 @@ const GAS_FILES = [
   'Phase8_ReplyTracker.gs',
   'Phase9_GhlSync.gs',
   'Phase10_ConversionFunnel.gs',
-  'Phase11_BensPodcastSync.gs'
+  'Phase11_BensPodcastSync.gs',
+  'Phase12_GhlNoteSync.gs'
 ];
 
 function stubApi(name) {

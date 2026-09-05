@@ -5919,3 +5919,192 @@ test('previewGhlNotesAndCustomFields_ bails clearly when no confident contact ma
     assert.ok(lines.some((l) => l.indexOf('Could not find a single confident contact match') !== -1));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 12 — post each scored call's AI review as a GHL Note
+// (Phase12_GhlNoteSync.gs)
+// ---------------------------------------------------------------------------
+
+test('buildGhlReviewNoteBody_ includes call date/type/rep, lead quality, score, feedback summary, and a transcript link', () => {
+  const body = gas.buildGhlReviewNoteBody_({
+    callDate: '20/08/2026',
+    callType: 'Sales Call',
+    rep: 'Sean',
+    leadQualityVerdict: 'Qualified',
+    callQualityScore: 4,
+    aiFeedbackSummary: 'Handled objections well.',
+    transcriptUrl: 'https://drive.google.com/x'
+  });
+  assert.ok(body.indexOf('20/08/2026') !== -1);
+  assert.ok(body.indexOf('Sales Call') !== -1);
+  assert.ok(body.indexOf('Sean') !== -1);
+  assert.ok(body.indexOf('Qualified') !== -1);
+  assert.ok(body.indexOf('4/5') !== -1);
+  assert.ok(body.indexOf('Handled objections well.') !== -1);
+  assert.ok(body.indexOf('<a href="https://drive.google.com/x">Transcript</a>') !== -1);
+});
+
+test('buildGhlReviewNoteBody_ escapes free-text feedback so an untrusted AI summary can never break the note\'s HTML', () => {
+  const body = gas.buildGhlReviewNoteBody_({
+    callDate: '20/08/2026', callType: 'QC', rep: 'Bens', leadQualityVerdict: 'Qualified',
+    callQualityScore: 3, aiFeedbackSummary: '<script>alert(1)</script>', transcriptUrl: ''
+  });
+  assert.ok(body.indexOf('<script>') === -1);
+  assert.ok(body.indexOf('&lt;script&gt;') !== -1);
+});
+
+test('buildGhlReviewNoteBody_ shows "(not scored)" for a blank score rather than printing "undefined/5" or "null/5"', () => {
+  const body = gas.buildGhlReviewNoteBody_({ callDate: '20/08/2026', callType: 'QC', rep: 'Bens', leadQualityVerdict: 'Qualified', callQualityScore: '', aiFeedbackSummary: '', transcriptUrl: '' });
+  assert.ok(body.indexOf('(not scored)/5') === -1);
+  assert.ok(body.indexOf('Call Quality Score: (not scored)') !== -1);
+});
+
+function withMockedGhlNoteSyncPlan_(mocks, fn) {
+  const originals = {
+    SpreadsheetApp: gas.SpreadsheetApp,
+    Utilities: gas.Utilities,
+    ghlSearchContactByName_: gas.ghlSearchContactByName_
+  };
+  gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
+  Object.assign(gas, mocks);
+  try {
+    return fn();
+  } finally {
+    Object.assign(gas, originals);
+  }
+}
+
+function ghlNoteSyncHeaders() {
+  return gas.SALES_CALL_LOG_HEADERS.slice();
+}
+
+function ghlNoteSyncRow(overrides) {
+  const row = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  Object.keys(overrides).forEach((h) => { row[gas.SALES_CALL_LOG_HEADERS.indexOf(h)] = overrides[h]; });
+  return row;
+}
+
+function fakeGhlNoteSyncSheet(dataRows) {
+  const headerRow = ghlNoteSyncHeaders();
+  return {
+    getLastRow: () => dataRows.length + 1,
+    getRange: (row) => {
+      if (row === 1) return { getValues: () => [headerRow] };
+      return { getValues: () => dataRows };
+    }
+  };
+}
+
+test('computeGhlReviewNoteSyncPlan_ skips a row with no Lead Quality Verdict (not yet scored) without ever calling GHL', () => {
+  const dataRows = [ghlNoteSyncRow({ 'Prospect Name': 'Not Scored Guy', 'Lead Quality Verdict': '' })];
+  let searchCalls = 0;
+  const plan = withMockedGhlNoteSyncPlan_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeGhlNoteSyncSheet(dataRows) }) },
+    ghlSearchContactByName_: () => { searchCalls++; return { ok: true, contacts: [] }; }
+  }, () => gas.computeGhlReviewNoteSyncPlan_('loc-1'));
+  assert.equal(searchCalls, 0);
+  assert.equal(plan.stats.notScored, 1);
+  assert.equal(plan.toPost.length, 0);
+});
+
+test('computeGhlReviewNoteSyncPlan_ skips a row already marked "GHL Review Synced", without ever calling GHL, so the same call never gets a duplicate note', () => {
+  const dataRows = [ghlNoteSyncRow({ 'Prospect Name': 'Already Synced Guy', 'Lead Quality Verdict': 'Qualified', 'GHL Review Synced': true })];
+  let searchCalls = 0;
+  const plan = withMockedGhlNoteSyncPlan_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeGhlNoteSyncSheet(dataRows) }) },
+    ghlSearchContactByName_: () => { searchCalls++; return { ok: true, contacts: [] }; }
+  }, () => gas.computeGhlReviewNoteSyncPlan_('loc-1'));
+  assert.equal(searchCalls, 0);
+  assert.equal(plan.stats.alreadySynced, 1);
+  assert.equal(plan.toPost.length, 0);
+});
+
+test('computeGhlReviewNoteSyncPlan_ plans a note for a scored, not-yet-synced row with exactly one confident GHL contact match', () => {
+  const dataRows = [ghlNoteSyncRow({
+    'Prospect Name': 'Nicole Freed', 'Call Date': '20/08/2026', 'Call Type': 'Sales Call', Rep: 'Sean',
+    'Lead Quality Verdict': 'Qualified', 'Call Quality Score': 4, 'AI Feedback Summary': 'Good call.'
+  })];
+  const plan = withMockedGhlNoteSyncPlan_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeGhlNoteSyncSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c-1', name: 'Nicole Freed' }] })
+  }, () => gas.computeGhlReviewNoteSyncPlan_('loc-1'));
+  assert.equal(plan.toPost.length, 1);
+  assert.equal(plan.toPost[0].contactId, 'c-1');
+  assert.equal(plan.toPost[0].row, 2);
+  assert.ok(plan.toPost[0].noteBody.indexOf('Good call.') !== -1);
+});
+
+test('computeGhlReviewNoteSyncPlan_ leaves an ambiguous match alone rather than guessing which contact to post the note to', () => {
+  const dataRows = [ghlNoteSyncRow({ 'Prospect Name': 'Common Name', 'Lead Quality Verdict': 'Qualified' })];
+  const plan = withMockedGhlNoteSyncPlan_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeGhlNoteSyncSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c-1', name: 'Common Name' }, { id: 'c-2', name: 'Common Name' }] })
+  }, () => gas.computeGhlReviewNoteSyncPlan_('loc-1'));
+  assert.equal(plan.stats.ambiguous, 1);
+  assert.equal(plan.toPost.length, 0);
+});
+
+test('runGhlNoteSync_ refuses to write while GHL_NOTE_SYNC_CONFIG.ENABLED is false', () => {
+  const original = gas.GHL_NOTE_SYNC_CONFIG.ENABLED;
+  let postCalls = 0;
+  const originalPost = gas.ghlPostContactNote_;
+  gas.ghlPostContactNote_ = () => { postCalls++; return { ok: true }; };
+  try {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = false;
+    gas.runGhlNoteSync_();
+    assert.equal(postCalls, 0);
+  } finally {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = original;
+    gas.ghlPostContactNote_ = originalPost;
+  }
+});
+
+test('runGhlNoteSync_ posts the note and marks "GHL Review Synced" true on a real write', () => {
+  const dataRows = [ghlNoteSyncRow({
+    'Prospect Name': 'Nicole Freed', 'Lead Quality Verdict': 'Qualified', 'Call Quality Score': 4
+  })];
+  const sheet = fakeGhlNoteSyncSheet(dataRows);
+  const setValues = [];
+  sheet.getRange = (function (orig) {
+    return function (row, col, numRows, numCols) {
+      if (numRows !== undefined) return orig(row, col, numRows, numCols);
+      if (row === 1 && col === undefined) return { getValues: () => [ghlNoteSyncHeaders()] };
+      return { setValue: (v) => setValues.push({ row: row, col: col, value: v }) };
+    };
+  })(sheet.getRange);
+
+  const originalEnabled = gas.GHL_NOTE_SYNC_CONFIG.ENABLED;
+  const originalGhlCheckSetup = gas.ghlCheckSetup_;
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalUtilities = gas.Utilities;
+  const originalSearch = gas.ghlSearchContactByName_;
+  const originalPost = gas.ghlPostContactNote_;
+  let postedTo = null;
+  try {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = true;
+    gas.ghlCheckSetup_ = () => 'loc-1';
+    gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.ghlSearchContactByName_ = () => ({ ok: true, contacts: [{ id: 'c-1', name: 'Nicole Freed' }] });
+    gas.ghlPostContactNote_ = (contactId) => { postedTo = contactId; return { ok: true }; };
+
+    gas.runGhlNoteSync_();
+
+    assert.equal(postedTo, 'c-1');
+    const synced = setValues.find((s) => s.col === gas.SALES_CALL_LOG_HEADERS.indexOf('GHL Review Synced') + 1);
+    assert.ok(synced, 'GHL Review Synced must be written to');
+    assert.equal(synced.value, true);
+    assert.equal(synced.row, 2);
+  } finally {
+    gas.GHL_NOTE_SYNC_CONFIG.ENABLED = originalEnabled;
+    gas.ghlCheckSetup_ = originalGhlCheckSetup;
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.Utilities = originalUtilities;
+    gas.ghlSearchContactByName_ = originalSearch;
+    gas.ghlPostContactNote_ = originalPost;
+  }
+});
+
+test('STANDING_AUTOMATION_HANDLERS_ includes runGhlNoteSync_ (Phase 12) -- a missing handler here gets silently swept as an orphan by installAllReadyTriggers_', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') !== -1);
+});

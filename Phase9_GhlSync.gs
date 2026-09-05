@@ -100,6 +100,38 @@ function ghlApiGet_(path) {
 }
 
 /**
+ * POST against the GHL API — same self-diagnosing contract as ghlApiGet_
+ * (returns {status, json, body} rather than throwing on non-2xx). Used for
+ * the first real WRITE this codebase makes to GHL (Phase12_GhlNoteSync.gs's
+ * review-note sync) — muteHttpExceptions still applies, so a bad payload
+ * shape shows up as a reportable 4xx, not a thrown exception mid-batch.
+ */
+function ghlApiPost_(path, payload) {
+  var token = getScriptSecret_(GHL_CONFIG.API_KEY_PROPERTY);
+  var url = GHL_CONFIG.API_BASE + path;
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    muteHttpExceptions: true,
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    headers: {
+      Authorization: 'Bearer ' + token,
+      Version: GHL_CONFIG.API_VERSION,
+      Accept: 'application/json'
+    }
+  });
+  var status = resp.getResponseCode();
+  var body = resp.getContentText();
+  var json = null;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    // leave json null — caller logs the raw body.
+  }
+  return { status: status, json: json, body: body, url: url };
+}
+
+/**
  * Confirms both Script Properties exist before any GHL call. Every entry
  * point below calls this first and bails with the same clear message
  * rather than each failing on a different obscure error.
@@ -477,6 +509,23 @@ function ghlGetContactNotes_(contactId) {
   }
   var notes = (res.json && (res.json.notes || res.json.data)) || [];
   return { ok: true, notes: notes };
+}
+
+/**
+ * Creates a new Note on one GHL contact — POST /contacts/{contactId}/notes,
+ * confirmed real and readable by previewGhlNotesAndCustomFields_ (05/09/2026,
+ * a genuine rep-written note came back with real HTML content). Used by
+ * Phase12_GhlNoteSync.gs to post each call's AI review. Never touches any
+ * existing note — this only ever creates a new one, additive by design,
+ * same "never overwrite, only fill/add" policy as every other GHL write in
+ * this codebase (syncGhlEmailAndDisposition_ only fills blank cells).
+ */
+function ghlPostContactNote_(contactId, body) {
+  var res = ghlApiPost_('/contacts/' + encodeURIComponent(contactId) + '/notes', { body: body });
+  if (res.status !== 200 && res.status !== 201) {
+    return { ok: false, status: res.status, body: res.body, url: res.url };
+  }
+  return { ok: true };
 }
 
 /**

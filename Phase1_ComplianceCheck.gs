@@ -1627,7 +1627,16 @@ var SALES_CALL_LOG_HEADERS = [
   // call at all (money already collected earlier).
   'Flag: Payment Collected By Rep', // AK (bool — blank when rep wasn't
                             //    present on this call at all)
-  'Payment Collected By Rep Gap'    // AL (free text, blank when collected or n/a)
+  'Payment Collected By Rep Gap',   // AL (free text, blank when collected or n/a)
+  // --- 05/09/2026: Phase 12 (Phase12_GhlNoteSync.gs), per Kris ("automate
+  // the fuck out of everything... reviews of calls, note on leads") —
+  // confirmed live that GHL's Notes endpoint is real, writable, and already
+  // in genuine use by the team. Tracks which rows already got their AI
+  // review posted as a GHL Note, so the sync never posts the same review
+  // twice. Blank on rows scored before this column existed, same
+  // backward-compatible "no signal" pattern as every column above —
+  // run migrateAddPrimaryFailureModeColumn() once to backfill the header. ---
+  'GHL Review Synced'      // AM (checkbox)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
@@ -3484,7 +3493,8 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
   'classifyNewReplies', 'sendReplyMetricsReport_',                         // Phase 8
   'syncGhlEmailAndDisposition_',                                           // Phase 9
-  'runBensPodcastSync_'                                                    // Phase 11
+  'runBensPodcastSync_',                                                   // Phase 11
+  'runGhlNoteSync_'                                                        // Phase 12
 ];
 
 /**
@@ -3648,6 +3658,14 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 11 (Bens podcast sync) — BENS_PODCAST_SYNC_CONFIG.ENABLED is false. Run ' +
       'previewBensPodcastSync() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof GHL_NOTE_SYNC_CONFIG !== 'undefined' && GHL_NOTE_SYNC_CONFIG.ENABLED) {
+    installGhlNoteSyncTrigger();
+    installed.push('Phase 12: GHL review-note sync');
+  } else {
+    skipped.push('Phase 12 (GHL review-note sync) — GHL_NOTE_SYNC_CONFIG.ENABLED is false. Run ' +
+      'previewGhlNoteSync() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own
