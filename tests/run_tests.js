@@ -7290,3 +7290,33 @@ test('buildDailyPracticeFeedbackEmail_ omits the average line entirely on a rep\
   assert.equal(email.body.indexOf('Average score'), -1);
   assert.equal(email.htmlBody.indexOf('Average score'), -1);
 });
+
+// ---------------------------------------------------------------------------
+// Real bug found live (05/09/2026): Reply Tracker's 'From' column was
+// configured as the lead-name source, but Phase8_ReplyTracker.gs:237
+// documents it as always the raw From header of the outreach relay/forward
+// address (e.g. "'Joana Peixe' via Network" <network@ardorseo.com>) — the
+// SAME text on nearly every row, never the real lead's name. This made
+// ~470 distinct real leads all search GHL under that one garbage string
+// instead of their own email, and showed it as every one of their "Name"
+// cells on the review sheets.
+// ---------------------------------------------------------------------------
+
+test('LEAD_RECONCILIATION_SOURCES has no nameColumns for Reply Tracker — "From" is always the relay/forward address (Phase8_ReplyTracker.gs), never the prospect\'s real name', () => {
+  const replyTracker = gas.LEAD_RECONCILIATION_SOURCES.filter((s) => s.label === 'Reply Tracker')[0];
+  assert.ok(replyTracker, 'Reply Tracker source must still exist');
+  assert.deepEqual(Array.from(replyTracker.nameColumns), []);
+  assert.deepEqual(Array.from(replyTracker.emailColumns), ['Lead Email']);
+});
+
+test('collectLeadsFromRows_ with no name column (nameIdx -1) leaves the lead\'s name blank rather than picking up an unrelated column — this is what fixes the Reply Tracker bug at the source', () => {
+  const values = [
+    ['From', 'Lead Email'],
+    ["'Joana Peixe' via Network <network@ardorseo.com>", 'realagent@example.com']
+  ];
+  const leads = gas.collectLeadsFromRows_(values, -1, 1, 'Reply Tracker');
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].name, '');
+  assert.equal(leads[0].email, 'realagent@example.com');
+});
+

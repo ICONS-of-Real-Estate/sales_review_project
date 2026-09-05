@@ -80,10 +80,21 @@ var LEAD_RECONCILIATION_SOURCES = [
     emailColumns: ['Email']
   },
   {
+    // Real bug found live (05/09/2026): 'From' is NOT the prospect's name —
+    // Phase8_ReplyTracker.gs:237 documents it as the raw From header of the
+    // last message actually FROM the outreach relay/forward address (e.g.
+    // "'Joana Peixe' via Network" <network@ardorseo.com>), the SAME text on
+    // nearly every row regardless of who the real lead is. Treating it as a
+    // name meant ~470 distinct real leads (correctly split apart by their
+    // genuinely-distinct Lead Email) all searched GHL for that identical
+    // garbage string instead of by their own email, and the review sheets
+    // showed that same unreadable text as every one of their "Name" cells.
+    // No column in this tab actually holds the prospect's real name — email
+    // only.
     label: 'Reply Tracker',
     spreadsheetId: null,
     tabName: 'Reply Tracker',
-    nameColumns: ['From'],
+    nameColumns: [],
     emailColumns: ['Lead Email']
   },
   {
@@ -492,7 +503,11 @@ function previewLeadReconciliation_() {
       continue;
     }
 
-    var query = lead.name || lead.email;
+    // Email first, not name: email is an exact key, name is fuzzy text
+    // search — and the Reply Tracker bug above is exactly what happens when
+    // a source's "name" isn't trustworthy. Falls back to name when there's
+    // no email at all (most Sales Call Log rows, GHL_PIPELINE_MAP.md §D).
+    var query = lead.email || lead.name;
     var search = ghlSearchContactByName_(locationId, query);
     if (!search.ok) {
       log_('  GHL search FAILED for "' + query + '": HTTP ' + search.status + ' — ' +
