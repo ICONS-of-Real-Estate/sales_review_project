@@ -54,11 +54,28 @@ var CRM_ORGANIZATION_REVIEW_CONFIG = {
  * "Bruno, Simon and Ty are old sales reps") — historical, not live, but a
  * KNOWN identity, not an open question. Anything else found on a live
  * opportunity is genuinely unidentified.
+ *
+ * The team's full GHL display names, confirmed by Kris (06/09/2026: "Bens
+ * Olano / Sean Church / Joana Peixe / Tomas Fonseca — are their full
+ * names"), are listed explicitly too — an exact match on a confirmed real
+ * identity, rather than relying only on ghlAssigneeNameMatchesKnownRep_'s
+ * first-name-token fallback (which would also match a different person who
+ * happens to share a first name). This is also the only place Tomás is
+ * known at all: he's deliberately not in CONFIG.REPS (trainer/closer, not
+ * a scored rep — see Phase1_ComplianceCheck.gs), so without this he'd show
+ * up as "unrecognized" on every opportunity he closes. Both the accented
+ * ("Tomás") and plain ("Tomas") spellings are listed since normalize_
+ * (Phase1_ComplianceCheck.gs) strips the accent to a space rather than
+ * folding it to a plain "a" — "Tomás" and "Tomas" normalize to DIFFERENT
+ * strings, and which spelling GHL itself stores isn't known.
  */
 function knownGhlAssigneeNames_() {
   var known = {};
   CONFIG.REPS.forEach(function (r) { known[normalize_(r.name)] = true; });
   ['Bruno', 'Simon', 'Ty'].forEach(function (n) { known[normalize_(n)] = true; });
+  ['Bens Olano', 'Sean Church', 'Joana Peixe', 'Tomas Fonseca', 'Tomás Fonseca', 'Tomás'].forEach(function (n) {
+    known[normalize_(n)] = true;
+  });
   return known;
 }
 

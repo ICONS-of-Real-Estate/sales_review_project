@@ -82,6 +82,13 @@ Claude cannot run these steps itself — say so and tell the user to run them.
 
 ## Who does what — never guess this again
 
+**Full names, confirmed by Kris 06/09/2026** (GHL resolves a fuller display
+name than `CONFIG.REPS`'s first-name-only entries — this is what
+`knownGhlAssigneeNames_` in `Phase15_CrmOrganizationReview.gs` checks
+against): Bens = **Bens Olano**, Sean = **Sean Church**, Joana = **Joana
+Peixe**, Tomás = **Tomás Fonseca** (also spelled "Tomas Fonseca" without the
+accent in some places).
+
 **Bens does NOT take Sales Calls.** His job is ICONS 100 (the podcast) and
 QCs (Qualification Calls) only. Kris has had to correct this more than
 once — do not re-derive it from column names or infer it from a tracker,

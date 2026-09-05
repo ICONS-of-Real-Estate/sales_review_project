@@ -7455,6 +7455,21 @@ test('classifyUnknownAssignees_ treats an ID the lookup cannot resolve at all as
   assert.equal(unknown[0].name, 'someUserId');
 });
 
+test('knownGhlAssigneeNames_ includes the team\'s confirmed full GHL display names (Kris, 06/09/2026) — including Tomás, who is never in CONFIG.REPS since he\'s the trainer/closer, not a scored rep', () => {
+  const known = gas.knownGhlAssigneeNames_();
+  ['Bens Olano', 'Sean Church', 'Joana Peixe', 'Tomas Fonseca', 'Tomás Fonseca'].forEach((fullName) => {
+    assert.equal(known[gas.normalize_(fullName)], true, fullName + ' should be a known assignee');
+  });
+});
+
+test('classifyUnknownAssignees_ excludes Tomás by his confirmed full name even though he is never in CONFIG.REPS', () => {
+  const knownNames = gas.knownGhlAssigneeNames_();
+  const unknown = gas.classifyUnknownAssignees_(
+    { tomasUserId: 12 }, knownNames, { tomasUserId: 'Tomás Fonseca' }
+  );
+  assert.equal(unknown.length, 0);
+});
+
 test('classifyUnknownAssignees_ sorts unrecognized assignees by open-opportunity count, most first', () => {
   const lookup = { SC: 'Some Company', JP: 'John Public', BO: 'Bea Otherperson' };
   const unknown = gas.classifyUnknownAssignees_({ 'SC': 3, 'JP': 14, 'BO': 8 }, {}, lookup);
