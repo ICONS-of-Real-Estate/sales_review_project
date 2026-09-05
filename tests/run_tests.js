@@ -7464,3 +7464,38 @@ test('nextCrmOrganizationReviewWriteRow_ returns row 2 for a brand-new sheet wit
   assert.equal(gas.nextCrmOrganizationReviewWriteRow_({ getLastRow: () => 1 }), 2);
 });
 
+// ---------------------------------------------------------------------------
+// Real bug found live (06/09/2026): "Unrecognized assignee" findings showed
+// raw GHL user IDs ("j3B1N9nwTDvgLyLgbcjI") instead of a name — useless for
+// Tomás to act on without looking each one up himself. buildGhlUserNameLookup_
+// / resolveGhlAssigneeLabel_ resolve IDs against a fetched user list instead.
+// ---------------------------------------------------------------------------
+
+test('buildGhlUserNameLookup_ maps user ID to a display name, preferring name, then first+last, then email', () => {
+  const lookup = gas.buildGhlUserNameLookup_([
+    { id: 'u1', name: 'Sean Church' },
+    { id: 'u2', firstName: 'Joana', lastName: 'Peixe' },
+    { id: 'u3', email: 'tomas@iconsofrealestate.com' },
+    { id: 'u4' } // no usable name at all — should not appear in the lookup
+  ]);
+  assert.equal(lookup.u1, 'Sean Church');
+  assert.equal(lookup.u2, 'Joana Peixe');
+  assert.equal(lookup.u3, 'tomas@iconsofrealestate.com');
+  assert.equal(lookup.u4, undefined);
+});
+
+test('buildGhlUserNameLookup_ returns an empty lookup for null/empty input rather than throwing — the fetch failed (missing scope) case', () => {
+  assert.equal(Object.keys(gas.buildGhlUserNameLookup_(null)).length, 0);
+  assert.equal(Object.keys(gas.buildGhlUserNameLookup_([])).length, 0);
+});
+
+test('resolveGhlAssigneeLabel_ resolves a known ID to "Name (id)"', () => {
+  const lookup = { j3B1N9nwTDvgLyLgbcjI: 'Sean Church' };
+  assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', lookup), 'Sean Church (j3B1N9nwTDvgLyLgbcjI)');
+});
+
+test('resolveGhlAssigneeLabel_ falls back to a clearly-labeled raw ID when the lookup has nothing for it (missing scope, or a user GHL didn\'t return)', () => {
+  assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', {}), 'Unknown user (j3B1N9nwTDvgLyLgbcjI)');
+  assert.equal(gas.resolveGhlAssigneeLabel_('j3B1N9nwTDvgLyLgbcjI', null), 'Unknown user (j3B1N9nwTDvgLyLgbcjI)');
+});
+

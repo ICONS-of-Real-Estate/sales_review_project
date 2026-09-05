@@ -106,6 +106,51 @@ function classifyUnknownAssignees_(assigneeCounts, knownNames) {
   return unknown.sort(function (a, b) { return b.count - a.count; });
 }
 
+/**
+ * Real bug found live (06/09/2026): "Unrecognized assignee" findings showed
+ * raw GHL user IDs ("j3B1N9nwTDvgLyLgbcjI") instead of a name — GHL
+ * opportunities carry `assignedTo` as a user ID, never a name, and this file
+ * never resolved it. Useless for Tomás to act on: he can't tell who
+ * "j3B1N9nwTDvgLyLgbcjI" is without going and looking it up himself, which
+ * defeats the point of a quick-approve review. Fetches every user on the
+ * location ONCE per run (GET /users/?locationId=..., read-only, same
+ * self-diagnosing contract as fetchGhlPipelines_ in Phase9_GhlSync.gs) and
+ * resolves IDs against that, instead of a per-ID call per finding.
+ */
+function fetchGhlLocationUsers_(locationId) {
+  var path = '/users/?locationId=' + encodeURIComponent(locationId);
+  var res = ghlApiGet_(path);
+
+  if (res.status !== 200) {
+    log_('Could not fetch GHL users (HTTP ' + res.status + ') — unrecognized-assignee findings will ' +
+      'show raw IDs instead of names this run. Response body (first 500 chars): ' + String(res.body).slice(0, 500));
+    log_('401/403 usually means the Private Integration token is missing the Users read scope ' +
+      '("View Users" / users.readonly) — add it in GHL Settings -> Private Integrations, same place ' +
+      'Custom Fields/Objects scopes were added 05/09/2026.');
+    return null;
+  }
+
+  var users = (res.json && (res.json.users || res.json.data)) || [];
+  return users;
+}
+
+/** Pure. userId -> display name, built fresh from the live user list every call. */
+function buildGhlUserNameLookup_(users) {
+  var lookup = {};
+  (users || []).forEach(function (u) {
+    if (!u || !u.id) return;
+    var name = (u.name || ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '');
+    if (name) lookup[u.id] = name;
+  });
+  return lookup;
+}
+
+/** Pure. Resolves one assignee ID to a human name, falling back to a clearly-labeled ID when the lookup has nothing (missing scope, or a user GHL itself doesn't return, e.g. a deactivated one). */
+function resolveGhlAssigneeLabel_(assigneeId, userNameLookup) {
+  var name = userNameLookup && userNameLookup[assigneeId];
+  return name ? (name + ' (' + assigneeId + ')') : ('Unknown user (' + assigneeId + ')');
+}
+
 var CRM_ORGANIZATION_REVIEW_SHEET_NAME_ = 'CRM Organization Review';
 var CRM_ORGANIZATION_REVIEW_HEADERS_ = [
   'Timestamp', 'Category', 'Finding', 'Evidence', 'Suggested Action', 'Approve', 'Reject'
@@ -193,6 +238,7 @@ function previewCrmOrganizationReview_() {
   }
 
   var unknownAssignees = classifyUnknownAssignees_(assigneeCounts, knownNames);
+  var userNameLookup = buildGhlUserNameLookup_(fetchGhlLocationUsers_(locationId));
 
   log_('Pipelines checked: ' + pipelines.length + '. ' + pipelineFindings.length +
     ' look potentially abandoned. ' + unknownAssignees.length + ' unrecognized assignee(s) found.');
@@ -215,8 +261,8 @@ function previewCrmOrganizationReview_() {
   unknownAssignees.forEach(function (a) {
     newRows.push([
       new Date(), 'Unrecognized assignee',
-      '"' + a.name + '" is assigned ' + a.count + ' open opportunity(ies) but is not in CONFIG.REPS ' +
-        'or the known-old-reps list (Bruno/Simon/Ty)',
+      resolveGhlAssigneeLabel_(a.name, userNameLookup) + ' is assigned ' + a.count +
+        ' open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
       'Found on live, non-terminal opportunities across the pipelines scanned this run.',
       'Confirm who this is and whether their calls should be scored (GHL_PIPELINE_MAP.md §C, still open).',
       false, false
