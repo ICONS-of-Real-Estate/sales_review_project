@@ -5973,6 +5973,30 @@ test('buildGhlReviewNoteBody_ shows "(not scored)" for a blank score rather than
   assert.ok(body.indexOf('Call Quality Score: (not scored)') !== -1);
 });
 
+test('buildGhlReviewNoteBody_ formats a real Date callDate in CONFIG.BUSINESS_TIMEZONE as dd/MM/yyyy (real bug: raw Date.toString() leaked the Apps Script project\'s own timezone into a live, team-visible GHL note)', () => {
+  const originalUtilities = gas.Utilities;
+  gas.Utilities = { formatDate: realFormatDate };
+  try {
+    // A moment that renders as a DIFFERENT calendar day in the Apps Script
+    // project's own default timezone (Indochina Time, UTC+7) than in
+    // CONFIG.BUSINESS_TIMEZONE ('America/New_York') — this is exactly the
+    // live bug: the note showed "Wed Jan 21 2026 12:00:00 GMT+0700
+    // (Indochina Time)" (Date.toString()'s default rendering) instead of a
+    // clean business-timezone date.
+    const callDate = new gas.Date(Date.UTC(2026, 0, 21, 0, 30)); // 2026-01-21 00:30 UTC
+    const body = gas.buildGhlReviewNoteBody_({
+      callDate: callDate, callType: 'Sales Call', rep: 'Sean',
+      leadQualityVerdict: 'Qualified', callQualityScore: 4,
+      aiFeedbackSummary: '', transcriptUrl: ''
+    });
+    assert.ok(body.indexOf('GMT') === -1);
+    assert.ok(body.indexOf('Indochina') === -1);
+    assert.ok(body.indexOf('20/01/2026') !== -1); // still 20 Jan in America/New_York (UTC-5)
+  } finally {
+    gas.Utilities = originalUtilities;
+  }
+});
+
 function withMockedGhlNoteSyncPlan_(mocks, fn) {
   const originals = {
     SpreadsheetApp: gas.SpreadsheetApp,

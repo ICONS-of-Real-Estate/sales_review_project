@@ -84,6 +84,25 @@ function logGhlNoteSyncEntry_(row, prospectName, contactId, noteId) {
 var GHL_NOTE_SYNC_TIME_BUDGET_MS_ = 5 * 60 * 1000;
 
 /**
+ * Log-display-and-now-live-note-display formatter. Real bug found live
+ * (05/09/2026): a Date's default toString() (what plain string
+ * concatenation/escapeHtml_ produces) renders in the Apps Script PROJECT's
+ * own default timezone, not CONFIG.BUSINESS_TIMEZONE — the first live GHL
+ * note posted read "Wed Jan 21 2026 12:00:00 GMT+0700 (Indochina Time)"
+ * for a US business, baked directly into a note Tomás/the team will
+ * actually read in the CRM. Same class of bug already fixed once for the
+ * Bens podcast sync's preview LOG line (formatBensSyncDateForLog_,
+ * Phase11_BensPodcastSync.gs) — that fix never covered this call site
+ * since it's a different phase's note body, not a log line.
+ */
+function formatCallDateForGhlNote_(v) {
+  if (v instanceof Date && !isNaN(v)) {
+    return Utilities.formatDate(v, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
+  }
+  return String(v || '(no date)');
+}
+
+/**
  * Pure — builds one call's review note body from already-scored row data.
  * Testable without a real sheet, GHL, or SpreadsheetApp. HTML-escapes the
  * free-text feedback summary (escapeHtml_, Phase4_InboxSLA.gs) since GHL
@@ -94,7 +113,7 @@ function buildGhlReviewNoteBody_(rowData) {
   var scoreLabel = (rowData.callQualityScore === '' || rowData.callQualityScore === null || rowData.callQualityScore === undefined)
     ? '(not scored)' : (rowData.callQualityScore + '/5');
   var lines = [];
-  lines.push('<p><strong>AI Call Review</strong> — ' + escapeHtml_(rowData.callDate || '(no date)') +
+  lines.push('<p><strong>AI Call Review</strong> — ' + escapeHtml_(formatCallDateForGhlNote_(rowData.callDate)) +
     ' — ' + escapeHtml_(rowData.callType || '(no call type)') + ' (' + escapeHtml_(rowData.rep || '(no rep)') + ')</p>');
   lines.push('<p>Lead Quality: ' + escapeHtml_(rowData.leadQualityVerdict || '(not scored)') +
     ' | Call Quality Score: ' + scoreLabel + '</p>');
