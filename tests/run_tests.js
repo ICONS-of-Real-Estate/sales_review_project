@@ -7408,26 +7408,61 @@ test('classifyPipelineStageConcentration_ returns null when total opportunities 
   assert.equal(gas.classifyPipelineStageConcentration_('Tiny Pipeline', stageCounts, config), null);
 });
 
-test('classifyUnknownAssignees_ excludes CONFIG.REPS and the known-old-reps list (Bruno/Simon/Ty), flagging only genuinely unrecognized names', () => {
+test('ghlAssigneeNameMatchesKnownRep_ matches a full GHL display name against a first-name-only known rep — real bug found live 06/09/2026: "Sean Church" was flagged unrecognized because CONFIG.REPS only stores "Sean"', () => {
+  const knownNames = { sean: true };
+  assert.equal(gas.ghlAssigneeNameMatchesKnownRep_('Sean Church', knownNames), true);
+  assert.equal(gas.ghlAssigneeNameMatchesKnownRep_('Sean', knownNames), true);
+});
+
+test('ghlAssigneeNameMatchesKnownRep_ returns false for a genuinely different name', () => {
+  assert.equal(gas.ghlAssigneeNameMatchesKnownRep_('Amanda Arambulo', { sean: true, joana: true }), false);
+});
+
+test('ghlAssigneeNameMatchesKnownRep_ returns false for blank input', () => {
+  assert.equal(gas.ghlAssigneeNameMatchesKnownRep_('', { sean: true }), false);
+  assert.equal(gas.ghlAssigneeNameMatchesKnownRep_(null, { sean: true }), false);
+});
+
+// ---------------------------------------------------------------------------
+// Real bug found live (06/09/2026): assigneeCounts is keyed by the raw GHL
+// USER ID (opp.assignedTo — never a name; that's why this file's whole
+// ID->name resolution exists), but classifyUnknownAssignees_ used to compare
+// that raw ID directly against knownNames (real rep NAMES) — which can never
+// match, so every single assignee on every pipeline was flagged as
+// "unrecognized," including actual team members like Sean and Joana.
+// Fixed by requiring a userNameLookup (id -> name) and checking the RESOLVED
+// name against knownNames instead.
+// ---------------------------------------------------------------------------
+
+test('classifyUnknownAssignees_ excludes a real rep once their ID resolves to their (fuller) GHL display name', () => {
   const knownNames = gas.knownGhlAssigneeNames_();
-  const repName = gas.CONFIG.REPS[0].name;
-  const assigneeCounts = {};
-  assigneeCounts[repName] = 5;
-  assigneeCounts['Bruno'] = 2;
-  assigneeCounts['KD'] = 14;
-  const unknown = gas.classifyUnknownAssignees_(assigneeCounts, knownNames);
+  const repName = gas.CONFIG.REPS[0].name; // e.g. 'Bens', 'Joana', or 'Sean' — first name only
+  const assigneeCounts = { repUserId123: 5, oldRepUserId: 2, unknownUserId: 14 };
+  const userNameLookup = {
+    repUserId123: repName + ' Somebody', // simulates GHL's fuller display name
+    oldRepUserId: 'Bruno',
+    unknownUserId: 'Amanda Arambulo'
+  };
+  const unknown = gas.classifyUnknownAssignees_(assigneeCounts, knownNames, userNameLookup);
   assert.equal(unknown.length, 1);
-  assert.equal(unknown[0].name, 'KD');
+  assert.equal(unknown[0].name, 'unknownUserId');
   assert.equal(unknown[0].count, 14);
 });
 
+test('classifyUnknownAssignees_ treats an ID the lookup cannot resolve at all as unrecognized, not silently excluded', () => {
+  const unknown = gas.classifyUnknownAssignees_({ someUserId: 3 }, gas.knownGhlAssigneeNames_(), {});
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].name, 'someUserId');
+});
+
 test('classifyUnknownAssignees_ sorts unrecognized assignees by open-opportunity count, most first', () => {
-  const unknown = gas.classifyUnknownAssignees_({ 'SC': 3, 'JP': 14, 'BO': 8 }, {});
+  const lookup = { SC: 'Some Company', JP: 'John Public', BO: 'Bea Otherperson' };
+  const unknown = gas.classifyUnknownAssignees_({ 'SC': 3, 'JP': 14, 'BO': 8 }, {}, lookup);
   assert.equal(Array.from(unknown).map((a) => a.name).join(','), 'JP,BO,SC');
 });
 
 test('classifyUnknownAssignees_ skips blank/whitespace-only assignee values', () => {
-  const unknown = gas.classifyUnknownAssignees_({ '': 4, '   ': 2, 'KD': 1 }, {});
+  const unknown = gas.classifyUnknownAssignees_({ '': 4, '   ': 2, 'KD': 1 }, {}, {});
   assert.equal(unknown.length, 1);
   assert.equal(unknown[0].name, 'KD');
   assert.equal(unknown[0].count, 1);

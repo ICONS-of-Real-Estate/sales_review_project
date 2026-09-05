@@ -90,18 +90,55 @@ function classifyPipelineStageConcentration_(pipelineName, stageCounts, config) 
 }
 
 /**
- * Pure. Splits a list of raw assignee values into known vs. unrecognized,
- * with a count of how many open opportunities each unrecognized one carries
- * — so "who is KD?" comes with "and they have 14 open deals," not just a
- * bare name.
+ * Pure. True when `candidateName`'s normalized text either exactly matches
+ * a known name, or has it as one whitespace-separated token. Real bug found
+ * live (06/09/2026): CONFIG.REPS stores first names only ('Sean', 'Joana',
+ * 'Bens'), but a GHL opportunity's assignee resolves to a full display name
+ * ('Sean Church') — an exact-string comparison meant a real rep with a GHL
+ * last name could NEVER match, so "Unrecognized assignee" was flagging
+ * actual team members (Sean, Joana) as unknown. Token matching fixes that;
+ * the accepted tradeoff (documented, not accidental) is that a genuinely
+ * different person who happens to share a first name with a known rep
+ * (e.g. a different "Sean") would also be excluded — acceptable at this
+ * team's size, and still just advisory (Tomás reviews the result either way).
  */
-function classifyUnknownAssignees_(assigneeCounts, knownNames) {
+function ghlAssigneeNameMatchesKnownRep_(candidateName, knownNames) {
+  var normalized = normalize_(candidateName);
+  if (!normalized) return false;
+  if (knownNames[normalized]) return true;
+  var tokens = normalized.split(' ');
+  for (var i = 0; i < tokens.length; i++) {
+    if (knownNames[tokens[i]]) return true;
+  }
+  return false;
+}
+
+/**
+ * Pure. Splits a list of raw assignee IDs into known vs. unrecognized, with
+ * a count of how many open opportunities each unrecognized one carries —
+ * so "who is this?" comes with "and they have 14 open deals," not just a
+ * bare ID.
+ *
+ * Real bug found live (06/09/2026): `assigneeCounts` is keyed by the GHL
+ * user ID (that's literally why this file's ID->name resolution exists at
+ * all — GHL opportunities never carry a name), but this used to compare
+ * the raw ID string directly against `knownNames` (real names) — which can
+ * never match, so EVERY assignee on EVERY pipeline was flagged as
+ * "unrecognized," including every real rep. `userNameLookup` (the same
+ * id->name map fetchGhlLocationUsers_/buildGhlUserNameLookup_ already
+ * build) is now required so the known-rep check happens against the
+ * actual resolved name, not the ID it's stored under. An ID the lookup
+ * can't resolve at all is conservatively treated as unrecognized (nothing
+ * to compare against known names with) rather than silently excluded.
+ */
+function classifyUnknownAssignees_(assigneeCounts, knownNames, userNameLookup) {
   var unknown = [];
-  Object.keys(assigneeCounts).forEach(function (raw) {
-    var trimmed = String(raw || '').trim();
+  Object.keys(assigneeCounts).forEach(function (id) {
+    var trimmed = String(id || '').trim();
     if (!trimmed) return;
-    if (knownNames[normalize_(trimmed)]) return;
-    unknown.push({ name: trimmed, count: assigneeCounts[raw] });
+    var resolvedName = userNameLookup && userNameLookup[trimmed];
+    if (resolvedName && ghlAssigneeNameMatchesKnownRep_(resolvedName, knownNames)) return;
+    unknown.push({ name: trimmed, count: assigneeCounts[id] });
   });
   return unknown.sort(function (a, b) { return b.count - a.count; });
 }
@@ -246,8 +283,11 @@ function previewCrmOrganizationReview_() {
     if (concentration) pipelineFindings.push(concentration);
   }
 
-  var unknownAssignees = classifyUnknownAssignees_(assigneeCounts, knownNames);
+  // Must be fetched BEFORE classifying — see classifyUnknownAssignees_'s own
+  // comment for the real bug this ordering fixes (comparing raw IDs against
+  // known REP NAMES could never exclude anyone, real reps included).
   var userNameLookup = buildGhlUserNameLookup_(fetchGhlLocationUsers_(locationId));
+  var unknownAssignees = classifyUnknownAssignees_(assigneeCounts, knownNames, userNameLookup);
 
   log_('Pipelines checked: ' + pipelines.length + '. ' + pipelineFindings.length +
     ' look potentially abandoned. ' + unknownAssignees.length + ' unrecognized assignee(s) found.');
