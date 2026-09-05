@@ -109,9 +109,12 @@ Concretely, this means:
   `Call Type: Icons 100 Recording` rows — `Outcome Logged` true, `Outcome
   Disposition` deliberately left blank (confirmed with Tomás: outcome is
   the closer's job, not Bens's). Gated behind
-  `BENS_PODCAST_SYNC_CONFIG.ENABLED` (false by default) — still needs a
-  `previewBensPodcastSync()` run reviewed and the flag flipped before it's
-  live. Original bug description, kept for history: `sheetName:
+  `BENS_PODCAST_SYNC_CONFIG.ENABLED`, which is **`true` and live** — flipped
+  04/09/2026, and `installGhlNoteSyncTrigger`/`installAllReadyTriggers` has
+  it running daily at 07:00 America/New_York, appending real rows. (This
+  paragraph said "false by default, still needs a preview run reviewed"
+  until 05/09/2026; that was stale — treat this sync as production
+  behaviour.) Original bug description, kept for history: `sheetName:
   'Sales Call Log'` but `columns.outcomeLogged`/`callDate`/`prospectName`
   fallback lists (`'Recording Done'`, `'Recording Date'`, `'Booking
   Date'`, `'Name'`) were real headers from HIS tracker tab, not from
