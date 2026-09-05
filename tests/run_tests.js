@@ -6818,3 +6818,93 @@ test('readExistingGhlStageTriageOpportunityIds_ filters out blank/checkbox-paddi
   const ids = gas.readExistingGhlStageTriageOpportunityIds_(fakeSheet);
   assert.deepEqual(Array.from(ids), ['opp-real']);
 });
+
+test('classifyReconciliationNoise_ flags the outreach tool\'s own sender address as noise, not a lead — the real pattern found live (05/09/2026): 300+ "not in GHL" hits were all network@ardorseo.com', () => {
+  const v = gas.classifyReconciliationNoise_({ name: "'Joana Peixe' via Network", email: 'network@ardorseo.com' });
+  assert.equal(v.isNoise, true);
+  assert.ok(/cold-outreach/.test(v.reason));
+});
+
+test('classifyReconciliationNoise_ flags an internal @iconsofrealestate.com address as noise (team member, not a lead)', () => {
+  assert.equal(gas.classifyReconciliationNoise_({ name: 'Sean Church', email: 'sean@iconsofrealestate.com' }).isNoise, true);
+});
+
+test('classifyReconciliationNoise_ flags known email-newsletter names and Zoom recording filenames that leaked into the Prospect Name column', () => {
+  assert.equal(gas.classifyReconciliationNoise_({ name: 'The Daily Skimm', email: '' }).isNoise, true);
+  assert.equal(gas.classifyReconciliationNoise_({ name: 'Entrepreneur Daily', email: '' }).isNoise, true);
+  assert.equal(gas.classifyReconciliationNoise_({ name: 'GMT20260822-005817_Recording_640x360', email: '' }).isNoise, true);
+  assert.equal(gas.classifyReconciliationNoise_({ name: "Joana's Transcriptions", email: '' }).isNoise, true);
+});
+
+test('classifyReconciliationNoise_ does NOT flag a real prospect name/email — this is advisory tagging, never a filter that could hide a real lead', () => {
+  const v = gas.classifyReconciliationNoise_({ name: 'Andrew Leitheiser', email: '' });
+  assert.equal(v.isNoise, false);
+  assert.equal(v.reason, '');
+});
+
+test('buildLeadReconciliationReviewRow_ ends every row in the same dedupe key dedupeReconciliationLeads_ uses, so a re-run can recognize an already-listed lead', () => {
+  const row = gas.buildLeadReconciliationReviewRow_({
+    lead: { name: 'Ward Frederick', email: 'ward@example.com', sources: ['Sales Call Log:111'] },
+    status: 'not_found', matches: []
+  });
+  assert.equal(row[row.length - 1], 'email:ward@example.com');
+  assert.equal(row[1], 'Ward Frederick');
+  assert.equal(row[3], 'not_found');
+});
+
+test('buildLeadReconciliationReviewRow_ falls back to a normalized-name key when there is no email, matching dedupeReconciliationLeads_\'s own fallback', () => {
+  const row = gas.buildLeadReconciliationReviewRow_({
+    lead: { name: 'Deme Mekras', email: '', sources: ['Sales Call Log:37'] }, status: 'not_found', matches: []
+  });
+  assert.equal(row[row.length - 1], 'name:deme mekras');
+});
+
+test('buildLeadReconciliationReviewRow_ tags the noise columns inline, so "All" and "Candidates" can be built from the exact same row shape', () => {
+  const row = gas.buildLeadReconciliationReviewRow_({
+    lead: { name: 'Sean Church', email: 'sean@iconsofrealestate.com', sources: ['Reply Tracker:12'] },
+    status: 'not_found', matches: []
+  });
+  assert.equal(row[5], true); // Likely Noise
+  assert.ok(row[6]); // Noise Reason non-empty
+});
+
+test('nextReconciliationReviewWriteRow_ and readExistingReconciliationReviewKeys_ use the Dedupe Key column (K), not sheet.getLastRow() alone — same fix as Phase14\'s checkbox bug, applied here before it could happen', () => {
+  const values = { 2: [''], 3: ['email:ward@example.com'], 4: [''] };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows) => {
+      assert.equal(col, 11);
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push([values[r] !== undefined ? values[r][0] : '']);
+      return { getValues: () => out };
+    }
+  };
+  assert.deepEqual(Array.from(gas.readExistingReconciliationReviewKeys_(fakeSheet)), ['email:ward@example.com']);
+  assert.equal(gas.nextReconciliationReviewWriteRow_(fakeSheet), 4);
+});
+
+test('writeLeadReconciliationReviewRows_ skips a result whose dedupe key is already on the sheet, so a re-run never duplicates a still-missing lead\'s row', () => {
+  const written = [];
+  let insertCheckboxesCalled = false;
+  const fakeSheet = {
+    getLastRow: () => 2, // header only, existing key check reads nothing
+    getRange: () => ({
+      getValues: () => [],
+      setValues: (rows) => { written.push(...rows); },
+      insertCheckboxes: () => { insertCheckboxesCalled = true; }
+    })
+  };
+  const originalSS = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => fakeSheet, insertSheet: () => fakeSheet }) };
+  try {
+    const results = [
+      { lead: { name: 'Ward Frederick', email: 'ward@example.com', sources: ['a'] }, status: 'not_found', matches: [] }
+    ];
+    const count = gas.writeLeadReconciliationReviewRows_('Lead Reconciliation - All', results, gas.buildLeadReconciliationReviewRow_);
+    assert.equal(count, 1);
+    assert.equal(written.length, 1);
+    assert.equal(insertCheckboxesCalled, true);
+  } finally {
+    gas.SpreadsheetApp = originalSS;
+  }
+});
