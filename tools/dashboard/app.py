@@ -1191,7 +1191,7 @@ def lead_related_calls(name):
     conn = get_conn()
     rows = conn.execute(
         "SELECT call_date, rep, call_type, outcome_disposition, call_quality_score, "
-        "ai_feedback_summary, transcript_url FROM sales_call_log "
+        "ai_feedback_summary, transcript_url, prospect_email FROM sales_call_log "
         "WHERE LOWER(TRIM(prospect_name)) = LOWER(TRIM(?))",
         (name,),
     ).fetchall()
@@ -1249,7 +1249,19 @@ def review_leads_page(request: Request, only_candidates: str = "1"):
     if cards:
         # Only the visible card needs its related calls looked up — no
         # point querying for the other 500 that aren't on screen yet.
-        cards[0]["related_calls"] = lead_related_calls(cards[0].get("name"))
+        related = lead_related_calls(cards[0].get("name"))
+        cards[0]["related_calls"] = related
+        # Kris, 06/09/2026: "Can you add more information like email... or
+        # what member of our team spoke with them when" — a lead's own
+        # Email column is often blank (that's part of why it's not_found),
+        # but the matching Sales Call Log row frequently has one anyway.
+        # Fall back to it rather than showing nothing when the lead itself
+        # doesn't carry an email.
+        if not cards[0].get("email"):
+            for c in related:
+                if c.get("prospect_email"):
+                    cards[0]["email"] = c["prospect_email"]
+                    break
     return render(
         request,
         "review.html",

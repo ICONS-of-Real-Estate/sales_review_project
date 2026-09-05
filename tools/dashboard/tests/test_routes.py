@@ -723,3 +723,23 @@ def test_review_leads_page_shows_fallback_message_when_no_related_call_found(cli
     conn.commit()
     resp = client.get("/review/leads")
     assert "No matching Sales Call Log entry found" in resp.text
+
+
+def test_review_leads_page_backfills_email_from_the_matching_call_when_the_lead_itself_has_none(client, db_path, conn):
+    """Kris, 06/09/2026: "Can you add more information like email..." — a
+    lead's own Email column is often blank (that's part of why it's
+    not_found), but the Sales Call Log row for the same name frequently has
+    one anyway."""
+    _insert_lead_row(conn, sheet_row=2, name="Lucy Quinones", email="")
+    insert_call(conn, prospect_name="Lucy Quinones", prospect_email="lucyqpa@gmail.com", rep="Sean")
+    conn.commit()
+    resp = client.get("/review/leads")
+    assert "lucyqpa@gmail.com" in resp.text
+
+
+def test_review_leads_page_does_not_override_a_lead_email_that_already_exists(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Lucy Quinones", email="original@example.com")
+    insert_call(conn, prospect_name="Lucy Quinones", prospect_email="different@example.com", rep="Sean")
+    conn.commit()
+    resp = client.get("/review/leads")
+    assert "original@example.com" in resp.text
