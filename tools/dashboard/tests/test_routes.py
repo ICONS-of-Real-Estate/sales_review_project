@@ -492,3 +492,177 @@ def test_review_decide_failure_message_is_html_escaped_and_visible(client, db_pa
     assert "&lt;permission denied&gt;" in resp.text
     assert "&amp;" in resp.text
     assert "<permission denied>" not in resp.text  # must never appear unescaped
+
+
+# ---------------------------------------------------------------------------
+# /review/history, /review/undo, /review/undo_all — Kris, 06/09/2026: "Add to
+# be able to review all the changes in the interface with an UNDO and UNDO
+# ALL button." Every decide writes a review_decisions_log row; undo clears
+# both sheet checkboxes and marks the log entry undone.
+# ---------------------------------------------------------------------------
+
+
+def test_review_decide_logs_the_decision(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, category="Pipeline health", finding="Cold Calling 2 stuck")
+    conn.commit()
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", lambda table, sheet_row, approve: None)
+
+    client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+    )
+
+    row = conn.execute(
+        "SELECT table_name, sheet_row, decision, label, undone FROM review_decisions_log"
+    ).fetchone()
+    assert row == ("crm_organization_review", 2, "approve", "Pipeline health: Cold Calling 2 stuck", 0)
+
+
+def test_review_decide_does_not_log_a_failed_write(client, db_path, conn, monkeypatch):
+    """A decision that never reached the sheet must not show up in history
+    as if it happened — that would make Undo lie about what it's undoing."""
+    _insert_crm_row(conn, sheet_row=2)
+    conn.commit()
+
+    def _boom(table, sheet_row, approve):
+        raise Exception("boom")
+
+    monkeypatch.setattr(app_module.sheets_write, "write_decision", _boom)
+    client.post(
+        "/review/decide",
+        data={"table": "crm_organization_review", "sheet_row": 2, "decision": "approve", "only_candidates": "1"},
+    )
+    count = conn.execute("SELECT COUNT(*) FROM review_decisions_log").fetchone()[0]
+    assert count == 0
+
+
+def test_review_history_page_renders_on_empty_db(client, db_path):
+    resp = client.get("/review/history")
+    assert resp.status_code == 200
+    assert "No decisions made yet" in resp.text
+
+
+def test_review_history_page_lists_logged_decisions(client, db_path, conn):
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)"
+    )
+    conn.commit()
+    resp = client.get("/review/history")
+    assert "Test finding" in resp.text
+    assert "kris@iconsofrealestate.com" in resp.text
+
+
+def test_review_undo_clears_sheet_and_mirror_and_marks_log_undone(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, approve=1, reject=0)
+    cur = conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)"
+    )
+    log_id = cur.lastrowid
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.sheets_write, "clear_decision",
+        lambda table, sheet_row: calls.append((table, sheet_row)),
+    )
+    resp = client.post("/review/undo", data={"log_id": log_id}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert calls == [("crm_organization_review", 2)]
+
+    mirror = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
+    assert mirror == (0, 0)
+    undone = conn.execute("SELECT undone FROM review_decisions_log WHERE id = ?", (log_id,)).fetchone()[0]
+    assert undone == 1
+
+
+def test_review_undo_already_undone_is_a_no_op(client, db_path, conn, monkeypatch):
+    cur = conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 1)"
+    )
+    log_id = cur.lastrowid
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(app_module.sheets_write, "clear_decision", lambda table, sheet_row: calls.append(1))
+    resp = client.post("/review/undo", data={"log_id": log_id}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert calls == []  # never even attempted a second sheet write
+
+
+def test_review_undo_failure_does_not_mark_the_log_entry_undone(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, approve=1, reject=0)
+    cur = conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES ('crm_organization_review', 2, 'approve', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)"
+    )
+    log_id = cur.lastrowid
+    conn.commit()
+
+    def _boom(table, sheet_row):
+        raise Exception("403 no permission")
+
+    monkeypatch.setattr(app_module.sheets_write, "clear_decision", _boom)
+    resp = client.post("/review/undo", data={"log_id": log_id})
+    assert resp.status_code == 500
+
+    undone = conn.execute("SELECT undone FROM review_decisions_log WHERE id = ?", (log_id,)).fetchone()[0]
+    assert undone == 0
+    mirror = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 2").fetchone()
+    assert mirror == (1, 0)  # untouched — the failed undo must not silently revert the mirror either
+
+
+def test_review_undo_all_reverts_every_active_decision(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, approve=1, reject=0)
+    _insert_crm_row(conn, sheet_row=3, approve=0, reject=1)
+    for sheet_row, decision in ((2, "approve"), (3, "reject")):
+        conn.execute(
+            "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+            "VALUES ('crm_organization_review', ?, ?, 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)",
+            (sheet_row, decision),
+        )
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.sheets_write, "clear_decision",
+        lambda table, sheet_row: calls.append((table, sheet_row)),
+    )
+    resp = client.post("/review/undo_all", follow_redirects=False)
+    assert resp.status_code == 303
+    assert sorted(calls) == [("crm_organization_review", 2), ("crm_organization_review", 3)]
+
+    rows = conn.execute("SELECT sheet_row, approve, reject FROM crm_organization_review ORDER BY sheet_row").fetchall()
+    assert rows == [(2, 0, 0), (3, 0, 0)]
+    undone_count = conn.execute("SELECT COUNT(*) FROM review_decisions_log WHERE undone = 1").fetchone()[0]
+    assert undone_count == 2
+
+
+def test_review_undo_all_reports_partial_failure_and_leaves_that_row_active(client, db_path, conn, monkeypatch):
+    _insert_crm_row(conn, sheet_row=2, approve=1, reject=0)
+    _insert_crm_row(conn, sheet_row=3, approve=1, reject=0)
+    for sheet_row in (2, 3):
+        conn.execute(
+            "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+            "VALUES ('crm_organization_review', ?, 'approve', 'Test finding', 'kris@iconsofrealestate.com', '2026-09-06T12:00:00', 0)",
+            (sheet_row,),
+        )
+    conn.commit()
+
+    def _flaky(table, sheet_row):
+        if sheet_row == 3:
+            raise Exception("boom")
+
+    monkeypatch.setattr(app_module.sheets_write, "clear_decision", _flaky)
+    resp = client.post("/review/undo_all", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "message=" in resp.headers["location"]
+
+    statuses = dict(conn.execute(
+        "SELECT sheet_row, undone FROM review_decisions_log ORDER BY sheet_row"
+    ).fetchall())
+    assert statuses == {2: 1, 3: 0}  # row 2 undone, row 3's failure left it active
+    row3 = conn.execute("SELECT approve, reject FROM crm_organization_review WHERE sheet_row = 3").fetchone()
+    assert row3 == (1, 0)  # untouched since its undo failed

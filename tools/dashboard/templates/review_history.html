@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Review History — Sales Review Dashboard{% endblock %}
+{% block content %}
+<h1>Review History</h1>
+<p class="muted">
+  Every Approve/Reject made through Review. Undo unticks both checkboxes on
+  the spreadsheet, putting that item back to undecided.
+</p>
+<p><a href="/review">&larr; Back to Review overview</a></p>
+
+{% if message %}<p class="review-history-message">{{ message }}</p>{% endif %}
+
+{% set pending = decisions | selectattr('undone', 'equalto', 0) | list %}
+{% if pending %}
+<form method="post" action="/review/undo_all">
+  <button type="submit" class="review-btn review-btn-red" style="max-width:260px; margin-bottom:1.5rem;"
+    onclick="return confirm('Undo all {{ pending|length }} active decision(s)? This reverts every Approve/Reject back to undecided.');">
+    Undo All ({{ pending|length }})
+  </button>
+</form>
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>When</th><th>By</th><th>Queue</th><th>Item</th><th>Decision</th><th>Status</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in decisions %}
+    <tr>
+      <td>{{ d.decided_at }}</td>
+      <td>{{ d.decided_by }}</td>
+      <td>{{ 'CRM' if d.table_name == 'crm_organization_review' else 'Lead' }}</td>
+      <td>{{ d.label }}</td>
+      <td>{{ 'Approve' if d.decision == 'approve' else 'Reject' }}</td>
+      <td>{{ 'Undone' if d.undone else 'Active' }}</td>
+      <td>
+        {% if not d.undone %}
+        <form method="post" action="/review/undo" style="display:inline;">
+          <input type="hidden" name="log_id" value="{{ d.id }}">
+          <button type="submit" class="review-undo-btn">Undo</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not decisions %}
+    <tr><td colspan="7" class="muted">No decisions made yet.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

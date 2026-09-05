@@ -370,6 +370,21 @@ def init_schema(conn):
             likely_noise INTEGER, noise_reason TEXT, ambiguous_matches TEXT,
             real_lead INTEGER, not_real_lead INTEGER, dedupe_key TEXT
         );
+        -- Kris, 06/09/2026: "Add to be able to review all the changes in
+        -- the interface with an UNDO and UNDO ALL button" — an audit trail
+        -- of every Approve/Reject made through /review, so /review/history
+        -- can show what happened and undo it. Deliberately NOT one of the
+        -- tables sync.py's main() refreshes from the Sheet every cycle
+        -- (see the `tabs` dict below) — this is dashboard-local history,
+        -- not sheet-derived data, and a full-refresh cycle must never wipe
+        -- it. `label` snapshots a human-readable description of what was
+        -- decided at decide-time, so history reads correctly even if the
+        -- underlying sheet row's own text later changes or the row is gone.
+        CREATE TABLE IF NOT EXISTS review_decisions_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name TEXT, sheet_row INTEGER, decision TEXT, label TEXT,
+            decided_by TEXT, decided_at TEXT, undone INTEGER DEFAULT 0
+        );
         """
     )
     # Migrate an already-existing database (see _add_column_if_missing) —

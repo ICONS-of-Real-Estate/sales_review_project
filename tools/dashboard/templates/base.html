@@ -90,6 +90,14 @@
     .review-toggle { margin-bottom: 1.25rem; font-size: 0.9rem; }
     .review-toggle a { margin-right: 1rem; }
     .review-toggle a.active { color: #e8ecf4; font-weight: 600; }
+    .review-history-message {
+      background: #161c2b; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;
+    }
+    .review-undo-btn {
+      background: #262c3d; color: #e8ecf4; border: none; border-radius: 6px;
+      padding: 0.35rem 0.8rem; cursor: pointer; font-size: 0.85rem;
+    }
+    .review-undo-btn:hover { background: #333b52; }
   </style>
 </head>
 <body>
@@ -100,6 +108,7 @@
       <a href="/training" class="{{ 'active' if active_page == 'training' else '' }}">Training</a>
       <a href="/queue" class="{{ 'active' if active_page == 'queue' else '' }}">Review queue</a>
       <a href="/review" class="{{ 'active' if active_page == 'review' else '' }}">Review</a>
+      <a href="/review/history">History</a>
       <a href="/calls" class="{{ 'active' if active_page == 'calls' else '' }}">Calls</a>
     </div>
     {% if user_email %}

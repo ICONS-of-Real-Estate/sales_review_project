@@ -18,6 +18,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -1241,6 +1242,25 @@ _REVIEW_TABLE_INFO = {
 }
 
 
+def _review_row_label(conn, table, sheet_row):
+    """A human-readable one-liner for review_decisions_log, snapshotted at
+    decide-time (see that table's own comment in sync.py for why)."""
+    if table == "crm_organization_review":
+        row = conn.execute(
+            "SELECT category, finding FROM crm_organization_review WHERE sheet_row = ?", (sheet_row,)
+        ).fetchone()
+        return f"{row[0]}: {row[1]}" if row else f"(CRM row {sheet_row})"
+    if table == "lead_reconciliation":
+        row = conn.execute(
+            "SELECT name, email FROM lead_reconciliation WHERE sheet_row = ?", (sheet_row,)
+        ).fetchone()
+        if not row:
+            return f"(lead row {sheet_row})"
+        name = row[0] or "(no name)"
+        return f"{name} — {row[1]}" if row[1] else name
+    return f"(row {sheet_row})"
+
+
 @app.post("/review/decide")
 def review_decide(
     request: Request,
@@ -1255,9 +1275,14 @@ def review_decide(
 
     back_url = info["back_url"] + (f"?only_candidates={only_candidates}" if table == "lead_reconciliation" else "")
     approve = decision == "approve"
+
+    conn = get_conn()
+    label = _review_row_label(conn, table, sheet_row)
+
     try:
         sheets_write.write_decision(table, sheet_row, approve)
     except Exception as e:
+        conn.close()
         # Surface the failure to whoever clicked the button rather than
         # silently pretending it worked — a swallowed exception here means
         # Tomás's decision never actually reached the spreadsheet, the one
@@ -1279,15 +1304,123 @@ def review_decide(
     # Update the local mirror immediately too, so this row doesn't reappear
     # in the queue for the next click — sync.py's next scheduled cycle will
     # overwrite this with the same values read back from the sheet anyway.
-    conn = get_conn()
     conn.execute(
         f"UPDATE {table} SET {info['approve_col']} = ?, {info['reject_col']} = ? WHERE sheet_row = ?",
         (int(approve), int(not approve), sheet_row),
+    )
+    # Kris, 06/09/2026: "Add to be able to review all the changes in the
+    # interface with an UNDO and UNDO ALL button" — every decision made
+    # through this route is logged so /review/history can show it and undo
+    # it later; see review_decisions_log's own comment in sync.py.
+    conn.execute(
+        "INSERT INTO review_decisions_log (table_name, sheet_row, decision, label, decided_by, decided_at, undone) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (table, sheet_row, decision, label, request.session.get("user_email") or "", datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
     conn.close()
 
     return RedirectResponse(url=back_url, status_code=303)
+
+
+def review_decisions_log_rows():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, table_name, sheet_row, decision, label, decided_by, decided_at, undone "
+        "FROM review_decisions_log ORDER BY decided_at DESC, id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/review/history", response_class=HTMLResponse)
+def review_history_page(request: Request, message: str = ""):
+    return render(
+        request,
+        "review_history.html",
+        {
+            "active_page": "review",
+            "freshness": freshness_status(),
+            "decisions": review_decisions_log_rows(),
+            "message": message,
+        },
+    )
+
+
+def _undo_one(conn, log_row):
+    """Undoes one logged decision: clears both sheet checkboxes, updates the
+    local mirror, and marks the log entry undone — in that order, so a
+    sheet-write failure (raised to the caller) leaves the log entry active
+    and the mirror untouched rather than claiming an undo that didn't
+    actually reach the spreadsheet."""
+    table = log_row["table_name"]
+    sheet_row = log_row["sheet_row"]
+    info = _REVIEW_TABLE_INFO[table]
+    sheets_write.clear_decision(table, sheet_row)
+    conn.execute(
+        f"UPDATE {table} SET {info['approve_col']} = 0, {info['reject_col']} = 0 WHERE sheet_row = ?",
+        (sheet_row,),
+    )
+    conn.execute("UPDATE review_decisions_log SET undone = 1 WHERE id = ?", (log_row["id"],))
+
+
+@app.post("/review/undo")
+def review_undo(request: Request, log_id: int = Form(...)):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, table_name, sheet_row, undone FROM review_decisions_log WHERE id = ?", (log_id,)
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return HTMLResponse(
+            "<p>No such decision.</p><p><a href='/review/history'>Back to history</a></p>", status_code=404
+        )
+    if row["undone"]:
+        conn.close()
+        return RedirectResponse(url="/review/history", status_code=303)
+
+    try:
+        _undo_one(conn, dict(row))
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return HTMLResponse(
+            f"<p>Could not undo that decision:</p>"
+            f"<pre style='white-space:pre-wrap;'>{html.escape(str(e))}</pre>"
+            f"<p><a href='/review/history'>Back to history</a></p>",
+            status_code=500,
+        )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/review/history", status_code=303)
+
+
+@app.post("/review/undo_all")
+def review_undo_all(request: Request):
+    conn = get_conn()
+    pending = conn.execute(
+        "SELECT id, table_name, sheet_row FROM review_decisions_log WHERE undone = 0"
+    ).fetchall()
+    undone_count = 0
+    failures = []
+    for row in pending:
+        row = dict(row)
+        try:
+            _undo_one(conn, row)
+            conn.commit()
+            undone_count += 1
+        except Exception as e:
+            conn.rollback()
+            failures.append(f"row {row['sheet_row']} ({row['table_name']}): {e}")
+    conn.close()
+
+    if failures:
+        message = f"Undid {undone_count} decision(s). {len(failures)} failed: " + "; ".join(failures[:5])
+        if len(failures) > 5:
+            message += f" ... and {len(failures) - 5} more"
+    else:
+        message = f"Undid {undone_count} decision(s)." if undone_count else "Nothing to undo."
+    return RedirectResponse(url=f"/review/history?message={quote(message)}", status_code=303)
 
 
 @app.get("/healthz")

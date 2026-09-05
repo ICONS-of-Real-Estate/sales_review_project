@@ -82,6 +82,19 @@ def write_decision(table, sheet_row, approve, service=None):
     swallowing it — app.py surfaces that to the person clicking the button
     instead of pretending the write succeeded when it didn't.
     """
+    _write_checkboxes(table, sheet_row, [approve, not approve], service=service)
+
+
+def clear_decision(table, sheet_row, service=None):
+    """Undoes a decision: unticks BOTH checkboxes on one row, putting it back
+    to "undecided" so it reappears in /review's queue. Used by /review/undo
+    and /review/undo_all (app.py) — see review_decisions_log's own comment
+    in sync.py for why an undo needs its own audit trail rather than just
+    re-deriving "undecided" from the sheet."""
+    _write_checkboxes(table, sheet_row, [False, False], service=service)
+
+
+def _write_checkboxes(table, sheet_row, values, service=None):
     if table not in DECISION_RANGES:
         raise ValueError(f"Unknown review table {table!r} — not in DECISION_RANGES.")
     spec = DECISION_RANGES[table]
@@ -91,5 +104,5 @@ def write_decision(table, sheet_row, approve, service=None):
         spreadsheetId=SHEET_ID,
         range=range_,
         valueInputOption="RAW",
-        body={"values": [[approve, not approve]]},
+        body={"values": [values]},
     ).execute()
