@@ -5970,7 +5970,19 @@ test('buildGhlReviewNoteBody_ escapes free-text feedback so an untrusted AI summ
 test('buildGhlReviewNoteBody_ shows "(not scored)" for a blank score rather than printing "undefined/5" or "null/5"', () => {
   const body = gas.buildGhlReviewNoteBody_({ callDate: '20/08/2026', callType: 'QC', rep: 'Bens', leadQualityVerdict: 'Qualified', callQualityScore: '', aiFeedbackSummary: '', transcriptUrl: '' });
   assert.ok(body.indexOf('(not scored)/5') === -1);
-  assert.ok(body.indexOf('Call Quality Score: (not scored)') !== -1);
+  assert.ok(body.indexOf('Call Quality Score:</strong> (not scored)') !== -1);
+});
+
+test('buildGhlReviewNoteBody_ uses <strong> + <br><br> (both confirmed live to render), never <p> or markdown asterisks (both confirmed live NOT to work: <p> gives no visual gap, and **/* show as literal asterisks — runGhlNoteFormattingTest_, 05/09/2026)', () => {
+  const body = gas.buildGhlReviewNoteBody_({
+    callDate: '20/08/2026', callType: 'Sales Call', rep: 'Sean',
+    leadQualityVerdict: 'Qualified', callQualityScore: 4,
+    aiFeedbackSummary: 'Handled objections well.', transcriptUrl: 'https://drive.google.com/x'
+  });
+  assert.ok(body.indexOf('<p>') === -1 && body.indexOf('</p>') === -1);
+  assert.ok(body.indexOf('<strong>') !== -1);
+  assert.ok(body.indexOf('<br><br>') !== -1);
+  assert.ok(body.indexOf('**') === -1);
 });
 
 test('buildGhlReviewNoteBody_ formats a real Date callDate in CONFIG.BUSINESS_TIMEZONE as dd/MM/yyyy (real bug: raw Date.toString() leaked the Apps Script project\'s own timezone into a live, team-visible GHL note)', () => {

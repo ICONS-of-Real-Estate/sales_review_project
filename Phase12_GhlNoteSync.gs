@@ -105,25 +105,31 @@ function formatCallDateForGhlNote_(v) {
 /**
  * Pure — builds one call's review note body from already-scored row data.
  * Testable without a real sheet, GHL, or SpreadsheetApp. HTML-escapes the
- * free-text feedback summary (escapeHtml_, Phase4_InboxSLA.gs) since GHL
- * notes render as rich text, same reasoning as every other htmlBody this
- * codebase builds.
+ * free-text feedback summary (escapeHtml_, Phase4_InboxSLA.gs).
+ *
+ * Formatting confirmed live against a real GHL note
+ * (runGhlNoteFormattingTest_, 05/09/2026): <strong> DOES render bold and
+ * <br><br> DOES render as a real blank-line gap — but <p>...</p> renders
+ * with NO visual gap at all (Kris's "more white space" ask), and markdown-
+ * style asterisks for bold/italic show up as literal asterisks, not
+ * formatting. So this uses <strong> for labels and joins sections with
+ * <br><br>, never <p>.
  */
 function buildGhlReviewNoteBody_(rowData) {
   var scoreLabel = (rowData.callQualityScore === '' || rowData.callQualityScore === null || rowData.callQualityScore === undefined)
     ? '(not scored)' : (rowData.callQualityScore + '/5');
   var lines = [];
-  lines.push('<p><strong>AI Call Review</strong> — ' + escapeHtml_(formatCallDateForGhlNote_(rowData.callDate)) +
-    ' — ' + escapeHtml_(rowData.callType || '(no call type)') + ' (' + escapeHtml_(rowData.rep || '(no rep)') + ')</p>');
-  lines.push('<p>Lead Quality: ' + escapeHtml_(rowData.leadQualityVerdict || '(not scored)') +
-    ' | Call Quality Score: ' + scoreLabel + '</p>');
+  lines.push('<strong>AI Call Review</strong> — ' + escapeHtml_(formatCallDateForGhlNote_(rowData.callDate)) +
+    ' — ' + escapeHtml_(rowData.callType || '(no call type)') + ' (' + escapeHtml_(rowData.rep || '(no rep)') + ')');
+  lines.push('<strong>Lead Quality:</strong> ' + escapeHtml_(rowData.leadQualityVerdict || '(not scored)') +
+    ' | <strong>Call Quality Score:</strong> ' + scoreLabel);
   if (rowData.aiFeedbackSummary) {
-    lines.push('<p>' + escapeHtml_(rowData.aiFeedbackSummary) + '</p>');
+    lines.push(escapeHtml_(rowData.aiFeedbackSummary));
   }
   if (rowData.transcriptUrl) {
-    lines.push('<p><a href="' + rowData.transcriptUrl + '">Transcript</a></p>');
+    lines.push('<a href="' + rowData.transcriptUrl + '">Transcript</a>');
   }
-  return lines.join('');
+  return lines.join('<br><br>');
 }
 
 /**
