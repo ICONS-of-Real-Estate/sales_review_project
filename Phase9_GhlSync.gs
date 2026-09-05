@@ -479,6 +479,25 @@ function ghlGetContactNotes_(contactId) {
   return { ok: true, notes: notes };
 }
 
+/**
+ * Every custom field DEFINITION this location has configured (id -> name/
+ * dataType/model), so a contact's raw customFields array (opaque IDs, no
+ * label — confirmed live 05/09/2026: "0XClDtZThQISxKsT9RYr" told us nothing
+ * on its own) can be reported with a human-readable name. Best-effort guess
+ * at endpoint/shape (GHL v2: GET /locations/{locationId}/customFields),
+ * same self-diagnosing contract as every other ghl*_ function here.
+ */
+function ghlGetLocationCustomFieldDefs_(locationId) {
+  var res = ghlApiGet_('/locations/' + encodeURIComponent(locationId) + '/customFields');
+  if (res.status !== 200) {
+    return { ok: false, status: res.status, body: res.body, url: res.url, defs: null };
+  }
+  var fields = (res.json && (res.json.customFields || res.json.fields || res.json.data)) || [];
+  var byId = {};
+  fields.forEach(function (f) { byId[f.id] = f; });
+  return { ok: true, defs: byId, raw: fields };
+}
+
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function previewGhlNotesAndCustomFields() {
   return previewGhlNotesAndCustomFields_();
@@ -512,32 +531,73 @@ function previewGhlNotesAndCustomFields_() {
     return;
   }
 
-  var sample = sampleSalesCallLogRows_(10); // small net across reps -- only need ONE confident match
+  // Real gap found live (05/09/2026): a contact's own customFields array is
+  // just {id, value} pairs with NO label — "0XClDtZThQISxKsT9RYr" tells a
+  // human nothing. The field DEFINITIONS (name/dataType) live at the
+  // location level, a separate call.
+  var fieldDefsRes = ghlGetLocationCustomFieldDefs_(locationId);
+  var fieldDefs = (fieldDefsRes.ok && fieldDefsRes.defs) || {};
+  if (!fieldDefsRes.ok) {
+    log_('GET /locations/{id}/customFields FAILED: HTTP ' + fieldDefsRes.status + ' — field names below ' +
+      'will show as raw opaque IDs instead. Body (first 500 chars): ' + String(fieldDefsRes.body).slice(0, 500));
+  } else {
+    log_(fieldDefsRes.raw.length + ' custom field DEFINITION(s) configured on this location (name : model : dataType):');
+    fieldDefsRes.raw.forEach(function (f) {
+      log_('   ' + f.id + '  "' + f.name + '"  (' + (f.model || 'contact') + ', ' + f.dataType + ')');
+    });
+    log_('   (Look for anything resembling call date/type/disposition above — if nothing does, new fields ' +
+      'need creating before this can replace those Sales Call Log columns.)');
+  }
+
+  var sample = sampleSalesCallLogRows_(10);
   if (!sample.length) { log_('No Sales Call Log rows found to sample.'); return; }
 
-  var contact = null, matchedName = null;
-  for (var i = 0; i < sample.length && !contact; i++) {
+  // Real gap in the first run of this probe (05/09/2026): it stopped at the
+  // FIRST confident contact match and that contact happened to have zero
+  // notes, which only proved the endpoint is real (HTTP 200) — not that
+  // read-back of REAL note content actually works. Now checks every
+  // confidently-matched contact in the sample and reports on the first one
+  // that actually has notes, so a real end-to-end read doesn't depend on
+  // Kris manually adding a throwaway note first.
+  var checked = [];
+  var firstFailure = null; // first non-200 .../notes response seen, kept in case nothing better turns up
+  var contactWithNotes = null, notesForThatContact = null, nameForThatContact = null;
+  for (var i = 0; i < sample.length; i++) {
     var search = ghlSearchContactByName_(locationId, sample[i].prospectName);
     if (!search.ok || !search.contacts.length) continue;
     var candidates = search.contacts.filter(function (c) { return contactNameLooksLikeQuery_(c, sample[i].prospectName); });
-    if (candidates.length === 1) {
-      contact = candidates[0];
-      matchedName = sample[i].prospectName;
+    if (candidates.length !== 1) continue;
+    var candidate = candidates[0];
+    checked.push(sample[i].prospectName);
+    var notesRes = ghlGetContactNotes_(candidate.id);
+    if (!notesRes.ok) {
+      if (!firstFailure) firstFailure = notesRes;
+      continue;
+    }
+    if (notesRes.notes.length) {
+      contactWithNotes = candidate;
+      notesForThatContact = notesRes.notes;
+      nameForThatContact = sample[i].prospectName;
+      break;
     }
   }
-  if (!contact) {
+
+  if (!checked.length) {
+    log_('');
     log_('Could not find a single confident contact match in a sample of ' + sample.length +
       ' rows to probe against — re-run previewGhlMatching() first to confirm matching works at all.');
     return;
   }
-  log_('Probing against "' + matchedName + '" -> GHL contact id=' + contact.id);
 
   log_('');
-  log_('--- Custom fields ---');
-  var full = ghlGetContact_(contact.id);
-  if (!full.ok) {
-    log_('GET /contacts/{id} FAILED: HTTP ' + full.status + '. Body (first 1000 chars): ' +
-      String(full.body).slice(0, 1000));
+  log_('--- Custom fields (on "' + checked[0] + '") ---');
+  var searchFirst = ghlSearchContactByName_(locationId, checked[0]);
+  var contactFirst = searchFirst.ok && searchFirst.contacts.filter(function (c) {
+    return contactNameLooksLikeQuery_(c, checked[0]);
+  })[0];
+  var full = contactFirst && ghlGetContact_(contactFirst.id);
+  if (!full || !full.ok) {
+    log_('GET /contacts/{id} FAILED' + (full ? (': HTTP ' + full.status + '. Body (first 1000 chars): ' + String(full.body).slice(0, 1000)) : '.'));
   } else if (!full.contact) {
     log_('GET /contacts/{id} returned 200 but no recognizable contact object. Raw body (first 1000 chars): ' +
       String(full.body || JSON.stringify(full)).slice(0, 1000));
@@ -549,25 +609,27 @@ function previewGhlNotesAndCustomFields_() {
     } else {
       log_(customFields.length + ' custom field(s) found on this contact:');
       customFields.forEach(function (f) {
-        log_('   ' + (f.name || f.key || f.id) + ' = ' + JSON.stringify(f.value));
+        var def = fieldDefs[f.id];
+        log_('   ' + (def ? def.name : f.id) + ' = ' + JSON.stringify(f.value));
       });
     }
   }
 
   log_('');
   log_('--- Notes ---');
-  var notesRes = ghlGetContactNotes_(contact.id);
-  if (!notesRes.ok) {
-    log_('GET /contacts/{id}/notes FAILED: HTTP ' + notesRes.status + '. Body (first 1000 chars): ' +
-      String(notesRes.body).slice(0, 1000));
+  log_('Checked ' + checked.length + ' contact(s) (' + checked.join(', ') + ') for existing notes.');
+  if (!contactWithNotes && firstFailure) {
+    log_('GET /contacts/{id}/notes FAILED for at least one of them: HTTP ' + firstFailure.status +
+      '. Body (first 1000 chars): ' + String(firstFailure.body).slice(0, 1000));
     log_('   404 here likely means this account\'s API version/plan doesn\'t expose Notes this way -- ' +
       'paste this back to Claude either way, the exact error decides the next step.');
-  } else if (!notesRes.notes.length) {
-    log_('Notes endpoint is REAL (HTTP 200) but this contact has none yet -- try again against a contact ' +
-      'you know has a manually-added note in the GHL UI, to confirm read-back actually works end to end.');
+  } else if (!contactWithNotes) {
+    log_('None of them have any notes yet — the endpoint itself responded HTTP 200 (real), but this still ' +
+      'hasn\'t proven read-back of REAL note content. Either add one manually to a test contact in the GHL ' +
+      'UI and re-run, or paste this log back and Claude will widen the sample.');
   } else {
-    log_(notesRes.notes.length + ' note(s) found on this contact:');
-    notesRes.notes.forEach(function (n) {
+    log_('"' + nameForThatContact + '" has ' + notesForThatContact.length + ' note(s):');
+    notesForThatContact.forEach(function (n) {
       log_('   [' + (n.dateAdded || n.createdAt || '?') + '] ' + String(n.body || n.text || JSON.stringify(n)).slice(0, 300));
     });
   }

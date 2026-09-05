@@ -5820,6 +5820,7 @@ test('buildComplianceEmail_ names the tab right next to the Tracker link, not ju
 function withMockedGhlNotesProbe_(mocks, fn) {
   const originals = {
     ghlCheckSetup_: gas.ghlCheckSetup_,
+    ghlGetLocationCustomFieldDefs_: gas.ghlGetLocationCustomFieldDefs_,
     sampleSalesCallLogRows_: gas.sampleSalesCallLogRows_,
     ghlSearchContactByName_: gas.ghlSearchContactByName_,
     ghlGetContact_: gas.ghlGetContact_,
@@ -5829,6 +5830,7 @@ function withMockedGhlNotesProbe_(mocks, fn) {
   const lines = [];
   gas.Logger = { log: (msg) => lines.push(msg) };
   gas.ghlCheckSetup_ = () => 'loc-1';
+  gas.ghlGetLocationCustomFieldDefs_ = () => ({ ok: true, defs: {}, raw: [] });
   gas.sampleSalesCallLogRows_ = () => [{ prospectName: 'Nicole Freed', rep: 'Bens' }];
   gas.ghlSearchContactByName_ = () => ({ ok: true, contacts: [{ id: 'c-1', name: 'Nicole Freed' }] });
   Object.assign(gas, mocks);
@@ -5839,14 +5841,21 @@ function withMockedGhlNotesProbe_(mocks, fn) {
   }
 }
 
-test('previewGhlNotesAndCustomFields_ reports every custom field found on the matched contact', () => {
+test('previewGhlNotesAndCustomFields_ lists every custom field DEFINITION configured on the location, and resolves a contact\'s opaque field IDs to their real names', () => {
   withMockedGhlNotesProbe_({
-    ghlGetContact_: () => ({ ok: true, contact: { customFields: [{ name: 'Call Date', value: '20/08/2026' }] } }),
+    ghlGetLocationCustomFieldDefs_: () => ({
+      ok: true,
+      defs: { 'fld-1': { id: 'fld-1', name: 'Call Date', dataType: 'DATE' } },
+      raw: [{ id: 'fld-1', name: 'Call Date', model: 'contact', dataType: 'DATE' }]
+    }),
+    ghlGetContact_: () => ({ ok: true, contact: { customFields: [{ id: 'fld-1', value: '20/08/2026' }] } }),
     ghlGetContactNotes_: () => ({ ok: true, notes: [] })
   }, (lines) => {
     gas.previewGhlNotesAndCustomFields_();
-    assert.ok(lines.some((l) => l.indexOf('1 custom field(s) found') !== -1));
-    assert.ok(lines.some((l) => l.indexOf('Call Date') !== -1 && l.indexOf('20/08/2026') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('1 custom field DEFINITION(s)') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('"Call Date"') !== -1), 'location-level definition listing must show the real name');
+    assert.ok(lines.some((l) => l.indexOf('Call Date = "20/08/2026"') !== -1),
+      'a contact\'s raw {id, value} pair must be resolved to its real field name, not left as the opaque ID');
   });
 });
 
@@ -5860,13 +5869,34 @@ test('previewGhlNotesAndCustomFields_ reports NO custom fields plainly rather th
   });
 });
 
-test('previewGhlNotesAndCustomFields_ distinguishes a real-but-empty Notes endpoint from a failed one', () => {
+test('previewGhlNotesAndCustomFields_ checks every confidently-matched contact in the sample for notes, not just the first, and reports the first one that actually has real note content', () => {
+  const sample = [
+    { prospectName: 'No Notes Guy', rep: 'Sean' },
+    { prospectName: 'Has Notes Guy', rep: 'Joana' }
+  ];
+  const contactsByName = { 'No Notes Guy': { id: 'c-1', name: 'No Notes Guy' }, 'Has Notes Guy': { id: 'c-2', name: 'Has Notes Guy' } };
+  withMockedGhlNotesProbe_({
+    sampleSalesCallLogRows_: () => sample,
+    ghlSearchContactByName_: (locId, name) => ({ ok: true, contacts: [contactsByName[name]] }),
+    ghlGetContact_: () => ({ ok: true, contact: { customFields: [] } }),
+    ghlGetContactNotes_: (contactId) => contactId === 'c-2'
+      ? { ok: true, notes: [{ dateAdded: '2026-08-20', body: 'Discussed pricing' }] }
+      : { ok: true, notes: [] }
+  }, (lines) => {
+    gas.previewGhlNotesAndCustomFields_();
+    assert.ok(lines.some((l) => l.indexOf('Checked 2 contact(s)') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('"Has Notes Guy" has 1 note(s)') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('Discussed pricing') !== -1));
+  });
+});
+
+test('previewGhlNotesAndCustomFields_ distinguishes "checked, genuinely empty" from "the notes call itself failed"', () => {
   withMockedGhlNotesProbe_({
     ghlGetContact_: () => ({ ok: true, contact: { customFields: [] } }),
     ghlGetContactNotes_: () => ({ ok: true, notes: [] })
   }, (lines) => {
     gas.previewGhlNotesAndCustomFields_();
-    assert.ok(lines.some((l) => l.indexOf('Notes endpoint is REAL') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('None of them have any notes yet') !== -1));
   });
 
   withMockedGhlNotesProbe_({
@@ -5874,7 +5904,7 @@ test('previewGhlNotesAndCustomFields_ distinguishes a real-but-empty Notes endpo
     ghlGetContactNotes_: () => ({ ok: false, status: 404, body: 'not found' })
   }, (lines) => {
     gas.previewGhlNotesAndCustomFields_();
-    assert.ok(lines.some((l) => l.indexOf('FAILED: HTTP 404') !== -1));
+    assert.ok(lines.some((l) => l.indexOf('FAILED for at least one of them: HTTP 404') !== -1));
   });
 });
 
