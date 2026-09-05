@@ -334,8 +334,28 @@ function previewCrmOrganizationReview_() {
   // Must be fetched BEFORE classifying — see classifyUnknownAssignees_'s own
   // comment for the real bug this ordering fixes (comparing raw IDs against
   // known REP NAMES could never exclude anyone, real reps included).
-  var userNameLookup = buildGhlUserNameLookup_(fetchGhlLocationUsers_(locationId));
-  var unknownAssignees = classifyUnknownAssignees_(assigneeCounts, knownNames, userNameLookup);
+  //
+  // Real bug found live (06/09/2026): a single flaky GHL call (HTTP 401,
+  // "Command timed out" — a transient backend timeout, not a real
+  // permission problem) made fetchGhlLocationUsers_ return null for this
+  // run only. Since classifyUnknownAssignees_ can only exclude a known rep
+  // once their ID actually resolves to a name, a totally failed fetch meant
+  // NO id resolved to anything — so every real rep (Sean, Joana, Bens,
+  // Tomás included) got reported as "unrecognized" again, and the dedupe
+  // key (new for their IDs, since they'd never been flagged before) let
+  // every one of those false findings get written as a permanent new row.
+  // A transient fetch failure must never be able to inject a false finding
+  // for a real rep — skip the unrecognized-assignee report entirely this
+  // run instead (pipeline health is unaffected, since it doesn't depend on
+  // assignee resolution), and say so plainly so Kris knows to just re-run.
+  var ghlUsers = fetchGhlLocationUsers_(locationId);
+  var userNameLookup = buildGhlUserNameLookup_(ghlUsers);
+  var unknownAssignees = ghlUsers === null ? [] : classifyUnknownAssignees_(assigneeCounts, knownNames, userNameLookup);
+  if (ghlUsers === null) {
+    log_('Skipping the "Unrecognized assignee" report entirely this run — without the user list, a real ' +
+      'rep could not be told apart from a genuinely unknown one, and reporting everyone as unrecognized ' +
+      'would risk permanently flagging a real rep by mistake. Re-run once the GHL API call above succeeds.');
+  }
 
   log_('Pipelines checked: ' + pipelines.length + '. ' + pipelineFindings.length +
     ' look potentially abandoned. ' + unknownAssignees.length + ' unrecognized assignee(s) found.');
