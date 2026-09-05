@@ -215,8 +215,14 @@ function resolveGhlAssigneeLabel_(assigneeId, userNameLookup) {
 }
 
 var CRM_ORGANIZATION_REVIEW_SHEET_NAME_ = 'CRM Organization Review';
+// "Dedupe Key" (col H) added 06/09/2026 — same fix pattern as Phase13's own
+// dedupe key (Phase13_LeadReconciliation.gs), added after this file's first
+// live re-run wrote 10 new rows including exact duplicates of "Cold Calling
+// 2"/"SALES CALL pipeline" that were already sitting in the sheet from the
+// FIRST run. Unlike Phase13, this file never had any dedupe check at all —
+// every run just appended fresh rows for the same recurring findings.
 var CRM_ORGANIZATION_REVIEW_HEADERS_ = [
-  'Timestamp', 'Category', 'Finding', 'Evidence', 'Suggested Action', 'Approve', 'Reject'
+  'Timestamp', 'Category', 'Finding', 'Evidence', 'Suggested Action', 'Approve', 'Reject', 'Dedupe Key'
 ];
 
 function getOrCreateCrmOrganizationReviewSheet_() {
@@ -244,6 +250,31 @@ function nextCrmOrganizationReviewWriteRow_(sheet) {
     if (String(findings[r][0] || '').trim()) return r + 3;
   }
   return 2;
+}
+
+/** Pure. Stable identity for a "Pipeline health" finding — the pipeline itself, not its current percentage/count (which naturally drifts run to run without being a genuinely new finding). */
+function buildPipelineHealthDedupeKey_(pipelineName) {
+  return 'pipeline:' + normalize_(pipelineName);
+}
+
+/** Pure. Stable identity for an "Unrecognized assignee" finding — the GHL user ID, not the current open-opportunity count. */
+function buildUnrecognizedAssigneeDedupeKey_(assigneeId) {
+  return 'assignee:' + assigneeId;
+}
+
+/**
+ * The Dedupe Key column (H) is the same key buildPipelineHealthDedupeKey_/
+ * buildUnrecognizedAssigneeDedupeKey_ build — reading it back is what lets a
+ * re-run skip a finding already listed (whether or not Tomás has decided on
+ * it yet) instead of appending a duplicate row for the exact same pipeline
+ * or assignee every time this is run.
+ */
+function readExistingCrmOrganizationReviewKeys_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 8, lastRow - 1, 1).getValues()
+    .map(function (r) { return String(r[0] || '').trim(); })
+    .filter(function (k) { return !!k; });
 }
 
 /** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
@@ -310,9 +341,13 @@ function previewCrmOrganizationReview_() {
     ' look potentially abandoned. ' + unknownAssignees.length + ' unrecognized assignee(s) found.');
 
   var sheet = getOrCreateCrmOrganizationReviewSheet_();
+  var existingKeys = readExistingCrmOrganizationReviewKeys_(sheet);
   var newRows = [];
+  var skippedAlreadyListed = 0;
 
   pipelineFindings.forEach(function (f) {
+    var key = buildPipelineHealthDedupeKey_(f.pipelineName);
+    if (existingKeys.indexOf(key) !== -1) { skippedAlreadyListed++; return; }
     newRows.push([
       new Date(), 'Pipeline health',
       '"' + f.pipelineName + '" — ' + f.sharePct + '% of open opportunities (' + f.topCount + ' of ' +
@@ -320,28 +355,33 @@ function previewCrmOrganizationReview_() {
       f.total + ' open opportunities scanned, none in a terminal stage.',
       'Confirm whether this pipeline is still actively worked, or should be archived/consolidated ' +
         '(GHL_PIPELINE_MAP.md flagged "Cold Calling 2" as this exact pattern on 27/08 — this re-checks live).',
-      false, false
+      false, false, key
     ]);
   });
 
   unknownAssignees.forEach(function (a) {
+    var key = buildUnrecognizedAssigneeDedupeKey_(a.name);
+    if (existingKeys.indexOf(key) !== -1) { skippedAlreadyListed++; return; }
     newRows.push([
       new Date(), 'Unrecognized assignee',
       resolveGhlAssigneeLabel_(a.name, userNameLookup) + ' is assigned ' + a.count +
         ' open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)',
       'Found on live, non-terminal opportunities across the pipelines scanned this run.',
       'Confirm who this is and whether their calls should be scored (GHL_PIPELINE_MAP.md §C, still open).',
-      false, false
+      false, false, key
     ]);
   });
 
+  if (skippedAlreadyListed) {
+    log_(skippedAlreadyListed + ' finding(s) already listed from a previous run — skipped, not duplicated.');
+  }
   if (newRows.length) {
     var writeRow = nextCrmOrganizationReviewWriteRow_(sheet);
     sheet.getRange(writeRow, 1, newRows.length, CRM_ORGANIZATION_REVIEW_HEADERS_.length).setValues(newRows);
     sheet.getRange(writeRow, 6, newRows.length, 2).insertCheckboxes();
     log_('Wrote ' + newRows.length + ' new finding(s) to "' + CRM_ORGANIZATION_REVIEW_SHEET_NAME_ + '".');
   } else {
-    log_('Nothing new to report — no pipeline looked abandoned and no unrecognized assignee was found.');
+    log_('Nothing new to report — no pipeline looked abandoned and no unrecognized assignee was found beyond what\'s already listed.');
   }
 
   log_('');

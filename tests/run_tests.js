@@ -7515,6 +7515,45 @@ test('nextCrmOrganizationReviewWriteRow_ returns row 2 for a brand-new sheet wit
 });
 
 // ---------------------------------------------------------------------------
+// Real bug found live (06/09/2026): a re-run of previewCrmOrganizationReview_
+// wrote 10 new rows including exact duplicates of "Cold Calling 2"/"SALES
+// CALL pipeline" already sitting in the sheet from the FIRST run — this file
+// never had any dedupe check at all (unlike Phase13's dedupe-by-key).
+// buildPipelineHealthDedupeKey_/buildUnrecognizedAssigneeDedupeKey_ give each
+// finding a stable identity (the pipeline, or the assignee ID — not the
+// current percentage/count, which naturally drifts run to run) and
+// readExistingCrmOrganizationReviewKeys_ reads them back so a re-run can
+// skip what's already listed.
+// ---------------------------------------------------------------------------
+
+test('buildPipelineHealthDedupeKey_ is stable across case/whitespace differences in the pipeline name', () => {
+  assert.equal(gas.buildPipelineHealthDedupeKey_('Cold Calling 2'), gas.buildPipelineHealthDedupeKey_('  cold calling 2  '));
+});
+
+test('buildUnrecognizedAssigneeDedupeKey_ is keyed on the assignee ID, not any resolved name', () => {
+  assert.equal(gas.buildUnrecognizedAssigneeDedupeKey_('j3B1N9nwTDvgLyLgbcjI'), 'assignee:j3B1N9nwTDvgLyLgbcjI');
+});
+
+test('readExistingCrmOrganizationReviewKeys_ reads the Dedupe Key column (H), skipping blanks', () => {
+  const values = { 2: ['pipeline:cold calling 2'], 3: [''], 4: ['assignee:j3b1n9nwtdvglylgbcji'] };
+  const fakeSheet = {
+    getLastRow: () => 4,
+    getRange: (row, col, numRows, numCols) => {
+      assert.equal(col, 8); // Dedupe Key column
+      const out = [];
+      for (let r = row; r < row + numRows; r++) out.push(values[r] !== undefined ? values[r] : ['']);
+      return { getValues: () => out };
+    }
+  };
+  const keys = gas.readExistingCrmOrganizationReviewKeys_(fakeSheet);
+  assert.deepEqual(Array.from(keys), ['pipeline:cold calling 2', 'assignee:j3b1n9nwtdvglylgbcji']);
+});
+
+test('readExistingCrmOrganizationReviewKeys_ returns an empty list for a brand-new sheet', () => {
+  assert.deepEqual(Array.from(gas.readExistingCrmOrganizationReviewKeys_({ getLastRow: () => 1 })), []);
+});
+
+// ---------------------------------------------------------------------------
 // Real bug found live (06/09/2026): "Unrecognized assignee" findings showed
 // raw GHL user IDs ("j3B1N9nwTDvgLyLgbcjI") instead of a name — useless for
 // Tomás to act on without looking each one up himself. buildGhlUserNameLookup_
