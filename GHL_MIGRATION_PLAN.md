@@ -182,6 +182,10 @@ None of these stop the migration. Three are read-only probes we run
 ourselves; two need a human answer before Phase 2 moves.
 
 **Q1 — Option A or Option B?** (§2)
+**Kris's answer 05/09/2026: Option A** — a Call Review custom object, one
+record per call, scores as real CRM fields. Still needs the probe to confirm
+custom objects are actually available on this plan; Option B stands as the
+fallback if they aren't.
 **Probe built and ready to run:**
 `previewGhlPerCallObjects()` (`Phase9_GhlSync.gs`) — read-only. Reports every
 custom field definition grouped by the object `model` it attaches to, probes
@@ -197,7 +201,13 @@ work — both of which were settled this way). *One run.*
 adding the scope as of this writing. Re-run
 `previewGhlNotesAndCustomFields()` to confirm. Blocks every field write.
 
-**Q3 — Whose calls are in scope?** *(needs a human answer)*
+**Q3 — Whose calls are in scope?** ✅ **ANSWERED** (Kris, 05/09/2026):
+**Bruno, Simon and Ty are old sales reps.** So their calls are historical,
+not incoming work — their leads and history belong in GHL like everyone
+else's, but they don't need live scoring, weekly scorecards or coaching
+emails. Practically: include them in data migration and reporting, exclude
+them from `CONFIG.REPS`-driven sends. Original question kept below for
+context.
 `GHL_PIPELINE_MAP.md` §C: GHL shows sources naming **Bruno, Simon, Ty** and
 six assignee initials (SC, JP, BO, PC, KD, AA), none in `CONFIG.REPS`
 (Bens, Joana, Sean, Tomás). While the sheet is the source they're invisible.
@@ -205,7 +215,13 @@ six assignee initials (SC, JP, BO, PC, KD, AA), none in `CONFIG.REPS`
 must say: scored, ignored, or scored-but-not-emailed.
 *Owner: Kris/Tomás. Blocks Phases 1 and 2.*
 
-**Q4 — Leads that aren't in GHL yet** *(needs a human answer)*
+**Q4 — Leads that aren't in GHL yet** ✅ **ANSWERED** (Kris, 05/09/2026):
+**"Add them to CRM."** So every lead found in a spreadsheet but missing from
+GHL gets created as a GHL contact. `previewLeadReconciliation()`
+(`Phase13_LeadReconciliation.gs`) produces that list; creating the contacts
+is a separate gated step so the list gets eyeballed first — a name-matching
+false negative would create a duplicate contact, and CRM duplicates are much
+harder to clean up than to avoid. Original question kept below.
 Confirmed (`GHL_PIPELINE_MAP.md` §E, Tomás 28/08/2026): Lucy Quiñones,
 Chelsea Fernandez, Monique Lewis and Salisia Murray are real leads whose
 history lives outside GHL — the podcast-guest route, or nowhere formal.
@@ -469,10 +485,12 @@ flipped to `true` on 04/09/2026 and has been writing daily at 07:00 since.
    ready.**
 3. F1 — add column AN, backfill contact IDs mostly free from the note-sync
    log.
-4. F3 — build the call-review record in GHL, whichever option Q1 picks. This
-   is the real "everything in GHL" step: from here on, every newly scored
-   call lands in the CRM in full.
-5. Put Q3 and Q4 to Tomás.
+4. F3 — build the Call Review custom object (Q1: Option A). This is the real
+   "everything in GHL" step: from here on, every newly scored call lands in
+   the CRM in full.
+5. Run `previewLeadReconciliation()` (`Phase13_LeadReconciliation.gs`) — the
+   audit of every spreadsheet against GHL — then create the missing contacts
+   (Q4) behind its own log-and-revert gate.
 6. Fix the `resolveSheet_` silent-fallback footgun (§7) — cheap, and it makes
    every later step fail loudly instead of quietly.
 

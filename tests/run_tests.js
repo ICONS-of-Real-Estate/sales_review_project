@@ -6566,3 +6566,137 @@ test('runGhlNoteSync_ caps the batch at GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN by
     gas.ghlPostContactNote_ = originalPost;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 13 — lead reconciliation (Phase13_LeadReconciliation.gs). Read-only
+// audit answering "is every lead in every spreadsheet actually in GHL?"
+// ---------------------------------------------------------------------------
+
+test('collectLeadsFromRows_ skips rows with neither name nor email (trailing blanks / checkbox-extended empty rows) but keeps email-only and name-only rows', () => {
+  const values = [
+    ['Prospect Name', 'Prospect Email'],
+    ['Ward Frederick', 'ward@example.com'],
+    ['', 'noname@example.com'],
+    ['No Email Person', ''],
+    ['', ''],
+    ['   ', '   ']
+  ];
+  const leads = gas.collectLeadsFromRows_(values, 0, 1, 'Sales Call Log');
+  assert.equal(leads.length, 3);
+  // Array.from: the vm realm's Array prototype differs from the host's, so a
+  // bare deepEqual on a vm-produced array fails on prototype identity alone.
+  assert.deepEqual(Array.from(leads.map((l) => l.name)), ['Ward Frederick', '', 'No Email Person']);
+  assert.equal(leads[0].sourceRow, 2); // 1-based sheet row, header is row 1
+  assert.equal(leads[1].email, 'noname@example.com');
+});
+
+test('collectLeadsFromRows_ lowercases and trims email so the same person written two ways dedupes to one lead', () => {
+  const values = [['Name', 'Email'], ['Ward Frederick', '  WARD@Example.COM ']];
+  const leads = gas.collectLeadsFromRows_(values, 0, 1, 'src');
+  assert.equal(leads[0].email, 'ward@example.com');
+});
+
+test('collectLeadsFromRows_ tolerates a source with no email column at all (nameIdx/emailIdx of -1)', () => {
+  const values = [['Name'], ['Ward Frederick']];
+  const leads = gas.collectLeadsFromRows_(values, 0, -1, 'src');
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].email, '');
+});
+
+test('dedupeReconciliationLeads_ collapses the same person appearing in several spreadsheets into one lead to check, keyed on email', () => {
+  const distinct = gas.dedupeReconciliationLeads_([
+    { name: 'Ward Frederick', email: 'ward@example.com', source: 'Sales Call Log', sourceRow: 111 },
+    { name: 'Ward Frederick', email: 'ward@example.com', source: 'Reply Tracker', sourceRow: 4 },
+    { name: 'Deme Mekras', email: '', source: 'Sales Call Log', sourceRow: 37 }
+  ]);
+  assert.equal(distinct.length, 2);
+  assert.equal(distinct[0].occurrences, 2);
+  assert.deepEqual(Array.from(distinct[0].sources), ['Sales Call Log:111', 'Reply Tracker:4']);
+});
+
+test('dedupeReconciliationLeads_ falls back to the normalized name when a source has no email, so name-only rows still get checked', () => {
+  const distinct = gas.dedupeReconciliationLeads_([
+    { name: 'Deme Mekras', email: '', source: 'a', sourceRow: 2 },
+    { name: '  deme   mekras ', email: '', source: 'b', sourceRow: 9 }
+  ]);
+  assert.equal(distinct.length, 1);
+  assert.equal(distinct[0].occurrences, 2);
+});
+
+test('dedupeReconciliationLeads_ does NOT merge a name-only record into an email-bearing one — over-reporting a lead costs a search, under-reporting loses it entirely', () => {
+  const distinct = gas.dedupeReconciliationLeads_([
+    { name: 'Ward Frederick', email: 'ward@example.com', source: 'a', sourceRow: 2 },
+    { name: 'Ward Frederick', email: '', source: 'b', sourceRow: 3 }
+  ]);
+  assert.equal(distinct.length, 2);
+});
+
+test('dedupeReconciliationLeads_ drops a row that has neither a usable name nor an email rather than emitting a keyless lead', () => {
+  const distinct = gas.dedupeReconciliationLeads_([{ name: '', email: '', source: 'a', sourceRow: 2 }]);
+  assert.equal(distinct.length, 0);
+});
+
+test('dedupeReconciliationLeads_ backfills a missing name from another source that had one, so the report is human-readable', () => {
+  const distinct = gas.dedupeReconciliationLeads_([
+    { name: '', email: 'ward@example.com', source: 'Reply Tracker', sourceRow: 4 },
+    { name: 'Ward Frederick', email: 'ward@example.com', source: 'Sales Call Log', sourceRow: 111 }
+  ]);
+  assert.equal(distinct.length, 1);
+  assert.equal(distinct[0].name, 'Ward Frederick');
+});
+
+test('classifyLeadGhlPresence_ returns not_found when GHL returns only unrelated people (the real "Desiree Doggett" failure mode — without this the audit reports a clean bill of health while being entirely wrong)', () => {
+  const verdict = gas.classifyLeadGhlPresence_(
+    { name: 'Desiree Doggett', email: '' },
+    [{ id: '1', name: 'Someone Else' }, { id: '2', name: 'Another Person' }]
+  );
+  assert.equal(verdict.status, 'not_found');
+});
+
+test('classifyLeadGhlPresence_ returns found for a single real name-token match', () => {
+  const verdict = gas.classifyLeadGhlPresence_(
+    { name: 'Ward Frederick', email: '' },
+    [{ id: 'abc', name: 'Ward Frederick' }, { id: 'xyz', name: 'Totally Unrelated' }]
+  );
+  assert.equal(verdict.status, 'found');
+  assert.equal(verdict.matches.length, 1);
+  assert.equal(verdict.matches[0].id, 'abc');
+});
+
+test('classifyLeadGhlPresence_ matches on exact email even when the GHL contact name looks nothing like the sheet name (married/changed names, nicknames)', () => {
+  const verdict = gas.classifyLeadGhlPresence_(
+    { name: 'Pam Flitton', email: 'pamela@example.com' },
+    [{ id: 'abc', name: 'Pamela Smith-Flitton', email: 'PAMELA@example.com' }]
+  );
+  assert.equal(verdict.status, 'found');
+});
+
+test('classifyLeadGhlPresence_ returns ambiguous rather than guessing when two plausible contacts match — guessing is how a lead gets someone else\'s call history', () => {
+  const verdict = gas.classifyLeadGhlPresence_(
+    { name: 'David Crum', email: '' },
+    [{ id: '1', name: 'David Crum' }, { id: '2', name: 'David Crum' }]
+  );
+  assert.equal(verdict.status, 'ambiguous');
+  assert.equal(verdict.matches.length, 2);
+});
+
+test('classifyLeadGhlPresence_ returns not_found for an empty GHL result set', () => {
+  assert.equal(gas.classifyLeadGhlPresence_({ name: 'Nobody', email: '' }, []).status, 'not_found');
+  assert.equal(gas.classifyLeadGhlPresence_({ name: 'Nobody', email: '' }, null).status, 'not_found');
+});
+
+test('buildLeadReconciliationSummary_ counts each bucket and flags a partial run so a capped scan is never mistaken for a complete audit', () => {
+  const summary = gas.buildLeadReconciliationSummary_([
+    { status: 'found' }, { status: 'found' }, { status: 'not_found' }, { status: 'ambiguous' }
+  ], 4, 40, true);
+  assert.ok(summary.indexOf('Checked 4 of 40') !== -1);
+  assert.ok(summary.indexOf('in GHL:      2') !== -1);
+  assert.ok(summary.indexOf('NOT in GHL:  1') !== -1);
+  assert.ok(summary.indexOf('ambiguous:   1') !== -1);
+  assert.ok(summary.indexOf('PARTIAL RUN') !== -1);
+});
+
+test('buildLeadReconciliationSummary_ omits the PARTIAL RUN warning on a complete run', () => {
+  const summary = gas.buildLeadReconciliationSummary_([{ status: 'found' }], 1, 1, false);
+  assert.ok(summary.indexOf('PARTIAL RUN') === -1);
+});
