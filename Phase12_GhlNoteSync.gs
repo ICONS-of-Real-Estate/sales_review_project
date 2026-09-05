@@ -37,10 +37,14 @@ var GHL_NOTE_SYNC_CONFIG = {
   // actually works end to end against a handful of real notes, THEN raise
   // this (or set it back to null) for the full run. null/0 = no limit.
   //
-  // Set to 3 for the first live run (05/09/2026) — raise to null once
-  // that batch is confirmed posted correctly in GHL and revertGhlNoteSync_
-  // is confirmed to actually undo it.
-  MAX_ROWS_PER_RUN: 3
+  // Raised to null (05/09/2026): the initial 3-row batch round-tripped
+  // clean through revertGhlNoteSync_ and reposted correctly with the fixed
+  // date formatting (formatCallDateForGhlNote_) and note markup
+  // (buildGhlReviewNoteBody_'s <strong>/<br><br> formatting, confirmed
+  // live via runGhlNoteFormattingTest_) — Kris confirmed both look right in
+  // GHL. No limit now; each run works through GHL_NOTE_SYNC_TIME_BUDGET_MS_
+  // worth of rows and is safe to just re-run for the rest.
+  MAX_ROWS_PER_RUN: null
 };
 
 var GHL_NOTE_SYNC_LOG_SHEET_NAME = 'GHL Note Sync Log';
