@@ -6946,3 +6946,132 @@ test('writeLeadReconciliationReviewRows_ skips a result whose dedupe key is alre
     gas.SpreadsheetApp = originalSS;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Weekly training rotation (Kris, 05/09/2026): "unless there is something
+// urgent to focus on I want to cycle through Week 1: Discovery / Week 2:
+// Framework & Delivery / Week 3: closing & Objection Handling" — replacing
+// "always pick whichever single element failed the most" with a team-wide
+// curriculum, still overridable per rep by a genuinely urgent issue.
+// ---------------------------------------------------------------------------
+
+test('trainingRotationIndexForWeekNumber_ cycles 0,1,2,0,1,2... starting from week 1 -> index 0 (Discovery)', () => {
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(1), 0);
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(2), 1);
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(3), 2);
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(4), 0);
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(52), 0);
+  assert.equal(gas.trainingRotationIndexForWeekNumber_(53), 1);
+});
+
+test('pickWeeklyTrainingFocus_ uses the scheduled topic when nothing outside it is urgent, combining its elements\' failed/scored counts', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [
+    call(2, { discovery: true, framework: false, delivery: false, ask: true, objections: true }),
+    call(3, { discovery: true, framework: true, delivery: false, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Framework & Delivery', keys: ['framework', 'delivery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.isUrgentOverride, false);
+  assert.equal(focus.label, 'Framework & Delivery');
+  assert.equal(focus.failed, 3); // framework failed 1 + delivery failed 2
+  assert.equal(focus.scored, 4); // framework scored 2 + delivery scored 2
+});
+
+test('pickWeeklyTrainingFocus_ de-duplicates a call that fails BOTH elements of a two-element week, never double-listing it', () => {
+  const call = (score, flags) => ({ score, flags });
+  const bothFail = call(1, { discovery: true, framework: false, delivery: false, ask: true, objections: true });
+  const calls = [bothFail];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Framework & Delivery', keys: ['framework', 'delivery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.failedCalls.length, 1, 'the same call must not appear twice just because it failed two elements');
+});
+
+test('pickWeeklyTrainingFocus_ overrides the schedule when an OUTSIDE element is urgent (2+ failed calls averaging <=2)', () => {
+  const call = (score, flags) => ({ score, flags });
+  // Scheduled week is Discovery, but objections fails 3 calls at a low average.
+  const calls = [
+    call(2, { discovery: true, framework: true, delivery: true, ask: true, objections: false }),
+    call(1, { discovery: true, framework: true, delivery: true, ask: true, objections: false }),
+    call(2, { discovery: true, framework: true, delivery: true, ask: true, objections: false })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Discovery', keys: ['discovery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.isUrgentOverride, true);
+  assert.equal(focus.label, 'Objection handling');
+  assert.equal(focus.scheduleLabel, 'Discovery');
+});
+
+test('pickWeeklyTrainingFocus_ does NOT override for a single bad call outside the schedule — one call is normal variance, not urgent', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [
+    call(1, { discovery: true, framework: true, delivery: true, ask: true, objections: false }), // only 1 failed call
+    call(5, { discovery: true, framework: true, delivery: true, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Discovery', keys: ['discovery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.isUrgentOverride, false);
+  assert.equal(focus.label, 'Discovery');
+});
+
+test('pickWeeklyTrainingFocus_ does NOT override for a recurring failure that still scores decently (2+ failed but average > 2) — urgency needs both a pattern AND a genuinely poor score', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [
+    call(3, { discovery: true, framework: true, delivery: true, ask: true, objections: false }),
+    call(3, { discovery: true, framework: true, delivery: true, ask: true, objections: false })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Discovery', keys: ['discovery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.isUrgentOverride, false);
+});
+
+test('pickWeeklyTrainingFocus_ never overrides FOR an element that is already inside this week\'s schedule (no such thing as an "urgent override" onto the same topic)', () => {
+  const call = (score, flags) => ({ score, flags });
+  // discovery (inside schedule) is badly failing; nothing outside the schedule is.
+  const calls = [
+    call(1, { discovery: false, framework: true, delivery: true, ask: true, objections: true }),
+    call(1, { discovery: false, framework: true, delivery: true, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const schedule = { label: 'Discovery', keys: ['discovery'] };
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, schedule);
+  assert.equal(focus.isUrgentOverride, false);
+  assert.equal(focus.label, 'Discovery');
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ names the scheduled topic in the body when an urgent override fires, so Tomás sees why the session deviated from the announced curriculum', () => {
+  const repCfg = { name: 'Sean' };
+  const focus = { label: 'Objection handling', failed: 3, scored: 5, failedCalls: [], isUrgentOverride: true, scheduleLabel: 'Discovery' };
+  const flagged = [{ prospectName: 'x', callDate: '01/09/2026', feedback: 'x' }];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], focus);
+  assert.ok(email.subject.indexOf('objection handling') !== -1);
+  assert.ok(email.body.indexOf('urgent override') !== -1);
+  assert.ok(email.body.indexOf('Discovery') !== -1);
+  assert.ok(email.htmlBody.indexOf('urgent override') !== -1);
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ says nothing about an override when focus came from the normal schedule', () => {
+  const repCfg = { name: 'Sean' };
+  const focus = { label: 'Framework & Delivery', failed: 2, scored: 4, failedCalls: [], isUrgentOverride: false, scheduleLabel: 'Framework & Delivery' };
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, [], '24/08/2026 - 30/08/2026', [], focus);
+  assert.equal(email.body.indexOf('urgent override'), -1);
+});
+
+test('rankTrainingPriorities_ ranks the new "delivery" element same as any other — appended without disturbing the four original elements\' relative order (existing behavior unchanged)', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [
+    call(2, { discovery: false, framework: true, delivery: true, ask: false, objections: true }),
+    call(3, { discovery: false, framework: true, delivery: true, ask: true, objections: true }),
+    call(2, { discovery: false, framework: true, delivery: true, ask: false, objections: false }),
+    call(5, { discovery: true, framework: true, delivery: true, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  assert.equal(ranking.length, 5);
+  assert.equal(ranking[0].key, 'discovery');
+  assert.equal(ranking[4].key, 'delivery', 'delivery has zero failures here and, appended last, sorts last among the ties');
+});

@@ -2944,8 +2944,118 @@ var TRAINING_PRIORITY_ELEMENTS_ = [
   { key: 'discovery', label: 'Discovery', column: 'Flag: Discovery Adequate', gapsColumn: 'Discovery Gaps' },
   { key: 'framework', label: 'Framework explanation', column: 'Flag: Framework Explained', gapsColumn: 'Framework Gaps' },
   { key: 'ask', label: 'Asking for the money / the booking', column: 'Flag: Asked For Close', gapsColumn: null },
-  { key: 'objections', label: 'Objection handling', column: 'Flag: Objections Handled', gapsColumn: null }
+  { key: 'objections', label: 'Objection handling', column: 'Flag: Objections Handled', gapsColumn: null },
+  // Appended, not inserted — rankTrainingPriorities_'s sort is stable, and
+  // this element ties (0 failed) with 'framework' on plenty of real weeks,
+  // so appending it keeps every existing failed/scored ranking position for
+  // the four elements above unchanged; it only ever affects the NEW
+  // 5th slot. Added 05/09/2026 so 'delivery' has real per-week failure data
+  // to group with 'framework' under WEEKLY_TRAINING_ROTATION_ below.
+  { key: 'delivery', label: 'Delivery', column: 'Flag: Delivery Effective', gapsColumn: 'Delivery Gaps' }
 ];
+
+/**
+ * Kris's ask (05/09/2026): "unless there is something urgent to focus on I
+ * want to cycle through Week 1: Discovery / Week 2: Framework & Delivery /
+ * Week 3: Closing & Objection Handling" — replacing the previous "always
+ * pick whichever single element failed the most calls" rule with a fixed
+ * team-wide curriculum, so the whole team trains on the same topic each
+ * week instead of each rep's session going wherever their own worst stat
+ * happens to point. "Closing" here is the existing 'ask' element (asking
+ * for the money/the booking) — same rubric field, per-rep-role-aware
+ * meaning already unchanged (see TRAINING_PRIORITY_ELEMENTS_ above).
+ *
+ * Index into this array cycles via the ISO week number mod 3
+ * (trainingRotationScheduleForWeek_ below) — stateless, no counter to seed
+ * or drift, same "no watermark" principle this whole review already
+ * follows (see buildAndMaybeSendPlaybookReview_'s header comment).
+ */
+var WEEKLY_TRAINING_ROTATION_ = [
+  { label: 'Discovery', keys: ['discovery'] },
+  { label: 'Framework & Delivery', keys: ['framework', 'delivery'] },
+  { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] }
+];
+
+/**
+ * What counts as "something urgent" enough to override the week's scheduled
+ * topic for one rep, per Kris's own qualifier. Deliberately conservative —
+ * a single bad call is normal variance (rankTrainingPriorities_'s own
+ * design principle), so urgency requires BOTH a recurring failure (not one
+ * call) AND a genuinely poor average score on those failures, not just any
+ * failure at all. Mirrors DAILY_PRACTICE_CONFIG.ESCALATE_AT_OR_BELOW's
+ * "<=2 is the escalation threshold" convention (Phase7_DailySelfPractice.gs)
+ * rather than inventing a new scale.
+ */
+var TRAINING_URGENT_OVERRIDE_CONFIG_ = {
+  MIN_FAILED_CALLS: 2,
+  MAX_AVG_FAILED_SCORE: 2
+};
+
+/**
+ * Pure. ISO-ish week-of-year mod 3 — deterministic and stateless, so the
+ * same calendar week always maps to the same rotation slot with no counter
+ * to persist or drift. Takes the week number as a plain integer (rather
+ * than a Date) so it's testable without a real clock or CONFIG.BUSINESS_
+ * TIMEZONE; the real call site derives it via
+ * Utilities.formatDate(date, tz, 'w').
+ */
+function trainingRotationIndexForWeekNumber_(weekNumber) {
+  return ((Number(weekNumber) - 1) % WEEKLY_TRAINING_ROTATION_.length + WEEKLY_TRAINING_ROTATION_.length) %
+    WEEKLY_TRAINING_ROTATION_.length;
+}
+
+/**
+ * Pure. Decides one rep's actual training focus for the week: the
+ * scheduled rotation topic, UNLESS some element outside that topic is
+ * urgent (TRAINING_URGENT_OVERRIDE_CONFIG_) and ranks worse than every
+ * scheduled element — in which case that urgent element overrides the
+ * schedule for this rep only, this week only (every other rep still gets
+ * the scheduled topic; next week's schedule is untouched).
+ *
+ * `ranking` is rankTrainingPriorities_'s full worst-first output (already
+ * includes 'delivery'). `schedule` is one entry of WEEKLY_TRAINING_ROTATION_.
+ *
+ * Returns the same shape buildPlaybookReviewNewMaterialEmail_ already reads
+ * off ranking[0] — {label, failed, scored, failedCalls} — plus
+ * `isUrgentOverride` and `scheduleLabel` so the email can say WHY it's
+ * showing what it's showing rather than asserting it silently.
+ */
+function pickWeeklyTrainingFocus_(ranking, schedule) {
+  var scheduleKeys = schedule.keys;
+  var urgent = ranking.filter(function (r) {
+    return scheduleKeys.indexOf(r.key) === -1 &&
+      r.failed >= TRAINING_URGENT_OVERRIDE_CONFIG_.MIN_FAILED_CALLS &&
+      r.avgFailedScore !== null && r.avgFailedScore <= TRAINING_URGENT_OVERRIDE_CONFIG_.MAX_AVG_FAILED_SCORE;
+  })[0]; // ranking is already worst-first, so the first match is the worst urgent candidate
+
+  if (urgent) {
+    return {
+      label: urgent.label, failed: urgent.failed, scored: urgent.scored, failedCalls: urgent.failedCalls,
+      isUrgentOverride: true, scheduleLabel: schedule.label
+    };
+  }
+
+  var scheduled = ranking.filter(function (r) { return scheduleKeys.indexOf(r.key) !== -1; });
+  var failed = scheduled.reduce(function (sum, r) { return sum + r.failed; }, 0);
+  var scored = scheduled.reduce(function (sum, r) { return sum + r.scored; }, 0);
+  // Union, not concat: the same call can fail BOTH elements of a two-element
+  // week (e.g. a call that failed both framework AND delivery) and must
+  // only be listed once.
+  var seen = [];
+  var failedCalls = [];
+  scheduled.forEach(function (r) {
+    r.failedCalls.forEach(function (c) {
+      if (seen.indexOf(c) !== -1) return;
+      seen.push(c);
+      failedCalls.push(c);
+    });
+  });
+
+  return {
+    label: schedule.label, failed: failed, scored: scored, failedCalls: failedCalls,
+    isUrgentOverride: false, scheduleLabel: schedule.label
+  };
+}
 
 /**
  * Reads one Sales Call Log row into the four-element shape
@@ -3066,6 +3176,17 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
   var windowLabel = Utilities.formatDate(week.start, tz, 'dd/MM/yyyy') + ' - ' +
     Utilities.formatDate(shiftBusinessDate_(week.end, tz, -1), tz, 'dd/MM/yyyy');
 
+  // Kris's ask (05/09/2026): the whole team cycles through the same
+  // curriculum week to week — Discovery, then Framework & Delivery, then
+  // Closing & Objection Handling — rather than each rep's session going
+  // wherever their own single worst stat happens to point. Computed once
+  // per run (same week, same schedule, for every rep) so the team stays in
+  // sync; pickWeeklyTrainingFocus_ below still lets an individual rep's
+  // genuinely urgent issue override it for just that rep.
+  var rotationWeekNumber = Number(Utilities.formatDate(week.start, tz, 'w'));
+  var rotationIndex = trainingRotationIndexForWeekNumber_(rotationWeekNumber);
+  var schedule = WEEKLY_TRAINING_ROTATION_[rotationIndex];
+
   CONFIG.REPS.forEach(function (repCfg) {
     // Every one of the rep's calls last week, not just the objection-flagged
     // ones this used to filter down to — all four elements get graded, then
@@ -3093,27 +3214,31 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
     });
 
     var ranking = rankTrainingPriorities_(calls);
-    var focus = ranking[0];
-    var flagged = (focus && focus.failed) ? focus.failedCalls : [];
+    var focus = pickWeeklyTrainingFocus_(ranking, schedule);
+    var flagged = focus.failed ? focus.failedCalls : [];
 
     if (forcePreview) {
       log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
-        windowLabel + '). Priority: ' + ranking.map(function (r) {
+        windowLabel + '). Scheduled topic: ' + schedule.label + '. Focus: ' + focus.label +
+        (focus.isUrgentOverride ? ' [URGENT OVERRIDE — outside this week\'s schedule]' : '') +
+        '. All elements: ' + ranking.map(function (r) {
           return r.label + ' ' + r.failed + '/' + r.scored;
         }).join(', ') + '.');
       return;
     }
 
     var sent = flagged.length
-      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking)
-      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel);
+      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
+      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
       return;
     }
     log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - focus "' + focus.label + '" (' +
-      focus.failed + '/' + focus.scored + ' call(s)) for the week of ' + windowLabel + '.');
+      focus.failed + '/' + focus.scored + ' call(s))' +
+      (focus.isUrgentOverride ? ' [urgent override, scheduled topic was "' + schedule.label + '"]' : '') +
+      ' for the week of ' + windowLabel + '.');
   });
 }
 
@@ -3130,20 +3255,35 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
  * reused so a score is colored the same way everywhere in the system,
  * rather than inventing a second color rubric here.
  */
-function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking) {
+/**
+ * `focusOverride` is pickWeeklyTrainingFocus_'s output — the week's actual
+ * focus (the scheduled rotation topic, or an urgent override — see
+ * WEEKLY_TRAINING_ROTATION_/TRAINING_URGENT_OVERRIDE_CONFIG_ above). Kept
+ * optional (defaulting to ranking[0], the old "worst single element" rule)
+ * so every existing caller/test that predates the 05/09/2026 rotation ask
+ * keeps working unchanged.
+ */
+function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focusOverride) {
   // Kris's ask (02/09/2026): "don't need the year in the subject — we know
   // what year it is." Only the subject drops it; the body keeps the full
   // dd/MM/yyyy dates, same as every other email in this system.
-  var focus = (ranking && ranking.length) ? ranking[0] : null;
+  var focus = focusOverride || ((ranking && ranking.length) ? ranking[0] : null);
   var focusLabel = focus ? focus.label : 'Objection handling';
   var subject = repCfg.name + ' — ' + focusLabel.toLowerCase() + ' is this week\'s focus (' +
     stripYearFromDateRangeLabel_(windowLabel) + ')';
+  // Kris's ask (05/09/2026): the team cycles Discovery -> Framework &
+  // Delivery -> Closing & Objection Handling weekly; when an individual
+  // rep's urgent issue overrides that schedule, say so explicitly rather
+  // than silently deviating from the announced curriculum.
+  var scheduleNote = (focus && focus.isUrgentOverride)
+    ? ' — urgent override; this week\'s scheduled topic is "' + focus.scheduleLabel + '"'
+    : '';
 
-  // The full four-element standing, so the pick is visible rather than
-  // asserted — Tomás can see that e.g. discovery failed 3 of 5 while the
-  // money-ask failed 1 of 5, and why the session is going where it is.
-  // An element nobody was graded on last week (scored 0) is shown as such
-  // rather than as a clean pass it didn't earn.
+  // The full standing across every scored element, so the pick is visible
+  // rather than asserted — Tomás can see that e.g. discovery failed 3 of 5
+  // while the money-ask failed 1 of 5, and why the session is going where
+  // it is. An element nobody was graded on last week (scored 0) is shown as
+  // such rather than as a clean pass it didn't earn.
   var rankingLines = (ranking || []).map(function (r) {
     if (!r.scored) return '  - ' + r.label + ': not graded on any call last week';
     return '  - ' + r.label + ': failed ' + r.failed + ' of ' + r.scored + ' graded call(s)';
@@ -3160,8 +3300,9 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     'Tomás,\n\n' +
     'This week\'s training focus for ' + repCfg.name + ': ' + focusLabel.toUpperCase() +
     (focus ? ' — failed on ' + focus.failed + ' of ' + focus.scored + ' graded call(s)' : '') +
+    scheduleNote +
     ' last week (' + windowLabel + ').\n\n' +
-    (rankingLines.length ? 'All four elements, worst first:\n' + rankingLines.join('\n') + '\n\n' : '') +
+    (rankingLines.length ? 'All elements, worst first:\n' + rankingLines.join('\n') + '\n\n' : '') +
     'The ' + flagged.length + ' call(s) that failed on ' + focusLabel.toLowerCase() + ' — raw data, not a ' +
     'finished playbook. This week\'s session should focus on just these, not older material already ' +
     'covered.\n\n' +
@@ -3208,9 +3349,9 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     escapeHtml_(repCfg.name) + ': ' + escapeHtml_(focusLabel) + '</strong></p>' +
     '<p style="margin:0;">' +
     (focus ? 'Failed on <strong>' + focus.failed + ' of ' + focus.scored + '</strong> graded call(s) ' : '') +
-    'last week (' + escapeHtml_(windowLabel) + ').</p>' +
+    'last week (' + escapeHtml_(windowLabel) + ')' + escapeHtml_(scheduleNote) + '.</p>' +
     '</div>' +
-    (rankingHtml ? '<p style="margin:0 0 4px;">All four elements, worst first:</p>' +
+    (rankingHtml ? '<p style="margin:0 0 4px;">All elements, worst first:</p>' +
       '<ul style="margin:0 0 14px;padding-left:20px;font-size:13px;">' + rankingHtml + '</ul>' : '') +
     '<p>The <strong>' + flagged.length + ' call(s)</strong> that failed on ' +
     escapeHtml_(focusLabel.toLowerCase()) + ' — raw data, not a finished playbook. This week\'s session ' +
@@ -3223,8 +3364,8 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
-function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking) {
-  var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking);
+function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus) {
+  var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus);
   return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL,
     htmlBody: email.htmlBody,
@@ -3232,13 +3373,16 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranki
   }, 2);
 }
 
-function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel) {
+/** `schedule` is optional (one entry of WEEKLY_TRAINING_ROTATION_) — named in the body so "nothing to train" still says what topic was scheduled. */
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
   var body =
     'Tomás,\n\n' +
-    'Nothing flagged for ' + repCfg.name + ' last week (' + windowLabel + ') — none of the four elements ' +
-    '(discovery, framework, asking for the money/booking, objection handling) failed on a graded call, so ' +
-    'there\'s no new material to train on this session. Per Kris\'s ask, this is deliberately NOT a pointer ' +
-    'back to older material — training should stay scoped to what actually happened last week.\n\n' +
+    'Nothing flagged for ' + repCfg.name + ' last week (' + windowLabel + ')' +
+    (schedule ? ' — this week\'s scheduled topic is "' + schedule.label + '", and none of its elements' :
+      ' — none of the graded elements') +
+    ' failed on a graded call, so there\'s no new material to train on this session. Per Kris\'s ask, this is ' +
+    'deliberately NOT a pointer back to older material — training should stay scoped to what actually ' +
+    'happened last week.\n\n' +
     '— Sent automatically ahead of this week\'s session.';
 
   return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no flagged calls last week', body, {
