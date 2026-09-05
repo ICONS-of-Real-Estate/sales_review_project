@@ -79,6 +79,23 @@
       {% endif %}
       <p class="muted" style="font-size:0.8rem;">No phone number is tracked anywhere in this system — only name, email, and call history.</p>
     {% endif %}
+
+    <div class="review-decision-meaning">
+      {% if review_type == 'crm' and card.category == 'Pipeline health' %}
+        <div><strong>Approve</strong> = Yes, confirmed — this pipeline really is stuck and needs real follow-up (archive it, consolidate it, or reassign its leads out). Someone still has to go do that by hand.</div>
+        <div><strong>Reject</strong> = No — this pipeline is fine as-is / still being actively worked. Nothing to do.</div>
+      {% elif review_type == 'crm' and card.category == 'Unrecognized assignee' %}
+        <div><strong>Approve</strong> = Yes, confirmed — this person needs to be identified and someone needs to decide whether their calls should be scored.</div>
+        <div><strong>Reject</strong> = No — this doesn't need follow-up (e.g. a known contractor/VA, or the assignment is already fine).</div>
+      {% elif review_type == 'crm' %}
+        <div><strong>Approve</strong> = Yes, this finding is real and needs follow-up by hand.</div>
+        <div><strong>Reject</strong> = No, this doesn't need any action.</div>
+      {% else %}
+        <div><strong>Real lead</strong> = Yes, this is a genuine prospect that should exist in GHL. This button does NOT create them — someone still has to add them in GHL by hand.</div>
+        <div><strong>Not a lead</strong> = No, this is noise (a newsletter, an internal address, a duplicate, a recording filename) — safe to ignore.</div>
+      {% endif %}
+    </div>
+
     <form method="post" action="/review/decide" class="review-actions">
       <input type="hidden" name="table" value="{{ 'crm_organization_review' if review_type == 'crm' else 'lead_reconciliation' }}">
       <input type="hidden" name="sheet_row" value="{{ card.sheet_row }}">

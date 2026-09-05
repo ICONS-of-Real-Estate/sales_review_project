@@ -363,6 +363,35 @@ def test_review_crm_page_shows_first_undecided_finding(client, db_path, conn):
     assert "1 left to review" in resp.text
 
 
+def test_review_crm_page_shows_pipeline_health_specific_decision_meaning(client, db_path, conn):
+    """Kris, 06/09/2026: "The message on EVERY approve/deny needs to be
+    crystal fucking clear so Tomas can make a decision" — a top-of-page
+    disclaimer isn't enough if Tomás is looking at the buttons, not the
+    header. Each finding category gets its own explicit Approve/Reject
+    meaning right next to the buttons."""
+    _insert_crm_row(conn, sheet_row=2, category="Pipeline health")
+    conn.commit()
+    resp = client.get("/review/crm")
+    assert "this pipeline really is stuck and needs real follow-up" in resp.text
+    assert "this pipeline is fine as-is" in resp.text
+
+
+def test_review_crm_page_shows_unrecognized_assignee_specific_decision_meaning(client, db_path, conn):
+    _insert_crm_row(conn, sheet_row=2, category="Unrecognized assignee")
+    conn.commit()
+    resp = client.get("/review/crm")
+    assert "this person needs to be identified" in resp.text
+    assert "this doesn't need follow-up" in resp.text
+
+
+def test_review_leads_page_shows_real_lead_decision_meaning(client, db_path, conn):
+    _insert_lead_row(conn, sheet_row=2, name="Lucy Quinones")
+    conn.commit()
+    resp = client.get("/review/leads")
+    assert "genuine prospect that should exist in GHL" in resp.text
+    assert "safe to ignore" in resp.text
+
+
 def test_review_crm_page_skips_already_decided_rows(client, db_path, conn):
     _insert_crm_row(conn, sheet_row=2, finding="Already approved", approve=1)
     _insert_crm_row(conn, sheet_row=3, finding="Still pending")
