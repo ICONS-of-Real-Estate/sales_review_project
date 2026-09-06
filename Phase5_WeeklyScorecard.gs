@@ -352,6 +352,37 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
   };
 }
 
+/**
+ * Best-effort lookup of the actual recording (video) that goes with a
+ * "Transcript URL" Doc link — the Sales Call Log has no dedicated recording-
+ * link column, but every transcription script in this project (see
+ * tools/transcribe_sean_calls.py's save_transcript_doc) uploads the
+ * transcript Doc as "<video name> — Transcript" in the SAME Drive folder as
+ * the video itself, so the video is always findable from the transcript by
+ * name. Kris's ask (06/09/2026): "With a feedback on recordings, always
+ * send link to the recording" — the weekly scorecard's worst-call highlight
+ * only ever linked the transcript text before this. Never throws — a
+ * missing/malformed transcriptUrl, a moved/renamed video, or any Drive
+ * error just means no recording link this week, not a broken scorecard.
+ */
+function findRecordingUrlForTranscript_(transcriptUrl) {
+  if (!transcriptUrl) return null;
+  var m = transcriptUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    var transcriptFile = DriveApp.getFileById(m[1]);
+    var videoName = transcriptFile.getName().replace(/ — Transcript$/, '');
+    if (videoName === transcriptFile.getName()) return null; // didn't carry the expected "<name> — Transcript" suffix
+    var parents = transcriptFile.getParents();
+    if (!parents.hasNext()) return null;
+    var it = parents.next().getFilesByName(videoName);
+    return it.hasNext() ? it.next().getUrl() : null;
+  } catch (e) {
+    log_('    ↳ findRecordingUrlForTranscript_ failed for ' + transcriptUrl + ': ' + e);
+    return null;
+  }
+}
+
 /** Deterministic "what to work on this week", from Primary Failure Mode, falling back to the two flags. */
 function priorityToImprove_(stats) {
   if (!stats.weekCalls.length) return null;
@@ -390,14 +421,23 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var priority = priorityToImprove_(stats);
   var worstCall = stats.worstCall;
   var transcriptLine = worstCall
-    ? 'Transcript: ' + (worstCall.transcriptUrl || '(no transcript on file)') + '\n\n'
+    ? 'Transcript: ' + (worstCall.transcriptUrl || '(no transcript on file)') + '\n' +
+      'Recording: ' + (worstCall.recordingUrl || '(recording not found)') + '\n\n'
     : '';
 
-  var taskLevelSection = worstCall && worstCall.feedbackSummary
-    ? 'From ' + worstCall.name + ' this week:\n' + worstCall.feedbackSummary + '\n\n' + transcriptLine
-    : (stats.weekCalls.length
-      ? ''
-      : 'No calls were scored this week.\n\n');
+  // Kris's ask (06/09/2026): "If it's under 3 score, I'll watch and give
+  // feedback" — below that, he reviews the call himself (via the Calibration
+  // Feedback pipeline, Phase16_CalibrationFeedback.gs) instead of the AI's
+  // own auto-generated coaching going out, so the rep isn't getting two
+  // separate (and possibly conflicting) reviews of the same low call.
+  var krisIsReviewingLine = 'Kris is watching this one and will follow up directly with his own feedback.\n\n';
+  var taskLevelSection = worstCall && worstCall.score < 3
+    ? 'From ' + worstCall.name + ' this week:\n' + krisIsReviewingLine + transcriptLine
+    : (worstCall && worstCall.feedbackSummary
+      ? 'From ' + worstCall.name + ' this week:\n' + worstCall.feedbackSummary + '\n\n' + transcriptLine
+      : (stats.weekCalls.length
+        ? ''
+        : 'No calls were scored this week.\n\n'));
 
   // Real bug found live (03/09/2026, Tomás/Kris — April Stephens, Joana):
   // a manual-review-flagged call (e.g. "[BLANK_AUDIO]" for the whole
@@ -476,14 +516,31 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
   var quotedFeedback = worstCall && worstCall.feedbackSummary
     ? escapeHtml_(worstCall.feedbackSummary).replace(/\n/g, '<br>').replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>')
     : '';
-  var taskLevelHtml = worstCall && worstCall.feedbackSummary
+  var recordingLineHtml = worstCall
+    ? '<p>' + (worstCall.recordingUrl
+        ? '<strong>Recording:</strong> <a href="' + escapeHtml_(worstCall.recordingUrl) + '">' +
+          escapeHtml_(worstCall.recordingUrl) + '</a>'
+        : '<strong>Recording:</strong> <i>(recording not found)</i>') + '</p>'
+    : '';
+  // Same "Kris reviews it himself below 3" rule as the plain-text body above.
+  var krisIsReviewingHtml = '<p><i>Kris is watching this one and will follow up directly with his own feedback.</i></p>';
+  var taskLevelHtml = worstCall && worstCall.score < 3
     ? '<p><strong>From ' + escapeHtml_(worstCall.name) + ' this week:</strong></p>' +
-      '<p>' + quotedFeedback + '</p>' +
+      krisIsReviewingHtml +
       '<p>' + (worstCall.transcriptUrl
         ? '<strong>Transcript:</strong> <a href="' + escapeHtml_(worstCall.transcriptUrl) + '">' +
           escapeHtml_(worstCall.transcriptUrl) + '</a>'
-        : '<strong>Transcript:</strong> <i>(no transcript on file)</i>') + '</p>'
-    : (stats.weekCalls.length ? '' : '<p>No calls were scored this week.</p>');
+        : '<strong>Transcript:</strong> <i>(no transcript on file)</i>') + '</p>' +
+      recordingLineHtml
+    : (worstCall && worstCall.feedbackSummary
+      ? '<p><strong>From ' + escapeHtml_(worstCall.name) + ' this week:</strong></p>' +
+        '<p>' + quotedFeedback + '</p>' +
+        '<p>' + (worstCall.transcriptUrl
+          ? '<strong>Transcript:</strong> <a href="' + escapeHtml_(worstCall.transcriptUrl) + '">' +
+            escapeHtml_(worstCall.transcriptUrl) + '</a>'
+          : '<strong>Transcript:</strong> <i>(no transcript on file)</i>') + '</p>' +
+        recordingLineHtml
+      : (stats.weekCalls.length ? '' : '<p>No calls were scored this week.</p>'));
 
   // Same manual-review action item as manualReviewSection above, styled
   // like the compliance-nudge/handoff-brief callouts elsewhere in this
@@ -558,6 +615,13 @@ function buildAndMaybeSendScorecards_(forcePreview) {
 
   CONFIG.REPS.forEach(function (repCfg) {
     var stats = computeRepWeeklyStats_(rows, col, repCfg.name, week.start, week.end, tz);
+    // Resolved here (not inside computeRepWeeklyStats_) so that function stays
+    // a pure, unit-testable computation over already-fetched row values —
+    // this is the one live Drive lookup in the whole pipeline, and only ever
+    // for the single worst call, not every call scored this week.
+    if (stats.worstCall) {
+      stats.worstCall.recordingUrl = findRecordingUrlForTranscript_(stats.worstCall.transcriptUrl);
+    }
     var email = buildWeeklyScorecardEmail_(repCfg, stats, week.start, week.end, tz);
 
     if (forcePreview || !WEEKLY_SCORECARD_CONFIG.ENABLED) {
@@ -791,7 +855,8 @@ function buildWeeklyTrainingSummaryContent_(repName, stats, weekLabel) {
       name: worstCall.name,
       score: worstCall.score,
       feedbackSummary: worstCall.feedbackSummary || '',
-      transcriptUrl: worstCall.transcriptUrl || ''
+      transcriptUrl: worstCall.transcriptUrl || '',
+      recordingUrl: worstCall.recordingUrl || ''
     } : null,
     manualReviewFlags: stats.weekManualReviewFlags,
     priority: priorityToImprove_(stats),
@@ -863,6 +928,14 @@ function renderWeeklyTrainingSummaryDoc_(doc, content) {
     var transcriptPara = body.appendParagraph(transcriptText);
     if (wc.transcriptUrl) {
       transcriptPara.editAsText().setLinkUrl('Transcript: '.length, transcriptText.length - 1, wc.transcriptUrl);
+    }
+
+    // Kris's ask (06/09/2026): "always send link to the recording" — this
+    // Doc only ever linked the transcript text before now.
+    var recordingText = 'Recording: ' + (wc.recordingUrl || '(recording not found)');
+    var recordingPara = body.appendParagraph(recordingText);
+    if (wc.recordingUrl) {
+      recordingPara.editAsText().setLinkUrl('Recording: '.length, recordingText.length - 1, wc.recordingUrl);
     }
   } else {
     body.appendParagraph('No individual call feedback available this week.');

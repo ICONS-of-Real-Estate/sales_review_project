@@ -1069,7 +1069,7 @@ test('buildWeeklyScorecardEmail_ leads with the task-level quote/priority, pushe
     historicCount: 10,
     rolling4WeekAvg: 2.8,
     rolling4WeekCount: 6,
-    worstCall: { name: 'Jane Doe', score: 2, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' },
+    worstCall: { name: 'Jane Doe', score: 3, feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.' },
     weekFailureModes: ['objections_missed'],
     weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
     weekMissingOutcomeDisposition: 1,
@@ -1110,9 +1110,10 @@ test('buildWeeklyScorecardEmail_ now includes a styled htmlBody with bold labels
     rolling4WeekAvg: 2.8,
     rolling4WeekCount: 6,
     worstCall: {
-      name: 'Jane Doe', score: 2,
+      name: 'Jane Doe', score: 3,
       feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.',
-      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit'
+      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit',
+      recordingUrl: 'https://drive.google.com/file/d/xyz789/view'
     },
     weekFailureModes: ['objections_missed'],
     weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
@@ -1136,8 +1137,55 @@ test('buildWeeklyScorecardEmail_ now includes a styled htmlBody with bold labels
     '"For the record" must render as a real bulleted list, not <br>-separated lines');
   assert.ok(email.htmlBody.indexOf('<a href="https://docs.google.com/document/d/abc123/edit"') !== -1,
     'the worst call\'s transcript must be a clickable link');
+  assert.ok(email.htmlBody.indexOf('<a href="https://drive.google.com/file/d/xyz789/view"') !== -1,
+    'the worst call\'s recording must also be a clickable link (Kris\'s ask 06/09/2026: "always send link to the recording")');
   assert.ok(email.htmlBody.indexOf('Dave Gove') !== -1 && email.htmlBody.indexOf('Jane Doe') !== -1,
     'every this-week call must be listed, not just the worst one');
+});
+
+test('buildWeeklyScorecardEmail_ links the recording in plain text too, and says plainly when one couldn\'t be found', () => {
+  const stats = {
+    weekCalls: [{ name: 'Jane Doe', score: 4 }],
+    weeklyAvg: 4, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    rolling4WeekAvg: 3, rolling4WeekCount: 5,
+    worstCall: { name: 'Jane Doe', score: 4, feedbackSummary: 'Solid call.', transcriptUrl: 'https://docs.google.com/document/d/abc/edit', recordingUrl: 'https://drive.google.com/file/d/vid1/view' },
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0,
+    weekManualReviewFlags: []
+  };
+  gas.Utilities = { formatDate: (d, tz, fmt) => (fmt === 'dd/MM' ? '10/08' : '10/08/2026') };
+  const email = gas.buildWeeklyScorecardEmail_({ name: 'Sean', email: 'sean@example.com' }, stats, new gas.Date(2026, 7, 10), new gas.Date(2026, 7, 17), 'UTC');
+  assert.ok(email.body.indexOf('Recording: https://drive.google.com/file/d/vid1/view') !== -1);
+
+  const statsNoRecording = Object.assign({}, stats, { worstCall: Object.assign({}, stats.worstCall, { recordingUrl: null }) });
+  const email2 = gas.buildWeeklyScorecardEmail_({ name: 'Sean', email: 'sean@example.com' }, statsNoRecording, new gas.Date(2026, 7, 10), new gas.Date(2026, 7, 17), 'UTC');
+  assert.ok(email2.body.indexOf('Recording: (recording not found)') !== -1);
+});
+
+test('buildWeeklyScorecardEmail_ holds back the AI\'s own feedback quote for a worst call scored under 3, telling the rep Kris will review it personally instead (Kris\'s ask 06/09/2026: "If it\'s under 3 score, I\'ll watch and give feedback" — avoids the rep getting two separate, possibly conflicting reviews of the same call)', () => {
+  const stats = {
+    weekCalls: [{ name: 'Jane Doe', score: 2 }],
+    weeklyAvg: 2, historicAvg: 3, historicAvgBeforeThisWeek: 3.2, historicCount: 10,
+    rolling4WeekAvg: 2.8, rolling4WeekCount: 6,
+    worstCall: {
+      name: 'Jane Doe', score: 2,
+      feedbackSummary: '"I guess we could talk price" — you let that sit instead of isolating it.',
+      transcriptUrl: 'https://docs.google.com/document/d/abc123/edit',
+      recordingUrl: 'https://drive.google.com/file/d/xyz789/view'
+    },
+    weekFailureModes: ['objections_missed'], weekFlagMiss: { askedForClose: 0, objectionsHandled: 1 },
+    weekMissingOutcomeDisposition: 0, weekManualReviewFlags: []
+  };
+  gas.Utilities = { formatDate: (d, tz, fmt) => (fmt === 'dd/MM' ? '10/08' : '10/08/2026') };
+  const email = gas.buildWeeklyScorecardEmail_({ name: 'Sean', email: 'sean@example.com' }, stats, new gas.Date(2026, 7, 10), new gas.Date(2026, 7, 17), 'UTC');
+
+  assert.equal(email.body.indexOf('I guess we could talk price'), -1, 'the AI\'s own quote must not appear for a sub-3 worst call');
+  assert.match(email.body, /Kris is watching this one and will follow up directly/);
+  assert.ok(email.body.indexOf('Recording: https://drive.google.com/file/d/xyz789/view') !== -1,
+    'the recording link must still be sent even when the AI feedback is held back');
+
+  assert.equal(email.htmlBody.indexOf('I guess we could talk price'), -1);
+  assert.match(email.htmlBody, /Kris is watching this one and will follow up directly/);
+  assert.ok(email.htmlBody.indexOf('<a href="https://drive.google.com/file/d/xyz789/view"') !== -1);
 });
 
 test('buildWeeklyScorecardEmail_ surfaces a manual-review-flagged call as an action item (ask for a new recording), never as a score (Kris\'s real complaint, 03/09/2026, April Stephens: a [BLANK_AUDIO] recording failure carried a real-looking "1/5" and could still win "worst call" — computeRepWeeklyStats_ now keeps it out of stats.weekCalls/worstCall entirely; this only ever sees it via weekManualReviewFlags)', () => {
@@ -1203,11 +1251,74 @@ test('buildWeeklyTrainingSummaryContent_ carries manualReviewFlags through (sepa
   assert.equal(content.hasCalls, true);
   assert.equal(content.worstCall.name, 'Dave Gove');
   assert.equal(content.worstCall.transcriptUrl, 'https://docs.google.com/document/d/abc/edit');
+  assert.equal(content.worstCall.recordingUrl, ''); // stats.worstCall carried no recordingUrl in this fixture — defaults to '', never undefined
   assert.equal(content.weekCalls.length, 1);
   assert.equal(content.weekMissingOutcomeDisposition, 2);
   assert.equal(content.manualReviewFlags.length, 1);
   assert.equal(content.manualReviewFlags[0].name, 'April Stephens');
   assert.ok(content.priority, 'expected a priority string, even a fallback one');
+});
+
+test('buildWeeklyTrainingSummaryContent_ carries the worst call\'s recordingUrl through when set', () => {
+  const stats = {
+    weekCalls: [{ name: 'Dave Gove', score: 4 }],
+    weeklyAvg: 4, historicAvg: 3, historicAvgBeforeThisWeek: 3, historicCount: 5,
+    rolling4WeekAvg: 3, rolling4WeekCount: 5,
+    worstCall: {
+      name: 'Dave Gove', score: 4, feedbackSummary: 'Solid call overall.',
+      transcriptUrl: 'https://docs.google.com/document/d/abc/edit',
+      recordingUrl: 'https://drive.google.com/file/d/vid1/view'
+    },
+    weekFailureModes: [], weekFlagMiss: { askedForClose: 0, objectionsHandled: 0 }, weekMissingOutcomeDisposition: 0,
+    weekManualReviewFlags: []
+  };
+  const content = gas.buildWeeklyTrainingSummaryContent_('Joana', stats, '24/08–30/08/2026');
+  assert.equal(content.worstCall.recordingUrl, 'https://drive.google.com/file/d/vid1/view');
+});
+
+test('findRecordingUrlForTranscript_ finds the sibling video in the transcript Doc\'s own parent folder, by stripping the " — Transcript" suffix (matches tools/transcribe_sean_calls.py\'s save_transcript_doc naming convention)', () => {
+  const originalDriveApp = gas.DriveApp;
+  const fakeVideoFile = { getUrl: () => 'https://drive.google.com/file/d/vid1/view' };
+  const fakeFolder = {
+    getFilesByName: (name) => {
+      const match = name === 'Julio Lopez.mp4';
+      let served = false;
+      return { hasNext: () => match && !served, next: () => { served = true; return fakeVideoFile; } };
+    }
+  };
+  const fakeTranscriptFile = {
+    getName: () => 'Julio Lopez.mp4 — Transcript',
+    getParents: () => { let served = false; return { hasNext: () => !served, next: () => { served = true; return fakeFolder; } }; }
+  };
+  gas.DriveApp = { getFileById: (id) => { assert.equal(id, 'abc123'); return fakeTranscriptFile; } };
+  try {
+    const url = gas.findRecordingUrlForTranscript_('https://docs.google.com/document/d/abc123/edit');
+    assert.equal(url, 'https://drive.google.com/file/d/vid1/view');
+  } finally {
+    gas.DriveApp = originalDriveApp;
+  }
+});
+
+test('findRecordingUrlForTranscript_ returns null (never throws) for a blank URL, a URL with no extractable file id, a transcript name with no "— Transcript" suffix, a transcript with no parent folder, or any Drive error', () => {
+  const originalDriveApp = gas.DriveApp;
+  try {
+    assert.equal(gas.findRecordingUrlForTranscript_(''), null);
+    assert.equal(gas.findRecordingUrlForTranscript_(null), null);
+    assert.equal(gas.findRecordingUrlForTranscript_('not a real url'), null);
+
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Some Video.mp4' /* no " — Transcript" suffix */ }) };
+    assert.equal(gas.findRecordingUrlForTranscript_('https://docs.google.com/document/d/abc123/edit'), null);
+
+    gas.DriveApp = {
+      getFileById: () => ({ getName: () => 'Julio Lopez.mp4 — Transcript', getParents: () => ({ hasNext: () => false }) })
+    };
+    assert.equal(gas.findRecordingUrlForTranscript_('https://docs.google.com/document/d/abc123/edit'), null);
+
+    gas.DriveApp = { getFileById: () => { throw new Error('Drive is down'); } };
+    assert.equal(gas.findRecordingUrlForTranscript_('https://docs.google.com/document/d/abc123/edit'), null);
+  } finally {
+    gas.DriveApp = originalDriveApp;
+  }
 });
 
 test('buildWeeklyTrainingSummaryContent_ handles no calls this week and no worst call gracefully, without throwing', () => {
