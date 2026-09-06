@@ -620,6 +620,38 @@ test('pickRandomSample_ returns empty for an empty pool or n=0', () => {
   assert.equal(gas.pickRandomSample_(['a'], 0, () => 0).length, 0);
 });
 
+test('pickOneCallPerRep_ picks exactly one call per distinct rep, never two from the same rep', () => {
+  // Sean has 3 eligible rows, Joana has 1, Tomás has 0 — the real bug
+  // (04/09/2026 digest): a flat pickRandomSample_ over the combined pool
+  // drew Sean twice and skipped Joana entirely, purely because Sean had
+  // more rows in the pool. Grouping first must guarantee one each.
+  const eligible = [
+    { rowIndex: 1, rep: 'Sean' },
+    { rowIndex: 2, rep: 'Sean' },
+    { rowIndex: 3, rep: 'Sean' },
+    { rowIndex: 4, rep: 'Joana' }
+  ];
+  const sample = gas.pickOneCallPerRep_(eligible, () => 0);
+  assert.equal(sample.length, 2, 'expected exactly one call per distinct rep (Sean, Joana)');
+  const reps = Array.prototype.slice.call(sample).map((c) => c.rep).sort();
+  assert.deepEqual(reps, ['Joana', 'Sean']);
+});
+
+test('pickOneCallPerRep_ uses randomFn to choose WHICH call within a rep\'s group, not just the first', () => {
+  const eligible = [
+    { rowIndex: 10, rep: 'Sean' },
+    { rowIndex: 20, rep: 'Sean' },
+    { rowIndex: 30, rep: 'Sean' }
+  ];
+  const sample = gas.pickOneCallPerRep_(eligible, () => 0.99);
+  assert.equal(sample.length, 1);
+  assert.equal(sample[0].rowIndex, 30, 'randomFn close to 1 should pick the last item in the group');
+});
+
+test('pickOneCallPerRep_ returns empty for an empty pool', () => {
+  assert.equal(gas.pickOneCallPerRep_([], () => 0).length, 0);
+});
+
 test('pickDuplicateRowsToDelete_ leaves distinct (rep, name, date) rows alone', () => {
   const rows = [
     { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },

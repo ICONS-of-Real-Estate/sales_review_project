@@ -4741,6 +4741,42 @@ function pickRandomSample_(items, n, randomFn) {
   return picked;
 }
 
+/**
+ * Groups eligible calls by item.rep and picks exactly one random call per
+ * rep — never two from the same rep, never zero for a rep that has at
+ * least one eligible call. Fixes the real bug Kris hit live (04/09/2026
+ * digest): pickRandomSample_() alone draws uniformly from the COMBINED
+ * pool across all reps, so a rep with more eligible rows just crowds out
+ * one with fewer — that week Sean was drawn twice and Joana (who had
+ * eligible rows) wasn't drawn at all. Grouping first guarantees coverage;
+ * which call gets picked within a rep's group is still random (via
+ * randomFn, injectable for tests). Order of reps in the returned array
+ * follows first-appearance order in `eligible`. Pure/no side effects.
+ *
+ * Deliberately does NOT hardcode a rep list (e.g. to exclude Bens, who
+ * doesn't take Sales Calls per CLAUDE.md) — it only ever groups reps that
+ * actually show up with an eligible SCORED row, so a rep who never has
+ * scored Sales Call rows (Bens) simply never appears here without special-
+ * casing his name.
+ */
+function pickOneCallPerRep_(eligible, randomFn) {
+  var order = [];
+  var byRep = {};
+  eligible.forEach(function (item) {
+    var key = String(item.rep || '').trim() || '(no rep)';
+    if (!byRep[key]) {
+      byRep[key] = [];
+      order.push(key);
+    }
+    byRep[key].push(item);
+  });
+  return order.map(function (key) {
+    var group = byRep[key];
+    var idx = Math.floor(randomFn() * group.length);
+    return group[idx];
+  });
+}
+
 /** Run this FIRST from the editor. Logs the sample it would email — sends nothing. */
 function previewRandomCalibrationSample() {
   return buildRandomCalibrationSampleImpl_(/*forcePreview=*/true);
@@ -4802,7 +4838,13 @@ function buildRandomCalibrationSampleImpl_(forcePreview) {
     return null;
   }
 
-  var sample = pickRandomSample_(eligible, RANDOM_CALIBRATION_CONFIG.SAMPLE_SIZE, Math.random);
+  // One call per rep first (never two from the same rep, per Kris's ask
+  // "Make it one per person" 06/09/2026 — see pickOneCallPerRep_'s comment
+  // for the bug this fixes), THEN cap at SAMPLE_SIZE if more reps than that
+  // are eligible in a given week (picks which reps randomly, not which calls
+  // — each rep still contributes at most one).
+  var perRep = pickOneCallPerRep_(eligible, Math.random);
+  var sample = pickRandomSample_(perRep, RANDOM_CALIBRATION_CONFIG.SAMPLE_SIZE, Math.random);
 
   log_('buildRandomCalibrationSample: picked ' + sample.length + ' random call(s) for blind calibration review.');
   sample.forEach(function (c) {
@@ -4837,9 +4879,16 @@ function salesCallLogRowLink_(sheet, rowIndex) {
  * paragraph.
  */
 function sendRandomCalibrationDigest_(sample, forcePreview, sheet) {
-  var intro = 'This week\'s ' + sample.length + ' random calibration call(s) — reviewed BLIND of the AI\'s ' +
-    'own flag/score, per QA_COACHING_RESEARCH_REPORT.md §1.1. For each, fill in "Kris Manual Review ' +
-    'Verdict" (Yes/No) in the Sales Call Log — same column the flagged review queue uses — so ' +
+  // Kris's ask (06/09/2026), reading a live digest: "INstructions on how to
+  // give feedback aren't clear." The old intro named the column but never
+  // said HOW to reach it (click "Sheet row" below, it's a real column in
+  // that same row) or what Yes/No actually records (whether the call itself
+  // — not the AI's score — was handled well). Spelled both out explicitly.
+  var intro = 'This week\'s ' + sample.length + ' random calibration call(s), one per rep — reviewed BLIND of the ' +
+    'AI\'s own flag/score, per QA_COACHING_RESEARCH_REPORT.md §1.1. How to give feedback: click each "Sheet row" ' +
+    'link below, listen to (or read) the call via the Transcript link, then in that same row of the Sales Call ' +
+    'Log type Yes or No into the "Kris Manual Review Verdict" column (Yes = the call itself was handled well, ' +
+    'independent of whatever the AI scored it) — same column the flagged review queue uses, so ' +
     'runWeeklyCalibration() picks it up automatically:';
 
   var plainLines = [intro, ''];
