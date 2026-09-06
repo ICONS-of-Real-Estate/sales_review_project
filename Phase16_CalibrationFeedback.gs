@@ -60,7 +60,7 @@
  */
 
 var CALIBRATION_FEEDBACK_CONFIG = {
-  ENABLED: false, // flip after previewCalibrationFeedback() looks right
+  ENABLED: true, // flipped 06/09/2026 after previewCalibrationFeedback() looked right on all 5 real recordings (2 Sean, 1 Joana, 2 Tomás)
   TRIGGER_HOUR: 9,
   FOLDERS: {
     Sean: '1vkSV1_rNnfFXMYr_RHsdIZ7ID3OjvDWX',
