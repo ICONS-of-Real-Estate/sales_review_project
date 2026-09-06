@@ -36,14 +36,16 @@
  *      hasn't handled yet, asks the same judge model Phase 6 uses (a new
  *      lightweight prompt built for grading Kris's spoken feedback on one
  *      call rather than a full 1:1 training-call transcript) to turn the
- *      transcript into a short coaching-summary paragraph PLUS objections/
- *      close-ask/framework gaps to drill, emails the rep the video link +
- *      that summary, and merges the drill topics into the exact same
- *      TRAINING_OBJECTIONS_<rep>/TRAINING_CLOSE_DRILL_<rep>/
- *      TRAINING_FRAMEWORK_<rep> Script Properties Phase 6 already writes —
- *      so Phase 7's daily practice assignment emails pick this up
- *      automatically with zero changes on that end ("incorporate what I
- *      say into the training plan for the coming week").
+ *      transcript into a bold one-line headline plus bulleted feedback
+ *      points PLUS objections/close-ask/framework gaps to drill, emails the
+ *      rep the video link (and when it was recorded) + that breakdown +
+ *      what just got added to their practice plan, and merges the drill
+ *      topics into the exact same TRAINING_OBJECTIONS_<rep>/
+ *      TRAINING_CLOSE_DRILL_<rep>/TRAINING_FRAMEWORK_<rep> Script Properties
+ *      Phase 6 already writes — so Phase 7's daily practice assignment
+ *      emails pick this up automatically with zero changes on that end
+ *      ("incorporate what I say into the training plan for the coming
+ *      week").
  *   4. A "<video name> — Feedback Sent" marker Doc gets dropped in the same
  *      folder once the email goes out, so a re-run never double-sends —
  *      same "write the marker before/around the real work" pattern Phase 6
@@ -104,11 +106,12 @@ function calibrationFeedbackAlreadySent_(folder, videoFile) {
  * Lightweight sibling of Phase6's buildTrainingReviewSystemPrompt_ — same
  * three drill fields (objections_to_drill/close_ask_drill/
  * framework_gaps_to_drill), same JSON shape, so the result plugs straight
- * into the SAME Script Properties/Phase 7 pipeline, plus a
- * "feedback_summary" field the rep-facing email actually shows — grading
- * Kris's own spoken/written feedback on one sales call rather than a
- * transcript of a full 1:1 training session between Tomás and the rep, so
- * this needed its own prompt rather than reusing Phase 6's.
+ * into the SAME Script Properties/Phase 7 pipeline, plus "headline"/
+ * "feedback_points" fields the rep-facing email renders as a bold headline
+ * and a real bulleted list — grading Kris's own spoken/written feedback on
+ * one sales call rather than a transcript of a full 1:1 training session
+ * between Tomás and the rep, so this needed its own prompt rather than
+ * reusing Phase 6's.
  */
 function buildCalibrationFeedbackJudgeSystemPrompt_(rep) {
   var role = trainingReviewRoleFor_(rep);
@@ -125,9 +128,11 @@ function buildCalibrationFeedbackJudgeSystemPrompt_(rep) {
       'prospect — part of a blind weekly calibration review, not a transcript of a training call or the sales ' +
       'call itself.',
     'Two things to produce for ' + rep + ':',
-    '  1. A short, faithful summary of what Kris actually said — his real feedback, in his own substance and ' +
-      'tone, not generic coaching invented on top of it. This gets emailed to ' + rep + ' directly, alongside the ' +
-      'recording itself, so it needs to read as "here\'s what Kris said," not as a rewritten review.',
+    '  1. A faithful breakdown of what Kris actually said — his real feedback, in his own substance, not generic ' +
+      'coaching invented on top of it. Split it into a ONE-SENTENCE HEADLINE (the single biggest verdict/point he ' +
+      'made) plus a separate bullet point for every other distinct thing he said — each bullet short (1-2 ' +
+      'sentences) and real, quoting his own words where useful. This gets emailed to ' + rep + ' directly, ' +
+      'alongside the recording itself, so it needs to read as "here\'s what Kris said," not as a rewritten review.',
     '  2. Concrete, actionable drill topics for ' + rep + '\'s coming week of daily self-practice, pulled only ' +
       'from what Kris\'s feedback actually says — do not invent gaps he doesn\'t mention.',
     '',
@@ -141,8 +146,10 @@ function buildCalibrationFeedbackJudgeSystemPrompt_(rep) {
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',
     '{',
-    '  "feedback_summary": "string — faithful summary of Kris\'s actual spoken feedback, 2-5 sentences. If it ' +
-      'covers more than one distinct point, put each on its own line separated by a literal \\n.",',
+    '  "headline": "string — the single biggest verdict/point from Kris\'s feedback, one sentence.",',
+    '  "feedback_points": [',
+    '    "string — one other distinct point Kris made, short, quoting him where useful"',
+    '  ],',
     '  "objections_to_drill": [',
     '    { "label": "string", "note": "string" }',
     '  ],',
@@ -166,7 +173,9 @@ function buildCalibrationFeedbackJudgeUserPrompt_(rep, videoTitle, transcriptTex
 
 function isValidCalibrationFeedbackSchema_(obj) {
   return !!(obj &&
-    typeof obj.feedback_summary === 'string' &&
+    typeof obj.headline === 'string' &&
+    Array.isArray(obj.feedback_points) &&
+    obj.feedback_points.every(function (p) { return typeof p === 'string'; }) &&
     Array.isArray(obj.objections_to_drill) &&
     obj.objections_to_drill.every(function (o) {
       return o && typeof o.label === 'string' && typeof o.note === 'string';
@@ -222,8 +231,8 @@ function gradeCalibrationFeedbackTranscript_(rep, videoTitle, transcriptText) {
     }
   }
   return {
-    feedback_summary: 'Automated summary unavailable this run — watch the recording directly for Kris\'s feedback.',
-    objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
+    headline: 'Automated summary unavailable this run — watch the recording directly for Kris\'s feedback.',
+    feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
   };
 }
 
@@ -252,20 +261,85 @@ function softenProfanityForJudge_(text) {
 }
 
 /**
- * Rep-facing email: the video link plus Kris's (AI-summarized) feedback —
- * this is blind calibration feedback on one specific call, so it stays
- * short and points the rep at the recording for full context rather than
- * trying to replace it.
+ * Strips the file extension and a leading "<rep> " prefix off a raw Drive
+ * filename for display (e.g. "Sean Margaret Bruno.mp4" -> "Margaret Bruno")
+ * — Kris's real complaint (06/09/2026): the email showed the raw filename
+ * verbatim and "looks bad." Never used for anything that has to match a
+ * real Drive file name (transcript/marker lookups keep using the raw name).
  */
-function buildCalibrationFeedbackEmail_(rep, videoTitle, videoUrl, feedbackSummary) {
-  var subject = '[Calibration feedback] ' + videoTitle;
-  var body = 'Kris recorded feedback for you — ' + videoTitle + ':\n\n' +
+function calibrationFeedbackDisplayTitle_(videoTitle, rep) {
+  var name = videoTitle.replace(/\.[a-zA-Z0-9]{2,5}$/, '');
+  var repPrefix = new RegExp('^' + rep.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[-—]?\\s*', 'i');
+  return name.replace(repPrefix, '').trim() || name.trim();
+}
+
+/**
+ * One plain-text line per drill topic just merged into the rep's training
+ * plan — Kris's ask (06/09/2026): "what has been added to practice" needs
+ * to be visible in the email itself, not just something that silently shows
+ * up later in a daily practice assignment. Empty array when nothing was
+ * extracted (a clean call, or the judge model fell back after a failure) —
+ * callers show a "nothing new" line for that case instead of an empty list.
+ */
+function calibrationFeedbackDrillSummaryLines_(graded) {
+  var lines = [];
+  (graded.objections_to_drill || []).forEach(function (o) {
+    lines.push('Objection — ' + o.label + ': ' + o.note);
+  });
+  if (graded.close_ask_drill) {
+    lines.push('Close ask — ' + graded.close_ask_drill.label + ': ' + graded.close_ask_drill.note);
+  }
+  (graded.framework_gaps_to_drill || []).forEach(function (f) {
+    lines.push('Framework (' + (FRAMEWORK_TOPIC_LABELS_[f.topic] || f.topic) + ') — ' + f.note);
+  });
+  return lines;
+}
+
+/** Wraps "..." quoted substrings in <i> — same convention buildWeeklyScorecardEmail_ (Phase5) already uses for quoted transcript excerpts. Escapes first, so this must run on already-escaped text. */
+function italicizeQuotesHtml_(escapedText) {
+  return escapedText.replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
+}
+
+/**
+ * Rep-facing email: the video link, when it was recorded, Kris's (AI-
+ * broken-out) feedback as a bold headline plus real bullet points, and what
+ * just got added to the rep's practice plan — Kris's ask (06/09/2026): the
+ * first version of this email "looks bad," needed bullet points/bold/
+ * italic, the recording date, and visibility into what changed on the
+ * practice side.
+ */
+function buildCalibrationFeedbackEmail_(rep, videoTitle, videoUrl, recordedDateLabel, graded) {
+  var displayTitle = calibrationFeedbackDisplayTitle_(videoTitle, rep);
+  var subject = '[Calibration feedback] ' + displayTitle;
+  var drillLines = calibrationFeedbackDrillSummaryLines_(graded);
+
+  var body =
+    'Kris recorded feedback for you — ' + displayTitle + ' (recorded ' + recordedDateLabel + '):\n\n' +
     'Recording: ' + videoUrl + '\n\n' +
-    'His feedback:\n' + feedbackSummary;
+    'His feedback:\n' +
+    graded.headline + '\n' +
+    (graded.feedback_points || []).map(function (p) { return '• ' + p; }).join('\n') +
+    '\n\n' +
+    'Added to your practice plan this week:\n' +
+    (drillLines.length ? drillLines.map(function (l) { return '• ' + l; }).join('\n') : '(nothing new this time)');
+
   var htmlBody = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
-    '<p>Kris recorded feedback for you — <strong>' + escapeHtml_(videoTitle) + '</strong>:</p>' +
+    '<p>Kris recorded feedback for you — <strong>' + escapeHtml_(displayTitle) + '</strong> ' +
+    '(recorded ' + escapeHtml_(recordedDateLabel) + '):</p>' +
     '<p><a href="' + escapeHtml_(videoUrl) + '">Watch the recording</a></p>' +
-    '<p><strong>His feedback:</strong><br>' + escapeHtml_(feedbackSummary).replace(/\n/g, '<br>') + '</p>' +
+    '<p><strong>His feedback:</strong></p>' +
+    '<p><strong>' + italicizeQuotesHtml_(escapeHtml_(graded.headline)) + '</strong></p>' +
+    (graded.feedback_points && graded.feedback_points.length
+      ? '<ul style="margin:0 0 12px 0;padding-left:20px;">' +
+        graded.feedback_points.map(function (p) { return '<li>' + italicizeQuotesHtml_(escapeHtml_(p)) + '</li>'; }).join('') +
+        '</ul>'
+      : '') +
+    '<p><strong>Added to your practice plan this week:</strong></p>' +
+    (drillLines.length
+      ? '<ul style="margin:0 0 12px 0;padding-left:20px;">' +
+        drillLines.map(function (l) { return '<li>' + escapeHtml_(l) + '</li>'; }).join('') +
+        '</ul>'
+      : '<p><i>(nothing new this time)</i></p>') +
     '</div>';
   return { subject: subject, body: body, htmlBody: htmlBody };
 }
@@ -307,7 +381,8 @@ function processCalibrationFeedbackVideo_(rep, folder, videoFile, transcriptFile
   var transcriptText = getTranscriptText_(transcriptFile);
   var graded = gradeCalibrationFeedbackTranscript_(rep, videoFile.getName(), transcriptText);
   var videoUrl = videoFile.getUrl();
-  var email = buildCalibrationFeedbackEmail_(rep, videoFile.getName(), videoUrl, graded.feedback_summary);
+  var recordedDateLabel = Utilities.formatDate(videoFile.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
+  var email = buildCalibrationFeedbackEmail_(rep, videoFile.getName(), videoUrl, recordedDateLabel, graded);
 
   if (dryRun) {
     log_('(preview) ' + repEmail + ' (cc ' + CONFIG.TOMAS_EMAIL + ', ' + CONFIG.KRIS_EMAIL + ') <- ' +

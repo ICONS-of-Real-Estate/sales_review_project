@@ -7911,7 +7911,8 @@ function fakeCalibrationVideoFile_(name, opts) {
   return {
     getName: () => name,
     getMimeType: () => opts.mimeType || 'video/mp4',
-    getUrl: () => opts.url || ('https://drive.google.com/file/d/' + name)
+    getUrl: () => opts.url || ('https://drive.google.com/file/d/' + name),
+    getDateCreated: () => opts.dateCreated || new Date(2026, 8, 6)
   };
 }
 
@@ -7968,7 +7969,8 @@ test('calibrationFeedbackAlreadySent_ is true only once the "<video name> — Fe
 
 test('isValidCalibrationFeedbackSchema_ accepts a well-formed result including a null close_ask_drill and empty arrays', () => {
   assert.equal(gas.isValidCalibrationFeedbackSchema_({
-    feedback_summary: 'Good energy, but never asked for the money directly.',
+    headline: 'Never asked for the money directly.',
+    feedback_points: ['Good discovery, but let the objection sit unanswered.'],
     objections_to_drill: [{ label: 'too busy', note: 'agree, isolate, repeat' }],
     close_ask_drill: null,
     framework_gaps_to_drill: []
@@ -7977,21 +7979,26 @@ test('isValidCalibrationFeedbackSchema_ accepts a well-formed result including a
 
 test('isValidCalibrationFeedbackSchema_ rejects missing/malformed fields', () => {
   assert.equal(gas.isValidCalibrationFeedbackSchema_(null), false);
-  assert.equal(gas.isValidCalibrationFeedbackSchema_({ objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }), false, 'missing feedback_summary');
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({ feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }), false, 'missing headline');
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({ headline: 'x', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }), false, 'missing feedback_points');
   assert.equal(gas.isValidCalibrationFeedbackSchema_({
-    feedback_summary: 'x', objections_to_drill: [{ label: 'x' }], close_ask_drill: null, framework_gaps_to_drill: []
+    headline: 'x', feedback_points: [1, 2], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
+  }), false, 'feedback_points entries must be strings');
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({
+    headline: 'x', feedback_points: [], objections_to_drill: [{ label: 'x' }], close_ask_drill: null, framework_gaps_to_drill: []
   }), false, 'objection missing note');
 });
 
-test('gradeCalibrationFeedbackTranscript_ falls back to a safe "watch the recording" summary and all-empty drill fields when the judge model never returns parseable JSON', () => {
+test('gradeCalibrationFeedbackTranscript_ falls back to a safe "watch the recording" headline and all-empty drill fields when the judge model never returns parseable JSON', () => {
   const originalConfig = gas.PHASE2_CONFIG;
   const originalCallKimiJudge = gas.callKimiJudge_;
   try {
     gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
     gas.callKimiJudge_ = () => 'not json';
     const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', 'some transcript');
-    assert.equal(typeof result.feedback_summary, 'string');
-    assert.ok(result.feedback_summary.length > 0);
+    assert.equal(typeof result.headline, 'string');
+    assert.ok(result.headline.length > 0);
+    assert.equal(result.feedback_points.length, 0);
     assert.equal(result.objections_to_drill.length, 0);
     assert.equal(result.close_ask_drill, null);
     assert.equal(result.framework_gaps_to_drill.length, 0);
@@ -8001,19 +8008,65 @@ test('gradeCalibrationFeedbackTranscript_ falls back to a safe "watch the record
   }
 });
 
-test('buildCalibrationFeedbackEmail_ includes the video link and the feedback summary verbatim, plain and HTML', () => {
-  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez.mp4',
-    'https://drive.google.com/file/d/abc123', 'Good discovery, but never asked for the money directly.');
-  assert.match(email.subject, /Julio Lopez\.mp4/);
-  assert.ok(email.body.indexOf('https://drive.google.com/file/d/abc123') !== -1);
-  assert.ok(email.body.indexOf('never asked for the money directly') !== -1);
-  assert.match(email.htmlBody, /href="https:\/\/drive\.google\.com\/file\/d\/abc123"/);
-  assert.ok(email.htmlBody.indexOf('never asked for the money directly') !== -1);
+test('calibrationFeedbackDisplayTitle_ strips the extension and a leading "<rep> " prefix for a clean display name (Kris\'s complaint 06/09/2026: the email showed the raw filename verbatim and "looks bad")', () => {
+  assert.equal(gas.calibrationFeedbackDisplayTitle_('Sean Margaret Bruno.mp4', 'Sean'), 'Margaret Bruno');
+  assert.equal(gas.calibrationFeedbackDisplayTitle_('Joana - Jason Pietruszka.mp4', 'Joana'), 'Jason Pietruszka');
+  assert.equal(gas.calibrationFeedbackDisplayTitle_('Julio Lopez.mp4', 'Sean'), 'Julio Lopez', 'no rep prefix to strip must leave the name as-is (minus extension)');
 });
 
-test('buildCalibrationFeedbackEmail_ escapes HTML in the feedback summary so a "<...>" artifact can\'t render as invisible markup (same bug class as the /review/decide escaping fix)', () => {
-  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez.mp4',
-    'https://drive.google.com/x', 'Said "<script>bad</script>" at 04:12');
+test('calibrationFeedbackDrillSummaryLines_ lists every drill topic just merged, empty when nothing was extracted', () => {
+  assert.deepEqual(Array.prototype.slice.call(gas.calibrationFeedbackDrillSummaryLines_({
+    objections_to_drill: [{ label: 'too busy', note: 'agree, isolate, repeat' }],
+    close_ask_drill: { label: 'Ready to get started?', note: 'ask twice' },
+    framework_gaps_to_drill: [{ topic: 'sell_more_houses', note: 'name a concrete case study' }]
+  })), [
+    'Objection — too busy: agree, isolate, repeat',
+    'Close ask — Ready to get started?: ask twice',
+    'Framework (Sell more houses) — name a concrete case study'
+  ]);
+  assert.equal(gas.calibrationFeedbackDrillSummaryLines_({ objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }).length, 0);
+});
+
+test('buildCalibrationFeedbackEmail_ includes the video link, recorded date, bold headline, bulleted feedback points, and what was added to the practice plan', () => {
+  const graded = {
+    headline: 'Never asked for the money directly.',
+    feedback_points: ['Good discovery.', '"I guess we could talk price" — you let that sit instead of isolating it.'],
+    objections_to_drill: [{ label: 'too busy', note: 'agree, isolate, repeat' }],
+    close_ask_drill: null,
+    framework_gaps_to_drill: []
+  };
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Sean Julio Lopez.mp4',
+    'https://drive.google.com/file/d/abc123', '06/09/2026', graded);
+  assert.match(email.subject, /Julio Lopez/);
+  assert.ok(email.body.indexOf('recorded 06/09/2026') !== -1);
+  assert.ok(email.body.indexOf('https://drive.google.com/file/d/abc123') !== -1);
+  assert.ok(email.body.indexOf('Never asked for the money directly.') !== -1);
+  assert.ok(email.body.indexOf('• Good discovery.') !== -1, 'feedback points must render as bullets in plain text');
+  assert.ok(email.body.indexOf('Added to your practice plan this week:') !== -1);
+  assert.ok(email.body.indexOf('Objection — too busy: agree, isolate, repeat') !== -1);
+
+  assert.match(email.htmlBody, /href="https:\/\/drive\.google\.com\/file\/d\/abc123"/);
+  assert.ok(email.htmlBody.indexOf('recorded 06/09/2026') !== -1);
+  assert.ok(email.htmlBody.indexOf('<strong>') !== -1 && email.htmlBody.indexOf('Never asked for the money directly.') !== -1,
+    'the headline must be bolded');
+  assert.ok(email.htmlBody.indexOf('<ul') !== -1 && email.htmlBody.indexOf('<li>Good discovery.</li>') !== -1,
+    'feedback points must render as a real bulleted list');
+  assert.ok(email.htmlBody.indexOf('<i>&quot;I guess we could talk price&quot;</i>') !== -1,
+    'quoted excerpts within a feedback point must be italicized');
+  assert.ok(email.htmlBody.indexOf('<li>Objection — too busy: agree, isolate, repeat</li>') !== -1,
+    'the practice-plan addition must be listed too');
+});
+
+test('buildCalibrationFeedbackEmail_ says plainly when nothing new was added to the practice plan', () => {
+  const graded = { headline: 'Solid call, nothing to flag.', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] };
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Sean Julio Lopez.mp4', 'https://drive.google.com/x', '06/09/2026', graded);
+  assert.ok(email.body.indexOf('(nothing new this time)') !== -1);
+  assert.ok(email.htmlBody.indexOf('(nothing new this time)') !== -1);
+});
+
+test('buildCalibrationFeedbackEmail_ escapes HTML in the headline/feedback points so a "<...>" artifact can\'t render as invisible markup (same bug class as the /review/decide escaping fix)', () => {
+  const graded = { headline: 'Said "<script>bad</script>" at 04:12', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] };
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez.mp4', 'https://drive.google.com/x', '06/09/2026', graded);
   assert.ok(email.htmlBody.indexOf('<script>bad</script>') === -1, 'raw script tag must not appear unescaped');
   assert.ok(email.htmlBody.indexOf('&lt;script&gt;') !== -1);
 });
@@ -8053,26 +8106,28 @@ test('processCalibrationFeedbackVideo_ emails the rep, merges drill topics, and 
   const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
   const originalDocumentApp = gas.DocumentApp;
   const originalDriveApp = gas.DriveApp;
+  const originalUtilities = gas.Utilities;
 
   let sendArgs = null;
   let mergeArgs = null;
   const movedMarkers = [];
   gas.getTranscriptText_ = () => 'Kris\'s spoken feedback transcript text';
   gas.gradeCalibrationFeedbackTranscript_ = () => ({
-    feedback_summary: 'Good energy, ask for the money directly next time.',
-    objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
+    headline: 'Good energy, ask for the money directly next time.',
+    feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
   });
   gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
   gas.mergeCalibrationDrillIntoTrainingProperties_ = (rep, graded) => { mergeArgs = [rep, graded]; };
   const fakeMarkerDoc = { getBody: () => ({ setText: () => {} }), saveAndClose: () => {}, getId: () => 'marker-id' };
   gas.DocumentApp = { create: () => fakeMarkerDoc };
   gas.DriveApp = { getFileById: (id) => ({ moveTo: (f) => movedMarkers.push({ id, folder: f }) }) };
+  gas.Utilities = { formatDate: () => '06/09/2026' };
 
   try {
     const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, false);
     assert.equal(didWork, true);
     assert.equal(sendArgs[0], 'sean@iconsofrealestate.com', 'must send to Sean\'s real CONFIG.REPS email');
-    assert.ok(sendArgs[1].indexOf('Julio Lopez.mp4') !== -1, 'subject must reference the recording');
+    assert.ok(sendArgs[1].indexOf('Julio Lopez') !== -1, 'subject must reference the recording');
     assert.deepEqual(mergeArgs[0], 'Sean');
     assert.equal(movedMarkers.length, 1, 'the Feedback Sent marker must be moved into the rep\'s folder');
     assert.equal(movedMarkers[0].folder, folder);
@@ -8083,6 +8138,7 @@ test('processCalibrationFeedbackVideo_ emails the rep, merges drill topics, and 
     gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
     gas.DocumentApp = originalDocumentApp;
     gas.DriveApp = originalDriveApp;
+    gas.Utilities = originalUtilities;
   }
 });
 
@@ -8094,10 +8150,12 @@ test('processCalibrationFeedbackVideo_ never merges or marks sent when guardedSe
   const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
   const originalGuardedSend = gas.guardedSend_;
   const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
+  const originalUtilities = gas.Utilities;
   gas.getTranscriptText_ = () => 'transcript text';
-  gas.gradeCalibrationFeedbackTranscript_ = () => ({ feedback_summary: 'x', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+  gas.gradeCalibrationFeedbackTranscript_ = () => ({ headline: 'x', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
   gas.guardedSend_ = () => false;
   gas.mergeCalibrationDrillIntoTrainingProperties_ = () => { throw new Error('must not merge — send failed'); };
+  gas.Utilities = { formatDate: () => '06/09/2026' };
   try {
     const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, false);
     assert.equal(didWork, false);
@@ -8106,29 +8164,32 @@ test('processCalibrationFeedbackVideo_ never merges or marks sent when guardedSe
     gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
     gas.guardedSend_ = originalGuardedSend;
     gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
+    gas.Utilities = originalUtilities;
   }
 });
 
-test('processCalibrationFeedbackVideo_ in dry-run logs but never sends, grades, merges, or writes', () => {
+test('processCalibrationFeedbackVideo_ in dry-run logs but never sends, merges, or writes', () => {
   const folder = fakeCalibrationFolder_([]);
   const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
   const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
   const originalGetTranscriptText = gas.getTranscriptText_;
   const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
   const originalGuardedSend = gas.guardedSend_;
+  const originalUtilities = gas.Utilities;
   gas.getTranscriptText_ = () => 'transcript text';
-  gas.gradeCalibrationFeedbackTranscript_ = () => { throw new Error('must not grade in dry-run before the preview log line'); };
   gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
+  gas.Utilities = { formatDate: () => '06/09/2026' };
   try {
     // gradeCalibrationFeedbackTranscript_ IS called before the dryRun check (it builds the
     // preview email body), so stub it to succeed and only assert nothing downstream fires.
-    gas.gradeCalibrationFeedbackTranscript_ = () => ({ feedback_summary: 'x', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+    gas.gradeCalibrationFeedbackTranscript_ = () => ({ headline: 'x', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
     const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, true);
     assert.equal(didWork, false);
   } finally {
     gas.getTranscriptText_ = originalGetTranscriptText;
     gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
     gas.guardedSend_ = originalGuardedSend;
+    gas.Utilities = originalUtilities;
   }
 });
 
@@ -8231,10 +8292,10 @@ test('gradeCalibrationFeedbackTranscript_ retries with softened language after a
       if (call === 1) {
         throw new Error('LlmTransportError_: LiteLLM proxy HTTP 400: {"error":{"code":400,"message":"The request was rejected because it was considered high risk","param":"prompt","type":"content_filter"}}');
       }
-      return JSON.stringify({ feedback_summary: 'Good energy, ask for the close directly.', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+      return JSON.stringify({ headline: 'Good energy, ask for the close directly.', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
     };
     const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', "don't fucking send people links, that's bullshit");
-    assert.equal(result.feedback_summary, 'Good energy, ask for the close directly.');
+    assert.equal(result.headline, 'Good energy, ask for the close directly.');
     assert.equal(promptsSeen.length, 2);
     assert.ok(promptsSeen[0].indexOf('fucking') !== -1, 'first attempt must send the real transcript, unmodified');
     assert.ok(promptsSeen[1].indexOf('fucking') === -1, 'second attempt must send the softened transcript, not the identical rejected text');
@@ -8254,7 +8315,8 @@ test('gradeCalibrationFeedbackTranscript_ still falls back safely when even the 
       throw new Error('LlmTransportError_: LiteLLM proxy HTTP 400: {"error":{"code":400,"message":"high risk","type":"content_filter"}}');
     };
     const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', 'fucking bullshit transcript');
-    assert.ok(result.feedback_summary.indexOf('watch the recording directly') !== -1);
+    assert.ok(result.headline.indexOf('watch the recording directly') !== -1);
+    assert.equal(result.feedback_points.length, 0);
     assert.equal(result.objections_to_drill.length, 0);
   } finally {
     gas.PHASE2_CONFIG = originalConfig;
