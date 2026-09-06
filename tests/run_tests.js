@@ -7785,81 +7785,102 @@ test('repairCrmOrganizationReviewAssigneeNames_ rewrites legacy and lingering-ID
 
 
 // ---------------------------------------------------------------------------
-// Phase16_CalibrationFeedback.gs — Kris's ask (06/09/2026): "Where do I put
-// the feedback recordings? ... send the video link and the notes to the rep.
-// Plus learn from it." Video+notes land on the same Sales Call Log row the
-// calibration digest already pointed Kris at; this phase emails the rep and
-// feeds the notes into the SAME drill-topic properties Phase 6/7 already use.
+// Phase16_CalibrationFeedback.gs — Kris's ask (06/09/2026): "I want the code
+// to automatically pick up my training, send email to the rep with my
+// feedback and link to my recording. Incorporate what I say into the
+// training plan for the coming week." Confirmed live: he drops raw videos
+// straight into each rep's Drive folder with no sheet interaction at all —
+// this phase is Drive-folder-driven end to end (video -> transcript, dropped
+// by tools/transcribe_calibration_feedback.py -> judged -> emailed -> merged
+// into the same TRAINING_* properties Phase 6/7 already use).
 // ---------------------------------------------------------------------------
 
-function calibrationFeedbackColMap_() {
-  const col = {};
-  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
-  return col;
+function fakeCalibrationVideoFile_(name, opts) {
+  opts = opts || {};
+  return {
+    getName: () => name,
+    getMimeType: () => opts.mimeType || 'video/mp4',
+    getUrl: () => opts.url || ('https://drive.google.com/file/d/' + name)
+  };
 }
 
-test('calibrationFeedbackPendingRows_ only picks rows with BOTH a video link and notes, and not already sent', () => {
-  const col = calibrationFeedbackColMap_();
-  const n = gas.SALES_CALL_LOG_HEADERS.length;
-  function row(overrides) {
-    const r = new Array(n).fill('');
-    Object.keys(overrides).forEach((h) => { r[col[h] - 1] = overrides[h]; });
-    return r;
-  }
-  const values = [
-    row({ 'Prospect Name': 'A', Rep: 'Sean', 'Call Date': '01/09/2026', 'Kris Feedback Video': 'https://drive.google.com/x', 'Kris Feedback Notes': 'good energy' }), // pending
-    row({ 'Prospect Name': 'B', Rep: 'Joana', 'Call Date': '02/09/2026', 'Kris Feedback Video': 'https://drive.google.com/y' }), // no notes yet
-    row({ 'Prospect Name': 'C', Rep: 'Tomás', 'Call Date': '03/09/2026', 'Kris Feedback Notes': 'missed the close' }), // no video yet
-    row({ 'Prospect Name': 'D', Rep: 'Sean', 'Call Date': '04/09/2026', 'Kris Feedback Video': 'https://drive.google.com/z', 'Kris Feedback Notes': 'already handled', 'Kris Feedback Sent': true }) // already sent
-  ];
-  const pending = gas.calibrationFeedbackPendingRows_(values, col);
-  assert.equal(pending.length, 1);
-  assert.equal(pending[0].prospectName, 'A');
-  assert.equal(pending[0].rowIndex, 2);
-  assert.equal(pending[0].videoUrl, 'https://drive.google.com/x');
-  assert.equal(pending[0].notes, 'good energy');
+/** files: array of { name, mimeType }. Mirrors the getFiles()/getFilesByName() fake pattern used by Phase 7's tests above. */
+function fakeCalibrationFolder_(files) {
+  return {
+    getFiles: () => {
+      let i = 0;
+      return {
+        hasNext: () => i < files.length,
+        next: () => { const f = files[i]; i++; return fakeCalibrationVideoFile_(f.name, f); }
+      };
+    },
+    getFilesByName: (wanted) => {
+      const exists = files.some((f) => f.name === wanted);
+      let served = false;
+      return { hasNext: () => exists && !served, next: () => { served = true; return fakeCalibrationVideoFile_(wanted, { mimeType: 'application/vnd.google-apps.document' }); } };
+    }
+  };
+}
+
+test('collectCalibrationFeedbackVideos_ returns only video/* files from a folder, ignoring transcript/marker Docs already sitting there', () => {
+  const folder = fakeCalibrationFolder_([
+    { name: 'Julio Lopez.mp4', mimeType: 'video/mp4' },
+    { name: 'Julio Lopez.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' },
+    { name: 'Reba Miller.mov', mimeType: 'video/quicktime' }
+  ]);
+  const videos = Array.prototype.slice.call(gas.collectCalibrationFeedbackVideos_(folder)).map((f) => f.getName());
+  assert.deepEqual(videos.sort(), ['Julio Lopez.mp4', 'Reba Miller.mov']);
 });
 
-test('buildCalibrationFeedbackEmail_ includes the video link and the notes verbatim, plain and HTML', () => {
-  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez', '05/09/2026',
-    'https://drive.google.com/file/d/abc123', 'Good discovery, but never asked for the money directly.');
-  assert.match(email.subject, /Julio Lopez/);
-  assert.ok(email.body.indexOf('https://drive.google.com/file/d/abc123') !== -1);
-  assert.ok(email.body.indexOf('never asked for the money directly') !== -1);
-  assert.match(email.htmlBody, /href="https:\/\/drive\.google\.com\/file\/d\/abc123"/);
-  assert.ok(email.htmlBody.indexOf('never asked for the money directly') !== -1);
+test('findCalibrationFeedbackTranscript_ finds the exact "<video name> — Transcript" sibling, trimming trailing whitespace in the video name (matches tools/transcribe_*.py\'s title_fn convention)', () => {
+  const folder = fakeCalibrationFolder_([
+    { name: 'Julio Lopez.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' }
+  ]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4 '); // trailing space, as real Drive filenames sometimes have
+  const found = gas.findCalibrationFeedbackTranscript_(folder, video);
+  assert.ok(found, 'expected the transcript sibling to be found despite trailing whitespace');
 });
 
-test('buildCalibrationFeedbackEmail_ escapes HTML in notes so a "<...>" GHL/transcript artifact can\'t render as invisible markup (same bug class as the /review/decide escaping fix)', () => {
-  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Prospect', '05/09/2026',
-    'https://drive.google.com/x', 'Said "<script>bad</script>" at 04:12');
-  assert.ok(email.htmlBody.indexOf('<script>bad</script>') === -1, 'raw script tag must not appear unescaped');
-  assert.ok(email.htmlBody.indexOf('&lt;script&gt;') !== -1);
+test('findCalibrationFeedbackTranscript_ returns null when no transcript exists yet — the driver must wait for tools/transcribe_calibration_feedback.py, not fail', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  assert.equal(gas.findCalibrationFeedbackTranscript_(folder, video), null);
 });
 
-test('isValidCalibrationDrillSchema_ accepts a well-formed result including a null close_ask_drill and empty arrays', () => {
-  assert.equal(gas.isValidCalibrationDrillSchema_({
+test('calibrationFeedbackAlreadySent_ is true only once the "<video name> — Feedback Sent" marker exists', () => {
+  const sentFolder = fakeCalibrationFolder_([{ name: 'Julio Lopez.mp4 — Feedback Sent', mimeType: 'application/vnd.google-apps.document' }]);
+  const pendingFolder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  assert.equal(gas.calibrationFeedbackAlreadySent_(sentFolder, video), true);
+  assert.equal(gas.calibrationFeedbackAlreadySent_(pendingFolder, video), false);
+});
+
+test('isValidCalibrationFeedbackSchema_ accepts a well-formed result including a null close_ask_drill and empty arrays', () => {
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({
+    feedback_summary: 'Good energy, but never asked for the money directly.',
     objections_to_drill: [{ label: 'too busy', note: 'agree, isolate, repeat' }],
     close_ask_drill: null,
     framework_gaps_to_drill: []
   }), true);
 });
 
-test('isValidCalibrationDrillSchema_ rejects missing/malformed fields', () => {
-  assert.equal(gas.isValidCalibrationDrillSchema_(null), false);
-  assert.equal(gas.isValidCalibrationDrillSchema_({ objections_to_drill: [], close_ask_drill: null }), false, 'missing framework_gaps_to_drill');
-  assert.equal(gas.isValidCalibrationDrillSchema_({
-    objections_to_drill: [{ label: 'x' }], close_ask_drill: null, framework_gaps_to_drill: []
+test('isValidCalibrationFeedbackSchema_ rejects missing/malformed fields', () => {
+  assert.equal(gas.isValidCalibrationFeedbackSchema_(null), false);
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({ objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }), false, 'missing feedback_summary');
+  assert.equal(gas.isValidCalibrationFeedbackSchema_({
+    feedback_summary: 'x', objections_to_drill: [{ label: 'x' }], close_ask_drill: null, framework_gaps_to_drill: []
   }), false, 'objection missing note');
 });
 
-test('extractCalibrationDrillTopics_ falls back to all-empty (never blocking the rep email) when the judge model never returns parseable JSON', () => {
+test('gradeCalibrationFeedbackTranscript_ falls back to a safe "watch the recording" summary and all-empty drill fields when the judge model never returns parseable JSON', () => {
   const originalConfig = gas.PHASE2_CONFIG;
   const originalCallKimiJudge = gas.callKimiJudge_;
   try {
     gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
     gas.callKimiJudge_ = () => 'not json';
-    const result = gas.extractCalibrationDrillTopics_('Sean', 'Julio Lopez', '05/09/2026', 'some notes');
+    const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', 'some transcript');
+    assert.equal(typeof result.feedback_summary, 'string');
+    assert.ok(result.feedback_summary.length > 0);
     assert.equal(result.objections_to_drill.length, 0);
     assert.equal(result.close_ask_drill, null);
     assert.equal(result.framework_gaps_to_drill.length, 0);
@@ -7869,6 +7890,23 @@ test('extractCalibrationDrillTopics_ falls back to all-empty (never blocking the
   }
 });
 
+test('buildCalibrationFeedbackEmail_ includes the video link and the feedback summary verbatim, plain and HTML', () => {
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez.mp4',
+    'https://drive.google.com/file/d/abc123', 'Good discovery, but never asked for the money directly.');
+  assert.match(email.subject, /Julio Lopez\.mp4/);
+  assert.ok(email.body.indexOf('https://drive.google.com/file/d/abc123') !== -1);
+  assert.ok(email.body.indexOf('never asked for the money directly') !== -1);
+  assert.match(email.htmlBody, /href="https:\/\/drive\.google\.com\/file\/d\/abc123"/);
+  assert.ok(email.htmlBody.indexOf('never asked for the money directly') !== -1);
+});
+
+test('buildCalibrationFeedbackEmail_ escapes HTML in the feedback summary so a "<...>" artifact can\'t render as invisible markup (same bug class as the /review/decide escaping fix)', () => {
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez.mp4',
+    'https://drive.google.com/x', 'Said "<script>bad</script>" at 04:12');
+  assert.ok(email.htmlBody.indexOf('<script>bad</script>') === -1, 'raw script tag must not appear unescaped');
+  assert.ok(email.htmlBody.indexOf('&lt;script&gt;') !== -1);
+});
+
 test('mergeCalibrationDrillIntoTrainingProperties_ only overwrites TRAINING_* properties when this round\'s extraction is non-empty, never wiping out a prior week\'s assignment (same non-destructive rule as processTrainingTranscript_)', () => {
   const store = { 'TRAINING_OBJECTIONS_Sean': JSON.stringify([{ label: 'old objection', note: 'old note' }]) };
   gas.PropertiesService = { getScriptProperties: () => ({ getProperty: (k) => store[k] || null, setProperty: (k, v) => { store[k] = v; } }) };
@@ -7876,13 +7914,11 @@ test('mergeCalibrationDrillIntoTrainingProperties_ only overwrites TRAINING_* pr
   const mirrored = [];
   gas.mirrorTrainingAssignment_ = (rep) => mirrored.push(rep);
   try {
-    // Empty extraction: must NOT touch TRAINING_OBJECTIONS_Sean or write a close-ask/framework property.
     gas.mergeCalibrationDrillIntoTrainingProperties_('Sean', { objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
     assert.equal(store['TRAINING_OBJECTIONS_Sean'], JSON.stringify([{ label: 'old objection', note: 'old note' }]));
     assert.equal(store['TRAINING_CLOSE_DRILL_Sean'], undefined);
     assert.deepEqual(mirrored, ['Sean'], 'mirrorTrainingAssignment_ must still run so the dashboard reflects the (unchanged) current assignment');
 
-    // Non-empty extraction: must overwrite.
     gas.mergeCalibrationDrillIntoTrainingProperties_('Sean', {
       objections_to_drill: [{ label: 'new objection', note: 'new note' }],
       close_ask_drill: { label: 'Ready to get started?', note: 'ask twice' },
@@ -7895,78 +7931,134 @@ test('mergeCalibrationDrillIntoTrainingProperties_ only overwrites TRAINING_* pr
   }
 });
 
-test('processCalibrationFeedbackRow_ emails the rep, merges drill topics, and marks "Kris Feedback Sent" only after a successful send', () => {
-  const col = calibrationFeedbackColMap_();
-  const written = [];
-  const fakeSheet = { getRange: (rowIndex, c) => ({ setValue: (v) => written.push({ rowIndex, col: c, value: v }) }) };
+test('processCalibrationFeedbackVideo_ emails the rep, merges drill topics, and drops a "Feedback Sent" marker only after a successful send', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4', { url: 'https://drive.google.com/file/d/xyz' });
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
   const originalGuardedSend = gas.guardedSend_;
-  const originalExtract = gas.extractCalibrationDrillTopics_;
   const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
+  const originalDocumentApp = gas.DocumentApp;
+  const originalDriveApp = gas.DriveApp;
+
   let sendArgs = null;
   let mergeArgs = null;
+  const movedMarkers = [];
+  gas.getTranscriptText_ = () => 'Kris\'s spoken feedback transcript text';
+  gas.gradeCalibrationFeedbackTranscript_ = () => ({
+    feedback_summary: 'Good energy, ask for the money directly next time.',
+    objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: []
+  });
   gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
-  gas.extractCalibrationDrillTopics_ = () => ({ objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
-  gas.mergeCalibrationDrillIntoTrainingProperties_ = (rep, extracted) => { mergeArgs = [rep, extracted]; };
+  gas.mergeCalibrationDrillIntoTrainingProperties_ = (rep, graded) => { mergeArgs = [rep, graded]; };
+  const fakeMarkerDoc = { getBody: () => ({ setText: () => {} }), saveAndClose: () => {}, getId: () => 'marker-id' };
+  gas.DocumentApp = { create: () => fakeMarkerDoc };
+  gas.DriveApp = { getFileById: (id) => ({ moveTo: (f) => movedMarkers.push({ id, folder: f }) }) };
+
   try {
-    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
-      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
-    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
+    const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, false);
     assert.equal(didWork, true);
     assert.equal(sendArgs[0], 'sean@iconsofrealestate.com', 'must send to Sean\'s real CONFIG.REPS email');
-    assert.ok(sendArgs[1].indexOf('Julio Lopez') !== -1, 'subject must reference the prospect');
-    assert.deepEqual(mergeArgs, ['Sean', { objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }]);
-    assert.deepEqual(written, [{ rowIndex: 42, col: col['Kris Feedback Sent'], value: true }]);
+    assert.ok(sendArgs[1].indexOf('Julio Lopez.mp4') !== -1, 'subject must reference the recording');
+    assert.deepEqual(mergeArgs[0], 'Sean');
+    assert.equal(movedMarkers.length, 1, 'the Feedback Sent marker must be moved into the rep\'s folder');
+    assert.equal(movedMarkers[0].folder, folder);
   } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
     gas.guardedSend_ = originalGuardedSend;
-    gas.extractCalibrationDrillTopics_ = originalExtract;
+    gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
+    gas.DocumentApp = originalDocumentApp;
+    gas.DriveApp = originalDriveApp;
+  }
+});
+
+test('processCalibrationFeedbackVideo_ never merges or marks sent when guardedSend_ fails (quota-short) — video must stay pending for the next run', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
+  gas.getTranscriptText_ = () => 'transcript text';
+  gas.gradeCalibrationFeedbackTranscript_ = () => ({ feedback_summary: 'x', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+  gas.guardedSend_ = () => false;
+  gas.mergeCalibrationDrillIntoTrainingProperties_ = () => { throw new Error('must not merge — send failed'); };
+  try {
+    const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, false);
+    assert.equal(didWork, false);
+  } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
+    gas.guardedSend_ = originalGuardedSend;
     gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
   }
 });
 
-test('processCalibrationFeedbackRow_ never marks "Kris Feedback Sent" when guardedSend_ fails (quota-short) — row must stay pending for the next run', () => {
-  const col = calibrationFeedbackColMap_();
-  const fakeSheet = { getRange: () => { throw new Error('must not write — send failed, row must stay pending'); } };
+test('processCalibrationFeedbackVideo_ in dry-run logs but never sends, grades, merges, or writes', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
   const originalGuardedSend = gas.guardedSend_;
-  gas.guardedSend_ = () => false;
-  try {
-    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
-      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
-    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
-    assert.equal(didWork, false);
-  } finally {
-    gas.guardedSend_ = originalGuardedSend;
-  }
-});
-
-test('processCalibrationFeedbackRow_ in dry-run logs but never sends, merges, or writes', () => {
-  const col = calibrationFeedbackColMap_();
-  const fakeSheet = { getRange: () => { throw new Error('must not write in dry-run'); } };
-  const originalGuardedSend = gas.guardedSend_;
-  const originalExtract = gas.extractCalibrationDrillTopics_;
+  gas.getTranscriptText_ = () => 'transcript text';
+  gas.gradeCalibrationFeedbackTranscript_ = () => { throw new Error('must not grade in dry-run before the preview log line'); };
   gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
-  gas.extractCalibrationDrillTopics_ = () => { throw new Error('must not extract/learn in dry-run'); };
   try {
-    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
-      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
-    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, true);
+    // gradeCalibrationFeedbackTranscript_ IS called before the dryRun check (it builds the
+    // preview email body), so stub it to succeed and only assert nothing downstream fires.
+    gas.gradeCalibrationFeedbackTranscript_ = () => ({ feedback_summary: 'x', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+    const didWork = gas.processCalibrationFeedbackVideo_('Sean', folder, video, transcriptFile, true);
     assert.equal(didWork, false);
   } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
     gas.guardedSend_ = originalGuardedSend;
-    gas.extractCalibrationDrillTopics_ = originalExtract;
   }
 });
 
-test('processCalibrationFeedbackRow_ skips a row with no known rep email rather than throwing or sending to nobody', () => {
-  const col = calibrationFeedbackColMap_();
-  const fakeSheet = { getRange: () => { throw new Error('must not write — no known rep email'); } };
+test('processCalibrationFeedbackVideo_ skips a video with no known rep email rather than throwing or sending to nobody', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
   const originalGuardedSend = gas.guardedSend_;
   gas.guardedSend_ = () => { throw new Error('must not send — no known rep email'); };
   try {
-    const rowData = { rowIndex: 42, rep: 'Some Old Rep', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
-      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
-    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
+    const didWork = gas.processCalibrationFeedbackVideo_('Some Old Rep', folder, video, transcriptFile, false);
     assert.equal(didWork, false);
   } finally {
     gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('buildAndMaybeSendCalibrationFeedback_ skips a video with no transcript yet and one already marked sent, only processing the one genuinely pending video', () => {
+  const folders = {
+    Sean: fakeCalibrationFolder_([
+      { name: 'No Transcript Yet.mp4', mimeType: 'video/mp4' },
+      { name: 'Already Sent.mp4', mimeType: 'video/mp4' },
+      { name: 'Already Sent.mp4 — Feedback Sent', mimeType: 'application/vnd.google-apps.document' },
+      { name: 'Pending.mp4', mimeType: 'video/mp4' },
+      { name: 'Pending.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' }
+    ])
+  };
+  const originalConfig = gas.CALIBRATION_FEEDBACK_CONFIG;
+  const originalDriveApp = gas.DriveApp;
+  const originalProcess = gas.processCalibrationFeedbackVideo_;
+  const processed = [];
+  gas.CALIBRATION_FEEDBACK_CONFIG = { ENABLED: false, TRIGGER_HOUR: 9, FOLDERS: { Sean: 'sean-folder-id' } };
+  gas.DriveApp = { getFolderById: (id) => folders.Sean };
+  gas.processCalibrationFeedbackVideo_ = (rep, folder, videoFile) => { processed.push(videoFile.getName()); return true; };
+  try {
+    const count = gas.buildAndMaybeSendCalibrationFeedback_(false);
+    assert.deepEqual(processed, ['Pending.mp4']);
+    assert.equal(count, 1);
+  } finally {
+    gas.CALIBRATION_FEEDBACK_CONFIG = originalConfig;
+    gas.DriveApp = originalDriveApp;
+    gas.processCalibrationFeedbackVideo_ = originalProcess;
   }
 });
