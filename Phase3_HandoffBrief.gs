@@ -892,7 +892,7 @@ function sendUpcomingLeadConfirmationReminders_() {
           return;
         }
         var didSend = guardedSend_(repCfg.email, email.subject, email.body,
-          { htmlBody: email.htmlBody, name: 'Lead Confirmation Reminder Bot' }, 1);
+          { htmlBody: email.htmlBody, cc: CONFIG.TOMAS_EMAIL, name: 'Lead Confirmation Reminder Bot' }, 2);
         if (didSend) {
           markLeadConfirmationReminderSent_(ev.id);
           sent++;

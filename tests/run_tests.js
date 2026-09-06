@@ -8062,3 +8062,35 @@ test('buildAndMaybeSendCalibrationFeedback_ skips a video with no transcript yet
     gas.processCalibrationFeedbackVideo_ = originalProcess;
   }
 });
+
+test('sendUpcomingLeadConfirmationReminders_ CCs Tomás on the rep-facing reminder (Kris\'s ask 06/09/2026: "CC Tomas on all the emails sent to reps") — real gap found live: this send had no CC at all', () => {
+  const originalLockService = gas.LockService;
+  const originalConfig = gas.LEAD_CONFIRMATION_CONFIG;
+  const originalFindEvents = gas.findUpcomingDiscoveryCallsForRep_;
+  const originalHasSent = gas.hasLeadConfirmationReminderBeenSent_;
+  const originalMarkSent = gas.markLeadConfirmationReminderSent_;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalRepsConfig = gas.CONFIG.REPS;
+  let sendArgs = null;
+  gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+  gas.LEAD_CONFIRMATION_CONFIG = { ENABLED: true, LOOKAHEAD_MIN_HOURS: 22, LOOKAHEAD_MAX_HOURS: 26 };
+  gas.CONFIG.REPS = [{ name: 'Sean', email: 'sean@iconsofrealestate.com' }];
+  gas.findUpcomingDiscoveryCallsForRep_ = () => [{ id: 'evt1', title: 'Discovery — Jane Doe', prospectGuess: 'Jane Doe', start: new Date() }];
+  gas.hasLeadConfirmationReminderBeenSent_ = () => false;
+  gas.markLeadConfirmationReminderSent_ = () => {};
+  gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
+  try {
+    gas.sendUpcomingLeadConfirmationReminders_();
+    assert.ok(sendArgs, 'expected guardedSend_ to be called');
+    assert.equal(sendArgs[0], 'sean@iconsofrealestate.com');
+    assert.equal(sendArgs[3].cc, gas.CONFIG.TOMAS_EMAIL);
+  } finally {
+    gas.LockService = originalLockService;
+    gas.LEAD_CONFIRMATION_CONFIG = originalConfig;
+    gas.findUpcomingDiscoveryCallsForRep_ = originalFindEvents;
+    gas.hasLeadConfirmationReminderBeenSent_ = originalHasSent;
+    gas.markLeadConfirmationReminderSent_ = originalMarkSent;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.CONFIG.REPS = originalRepsConfig;
+  }
+});
