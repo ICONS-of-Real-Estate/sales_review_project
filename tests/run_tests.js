@@ -8094,3 +8094,59 @@ test('sendUpcomingLeadConfirmationReminders_ CCs Tomás on the rep-facing remind
     gas.CONFIG.REPS = originalRepsConfig;
   }
 });
+
+test('softenProfanityForJudge_ replaces the handful of words most likely to trip a content filter, case-insensitively, whole-word only', () => {
+  const out = gas.softenProfanityForJudge_("Don't fucking send people links. That's bullshit, ass advice, damn it.");
+  assert.ok(out.indexOf('fucking') === -1 && out.indexOf('bullshit') === -1);
+  assert.ok(out.toLowerCase().indexOf('shitake') === -1); // sanity: nothing to mangle here, but confirms no accidental substring match
+  assert.match(out, /Don't really send people links/i);
+});
+
+test('softenProfanityForJudge_ does not mangle a word that merely contains a profane substring (whole-word boundaries)', () => {
+  const out = gas.softenProfanityForJudge_('The shiitake mushroom dish was a classic.');
+  assert.equal(out, 'The shiitake mushroom dish was a classic.');
+});
+
+test('gradeCalibrationFeedbackTranscript_ retries with softened language after a content_filter rejection, and succeeds if the softened retry gets through (real bug 06/09/2026: Kris\'s genuinely profane coaching style got rejected by the LiteLLM proxy as "high risk" — plain retry resent the identical text and failed identically twice)', () => {
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  const promptsSeen = [];
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 1 };
+    let call = 0;
+    gas.callKimiJudge_ = (systemPrompt, userPrompt) => {
+      promptsSeen.push(userPrompt);
+      call++;
+      if (call === 1) {
+        throw new Error('LlmTransportError_: LiteLLM proxy HTTP 400: {"error":{"code":400,"message":"The request was rejected because it was considered high risk","param":"prompt","type":"content_filter"}}');
+      }
+      return JSON.stringify({ feedback_summary: 'Good energy, ask for the close directly.', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+    };
+    const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', "don't fucking send people links, that's bullshit");
+    assert.equal(result.feedback_summary, 'Good energy, ask for the close directly.');
+    assert.equal(promptsSeen.length, 2);
+    assert.ok(promptsSeen[0].indexOf('fucking') !== -1, 'first attempt must send the real transcript, unmodified');
+    assert.ok(promptsSeen[1].indexOf('fucking') === -1, 'second attempt must send the softened transcript, not the identical rejected text');
+    assert.ok(promptsSeen[1].indexOf('really') !== -1);
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
+
+test('gradeCalibrationFeedbackTranscript_ still falls back safely when even the softened retry fails', () => {
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 1 };
+    gas.callKimiJudge_ = () => {
+      throw new Error('LlmTransportError_: LiteLLM proxy HTTP 400: {"error":{"code":400,"message":"high risk","type":"content_filter"}}');
+    };
+    const result = gas.gradeCalibrationFeedbackTranscript_('Sean', 'Julio Lopez.mp4', 'fucking bullshit transcript');
+    assert.ok(result.feedback_summary.indexOf('watch the recording directly') !== -1);
+    assert.equal(result.objections_to_drill.length, 0);
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
