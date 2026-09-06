@@ -1712,7 +1712,22 @@ var SALES_CALL_LOG_HEADERS = [
   // twice. Blank on rows scored before this column existed, same
   // backward-compatible "no signal" pattern as every column above —
   // run migrateAddPrimaryFailureModeColumn() once to backfill the header. ---
-  'GHL Review Synced'      // AM (checkbox)
+  'GHL Review Synced',     // AM (checkbox)
+  // --- 06/09/2026: Kris's blind calibration feedback (Phase16_CalibrationFeedback.gs),
+  // per Kris: "I will record a video and send to the team [feedback]... When
+  // you pick up my feedback, send the video link and the notes to the rep.
+  // Plus learn from it." Kris drops the raw video in the matching rep's
+  // "Calibration Feedback/<rep>" Drive folder, gets its share link, and
+  // pastes that link + his written notes into these two columns on the same
+  // row runRandomCalibrationSample() already pointed him at (Phase2_CallScoring.gs) —
+  // no new UI, just the two columns next to "Kris Manual Review Verdict" he
+  // already fills in. runCalibrationFeedback() then emails the rep the video
+  // + notes and feeds the notes into the SAME TRAINING_OBJECTIONS_*/
+  // TRAINING_CLOSE_DRILL_*/TRAINING_FRAMEWORK_* properties Phase 6/7 already
+  // use for daily practice assignments ("learn from it"). ---
+  'Kris Feedback Video',   // AN (URL — Drive share link to Kris's recording, blank until he adds one)
+  'Kris Feedback Notes',   // AO (free text — Kris's written notes to go with the video)
+  'Kris Feedback Sent'     // AP (checkbox — true once runCalibrationFeedback() has emailed the rep for this row)
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
@@ -3753,7 +3768,8 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'classifyNewReplies', 'sendReplyMetricsReport_',                         // Phase 8
   'syncGhlEmailAndDisposition_',                                           // Phase 9
   'runBensPodcastSync_',                                                   // Phase 11
-  'runGhlNoteSync_'                                                        // Phase 12
+  'runGhlNoteSync_',                                                       // Phase 12
+  'runCalibrationFeedback'                                                 // Phase 16
 ];
 
 /**
@@ -3925,6 +3941,14 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 12 (GHL review-note sync) — GHL_NOTE_SYNC_CONFIG.ENABLED is false. Run ' +
       'previewGhlNoteSync() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof CALIBRATION_FEEDBACK_CONFIG !== 'undefined' && CALIBRATION_FEEDBACK_CONFIG.ENABLED) {
+    installCalibrationFeedbackTrigger();
+    installed.push('Phase 16: calibration feedback (video + notes to rep, learns drill topics)');
+  } else {
+    skipped.push('Phase 16 (calibration feedback) — CALIBRATION_FEEDBACK_CONFIG.ENABLED is false. Run ' +
+      'migrateAddPrimaryFailureModeColumn() + previewCalibrationFeedback() first, then flip ENABLED and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own

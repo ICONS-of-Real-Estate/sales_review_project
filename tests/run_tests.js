@@ -7783,3 +7783,190 @@ test('repairCrmOrganizationReviewAssigneeNames_ rewrites legacy and lingering-ID
   assert.equal(written.value[2][0], 'Piero Bengoa is assigned 31 open opportunity(ies) but is not in CONFIG.REPS or the known-old-reps list (Bruno/Simon/Ty)');
 });
 
+
+// ---------------------------------------------------------------------------
+// Phase16_CalibrationFeedback.gs — Kris's ask (06/09/2026): "Where do I put
+// the feedback recordings? ... send the video link and the notes to the rep.
+// Plus learn from it." Video+notes land on the same Sales Call Log row the
+// calibration digest already pointed Kris at; this phase emails the rep and
+// feeds the notes into the SAME drill-topic properties Phase 6/7 already use.
+// ---------------------------------------------------------------------------
+
+function calibrationFeedbackColMap_() {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  return col;
+}
+
+test('calibrationFeedbackPendingRows_ only picks rows with BOTH a video link and notes, and not already sent', () => {
+  const col = calibrationFeedbackColMap_();
+  const n = gas.SALES_CALL_LOG_HEADERS.length;
+  function row(overrides) {
+    const r = new Array(n).fill('');
+    Object.keys(overrides).forEach((h) => { r[col[h] - 1] = overrides[h]; });
+    return r;
+  }
+  const values = [
+    row({ 'Prospect Name': 'A', Rep: 'Sean', 'Call Date': '01/09/2026', 'Kris Feedback Video': 'https://drive.google.com/x', 'Kris Feedback Notes': 'good energy' }), // pending
+    row({ 'Prospect Name': 'B', Rep: 'Joana', 'Call Date': '02/09/2026', 'Kris Feedback Video': 'https://drive.google.com/y' }), // no notes yet
+    row({ 'Prospect Name': 'C', Rep: 'Tomás', 'Call Date': '03/09/2026', 'Kris Feedback Notes': 'missed the close' }), // no video yet
+    row({ 'Prospect Name': 'D', Rep: 'Sean', 'Call Date': '04/09/2026', 'Kris Feedback Video': 'https://drive.google.com/z', 'Kris Feedback Notes': 'already handled', 'Kris Feedback Sent': true }) // already sent
+  ];
+  const pending = gas.calibrationFeedbackPendingRows_(values, col);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].prospectName, 'A');
+  assert.equal(pending[0].rowIndex, 2);
+  assert.equal(pending[0].videoUrl, 'https://drive.google.com/x');
+  assert.equal(pending[0].notes, 'good energy');
+});
+
+test('buildCalibrationFeedbackEmail_ includes the video link and the notes verbatim, plain and HTML', () => {
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Julio Lopez', '05/09/2026',
+    'https://drive.google.com/file/d/abc123', 'Good discovery, but never asked for the money directly.');
+  assert.match(email.subject, /Julio Lopez/);
+  assert.ok(email.body.indexOf('https://drive.google.com/file/d/abc123') !== -1);
+  assert.ok(email.body.indexOf('never asked for the money directly') !== -1);
+  assert.match(email.htmlBody, /href="https:\/\/drive\.google\.com\/file\/d\/abc123"/);
+  assert.ok(email.htmlBody.indexOf('never asked for the money directly') !== -1);
+});
+
+test('buildCalibrationFeedbackEmail_ escapes HTML in notes so a "<...>" GHL/transcript artifact can\'t render as invisible markup (same bug class as the /review/decide escaping fix)', () => {
+  const email = gas.buildCalibrationFeedbackEmail_('Sean', 'Prospect', '05/09/2026',
+    'https://drive.google.com/x', 'Said "<script>bad</script>" at 04:12');
+  assert.ok(email.htmlBody.indexOf('<script>bad</script>') === -1, 'raw script tag must not appear unescaped');
+  assert.ok(email.htmlBody.indexOf('&lt;script&gt;') !== -1);
+});
+
+test('isValidCalibrationDrillSchema_ accepts a well-formed result including a null close_ask_drill and empty arrays', () => {
+  assert.equal(gas.isValidCalibrationDrillSchema_({
+    objections_to_drill: [{ label: 'too busy', note: 'agree, isolate, repeat' }],
+    close_ask_drill: null,
+    framework_gaps_to_drill: []
+  }), true);
+});
+
+test('isValidCalibrationDrillSchema_ rejects missing/malformed fields', () => {
+  assert.equal(gas.isValidCalibrationDrillSchema_(null), false);
+  assert.equal(gas.isValidCalibrationDrillSchema_({ objections_to_drill: [], close_ask_drill: null }), false, 'missing framework_gaps_to_drill');
+  assert.equal(gas.isValidCalibrationDrillSchema_({
+    objections_to_drill: [{ label: 'x' }], close_ask_drill: null, framework_gaps_to_drill: []
+  }), false, 'objection missing note');
+});
+
+test('extractCalibrationDrillTopics_ falls back to all-empty (never blocking the rep email) when the judge model never returns parseable JSON', () => {
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 0 };
+    gas.callKimiJudge_ = () => 'not json';
+    const result = gas.extractCalibrationDrillTopics_('Sean', 'Julio Lopez', '05/09/2026', 'some notes');
+    assert.equal(result.objections_to_drill.length, 0);
+    assert.equal(result.close_ask_drill, null);
+    assert.equal(result.framework_gaps_to_drill.length, 0);
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
+
+test('mergeCalibrationDrillIntoTrainingProperties_ only overwrites TRAINING_* properties when this round\'s extraction is non-empty, never wiping out a prior week\'s assignment (same non-destructive rule as processTrainingTranscript_)', () => {
+  const store = { 'TRAINING_OBJECTIONS_Sean': JSON.stringify([{ label: 'old objection', note: 'old note' }]) };
+  gas.PropertiesService = { getScriptProperties: () => ({ getProperty: (k) => store[k] || null, setProperty: (k, v) => { store[k] = v; } }) };
+  const originalMirror = gas.mirrorTrainingAssignment_;
+  const mirrored = [];
+  gas.mirrorTrainingAssignment_ = (rep) => mirrored.push(rep);
+  try {
+    // Empty extraction: must NOT touch TRAINING_OBJECTIONS_Sean or write a close-ask/framework property.
+    gas.mergeCalibrationDrillIntoTrainingProperties_('Sean', { objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+    assert.equal(store['TRAINING_OBJECTIONS_Sean'], JSON.stringify([{ label: 'old objection', note: 'old note' }]));
+    assert.equal(store['TRAINING_CLOSE_DRILL_Sean'], undefined);
+    assert.deepEqual(mirrored, ['Sean'], 'mirrorTrainingAssignment_ must still run so the dashboard reflects the (unchanged) current assignment');
+
+    // Non-empty extraction: must overwrite.
+    gas.mergeCalibrationDrillIntoTrainingProperties_('Sean', {
+      objections_to_drill: [{ label: 'new objection', note: 'new note' }],
+      close_ask_drill: { label: 'Ready to get started?', note: 'ask twice' },
+      framework_gaps_to_drill: []
+    });
+    assert.equal(store['TRAINING_OBJECTIONS_Sean'], JSON.stringify([{ label: 'new objection', note: 'new note' }]));
+    assert.equal(store['TRAINING_CLOSE_DRILL_Sean'], JSON.stringify({ label: 'Ready to get started?', note: 'ask twice' }));
+  } finally {
+    gas.mirrorTrainingAssignment_ = originalMirror;
+  }
+});
+
+test('processCalibrationFeedbackRow_ emails the rep, merges drill topics, and marks "Kris Feedback Sent" only after a successful send', () => {
+  const col = calibrationFeedbackColMap_();
+  const written = [];
+  const fakeSheet = { getRange: (rowIndex, c) => ({ setValue: (v) => written.push({ rowIndex, col: c, value: v }) }) };
+  const originalGuardedSend = gas.guardedSend_;
+  const originalExtract = gas.extractCalibrationDrillTopics_;
+  const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
+  let sendArgs = null;
+  let mergeArgs = null;
+  gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
+  gas.extractCalibrationDrillTopics_ = () => ({ objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
+  gas.mergeCalibrationDrillIntoTrainingProperties_ = (rep, extracted) => { mergeArgs = [rep, extracted]; };
+  try {
+    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
+      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
+    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
+    assert.equal(didWork, true);
+    assert.equal(sendArgs[0], 'sean@iconsofrealestate.com', 'must send to Sean\'s real CONFIG.REPS email');
+    assert.ok(sendArgs[1].indexOf('Julio Lopez') !== -1, 'subject must reference the prospect');
+    assert.deepEqual(mergeArgs, ['Sean', { objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] }]);
+    assert.deepEqual(written, [{ rowIndex: 42, col: col['Kris Feedback Sent'], value: true }]);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+    gas.extractCalibrationDrillTopics_ = originalExtract;
+    gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
+  }
+});
+
+test('processCalibrationFeedbackRow_ never marks "Kris Feedback Sent" when guardedSend_ fails (quota-short) — row must stay pending for the next run', () => {
+  const col = calibrationFeedbackColMap_();
+  const fakeSheet = { getRange: () => { throw new Error('must not write — send failed, row must stay pending'); } };
+  const originalGuardedSend = gas.guardedSend_;
+  gas.guardedSend_ = () => false;
+  try {
+    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
+      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
+    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
+    assert.equal(didWork, false);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('processCalibrationFeedbackRow_ in dry-run logs but never sends, merges, or writes', () => {
+  const col = calibrationFeedbackColMap_();
+  const fakeSheet = { getRange: () => { throw new Error('must not write in dry-run'); } };
+  const originalGuardedSend = gas.guardedSend_;
+  const originalExtract = gas.extractCalibrationDrillTopics_;
+  gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
+  gas.extractCalibrationDrillTopics_ = () => { throw new Error('must not extract/learn in dry-run'); };
+  try {
+    const rowData = { rowIndex: 42, rep: 'Sean', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
+      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
+    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, true);
+    assert.equal(didWork, false);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+    gas.extractCalibrationDrillTopics_ = originalExtract;
+  }
+});
+
+test('processCalibrationFeedbackRow_ skips a row with no known rep email rather than throwing or sending to nobody', () => {
+  const col = calibrationFeedbackColMap_();
+  const fakeSheet = { getRange: () => { throw new Error('must not write — no known rep email'); } };
+  const originalGuardedSend = gas.guardedSend_;
+  gas.guardedSend_ = () => { throw new Error('must not send — no known rep email'); };
+  try {
+    const rowData = { rowIndex: 42, rep: 'Some Old Rep', prospectName: 'Julio Lopez', callDateLabel: '05/09/2026',
+      videoUrl: 'https://drive.google.com/x', notes: 'good energy' };
+    const didWork = gas.processCalibrationFeedbackRow_(fakeSheet, col, rowData, false);
+    assert.equal(didWork, false);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
