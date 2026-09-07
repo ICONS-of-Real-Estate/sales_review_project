@@ -67,11 +67,19 @@
 {% endif %}
 
 <h2>By rep</h2>
+<p class="muted" style="margin-top:-0.5rem;">
+  <strong>Closing rate</strong> is the headline number — of calls with an outcome logged, the % actually
+  Sold. Bens doesn't take Sales Calls, so his row shows his real conversion metric instead: QC booking
+  rate off his podcast recordings.
+</p>
 <table>
   <thead>
     <tr>
-      <th>Rep</th><th>Calls</th><th>Avg score</th>
-      <th>Asked for close</th><th>Objections handled</th><th>Framework explained</th><th>Outcome logged</th><th>Flagged for review</th>
+      <th>Rep</th><th>Calls</th>
+      <th>Closing rate</th><th>Book 2nd call</th>
+      <th>Avg score</th><th>Avg length</th>
+      <th>Objections handled</th><th>Framework explained</th><th>Biggest failure</th>
+      <th>Outcome logged</th><th>Flagged for review</th>
     </tr>
   </thead>
   <tbody>
@@ -79,16 +87,34 @@
     <tr>
       <td><a href="/reps/{{ r.rep }}">{{ r.rep }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}">{{ r.total_calls }}</a></td>
+      {% if r.bens_qc_booking %}
+      <td colspan="2" title="QC Booked / Recording Done, from his Icons Podcast Recordings tracker">
+        QC booking: {{ (r.bens_qc_booking.pct_qc_booked ~ "%") if r.bens_qc_booking.pct_qc_booked is not none else "—" }}
+        <span class="muted">({{ r.bens_qc_booking.qc_booked_count }} of {{ r.bens_qc_booking.recordings_done }} recordings)</span>
+      </td>
+      {% else %}
+      <td title="{{ r.sold_count }} Sold of {{ r.outcome_logged_count }} calls with an outcome logged">
+        <a href="/calls?rep={{ r.rep }}&outcome_disposition=Sold">{{ (r.pct_closing_rate ~ "%") if r.pct_closing_rate is not none else "—" }}</a>
+      </td>
+      <td title="Of calls scored on this dimension ({{ r.booking_decision_scored_count }} — blank on QC/Discovery calls)">
+        {{ (r.pct_booking_decision_appropriate ~ "%") if r.pct_booking_decision_appropriate is not none else "—" }}
+      </td>
+      {% endif %}
       <td><a href="/calls?rep={{ r.rep }}">{{ r.avg_score if r.avg_score is not none else "—" }}</a></td>
-      <td><a href="/calls?rep={{ r.rep }}&asked_for_close=yes">{{ (r.pct_asked_for_close ~ "%") if r.pct_asked_for_close is not none else "—" }}</a></td>
+      <td title="{{ r.call_length_measured_count }} call(s) with a measured length">
+        {{ (r.avg_call_length_minutes ~ "m") if r.avg_call_length_minutes is not none else "—" }}
+      </td>
       <td><a href="/calls?rep={{ r.rep }}&objections_handled=yes">{{ (r.pct_objections_handled ~ "%") if r.pct_objections_handled is not none else "—" }}</a></td>
       <td><a href="/calls?rep={{ r.rep }}&framework_explained=yes">{{ (r.pct_framework_explained ~ "%") if r.pct_framework_explained is not none else "—" }}</a></td>
+      <td>
+        {% if r.top_failure_mode %}<a href="/calls?rep={{ r.rep }}&failure_mode={{ r.top_failure_mode }}">{{ r.top_failure_mode }}</a>{% else %}—{% endif %}
+      </td>
       <td><a href="/calls?rep={{ r.rep }}&outcome_disposition={{ outcome_missing_key }}"
              title="Click to list {{ r.rep }}'s scored calls with no outcome logged">{{ (r.pct_outcome_logged ~ "%") if r.pct_outcome_logged is not none else "—" }}</a></td>
       <td><a href="/queue?rep={{ r.rep }}">{{ r.manual_review_count }}</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="muted">No scored calls yet.</td></tr>
+    <tr><td colspan="11" class="muted">No scored calls yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

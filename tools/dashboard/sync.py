@@ -89,6 +89,40 @@ SALES_CALL_LOG_COLUMNS = {
     "Primary Failure Mode": "primary_failure_mode",
     "Flag: Framework Explained": "flag_framework_explained",
     "Framework Gaps": "framework_gaps",
+    # Added 07/09/2026 for the rep roster stats Kris asked for: "closing
+    # rate... book the second calls... average time length" — Booking
+    # Decision Appropriate is the existing "did this call correctly result
+    # in booking (or not booking) the right next call" dimension
+    # (Phase2_CallScoring.gs's deriveBookingDecisionFields_ — only 'shared'/
+    # 'sean' variants score it; blank elsewhere, read as "no signal" not a
+    # failure). Call Length (Minutes) is the real measured call duration
+    # (extractCallLengthMinutes_, same file) — blank on any transcript from
+    # before that was tracked.
+    "Flag: Booking Decision Appropriate": "flag_booking_decision_appropriate",
+    "Call Length (Minutes)": "call_length_minutes",
+}
+
+# Bens doesn't take Sales Calls (CLAUDE.md "Who does what") — his real
+# conversion metric is QC booking off his podcast recordings, tracked in his
+# own long-standing "Icons Podcast Recordings" tab (same shared spreadsheet),
+# not the Sales Call Log. Column layout confirmed live from the spreadsheet,
+# documented in CLAUDE.md.
+BENS_PODCAST_TRACKER_TAB = "Icons Podcast Recordings"
+BENS_PODCAST_TRACKER_COLUMNS = {
+    "Name": "name",
+    "Email": "email",
+    "Source": "source",
+    "Booked": "booked",
+    "Booking Date": "booking_date",
+    "Recording Date": "recording_date",
+    "Recording Done": "recording_done",
+    "QC Booked": "qc_booked",
+    "QC Date": "qc_date",
+    "QC Show Up": "qc_show_up",
+    "SC Booked": "sc_booked",
+    "SC Date": "sc_date",
+    "SC Show Up": "sc_show_up",
+    "Sale": "sale",
 }
 
 # Must match TRAINING_ASSIGNMENTS_HEADERS in Phase6_TrainingCallReview.gs.
@@ -182,12 +216,30 @@ BOOLEAN_COLUMNS = {
     "real_lead",
     "not_real_lead",
     "needs_more_info",
+    "recording_done",
+    "qc_booked",
+    "qc_show_up",
+    "sc_booked",
+    "sc_show_up",
+    "sale",
 }
+# Tri-state, unlike BOOLEAN_COLUMNS above: a blank cell means "not scored on
+# this call" (e.g. Booking Decision Appropriate is only scored on 'shared'/
+# 'sean' variants — Phase2_CallScoring.gs's deriveBookingDecisionFields_),
+# NOT a false verdict. Coercing blank through to_bool() (like BOOLEAN_COLUMNS
+# does) would silently count "never scored" rows as "scored inappropriate,"
+# corrupting any rate computed from this column — same "no signal != false"
+# bug class Phase5_WeeklyScorecard.gs's own isExplicitlyFalse_ exists to
+# avoid. Stored as NULL/1/0 instead of always 1/0.
+NULLABLE_BOOLEAN_COLUMNS = {"flag_booking_decision_appropriate"}
 INT_COLUMNS = {
     "call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week",
     "missing_outcome_disposition", "sheet_row",
 }
-FLOAT_COLUMNS = {"weekly_avg_score", "rolling_4_week_avg", "historic_avg_before_week", "worst_call_score"}
+FLOAT_COLUMNS = {
+    "weekly_avg_score", "rolling_4_week_avg", "historic_avg_before_week", "worst_call_score",
+    "call_length_minutes",
+}
 
 
 def sheets_client():
@@ -341,7 +393,14 @@ def init_schema(conn):
             flag_asked_for_close INTEGER, flag_objections_handled INTEGER,
             manual_review_recommended INTEGER, severity INTEGER, ai_feedback_summary TEXT,
             reviewed_by_kris TEXT, queue_age INTEGER, kris_manual_review_verdict TEXT,
-            primary_failure_mode TEXT, flag_framework_explained INTEGER, framework_gaps TEXT
+            primary_failure_mode TEXT, flag_framework_explained INTEGER, framework_gaps TEXT,
+            flag_booking_decision_appropriate INTEGER, call_length_minutes REAL
+        );
+        CREATE TABLE IF NOT EXISTS bens_podcast_tracker (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, email TEXT, source TEXT, booked TEXT, booking_date TEXT,
+            recording_date TEXT, recording_done INTEGER, qc_booked INTEGER, qc_date TEXT,
+            qc_show_up INTEGER, sc_booked INTEGER, sc_date TEXT, sc_show_up INTEGER, sale INTEGER
         );
         CREATE TABLE IF NOT EXISTS training_assignments (
             rep TEXT PRIMARY KEY,
@@ -413,6 +472,9 @@ def init_schema(conn):
     _add_column_if_missing(conn, "crm_organization_review", "dedupe_key", "TEXT")
     _add_column_if_missing(conn, "crm_organization_review", "needs_more_info", "INTEGER")
     _add_column_if_missing(conn, "lead_reconciliation", "needs_more_info", "INTEGER")
+    # 07/09/2026: rep roster stats (closing rate, booking rate, call length).
+    _add_column_if_missing(conn, "sales_call_log", "flag_booking_decision_appropriate", "INTEGER")
+    _add_column_if_missing(conn, "sales_call_log", "call_length_minutes", "REAL")
     conn.commit()
 
 
@@ -468,6 +530,8 @@ def replace_table(conn, table, columns_map, rows):
             v = r.get(sheet_name, "")
             if col in BOOLEAN_COLUMNS:
                 v = int(to_bool(v))
+            elif col in NULLABLE_BOOLEAN_COLUMNS:
+                v = int(to_bool(v)) if str(v).strip() != "" else None
             elif col in INT_COLUMNS:
                 v = to_int_or_none(v, column=col, warnings=conversion_warnings)
             elif col in FLOAT_COLUMNS:
@@ -496,6 +560,7 @@ def main():
         "scorecard_history": (SCORECARD_HISTORY_TAB, SCORECARD_HISTORY_COLUMNS),
         "crm_organization_review": (CRM_ORGANIZATION_REVIEW_TAB, CRM_ORGANIZATION_REVIEW_COLUMNS),
         "lead_reconciliation": (LEAD_RECONCILIATION_TAB, LEAD_RECONCILIATION_COLUMNS),
+        "bens_podcast_tracker": (BENS_PODCAST_TRACKER_TAB, BENS_PODCAST_TRACKER_COLUMNS),
     }
 
     try:

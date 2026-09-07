@@ -159,6 +159,56 @@ def freshness_status():
     return {"last_synced_at": last_synced_at, "age_minutes": age_minutes, "level": level}
 
 
+def top_failure_mode_per_rep():
+    """Kris's ask (07/09/2026): "what's their biggest failure" on the rep
+    roster itself, not just the all-reps breakdown (failure_mode_breakdown()
+    below) — one most-frequent Primary Failure Mode per rep, alphabetical
+    tie-break for determinism (same convention as mostFrequent_ in
+    Phase5_WeeklyScorecard.gs)."""
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT rep, primary_failure_mode, COUNT(*) AS n
+        FROM sales_call_log
+        WHERE rep IS NOT NULL AND rep != ''
+          AND primary_failure_mode IS NOT NULL AND TRIM(primary_failure_mode) != ''
+          AND LOWER(primary_failure_mode) != 'none'
+        GROUP BY rep, primary_failure_mode
+        ORDER BY rep, n DESC, primary_failure_mode ASC
+        """
+    ).fetchall()
+    conn.close()
+    top = {}
+    for r in rows:
+        top.setdefault(r["rep"], r["primary_failure_mode"])  # first row per rep, already ordered worst-first
+    return top
+
+
+def bens_qc_booking_stats():
+    """Bens doesn't take Sales Calls (CLAUDE.md "Who does what") — Kris's
+    ask (07/09/2026) named his real conversion metric explicitly: "Bens
+    booking QCs." QC booking rate = QC Booked / Recording Done, from his own
+    "Icons Podcast Recordings" tracker tab (bens_podcast_tracker), not the
+    Sales Call Log. Denominator is recordings actually done, not every row
+    (a row can exist before the recording itself has happened)."""
+    conn = get_conn()
+    row = conn.execute(
+        """
+        SELECT
+            SUM(recording_done) AS recordings_done,
+            SUM(CASE WHEN recording_done = 1 AND qc_booked = 1 THEN 1 ELSE 0 END) AS qc_booked_count
+        FROM bens_podcast_tracker
+        """
+    ).fetchone()
+    conn.close()
+    recordings_done = row["recordings_done"] or 0
+    return {
+        "recordings_done": recordings_done,
+        "qc_booked_count": row["qc_booked_count"] or 0,
+        "pct_qc_booked": round(100 * (row["qc_booked_count"] or 0) / recordings_done) if recordings_done else None,
+    }
+
+
 def rep_summary():
     conn = get_conn()
     rows = conn.execute(
@@ -167,12 +217,23 @@ def rep_summary():
             rep,
             COUNT(*) AS total_calls,
             AVG(call_quality_score) AS avg_score,
+            AVG(call_length_minutes) AS avg_call_length_minutes,
+            SUM(CASE WHEN call_length_minutes IS NOT NULL THEN 1 ELSE 0 END) AS call_length_measured_count,
             SUM(flag_asked_for_close) AS asked_for_close_count,
             SUM(flag_objections_handled) AS objections_handled_count,
             SUM(manual_review_recommended) AS manual_review_count,
             SUM(CASE WHEN outcome_disposition IS NOT NULL AND TRIM(outcome_disposition) != ''
                      THEN 1 ELSE 0 END) AS outcome_logged_count,
-            SUM(flag_framework_explained) AS framework_explained_count
+            SUM(CASE WHEN LOWER(TRIM(outcome_disposition)) = 'sold' THEN 1 ELSE 0 END) AS sold_count,
+            SUM(flag_framework_explained) AS framework_explained_count,
+            -- flag_booking_decision_appropriate is tri-state (NULL = not scored on
+            -- this call, e.g. a QC row — see sync.py's NULLABLE_BOOLEAN_COLUMNS
+            -- comment). The rate below is deliberately of SCORED calls only, not
+            -- total_calls, so a rep with mostly QCs doesn't read as having a
+            -- crashed booking rate just because most of their calls were never
+            -- scored on this dimension at all.
+            SUM(CASE WHEN flag_booking_decision_appropriate IS NOT NULL THEN 1 ELSE 0 END) AS booking_decision_scored_count,
+            SUM(CASE WHEN flag_booking_decision_appropriate = 1 THEN 1 ELSE 0 END) AS booking_decision_appropriate_count
         FROM sales_call_log
         WHERE rep IS NOT NULL AND rep != ''
         GROUP BY rep
@@ -180,31 +241,58 @@ def rep_summary():
         """
     ).fetchall()
     conn.close()
+
+    top_failure = top_failure_mode_per_rep()
+    bens_qc = bens_qc_booking_stats()
+
     summary = []
     for r in rows:
         total = r["total_calls"] or 0
-        summary.append(
-            {
-                "rep": r["rep"],
-                "total_calls": total,
-                "avg_score": round(r["avg_score"], 2) if r["avg_score"] is not None else None,
-                "pct_asked_for_close": (
-                    round(100 * (r["asked_for_close_count"] or 0) / total) if total else None
-                ),
-                "pct_objections_handled": (
-                    round(100 * (r["objections_handled_count"] or 0) / total) if total else None
-                ),
-                "manual_review_count": r["manual_review_count"] or 0,
-                "outcome_logged_count": r["outcome_logged_count"] or 0,
-                "pct_outcome_logged": (
-                    round(100 * (r["outcome_logged_count"] or 0) / total) if total else None
-                ),
-                "framework_explained_count": r["framework_explained_count"] or 0,
-                "pct_framework_explained": (
-                    round(100 * (r["framework_explained_count"] or 0) / total) if total else None
-                ),
-            }
-        )
+        outcome_logged = r["outcome_logged_count"] or 0
+        booking_scored = r["booking_decision_scored_count"] or 0
+        entry = {
+            "rep": r["rep"],
+            "total_calls": total,
+            "avg_score": round(r["avg_score"], 2) if r["avg_score"] is not None else None,
+            "avg_call_length_minutes": (
+                round(r["avg_call_length_minutes"]) if r["avg_call_length_minutes"] is not None else None
+            ),
+            "call_length_measured_count": r["call_length_measured_count"] or 0,
+            "pct_asked_for_close": (
+                round(100 * (r["asked_for_close_count"] or 0) / total) if total else None
+            ),
+            "pct_objections_handled": (
+                round(100 * (r["objections_handled_count"] or 0) / total) if total else None
+            ),
+            "manual_review_count": r["manual_review_count"] or 0,
+            "outcome_logged_count": outcome_logged,
+            "pct_outcome_logged": round(100 * outcome_logged / total) if total else None,
+            # Closing rate (Kris, 07/09/2026: "our closing rate is shit" —
+            # the headline number this whole feature exists to surface). Of
+            # calls with an outcome logged, not of every call, so it isn't
+            # silently dragged down by unlogged calls the way "% of all
+            # calls" would be. Coverage is visible right next to it
+            # (pct_outcome_logged) so a low-coverage rep's rate reads as
+            # provisional, not as gospel.
+            "sold_count": r["sold_count"] or 0,
+            "pct_closing_rate": round(100 * (r["sold_count"] or 0) / outcome_logged) if outcome_logged else None,
+            "framework_explained_count": r["framework_explained_count"] or 0,
+            "pct_framework_explained": (
+                round(100 * (r["framework_explained_count"] or 0) / total) if total else None
+            ),
+            "booking_decision_scored_count": booking_scored,
+            "pct_booking_decision_appropriate": (
+                round(100 * (r["booking_decision_appropriate_count"] or 0) / booking_scored) if booking_scored else None
+            ),
+            "top_failure_mode": top_failure.get(r["rep"]),
+        }
+        if r["rep"] == "Bens":
+            # Bens doesn't take Sales Calls — his closing-rate/booking-rate
+            # cells above are meaningless (near-zero denominators), so the
+            # template shows his own QC-booking metric instead wherever a
+            # rep's row is rendered.
+            entry["bens_qc_booking"] = bens_qc
+        summary.append(entry)
     return summary
 
 

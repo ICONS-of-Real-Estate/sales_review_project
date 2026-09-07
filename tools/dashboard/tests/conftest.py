@@ -69,6 +69,8 @@ _CALL_DEFAULTS = {
     "primary_failure_mode": "none",
     "flag_framework_explained": 1,
     "framework_gaps": "",
+    "flag_booking_decision_appropriate": None,
+    "call_length_minutes": None,
 }
 
 

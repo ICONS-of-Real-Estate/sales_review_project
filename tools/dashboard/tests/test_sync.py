@@ -198,3 +198,62 @@ class TestReviewTablesSchema:
             "SELECT sheet_row, name, real_lead, not_real_lead FROM lead_reconciliation"
         ).fetchone()
         assert stored == (7, "Test Lead", 1, 0)
+
+
+class TestNullableBooleanColumns:
+    """flag_booking_decision_appropriate (07/09/2026, rep roster stats) is
+    only scored on 'shared'/'sean' rubric variants — a blank cell means "not
+    scored on this call," not a false verdict. Regular BOOLEAN_COLUMNS
+    coerce blank to False via to_bool(), which would corrupt any rate
+    computed from this column by silently counting "never scored" rows as
+    "scored inappropriate" — same "no signal != false" bug class
+    Phase5_WeeklyScorecard.gs's isExplicitlyFalse_ exists to avoid."""
+
+    def test_blank_cell_stores_null_not_false(self, conn):
+        rows = [{"Prospect Name": "QC Call", "Flag: Booking Decision Appropriate": ""}]
+        sync.replace_table(
+            conn, "sales_call_log",
+            {"Prospect Name": "prospect_name", "Flag: Booking Decision Appropriate": "flag_booking_decision_appropriate"},
+            rows,
+        )
+        conn.commit()
+        stored = conn.execute("SELECT flag_booking_decision_appropriate FROM sales_call_log").fetchone()[0]
+        assert stored is None
+
+    def test_true_and_false_cells_still_store_as_1_and_0(self, conn):
+        rows = [
+            {"Prospect Name": "Good Call", "Flag: Booking Decision Appropriate": "TRUE"},
+            {"Prospect Name": "Bad Call", "Flag: Booking Decision Appropriate": "FALSE"},
+        ]
+        sync.replace_table(
+            conn, "sales_call_log",
+            {"Prospect Name": "prospect_name", "Flag: Booking Decision Appropriate": "flag_booking_decision_appropriate"},
+            rows,
+        )
+        conn.commit()
+        stored = conn.execute(
+            "SELECT prospect_name, flag_booking_decision_appropriate FROM sales_call_log ORDER BY prospect_name"
+        ).fetchall()
+        assert stored == [("Bad Call", 0), ("Good Call", 1)]
+
+
+class TestBensPodcastTrackerSchema:
+    """Bens doesn't take Sales Calls (CLAUDE.md) — his real conversion metric
+    (QC booking rate off his podcast recordings) lives in his own "Icons
+    Podcast Recordings" tab, not the Sales Call Log, so it gets its own
+    mirrored table (07/09/2026, per Kris's ask: "Bens booking QCs")."""
+
+    def test_round_trips_through_replace_table(self, conn):
+        rows = [{
+            "Name": "Earl Fields", "Email": "easyf68@aol.com", "Source": "No Show QC",
+            "Booked": "Bens", "Booking Date": "May 13", "Recording Date": "May 20",
+            "Recording Done": "TRUE", "QC Booked": "TRUE", "QC Date": "",
+            "QC Show Up": "FALSE", "SC Booked": "FALSE", "SC Date": "", "SC Show Up": "FALSE",
+            "Sale": "FALSE",
+        }]
+        sync.replace_table(conn, "bens_podcast_tracker", sync.BENS_PODCAST_TRACKER_COLUMNS, rows)
+        conn.commit()
+        stored = conn.execute(
+            "SELECT name, recording_done, qc_booked, qc_show_up FROM bens_podcast_tracker"
+        ).fetchone()
+        assert stored == ("Earl Fields", 1, 1, 0)

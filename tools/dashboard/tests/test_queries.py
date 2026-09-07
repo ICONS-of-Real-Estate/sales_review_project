@@ -45,6 +45,69 @@ class TestRepSummary:
         # Bob has Nicole Freed (flagged) and Joseph Brandley (flagged) = 2
         assert summary["Bob"]["manual_review_count"] == 2
 
+    def test_closing_rate_is_percent_of_outcomes_logged_not_percent_of_all_calls(self, db_path, conn):
+        """Kris's ask (07/09/2026): "our closing rate is shit" — the headline
+        stat this whole feature exists to surface. Denominator must be calls
+        with an outcome actually logged, not every call, so an unlogged call
+        doesn't silently drag the rate down and get miscounted as a loss."""
+        insert_call(conn, rep="Dana", prospect_name="A", outcome_disposition="Sold")
+        insert_call(conn, rep="Dana", prospect_name="B", outcome_disposition="Not Sold")
+        insert_call(conn, rep="Dana", prospect_name="C", outcome_disposition="")  # not logged — excluded from the rate
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert summary["Dana"]["sold_count"] == 1
+        assert summary["Dana"]["pct_closing_rate"] == 50  # 1 of 2 LOGGED, not 1 of 3 total
+
+    def test_closing_rate_matches_sold_case_insensitively(self, db_path, conn):
+        insert_call(conn, rep="Dana", prospect_name="A", outcome_disposition="sold")
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert summary["Dana"]["pct_closing_rate"] == 100
+
+    def test_booking_decision_rate_excludes_calls_never_scored_on_that_dimension(self, db_path, conn):
+        """flag_booking_decision_appropriate is blank (None) on a QC call —
+        must not count as a failed booking decision, only genuinely-scored
+        calls belong in the denominator."""
+        insert_call(conn, rep="Dana", prospect_name="A", flag_booking_decision_appropriate=1)
+        insert_call(conn, rep="Dana", prospect_name="B", flag_booking_decision_appropriate=0)
+        insert_call(conn, rep="Dana", prospect_name="C", flag_booking_decision_appropriate=None)  # a QC call, never scored
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert summary["Dana"]["booking_decision_scored_count"] == 2
+        assert summary["Dana"]["pct_booking_decision_appropriate"] == 50
+
+    def test_avg_call_length_ignores_calls_with_no_measured_length(self, db_path, conn):
+        insert_call(conn, rep="Dana", prospect_name="A", call_length_minutes=40)
+        insert_call(conn, rep="Dana", prospect_name="B", call_length_minutes=60)
+        insert_call(conn, rep="Dana", prospect_name="C", call_length_minutes=None)
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert summary["Dana"]["avg_call_length_minutes"] == 50
+        assert summary["Dana"]["call_length_measured_count"] == 2
+
+    def test_top_failure_mode_is_the_most_frequent_excluding_none(self, db_path, conn):
+        insert_call(conn, rep="Dana", prospect_name="A", primary_failure_mode="no_close_ask")
+        insert_call(conn, rep="Dana", prospect_name="B", primary_failure_mode="no_close_ask")
+        insert_call(conn, rep="Dana", prospect_name="C", primary_failure_mode="objections_missed")
+        insert_call(conn, rep="Dana", prospect_name="D", primary_failure_mode="none")
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert summary["Dana"]["top_failure_mode"] == "no_close_ask"
+
+    def test_bens_gets_qc_booking_stats_instead_of_closing_rate(self, db_path, conn):
+        conn.execute(
+            "INSERT INTO bens_podcast_tracker (name, recording_done, qc_booked) VALUES "
+            "('Earl Fields', 1, 1), ('Jane Doe', 1, 0), ('Not Recorded Yet', 0, 0)"
+        )
+        insert_call(conn, rep="Bens", prospect_name="Recording A", call_type="Icons 100 Recording")
+        conn.commit()
+        summary = {r["rep"]: r for r in app_module.rep_summary()}
+        assert "bens_qc_booking" in summary["Bens"]
+        bens = summary["Bens"]["bens_qc_booking"]
+        assert bens["recordings_done"] == 2
+        assert bens["qc_booked_count"] == 1
+        assert bens["pct_qc_booked"] == 50
+
 
 class TestFailureModeBreakdown:
     def test_counts_by_mode_excluding_none(self, seeded_db):
