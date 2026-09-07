@@ -19,6 +19,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -868,6 +869,58 @@ def rep_scorecard_history(rep):
     return [dict(r) for r in rows]
 
 
+# Phase1_ComplianceCheck.gs's CONFIG.BUSINESS_TIMEZONE — the timezone every
+# "week start" (Monday) in this whole project is computed in. Must match
+# exactly, or a week-start label written here would never match the one
+# Apps Script's getWeekBounds_ computes, and the override would silently
+# never take effect.
+BUSINESS_TIMEZONE = "America/New_York"
+
+# Kris's ask (07/09/2026): a rep can only be trained on one of these three
+# team-wide topics per WEEKLY_TRAINING_ROTATION_ (Phase1_ComplianceCheck.gs),
+# or one of the four individual scored elements for a rep not on that
+# rotation (Bens). The dashboard's dropdown offers all of them plus a free-
+# text option — sheets_write.write_training_priority_override doesn't
+# validate the value at all (Apps Script's own findTrainingPriorityOverride_/
+# namedTrainingFocusFromRanking_ falls back gracefully to a bare label with
+# no supporting call data if it doesn't recognize the text), so a typo here
+# degrades rather than breaks.
+TRAINING_PRIORITY_OPTIONS = [
+    "Discovery",
+    "Framework & Delivery",
+    "Closing & Objection Handling",
+    "Objection handling",
+    "Asking for the money / the booking",
+    "Delivery",
+]
+
+
+def current_week_start_label():
+    """Monday of the current week, in BUSINESS_TIMEZONE, as dd/MM/yyyy — must
+    match Phase1_ComplianceCheck.gs's getWeekBounds_/Utilities.formatDate
+    output exactly, since Apps Script matches an override by this exact
+    string (findTrainingPriorityOverride_)."""
+    now = datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
+    monday = now.date() - timedelta(days=now.weekday())
+    return monday.strftime("%d/%m/%Y")
+
+
+def current_training_priority_override(rep):
+    """The LAST row in training_priority_overrides matching (rep, this
+    week's Monday) — same "last write wins" convention as Phase1_
+    ComplianceCheck.gs's findTrainingPriorityOverride_, so what's shown here
+    always matches what Apps Script will actually use. None if Tomás hasn't
+    set one for this week."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT priority, set_by, set_at FROM training_priority_overrides "
+        "WHERE rep = ? AND week_start = ? ORDER BY id DESC LIMIT 1",
+        (rep, current_week_start_label()),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def rep_playbook(rep):
     """The one PLAYBOOKS doc that belongs to this rep, or None if none exists
     (Joana) — a single doc, not the full list /training used to dump on one
@@ -907,8 +960,36 @@ def rep_detail_page(request: Request, rep: str):
             "framework_gaps": framework_gap_breakdown(rep),
             "scorecard_history": rep_scorecard_history(rep),
             "playbook": rep_playbook(rep),
+            "current_priority_override": current_training_priority_override(rep),
+            "training_priority_options": TRAINING_PRIORITY_OPTIONS,
         },
     )
+
+
+@app.post("/reps/{rep}/priority-override")
+def set_priority_override(request: Request, rep: str, priority: str = Form(...)):
+    """Kris's ask (07/09/2026): "every Tuesday morning... tell him what the
+    priority is for each sales rep... if he does nothing, it goes with that.
+    Otherwise, he can log into the interface and change it." This is that
+    change: a one-week override of the auto-computed weekly training focus,
+    written straight to the "Training Priority Overrides" sheet tab
+    (sheets_write.py) that Phase1_ComplianceCheck.gs's weekly playbook review
+    reads before falling back to its own auto-computed pick."""
+    week_start = current_week_start_label()
+    try:
+        sheets_write.write_training_priority_override(
+            rep, week_start, priority, request.session.get("user_email") or ""
+        )
+    except Exception as e:
+        # Same "surface it, don't pretend it worked" rule as /review/decide —
+        # this write is the one thing this button exists to do.
+        return HTMLResponse(
+            f"<p>Could not save that priority override to the spreadsheet:</p>"
+            f"<pre style='white-space:pre-wrap;'>{html.escape(str(e))}</pre>"
+            f"<p><a href='/reps/{rep}'>Back to {html.escape(rep)}</a></p>",
+            status_code=500,
+        )
+    return RedirectResponse(url=f"/reps/{rep}", status_code=303)
 
 
 def _rep_score_series(rep):

@@ -102,3 +102,63 @@ class TestClearDecision:
         assert by_range["'CRM Organization Review'!G5"] is False
         assert by_range["'CRM Organization Review'!I5"] is False
         call.return_value.execute.assert_called_once()
+
+
+class TestWriteTrainingPriorityOverride:
+    """Kris's ask (07/09/2026): Tomás can override the auto-computed weekly
+    training focus for one rep from the dashboard. Append-only — Phase1_
+    ComplianceCheck.gs's findTrainingPriorityOverride_ reads the LAST row
+    matching (rep, week_start), so a new override just needs to be appended
+    after any older one for the same week to win."""
+
+    def _service_with_existing_sheet(self):
+        service = _mock_service()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{"properties": {"title": "Training Priority Overrides"}}]
+        }
+        return service
+
+    def test_appends_a_row_with_rep_week_priority_and_who_set_it(self):
+        service = self._service_with_existing_sheet()
+        sheets_write.write_training_priority_override("Sean", "07/09/2026", "Discovery", "tomas@iconsofrealestate.com", service=service)
+        append_call = service.spreadsheets.return_value.values.return_value.append
+        _, kwargs = append_call.call_args
+        assert kwargs["range"] == "'Training Priority Overrides'!A:E"
+        row = kwargs["body"]["values"][0]
+        assert row[0] == "Sean"
+        assert row[1] == "07/09/2026"
+        assert row[2] == "Discovery"
+        assert row[3] == "tomas@iconsofrealestate.com"
+        append_call.return_value.execute.assert_called_once()
+
+    def test_creates_the_sheet_and_header_row_if_it_does_not_exist_yet(self):
+        """Tomás using the dashboard must not depend on Apps Script's Tuesday
+        job having run at least once first."""
+        service = _mock_service()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {"sheets": []}
+        sheets_write.write_training_priority_override("Sean", "07/09/2026", "Discovery", "tomas@iconsofrealestate.com", service=service)
+        add_sheet_call = service.spreadsheets.return_value.batchUpdate
+        _, kwargs = add_sheet_call.call_args
+        assert kwargs["body"]["requests"][0]["addSheet"]["properties"]["title"] == "Training Priority Overrides"
+        header_call = service.spreadsheets.return_value.values.return_value.update
+        _, header_kwargs = header_call.call_args
+        assert header_kwargs["body"]["values"][0] == sheets_write.TRAINING_PRIORITY_OVERRIDES_HEADERS
+
+    def test_does_not_recreate_the_sheet_if_it_already_exists(self):
+        service = self._service_with_existing_sheet()
+        sheets_write.write_training_priority_override("Sean", "07/09/2026", "Discovery", "tomas@iconsofrealestate.com", service=service)
+        service.spreadsheets.return_value.batchUpdate.assert_not_called()
+
+    def test_blank_priority_raises_rather_than_writing_an_empty_override(self):
+        service = self._service_with_existing_sheet()
+        with pytest.raises(ValueError):
+            sheets_write.write_training_priority_override("Sean", "07/09/2026", "   ", "tomas@iconsofrealestate.com", service=service)
+        service.spreadsheets.return_value.values.return_value.append.assert_not_called()
+
+    def test_api_failure_propagates_rather_than_being_swallowed(self):
+        service = self._service_with_existing_sheet()
+        service.spreadsheets.return_value.values.return_value.append.return_value.execute.side_effect = (
+            Exception("403 The caller does not have permission")
+        )
+        with pytest.raises(Exception, match="403"):
+            sheets_write.write_training_priority_override("Sean", "07/09/2026", "Discovery", "tomas@iconsofrealestate.com", service=service)

@@ -41,6 +41,21 @@ DB_PATH = os.environ.get("DASHBOARD_DB_PATH", str(BASE_DIR / "dashboard.db"))
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
+TRAINING_PRIORITY_OVERRIDES_TAB = "Training Priority Overrides"
+# Must match TRAINING_PRIORITY_OVERRIDES_HEADERS in Phase1_ComplianceCheck.gs
+# (and sheets_write.py's own copy of the same constant, which is what
+# actually writes rows here). Read-only mirror: the dashboard shows Tomás
+# what's currently set, but /reps/{rep}/priority-override (app.py) writes
+# through sheets_write.py, same "one write path" rule every other writable
+# tab in this file follows.
+TRAINING_PRIORITY_OVERRIDES_COLUMNS = {
+    "Rep": "rep",
+    "Week Start": "week_start",
+    "Priority": "priority",
+    "Set By": "set_by",
+    "Set At": "set_at",
+}
+
 SALES_CALL_LOG_TAB = "Sales Call Log"
 TRAINING_ASSIGNMENTS_TAB = "Training Assignments"
 DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
@@ -402,6 +417,10 @@ def init_schema(conn):
             recording_date TEXT, recording_done INTEGER, qc_booked INTEGER, qc_date TEXT,
             qc_show_up INTEGER, sc_booked INTEGER, sc_date TEXT, sc_show_up INTEGER, sale INTEGER
         );
+        CREATE TABLE IF NOT EXISTS training_priority_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rep TEXT, week_start TEXT, priority TEXT, set_by TEXT, set_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS training_assignments (
             rep TEXT PRIMARY KEY,
             training_objections_json TEXT,
@@ -561,6 +580,7 @@ def main():
         "crm_organization_review": (CRM_ORGANIZATION_REVIEW_TAB, CRM_ORGANIZATION_REVIEW_COLUMNS),
         "lead_reconciliation": (LEAD_RECONCILIATION_TAB, LEAD_RECONCILIATION_COLUMNS),
         "bens_podcast_tracker": (BENS_PODCAST_TRACKER_TAB, BENS_PODCAST_TRACKER_COLUMNS),
+        "training_priority_overrides": (TRAINING_PRIORITY_OVERRIDES_TAB, TRAINING_PRIORITY_OVERRIDES_COLUMNS),
     }
 
     try:

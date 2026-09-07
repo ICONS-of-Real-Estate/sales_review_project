@@ -3166,6 +3166,105 @@ function legacyTrainingFocusFromRanking_(ranking) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Training Priority Override — Kris's ask (07/09/2026): "every Tuesday
+// morning, I want you to send an email to Thomas and tell him what the
+// priority is for each sales rep to make the training plan for them. And
+// then if he does nothing, it goes with that. Otherwise, he can log into the
+// interface and change it." The Tuesday email already exists
+// (sendPlaybookReviewNewMaterialEmail_ below) — this is the override:
+// Tomás sets one via the dashboard (tools/dashboard/'s /reps/{rep}/priority-
+// override, writing through sheets_write.py), and buildAndMaybeSendPlaybook
+// Review_ checks for it before falling back to the auto-computed pick.
+// Scoped to ONE WEEK only, by (rep, week start) — next week starts fresh.
+// ---------------------------------------------------------------------------
+
+var TRAINING_PRIORITY_OVERRIDES_SHEET_NAME = 'Training Priority Overrides';
+var TRAINING_PRIORITY_OVERRIDES_HEADERS = ['Rep', 'Week Start', 'Priority', 'Set By', 'Set At'];
+
+/** Same getOrCreate-plus-frozen-header pattern as every other phase's own tab. */
+function getOrCreateTrainingPriorityOverridesSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(TRAINING_PRIORITY_OVERRIDES_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(TRAINING_PRIORITY_OVERRIDES_SHEET_NAME);
+    sheet.getRange(1, 1, 1, TRAINING_PRIORITY_OVERRIDES_HEADERS.length).setValues([TRAINING_PRIORITY_OVERRIDES_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + TRAINING_PRIORITY_OVERRIDES_SHEET_NAME + '" tab.');
+  }
+  return sheet;
+}
+
+/**
+ * Pure — takes already-fetched data rows (no header), so it's testable
+ * without a fake sheet. The dashboard's write path (sheets_write.py) only
+ * ever APPENDS a new row rather than finding/updating an existing one, so
+ * the LAST row matching (rep, weekStartLabel) is the current value — this
+ * is what makes "last write wins" work without either side needing to know
+ * a specific row index.
+ */
+function findTrainingPriorityOverride_(rows, rep, weekStartLabel) {
+  var found = null;
+  (rows || []).forEach(function (row) {
+    if (String(row[0] || '').trim().toLowerCase() === String(rep || '').toLowerCase() &&
+        String(row[1] || '').trim() === weekStartLabel) {
+      found = String(row[2] || '').trim();
+    }
+  });
+  return found || null;
+}
+
+/**
+ * Resolves Tomás's freeform override text into the same shape
+ * pickWeeklyTrainingFocus_/legacyTrainingFocusFromRanking_ produce, so
+ * buildPlaybookReviewNewMaterialEmail_ can't tell the difference. Three
+ * cases, in order:
+ *   1. Matches a WEEKLY_TRAINING_ROTATION_ label (e.g. "Framework &
+ *      Delivery") — union the real per-call data across that schedule's
+ *      elements, same as pickWeeklyTrainingFocus_'s own scheduled-topic path.
+ *   2. Matches one of TRAINING_PRIORITY_ELEMENTS_'s own labels (e.g.
+ *      "Discovery", "Objection handling") — that single element's data.
+ *   3. Doesn't match anything recognized (a typo, or genuinely custom text)
+ *      — used as a bare label with no supporting call data. Degrades
+ *      gracefully rather than throwing: Tomás's manual pick should never be
+ *      silently discarded just because the dashboard's dropdown text
+ *      doesn't exactly match this file's internal vocabulary.
+ */
+function namedTrainingFocusFromRanking_(ranking, label) {
+  var norm = String(label || '').trim().toLowerCase();
+  var schedule = WEEKLY_TRAINING_ROTATION_.filter(function (s) { return s.label.toLowerCase() === norm; })[0];
+  var keys = schedule ? schedule.keys : null;
+  if (!keys) {
+    var el = (ranking || []).filter(function (r) { return r.label.toLowerCase() === norm; })[0];
+    if (el) keys = [el.key];
+  }
+  if (!keys) {
+    return {
+      label: label, failed: 0, scored: 0, failedCalls: [],
+      isUrgentOverride: false, scheduleLabel: null, isManualOverride: true
+    };
+  }
+  var scoped = (ranking || []).filter(function (r) { return keys.indexOf(r.key) !== -1; });
+  var failed = scoped.reduce(function (sum, r) { return sum + r.failed; }, 0);
+  var scored = scoped.reduce(function (sum, r) { return sum + r.scored; }, 0);
+  // Union, not concat — same reasoning as pickWeeklyTrainingFocus_'s own
+  // union above (a call can fail two elements of the same schedule).
+  var seen = [], failedCalls = [];
+  scoped.forEach(function (r) {
+    r.failedCalls.forEach(function (c) {
+      if (seen.indexOf(c) !== -1) return;
+      seen.push(c);
+      failedCalls.push(c);
+    });
+  });
+  return {
+    label: schedule ? schedule.label : (scoped[0] ? scoped[0].label : label),
+    failed: failed, scored: scored, failedCalls: failedCalls,
+    isUrgentOverride: false, scheduleLabel: null, isManualOverride: true
+  };
+}
+
 /**
  * Reads one Sales Call Log row into the four-element shape
  * rankTrainingPriorities_ works on. A cell that isn't an actual boolean is
@@ -3296,6 +3395,16 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
   var rotationIndex = trainingRotationIndexForWeekNumber_(rotationWeekNumber);
   var schedule = WEEKLY_TRAINING_ROTATION_[rotationIndex];
 
+  // Tomás's one-week override (Kris, 07/09/2026 — see this file's own
+  // "Training Priority Override" section above) — fetched once for the
+  // whole run, not per rep, same reasoning as `rows` above.
+  var overridesSheet = getOrCreateTrainingPriorityOverridesSheet_();
+  var overridesLastRow = overridesSheet.getLastRow();
+  var overrideRows = overridesLastRow > 1
+    ? overridesSheet.getRange(2, 1, overridesLastRow - 1, TRAINING_PRIORITY_OVERRIDES_HEADERS.length).getValues()
+    : [];
+  var weekStartLabel = Utilities.formatDate(week.start, tz, 'dd/MM/yyyy');
+
   CONFIG.REPS.forEach(function (repCfg) {
     // Every one of the rep's calls last week, not just the objection-flagged
     // ones this used to filter down to — all four elements get graded, then
@@ -3340,12 +3449,24 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
     var focus = usesTeamRotation
       ? pickWeeklyTrainingFocus_(ranking, schedule)
       : legacyTrainingFocusFromRanking_(ranking);
+
+    // "If he does nothing, it goes with that [the auto-computed focus above].
+    // Otherwise, he can log into the interface and change it" — an override
+    // for THIS rep, THIS week wins over both the rotation and any urgent
+    // override the auto-computed path already applied.
+    var overrideLabel = findTrainingPriorityOverride_(overrideRows, repCfg.name, weekStartLabel);
+    if (overrideLabel) {
+      focus = namedTrainingFocusFromRanking_(ranking, overrideLabel);
+    }
+
     var flagged = focus.failed ? focus.failedCalls : [];
 
     if (forcePreview) {
       log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
         windowLabel + '). ' +
-        (usesTeamRotation
+        (focus.isManualOverride
+          ? 'Focus: ' + focus.label + ' [MANUAL OVERRIDE set by Tomás via the dashboard]'
+          : usesTeamRotation
           ? 'Scheduled topic: ' + schedule.label + '. Focus: ' + focus.label +
             (focus.isUrgentOverride ? ' [URGENT OVERRIDE — outside this week\'s schedule]' : '')
           : 'Not on the team rotation (' + repCfg.name + '\'s role) — focus: ' + focus.label) +
@@ -3403,7 +3524,9 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   // Delivery -> Closing & Objection Handling weekly; when an individual
   // rep's urgent issue overrides that schedule, say so explicitly rather
   // than silently deviating from the announced curriculum.
-  var scheduleNote = (focus && focus.isUrgentOverride)
+  var scheduleNote = (focus && focus.isManualOverride)
+    ? ' — you set this manually via the dashboard'
+    : (focus && focus.isUrgentOverride)
     ? ' — urgent override; this week\'s scheduled topic is "' + focus.scheduleLabel + '"'
     : '';
 

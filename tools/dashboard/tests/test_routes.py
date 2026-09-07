@@ -37,6 +37,75 @@ def test_rep_detail_page_for_unknown_rep_still_200s(client, seeded_db):
     assert resp.status_code == 200
 
 
+class TestTrainingPriorityOverride:
+    """Kris's ask (07/09/2026): "every Tuesday morning... tell him what the
+    priority is for each sales rep... if he does nothing, it goes with that.
+    Otherwise, he can log into the interface and change it.\""""
+
+    def test_rep_detail_shows_no_override_set_by_default(self, client, seeded_db):
+        resp = client.get("/reps/Alice")
+        assert "No override set for this week" in resp.text
+
+    def test_rep_detail_shows_current_weeks_override(self, client, db_path, conn):
+        week_start = app_module.current_week_start_label()
+        conn.execute(
+            "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+            "VALUES ('Alice', ?, 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T00:00:00+00:00')",
+            (week_start,),
+        )
+        conn.commit()
+        resp = client.get("/reps/Alice")
+        assert "Current override:" in resp.text
+        assert "Discovery" in resp.text
+        assert "tomas@iconsofrealestate.com" in resp.text
+
+    def test_rep_detail_ignores_an_override_from_a_different_week(self, client, db_path, conn):
+        """A stale override from a prior week must never look like it's
+        active this week — one week only, per Kris's answer."""
+        conn.execute(
+            "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+            "VALUES ('Alice', '01/01/2020', 'Discovery', 'tomas@iconsofrealestate.com', '2020-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        resp = client.get("/reps/Alice")
+        assert "No override set for this week" in resp.text
+
+    def test_rep_detail_uses_the_last_matching_row_when_several_exist_for_the_same_week(self, client, db_path, conn):
+        week_start = app_module.current_week_start_label()
+        conn.execute(
+            "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) VALUES "
+            "('Alice', ?, 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T09:00:00+00:00'), "
+            "('Alice', ?, 'Closing & Objection Handling', 'tomas@iconsofrealestate.com', '2026-09-07T10:00:00+00:00')",
+            (week_start, week_start),
+        )
+        conn.commit()
+        resp = client.get("/reps/Alice")
+        assert "Closing &amp; Objection Handling" in resp.text or "Closing & Objection Handling" in resp.text
+
+    def test_set_priority_override_writes_through_sheets_write_and_redirects(self, client, db_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            app_module.sheets_write, "write_training_priority_override",
+            lambda rep, week_start, priority, set_by: calls.append((rep, week_start, priority, set_by)),
+        )
+        resp = client.post("/reps/Sean/priority-override", data={"priority": "Discovery"}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/reps/Sean"
+        assert len(calls) == 1
+        rep, week_start, priority, set_by = calls[0]
+        assert rep == "Sean"
+        assert priority == "Discovery"
+        assert week_start == app_module.current_week_start_label()
+
+    def test_set_priority_override_surfaces_sheet_write_failure_instead_of_pretending_success(self, client, db_path, monkeypatch):
+        def _boom(rep, week_start, priority, set_by):
+            raise Exception("403 The caller does not have permission")
+        monkeypatch.setattr(app_module.sheets_write, "write_training_priority_override", _boom)
+        resp = client.post("/reps/Sean/priority-override", data={"priority": "Discovery"})
+        assert resp.status_code == 500
+        assert "403" in resp.text
+
+
 def test_calls_page_renders(client, seeded_db):
     resp = client.get("/calls")
     assert resp.status_code == 200

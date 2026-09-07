@@ -54,6 +54,28 @@
   <canvas id="repScoreChart" height="70"></canvas>
 </div>
 
+<div class="chart-card">
+  <h2>This week's training priority</h2>
+  <p class="muted" style="margin-top:-0.5rem;">
+    Sent to Tomás every Tuesday morning as the auto-computed focus for {{ rep }}. If he does nothing, that
+    auto-computed pick is what's used. Setting one here overrides it for this week only.
+  </p>
+  {% if current_priority_override %}
+  <p><strong>Current override:</strong> {{ current_priority_override.priority }}
+    <span class="muted">(set by {{ current_priority_override.set_by or "someone" }})</span></p>
+  {% else %}
+  <p class="muted">No override set for this week — the auto-computed pick from Tuesday's email is what will be used.</p>
+  {% endif %}
+  <form method="post" action="/reps/{{ rep }}/priority-override" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+    <select name="priority">
+      {% for opt in training_priority_options %}
+      <option value="{{ opt }}" {{ "selected" if current_priority_override and current_priority_override.priority == opt else "" }}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Set this week's priority</button>
+  </form>
+</div>
+
 {% if scorecard_history %}
 <div class="chart-card">
   <h2>Weekly history</h2>

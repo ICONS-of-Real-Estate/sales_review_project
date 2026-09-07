@@ -7503,6 +7503,97 @@ test('legacyTrainingFocusFromRanking_ handles an empty ranking (no calls last we
   assert.deepEqual(Array.from(focus.failedCalls), []);
 });
 
+// ---------------------------------------------------------------------------
+// Training Priority Override — Kris's ask (07/09/2026): "every Tuesday
+// morning... tell him what the priority is for each sales rep... if he does
+// nothing, it goes with that. Otherwise, he can log into the interface and
+// change it." Tomás's dashboard write (tools/dashboard/sheets_write.py)
+// appends a row; these are the read-side pure functions that make that
+// override actually take effect.
+// ---------------------------------------------------------------------------
+
+test('findTrainingPriorityOverride_ finds a row matching (rep, week start), case-insensitive on rep', () => {
+  const rows = [
+    ['Sean', '07/09/2026', 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T09:00:00Z'],
+    ['Joana', '07/09/2026', 'Closing & Objection Handling', 'tomas@iconsofrealestate.com', '2026-09-07T09:05:00Z']
+  ];
+  assert.equal(gas.findTrainingPriorityOverride_(rows, 'sean', '07/09/2026'), 'Discovery');
+  assert.equal(gas.findTrainingPriorityOverride_(rows, 'Joana', '07/09/2026'), 'Closing & Objection Handling');
+});
+
+test('findTrainingPriorityOverride_ returns null when nothing matches this rep/week — the auto-computed pick must win', () => {
+  const rows = [['Sean', '07/09/2026', 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T09:00:00Z']];
+  assert.equal(gas.findTrainingPriorityOverride_(rows, 'Joana', '07/09/2026'), null, 'different rep');
+  assert.equal(gas.findTrainingPriorityOverride_(rows, 'Sean', '14/09/2026'), null, 'different week');
+  assert.equal(gas.findTrainingPriorityOverride_([], 'Sean', '07/09/2026'), null, 'no rows at all');
+});
+
+test('findTrainingPriorityOverride_ uses the LAST matching row — append-only writes mean the newest override wins', () => {
+  const rows = [
+    ['Sean', '07/09/2026', 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T09:00:00Z'],
+    ['Sean', '07/09/2026', 'Closing & Objection Handling', 'tomas@iconsofrealestate.com', '2026-09-07T10:00:00Z']
+  ];
+  assert.equal(gas.findTrainingPriorityOverride_(rows, 'Sean', '07/09/2026'), 'Closing & Objection Handling');
+});
+
+test('namedTrainingFocusFromRanking_ resolves a WEEKLY_TRAINING_ROTATION_ schedule label to the union of its elements\' real data', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [
+    call(2, { discovery: true, framework: false, delivery: false, ask: true, objections: true }),
+    call(3, { discovery: true, framework: true, delivery: false, ask: true, objections: true })
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const focus = gas.namedTrainingFocusFromRanking_(ranking, 'Framework & Delivery');
+  assert.equal(focus.label, 'Framework & Delivery');
+  assert.equal(focus.failed, 3); // framework failed 1 + delivery failed 2, same union as pickWeeklyTrainingFocus_'s own test
+  assert.equal(focus.scored, 4);
+  assert.equal(focus.isManualOverride, true);
+});
+
+test('namedTrainingFocusFromRanking_ resolves a single TRAINING_PRIORITY_ELEMENTS_ label (e.g. "Discovery") to just that element', () => {
+  const call = (score, flags) => ({ score, flags });
+  const calls = [call(1, { discovery: false, framework: true, delivery: true, ask: true, objections: true })];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const focus = gas.namedTrainingFocusFromRanking_(ranking, 'discovery'); // case-insensitive
+  assert.equal(focus.label, 'Discovery');
+  assert.equal(focus.failed, 1);
+  assert.equal(focus.scored, 1);
+  assert.equal(focus.isManualOverride, true);
+});
+
+test('namedTrainingFocusFromRanking_ degrades gracefully to a bare label with no supporting data when the text matches nothing recognized', () => {
+  const focus = gas.namedTrainingFocusFromRanking_([], 'Some Typo Tomas Made');
+  assert.equal(focus.label, 'Some Typo Tomas Made');
+  assert.equal(focus.failed, 0);
+  assert.equal(focus.scored, 0);
+  assert.deepEqual(Array.from(focus.failedCalls), []);
+  assert.equal(focus.isManualOverride, true);
+});
+
+test('getOrCreateTrainingPriorityOverridesSheet_ creates the tab with frozen bold headers exactly once, reusing it on a second call', () => {
+  const created = [];
+  let existingSheet = null;
+  const fakeSheet = {
+    getRange: () => ({ setValues: () => ({ setFontWeight: () => ({ setBackground: () => {} }) }) }),
+    setFrozenRows: () => {}
+  };
+  const fakeSs = {
+    getSheetByName: (name) => { assert.equal(name, 'Training Priority Overrides'); return existingSheet; },
+    insertSheet: (name) => { created.push(name); existingSheet = fakeSheet; return fakeSheet; }
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => fakeSs };
+  try {
+    const first = gas.getOrCreateTrainingPriorityOverridesSheet_();
+    const second = gas.getOrCreateTrainingPriorityOverridesSheet_();
+    assert.equal(first, fakeSheet);
+    assert.equal(second, fakeSheet);
+    assert.deepEqual(created, ['Training Priority Overrides'], 'must only insert the sheet once');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
 test('TRAINING_REVIEW_ROLE_ has no entry for Sean/Joana, only Bens — this is the exact flag buildAndMaybeSendPlaybookReview_ uses to decide who gets the team rotation vs. the legacy per-rep worst-element rule', () => {
   assert.ok(gas.TRAINING_REVIEW_ROLE_.Bens, 'Bens must have a custom role entry');
   assert.equal(gas.TRAINING_REVIEW_ROLE_.Sean, undefined, 'Sean must use the team rotation (no custom role entry)');
