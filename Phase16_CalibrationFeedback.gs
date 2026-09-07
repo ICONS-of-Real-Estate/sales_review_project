@@ -260,6 +260,61 @@ function softenProfanityForJudge_(text) {
   return out;
 }
 
+/** Rep display name -> the literal spellings Kris might say out loud/be transcribed as. Tomás's name transcribes both accented and not. */
+var CALIBRATION_FEEDBACK_REP_NAME_ALIASES_ = {
+  Sean: ['sean'],
+  Joana: ['joana'],
+  'Tomás': ['tomás', 'tomas'],
+  Bens: ['bens']
+};
+
+/** Whole-word, case-insensitive count of how many times any of the given aliases appears in text. */
+function countCalibrationNameMentions_(text, aliases) {
+  var count = 0;
+  aliases.forEach(function (alias) {
+    var re = new RegExp('\\b' + alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
+    var m = String(text || '').match(re);
+    if (m) count += m.length;
+  });
+  return count;
+}
+
+/**
+ * Cheap safeguard against a real, already-happened failure mode: this whole
+ * phase trusts the Drive FOLDER a video sits in as the rep's identity, with
+ * nothing else cross-checking it — same "folder = identity, no verification"
+ * pattern as scoreLegacyTranscriptFolder (Phase2_CallScoring.gs). Kris
+ * confirmed live 07/09/2026 that exactly this happened: two of Tomás's
+ * calibration recordings ended up in Bens's folder and were emailed/labeled
+ * as Bens's ("Those 2 calls marked as Bens are Tomas not Bens" — and
+ * separately, from Tomás's own 1:1 with Kris the same week: "it sent me two
+ * of yours that it said were Ben's").
+ *
+ * Kris's calibration videos are him talking to camera about one specific
+ * rep's call, so he almost always says that rep's name out loud somewhere in
+ * the transcript. If the folder's own rep name is never mentioned but a
+ * DIFFERENT rep's name is mentioned repeatedly, that's a strong signal the
+ * file was dropped in the wrong folder rather than a real recording about
+ * the folder's rep. Deliberately not triggered by one incidental mention (a
+ * rep name dropped once in passing) — only when the transcript looks like
+ * it's ABOUT a different rep entirely.
+ */
+function detectCalibrationFolderMisfile_(rep, transcriptText) {
+  var ownCount = countCalibrationNameMentions_(transcriptText, CALIBRATION_FEEDBACK_REP_NAME_ALIASES_[rep] || [rep]);
+  if (ownCount > 0) return { suspected: false };
+
+  var suspectedRep = null, suspectedCount = 0;
+  Object.keys(CALIBRATION_FEEDBACK_REP_NAME_ALIASES_).forEach(function (otherRep) {
+    if (otherRep === rep) return;
+    var count = countCalibrationNameMentions_(transcriptText, CALIBRATION_FEEDBACK_REP_NAME_ALIASES_[otherRep]);
+    if (count >= 2 && count > suspectedCount) {
+      suspectedRep = otherRep;
+      suspectedCount = count;
+    }
+  });
+  return suspectedRep ? { suspected: true, suspectedRep: suspectedRep, mentionCount: suspectedCount } : { suspected: false };
+}
+
 /**
  * Strips the file extension and a leading "<rep> " prefix off a raw Drive
  * filename for display (e.g. "Sean Margaret Bruno.mp4" -> "Margaret Bruno")
@@ -379,6 +434,16 @@ function processCalibrationFeedbackVideo_(rep, folder, videoFile, transcriptFile
   }
 
   var transcriptText = getTranscriptText_(transcriptFile);
+
+  var misfile = detectCalibrationFolderMisfile_(rep, transcriptText);
+  if (misfile.suspected) {
+    log_('  ' + rep + '/' + videoFile.getName() + ': POSSIBLE MISFILED VIDEO — transcript mentions "' +
+      misfile.suspectedRep + '" ' + misfile.mentionCount + ' time(s) and never mentions "' + rep + '". This looks ' +
+      'like feedback about ' + misfile.suspectedRep + ' dropped into ' + rep + '\'s folder by mistake. Move it to ' +
+      'the correct folder and rerun — skipping for now, not sending or marking sent.');
+    return false;
+  }
+
   var graded = gradeCalibrationFeedbackTranscript_(rep, videoFile.getName(), transcriptText);
   var videoUrl = videoFile.getUrl();
   var recordedDateLabel = Utilities.formatDate(videoFile.getDateCreated(), CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');

@@ -8104,6 +8104,55 @@ test('mergeCalibrationDrillIntoTrainingProperties_ only overwrites TRAINING_* pr
   }
 });
 
+test('detectCalibrationFolderMisfile_ flags a transcript that names a different rep repeatedly and never names the folder\'s own rep (the real "2 of Tomas\'s calls landed in Bens\'s folder" bug)', () => {
+  const transcript = "Tomas, on this call you did a great job with discovery. Tomas asked good questions but Tomas never asked for the close.";
+  const result = gas.detectCalibrationFolderMisfile_('Bens', transcript);
+  assert.equal(result.suspected, true);
+  assert.equal(result.suspectedRep, 'Tomás', 'must resolve the unaccented "Tomas" transcription to the real rep name');
+  assert.equal(result.mentionCount, 3);
+});
+
+test('detectCalibrationFolderMisfile_ does not flag a normal recording that mentions the folder\'s own rep by name', () => {
+  const transcript = "Bens, great energy on this recording. Bens really nailed the framework explanation.";
+  const result = gas.detectCalibrationFolderMisfile_('Bens', transcript);
+  assert.equal(result.suspected, false);
+});
+
+test('detectCalibrationFolderMisfile_ does not flag a single incidental mention of another rep (not the whole video being about them)', () => {
+  const transcript = "Good discovery on this call. Reminded me a bit of how Sean handled a similar objection last week.";
+  const result = gas.detectCalibrationFolderMisfile_('Bens', transcript);
+  assert.equal(result.suspected, false, 'one passing mention of another rep should not trigger a false positive');
+});
+
+test('detectCalibrationFolderMisfile_ does not flag a transcript that names neither the folder\'s rep nor any other rep', () => {
+  const transcript = "Good energy on this call, but never asked for the close. Work on that this week.";
+  const result = gas.detectCalibrationFolderMisfile_('Sean', transcript);
+  assert.equal(result.suspected, false);
+});
+
+test('processCalibrationFeedbackVideo_ skips a likely-misfiled video (names a different rep, not this one) rather than emailing the wrong feedback to the wrong rep', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Julio Lopez.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
+  gas.getTranscriptText_ = () => "Tomas, great job on this call. Tomas really handled that objection well.";
+  gas.gradeCalibrationFeedbackTranscript_ = () => { throw new Error('must not even call the judge on a suspected misfile — save the cost'); };
+  gas.guardedSend_ = () => { throw new Error('must not send — suspected misfile'); };
+  gas.mergeCalibrationDrillIntoTrainingProperties_ = () => { throw new Error('must not merge — suspected misfile'); };
+  try {
+    const didWork = gas.processCalibrationFeedbackVideo_('Bens', folder, video, transcriptFile, false);
+    assert.equal(didWork, false);
+  } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradeCalibrationFeedbackTranscript_ = originalGrade;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.mergeCalibrationDrillIntoTrainingProperties_ = originalMerge;
+  }
+});
+
 test('processCalibrationFeedbackVideo_ emails the rep, merges drill topics, and drops a "Feedback Sent" marker only after a successful send', () => {
   const folder = fakeCalibrationFolder_([]);
   const video = fakeCalibrationVideoFile_('Julio Lopez.mp4', { url: 'https://drive.google.com/file/d/xyz' });
