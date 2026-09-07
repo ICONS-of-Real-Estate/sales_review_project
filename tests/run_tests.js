@@ -63,6 +63,15 @@ function realFormatDate(date, tz, pattern) {
   if (pattern === 'dd') {
     return new Intl.DateTimeFormat('en-US', { timeZone: tz, day: '2-digit' }).format(date);
   }
+  if (pattern === 'HH') {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', hour12: false }).format(date);
+  }
+  if (pattern === 'mm') {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(date).split(':')[1];
+  }
+  if (pattern === 'ss') {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date).split(':')[2];
+  }
   throw new Error('realFormatDate: unsupported pattern "' + pattern + '"');
 }
 
@@ -8321,5 +8330,86 @@ test('gradeCalibrationFeedbackTranscript_ still falls back safely when even the 
   } finally {
     gas.PHASE2_CONFIG = originalConfig;
     gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase17_SeanFollowUpAutomation.gs — "Automating Follow-Ups for Sean —
+// Plan (v2)" (Google Doc, 03/09/2026). Blocked end to end on the
+// gmail.compose scope propagating and a real handoff-email example from
+// Kris (see the file's own header) — these tests cover the pure scheduling
+// math, dead-label check, and tracker sheet that don't depend on either.
+// ---------------------------------------------------------------------------
+
+function assertBusinessTzInstant_(d, expected) {
+  assert.equal(realFormatDate(d, 'America/New_York', 'yyyy'), String(expected.year));
+  assert.equal(realFormatDate(d, 'America/New_York', 'MM'), String(expected.month).padStart(2, '0'));
+  assert.equal(realFormatDate(d, 'America/New_York', 'dd'), String(expected.day).padStart(2, '0'));
+  assert.equal(realFormatDate(d, 'America/New_York', 'HH'), String(expected.hour).padStart(2, '0'));
+  assert.equal(realFormatDate(d, 'America/New_York', 'mm'), String(expected.minute).padStart(2, '0'));
+  assert.equal(realFormatDate(d, 'America/New_York', 'ss'), String(expected.second).padStart(2, '0'));
+  if (expected.weekday) assert.equal(realFormatDate(d, 'America/New_York', 'EEEE'), expected.weekday);
+}
+
+test('dateAtTimeInBusinessTimezone_ builds the requested wall-clock time in CONFIG.BUSINESS_TIMEZONE (America/New_York), not the runtime default', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const d = gas.dateAtTimeInBusinessTimezone_(2026, 9, 10, 14, 30, 0);
+  assertBusinessTzInstant_(d, { year: 2026, month: 9, day: 10, hour: 14, minute: 30, second: 0 });
+});
+
+test('addBusinessDaysPreservingTimeOfDay_ skips Saturday/Sunday, preserving the exact time of day (the plan doc\'s own "real, specific requirement": "at the same time of day the lead\'s original reply came in," not just N days later whenever the trigger runs)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  // Thursday 03/09/2026, 15:42:10 America/New_York + 2 business days = Monday 07/09/2026 (skips Sat 05/09, Sun 06/09), same time.
+  const start = gas.dateAtTimeInBusinessTimezone_(2026, 9, 3, 15, 42, 10);
+  const result = gas.addBusinessDaysPreservingTimeOfDay_(start, 2);
+  assertBusinessTzInstant_(result, { year: 2026, month: 9, day: 7, hour: 15, minute: 42, second: 10, weekday: 'Monday' });
+});
+
+test('addBusinessDaysPreservingTimeOfDay_ handles a span starting on a Friday, landing on the following week (4 business days = breakup email timing)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  // Friday 04/09/2026, 09:00:00 + 4 business days (skips Sat 05, Sun 06) = Thursday 10/09/2026.
+  const start = gas.dateAtTimeInBusinessTimezone_(2026, 9, 4, 9, 0, 0);
+  const result = gas.addBusinessDaysPreservingTimeOfDay_(start, 4);
+  assertBusinessTzInstant_(result, { year: 2026, month: 9, day: 10, hour: 9, minute: 0, second: 0, weekday: 'Thursday' });
+});
+
+test('cadence2ReengagementSchedule_ returns all 5 steps (1 week/1/3/6/12 months) anchored to the last call date, in order', () => {
+  const schedule = gas.cadence2ReengagementSchedule_(new Date(2026, 0, 15)); // 15 Jan 2026
+  const labels = Array.prototype.slice.call(schedule).map((s) => s.label);
+  assert.deepEqual(labels, ['1 week', '1 month', '3 months', '6 months', '12 months']);
+  assert.equal(schedule[0].dueAt.getDate(), 22); // 15 Jan + 7 days = 22 Jan
+  assert.equal(schedule[1].dueAt.getMonth(), 1); // 15 Jan + 1 month = Feb (month index 1)
+  assert.equal(schedule[4].dueAt.getFullYear(), 2027); // 15 Jan 2026 + 12 months = Jan 2027
+});
+
+test('isThreadMarkedDead_ is true only when the configured dead label is present', () => {
+  assert.equal(gas.isThreadMarkedDead_(['Dead']), true);
+  assert.equal(gas.isThreadMarkedDead_(['Important', 'Dead', 'Follow-up']), true);
+  assert.equal(gas.isThreadMarkedDead_(['Important']), false);
+  assert.equal(gas.isThreadMarkedDead_([]), false);
+  assert.equal(gas.isThreadMarkedDead_(null), false);
+});
+
+test('getOrCreateSeanFollowUpTrackerSheet_ creates the tab with frozen bold headers exactly once, reusing it on a second call', () => {
+  const created = [];
+  let existingSheet = null;
+  const fakeSheet = {
+    getRange: () => ({ setValues: () => ({ setFontWeight: () => ({ setBackground: () => {} }) }) }),
+    setFrozenRows: () => {}
+  };
+  const fakeSs = {
+    getSheetByName: (name) => { assert.equal(name, 'Sean Follow-Up Tracker'); return existingSheet; },
+    insertSheet: (name) => { created.push(name); existingSheet = fakeSheet; return fakeSheet; }
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => fakeSs };
+  try {
+    const first = gas.getOrCreateSeanFollowUpTrackerSheet_();
+    const second = gas.getOrCreateSeanFollowUpTrackerSheet_();
+    assert.equal(first, fakeSheet);
+    assert.equal(second, fakeSheet);
+    assert.deepEqual(created, ['Sean Follow-Up Tracker'], 'must only insert the sheet once');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
   }
 });
