@@ -294,10 +294,19 @@ function dueReengagementStepFor_(lastCall, today, notifiedKeys) {
   return null;
 }
 
-/** Combines findLastRealCallPerLead_ + dueReengagementStepFor_ into the final due list. Pure. */
-function findDueReengagements_(rows, col, today, notifiedKeys) {
+/**
+ * Combines findLastRealCallPerLead_ + dueReengagementStepFor_ into the final
+ * due list. Pure. `overrideActions` is the map returned by
+ * getReengagementOverrideActions_ (keys "rep|leadKey" -> last action a rep
+ * set from the dashboard, e.g. 'cancelled') — a cancelled lead is skipped
+ * entirely, same as if it had been marked Sold. Optional (defaults to {})
+ * so existing single-rep callers/tests don't all need updating.
+ */
+function findDueReengagements_(rows, col, today, notifiedKeys, overrideActions) {
+  overrideActions = overrideActions || {};
   var due = [];
   findLastRealCallPerLead_(rows, col).forEach(function (c) {
+    if (overrideActions[c.rep + '|' + c.leadKey] === 'cancelled') return;
     var step = dueReengagementStepFor_(c, today, notifiedKeys);
     if (step) {
       due.push({
@@ -308,6 +317,63 @@ function findDueReengagements_(rows, col, today, notifiedKeys) {
     }
   });
   return due;
+}
+
+// ---------------------------------------------------------------------------
+// Re-engagement Overrides — Kris's ask (07/09/2026): "would be nice for each
+// rep to be able to see a list of all their old leads, in order of priority
+// and the rep can then lower the priority or cancel the follow up." The
+// dashboard (tools/dashboard/) is where a rep actually does this — this tab
+// is the one thing it writes back to the Sheet (sheets_write.py, same
+// append-only "last row wins" convention as Training Priority Overrides).
+// 'cancelled' actually changes automation behavior (findDueReengagements_
+// above skips that lead permanently until reactivated); 'deprioritized' is
+// display-only ranking for the dashboard's own leads list and has no effect
+// here. 'active' reverses either one.
+// ---------------------------------------------------------------------------
+
+var REENGAGEMENT_OVERRIDES_SHEET_NAME = 'Re-engagement Overrides';
+var REENGAGEMENT_OVERRIDES_HEADERS = ['Rep', 'Lead Email', 'Lead Name', 'Action', 'Set By', 'Set At'];
+
+/** Same getOrCreate-plus-frozen-header pattern as every other phase's own tab. Created here too (not just by the dashboard's sheets_write.py) so a preview/live run on a brand-new sheet never crashes reading a tab that doesn't exist yet. */
+function getOrCreateReengagementOverridesSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(REENGAGEMENT_OVERRIDES_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(REENGAGEMENT_OVERRIDES_SHEET_NAME);
+    sheet.getRange(1, 1, 1, REENGAGEMENT_OVERRIDES_HEADERS.length).setValues([REENGAGEMENT_OVERRIDES_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + REENGAGEMENT_OVERRIDES_SHEET_NAME + '" tab.');
+  }
+  return sheet;
+}
+
+/**
+ * Pure (given the raw values). Reduces every override row to a map of
+ * "rep|leadKey" -> LAST action set for that lead — append-only sheet, so the
+ * most recent row for a given rep+lead always wins, same convention as
+ * getNotifiedReengagementKeys_/findTrainingPriorityOverride_ (Phase1_
+ * ComplianceCheck.gs).
+ */
+function reengagementOverrideActionsFromRows_(rows) {
+  var byKey = {};
+  rows.forEach(function (row) {
+    var rep = String(row[0] || '').trim();
+    var leadEmail = row[1];
+    var leadName = row[2];
+    var action = String(row[3] || '').trim().toLowerCase();
+    if (!rep || !action) return;
+    byKey[rep + '|' + reengagementLeadKey_(leadEmail, leadName)] = action;
+  });
+  return byKey;
+}
+
+function getReengagementOverrideActions_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return {};
+  var values = sheet.getRange(2, 1, lastRow - 1, REENGAGEMENT_OVERRIDES_HEADERS.length).getValues();
+  return reengagementOverrideActionsFromRows_(values);
 }
 
 var REENGAGEMENT_TRACKER_SHEET_NAME = 'Re-engagement Tracker';
@@ -417,7 +483,8 @@ function buildAndMaybeSendReengagementDigest_(dryRun) {
   var tz = CONFIG.BUSINESS_TIMEZONE;
   var trackerSheet = getOrCreateReengagementTrackerSheet_();
   var notifiedKeys = getNotifiedReengagementKeys_(trackerSheet);
-  var dueItems = findDueReengagements_(rows, col, new Date(), notifiedKeys);
+  var overrideActions = getReengagementOverrideActions_(getOrCreateReengagementOverridesSheet_());
+  var dueItems = findDueReengagements_(rows, col, new Date(), notifiedKeys, overrideActions);
 
   if (dryRun) {
     log_('(preview) ' + dueItems.length + ' lead(s) due for re-engagement — nothing written or sent.');

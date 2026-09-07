@@ -162,3 +162,76 @@ class TestWriteTrainingPriorityOverride:
         )
         with pytest.raises(Exception, match="403"):
             sheets_write.write_training_priority_override("Sean", "07/09/2026", "Discovery", "tomas@iconsofrealestate.com", service=service)
+
+
+class TestWriteReengagementOverride:
+    """Kris's ask (07/09/2026): a rep can Cancel or Lower Priority one of
+    their own stalled leads from /reps/{rep}/leads. Append-only — Phase17_
+    SeanFollowUpAutomation.gs's getReengagementOverrideActions_ reads the
+    LAST row per (rep, lead), so a later 'active' row un-cancels/
+    un-deprioritizes without destroying history."""
+
+    def _service_with_existing_sheet(self):
+        service = _mock_service()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{"properties": {"title": "Re-engagement Overrides"}}]
+        }
+        return service
+
+    def test_appends_a_row_with_rep_lead_action_and_who_set_it(self):
+        service = self._service_with_existing_sheet()
+        sheets_write.write_reengagement_override(
+            "Bens", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com", service=service
+        )
+        append_call = service.spreadsheets.return_value.values.return_value.append
+        _, kwargs = append_call.call_args
+        assert kwargs["range"] == "'Re-engagement Overrides'!A:F"
+        row = kwargs["body"]["values"][0]
+        assert row[:5] == ["Bens", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com"]
+        append_call.return_value.execute.assert_called_once()
+
+    def test_creates_the_sheet_and_header_row_if_it_does_not_exist_yet(self):
+        service = _mock_service()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {"sheets": []}
+        sheets_write.write_reengagement_override(
+            "Bens", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com", service=service
+        )
+        add_sheet_call = service.spreadsheets.return_value.batchUpdate
+        _, kwargs = add_sheet_call.call_args
+        assert kwargs["body"]["requests"][0]["addSheet"]["properties"]["title"] == "Re-engagement Overrides"
+        header_call = service.spreadsheets.return_value.values.return_value.update
+        _, header_kwargs = header_call.call_args
+        assert header_kwargs["body"]["values"][0] == sheets_write.REENGAGEMENT_OVERRIDES_HEADERS
+
+    def test_does_not_recreate_the_sheet_if_it_already_exists(self):
+        service = self._service_with_existing_sheet()
+        sheets_write.write_reengagement_override(
+            "Bens", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com", service=service
+        )
+        service.spreadsheets.return_value.batchUpdate.assert_not_called()
+
+    def test_unknown_action_raises_rather_than_writing_somewhere_wrong(self):
+        service = self._service_with_existing_sheet()
+        with pytest.raises(ValueError):
+            sheets_write.write_reengagement_override(
+                "Bens", "lead@example.com", "Some Lead", "nonsense", "bens@iconsofrealestate.com", service=service
+            )
+        service.spreadsheets.return_value.values.return_value.append.assert_not_called()
+
+    def test_blank_rep_raises_rather_than_writing_an_orphaned_override(self):
+        service = self._service_with_existing_sheet()
+        with pytest.raises(ValueError):
+            sheets_write.write_reengagement_override(
+                "   ", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com", service=service
+            )
+        service.spreadsheets.return_value.values.return_value.append.assert_not_called()
+
+    def test_api_failure_propagates_rather_than_being_swallowed(self):
+        service = self._service_with_existing_sheet()
+        service.spreadsheets.return_value.values.return_value.append.return_value.execute.side_effect = (
+            Exception("403 The caller does not have permission")
+        )
+        with pytest.raises(Exception, match="403"):
+            sheets_write.write_reengagement_override(
+                "Bens", "lead@example.com", "Some Lead", "cancelled", "bens@iconsofrealestate.com", service=service
+            )

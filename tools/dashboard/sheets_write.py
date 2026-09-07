@@ -160,6 +160,65 @@ def _ensure_training_priority_overrides_sheet(client):
     ).execute()
 
 
+# Kris's ask (07/09/2026): "would be nice for each rep to be able to see a
+# list of all their old leads, in order of priority and the rep can then
+# lower the priority or cancel the follow up." This tab is what a rep's
+# "Cancel"/"Lower Priority"/"Reactivate" buttons on /reps/{rep}/leads
+# (app.py) actually write to — Phase17_SeanFollowUpAutomation.gs's
+# findDueReengagements_ reads the LAST row per (rep, lead) via
+# getReengagementOverrideActions_ and skips a 'cancelled' lead entirely from
+# the Cadence 2 digest; 'deprioritized' only affects this dashboard's own
+# sort order (Apps Script doesn't need to know about it). Must match
+# REENGAGEMENT_OVERRIDES_HEADERS in that file exactly.
+REENGAGEMENT_OVERRIDES_SHEET_NAME = "Re-engagement Overrides"
+REENGAGEMENT_OVERRIDES_HEADERS = ["Rep", "Lead Email", "Lead Name", "Action", "Set By", "Set At"]
+REENGAGEMENT_OVERRIDE_ACTIONS = ("cancelled", "deprioritized", "active")
+
+
+def _ensure_reengagement_overrides_sheet(client):
+    """Same lazily-create-the-tab pattern as _ensure_training_priority_overrides_sheet
+    above — a rep clicking a button on the dashboard must not depend on the
+    Apps Script side (getOrCreateReengagementOverridesSheet_) having created
+    this tab first."""
+    meta = client.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    titles = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    if REENGAGEMENT_OVERRIDES_SHEET_NAME in titles:
+        return
+    client.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": REENGAGEMENT_OVERRIDES_SHEET_NAME}}}]},
+    ).execute()
+    client.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"'{REENGAGEMENT_OVERRIDES_SHEET_NAME}'!A1",
+        valueInputOption="RAW",
+        body={"values": [REENGAGEMENT_OVERRIDES_HEADERS]},
+    ).execute()
+
+
+def write_reengagement_override(rep, lead_email, lead_name, action, set_by, service=None):
+    """Appends one row recording a rep's decision on one stalled lead.
+    Append-only, same "last row wins" convention as
+    write_training_priority_override above — a later 'active' row un-cancels
+    or un-deprioritizes a lead without destroying the history of what was
+    decided when. Raises on any API failure rather than swallowing it, same
+    as every other write in this module."""
+    if action not in REENGAGEMENT_OVERRIDE_ACTIONS:
+        raise ValueError(f"Unknown action {action!r} — must be one of {REENGAGEMENT_OVERRIDE_ACTIONS}.")
+    if not rep or not rep.strip():
+        raise ValueError("rep must not be blank")
+    client = service or sheets_write_client()
+    _ensure_reengagement_overrides_sheet(client)
+    now = datetime.now(timezone.utc).isoformat()
+    client.spreadsheets().values().append(
+        spreadsheetId=SHEET_ID,
+        range=f"'{REENGAGEMENT_OVERRIDES_SHEET_NAME}'!A:F",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [[rep.strip(), lead_email or "", lead_name or "", action, set_by or "", now]]},
+    ).execute()
+
+
 def write_training_priority_override(rep, week_start_label, priority, set_by, service=None):
     """Appends one row to "Training Priority Overrides" — Tomás's one-week
     override of the auto-computed weekly training focus for one rep.

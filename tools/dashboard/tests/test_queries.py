@@ -678,3 +678,152 @@ class TestTrainingAssignmentsFrameworkDrill:
         assignments = {a["rep"]: a for a in app_module.training_assignments()}
         assert assignments["Bob"]["framework_drill"] == []
         assert assignments["Carol"]["framework_drill"] == []
+
+
+class TestReengagementLeadKey:
+    def test_uses_lowercased_trimmed_email_when_present(self):
+        assert app_module.reengagement_lead_key(" A@Example.com ", "Some Name") == "email:a@example.com"
+
+    def test_falls_back_to_lowercased_name_when_no_email(self):
+        assert app_module.reengagement_lead_key("", "  Some Name ") == "name:some name"
+
+
+class TestReengagementSchedule:
+    def test_full_step_labels_and_month_arithmetic(self):
+        import datetime as dt
+
+        schedule = app_module.reengagement_schedule(dt.date(2026, 1, 15))
+        labels = [s["label"] for s in schedule]
+        assert labels == ["1 week", "1 month", "3 months", "6 months", "12 months"]
+        by_label = {s["label"]: s["due_at"] for s in schedule}
+        assert by_label["1 week"] == dt.date(2026, 1, 22)
+        assert by_label["1 month"] == dt.date(2026, 2, 15)
+        assert by_label["12 months"] == dt.date(2027, 1, 15)
+
+    def test_clamps_day_of_month_across_a_short_month(self):
+        import datetime as dt
+
+        # Jan 31 + 1 month must land on Feb 28 (2026 is not a leap year), not crash.
+        schedule = app_module.reengagement_schedule(dt.date(2026, 1, 31))
+        by_label = {s["label"]: s["due_at"] for s in schedule}
+        assert by_label["1 month"] == dt.date(2026, 2, 28)
+
+
+class TestLastRealCallPerLead:
+    def _row(self, **overrides):
+        base = {
+            "rep": "Sean", "call_type": "Sales Call", "call_date": None,
+            "prospect_name": "Some Lead", "prospect_email": "lead@example.com",
+            "outcome_disposition": "",
+        }
+        base.update(overrides)
+        return base
+
+    def test_keeps_only_the_most_recent_call_per_lead(self):
+        import datetime as dt
+
+        rows = [
+            self._row(call_date=dt.date(2026, 1, 1)),
+            self._row(call_date=dt.date(2026, 2, 1)),
+        ]
+        leads = app_module.last_real_call_per_lead(rows)
+        assert len(leads) == 1
+        assert leads[0]["call_date"] == dt.date(2026, 2, 1)
+
+    def test_excludes_sold_leads(self):
+        import datetime as dt
+
+        rows = [self._row(call_date=dt.date(2026, 1, 1), outcome_disposition="Sold")]
+        assert app_module.last_real_call_per_lead(rows) == []
+
+    def test_ignores_reps_not_in_reengagement_reps(self):
+        import datetime as dt
+
+        rows = [self._row(rep="Not A Rep", call_date=dt.date(2026, 1, 1))]
+        assert app_module.last_real_call_per_lead(rows) == []
+
+    def test_ignores_call_types_outside_qc_and_sales_call(self):
+        import datetime as dt
+
+        rows = [self._row(call_type="Discovery", call_date=dt.date(2026, 1, 1))]
+        assert app_module.last_real_call_per_lead(rows) == []
+
+    def test_ignores_rows_with_no_parsed_call_date(self):
+        rows = [self._row(call_date=None)]
+        assert app_module.last_real_call_per_lead(rows) == []
+
+
+class TestReengagementLeadsForRep:
+    def _row(self, **overrides):
+        base = {
+            "rep": "Bens", "call_type": "QC", "call_date": None,
+            "prospect_name": "Old Lead", "prospect_email": "old@example.com",
+            "outcome_disposition": "",
+        }
+        base.update(overrides)
+        return base
+
+    def test_sorts_active_leads_by_days_stalled_descending(self):
+        import datetime as dt
+
+        today = dt.date(2026, 6, 1)
+        rows = [
+            self._row(prospect_name="Fresher", prospect_email="fresher@example.com", call_date=dt.date(2026, 5, 1)),
+            self._row(prospect_name="Staler", prospect_email="staler@example.com", call_date=dt.date(2026, 1, 1)),
+        ]
+        leads = app_module.reengagement_leads_for_rep("Bens", rows, {}, today=today)
+        assert [l["prospect_name"] for l in leads] == ["Staler", "Fresher"]
+
+    def test_cancelled_leads_sort_to_the_bottom_but_still_appear(self):
+        import datetime as dt
+
+        today = dt.date(2026, 6, 1)
+        rows = [
+            self._row(prospect_name="Cancelled Old", prospect_email="c@example.com", call_date=dt.date(2026, 1, 1)),
+            self._row(prospect_name="Active New", prospect_email="a@example.com", call_date=dt.date(2026, 5, 1)),
+        ]
+        overrides = {("Bens", "email:c@example.com"): "cancelled"}
+        leads = app_module.reengagement_leads_for_rep("Bens", rows, overrides, today=today)
+        assert [l["prospect_name"] for l in leads] == ["Active New", "Cancelled Old"]
+        assert leads[1]["action"] == "cancelled"
+
+    def test_deprioritized_leads_sort_between_active_and_cancelled(self):
+        import datetime as dt
+
+        today = dt.date(2026, 6, 1)
+        rows = [
+            self._row(prospect_name="Cancelled", prospect_email="c@example.com", call_date=dt.date(2026, 1, 1)),
+            self._row(prospect_name="Deprioritized", prospect_email="d@example.com", call_date=dt.date(2026, 1, 1)),
+            self._row(prospect_name="Active", prospect_email="a@example.com", call_date=dt.date(2026, 1, 1)),
+        ]
+        overrides = {
+            ("Bens", "email:c@example.com"): "cancelled",
+            ("Bens", "email:d@example.com"): "deprioritized",
+        }
+        leads = app_module.reengagement_leads_for_rep("Bens", rows, overrides, today=today)
+        assert [l["prospect_name"] for l in leads] == ["Active", "Deprioritized", "Cancelled"]
+
+    def test_only_returns_leads_for_the_requested_rep(self):
+        import datetime as dt
+
+        rows = [
+            self._row(rep="Bens", call_date=dt.date(2026, 1, 1)),
+            self._row(rep="Joana", prospect_email="joana-lead@example.com", call_date=dt.date(2026, 1, 1)),
+        ]
+        leads = app_module.reengagement_leads_for_rep("Bens", rows, {}, today=dt.date(2026, 6, 1))
+        assert len(leads) == 1
+        assert leads[0]["prospect_email"] == "old@example.com"
+
+    def test_current_step_set_once_a_step_is_due_and_next_step_set_otherwise(self):
+        import datetime as dt
+
+        rows = [self._row(call_date=dt.date(2026, 1, 1))]
+        # 10 days later: "1 week" is due, "1 month" is next.
+        leads = app_module.reengagement_leads_for_rep("Bens", rows, {}, today=dt.date(2026, 1, 11))
+        assert leads[0]["current_step"] == "1 week"
+        assert leads[0]["next_step"] == "1 month"
+
+        # 3 days later: nothing due yet, "1 week" is next.
+        leads2 = app_module.reengagement_leads_for_rep("Bens", rows, {}, today=dt.date(2026, 1, 4))
+        assert leads2[0]["current_step"] is None
+        assert leads2[0]["next_step"] == "1 week"

@@ -9061,6 +9061,92 @@ test('findDueReengagements_ combines last-call lookup and due-step check end to 
   assert.equal(due[0].prospectName, 'Stalled Lead');
 });
 
+test('findDueReengagements_ skips a lead whose override action is cancelled', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Bens', name: 'Stalled Lead', email: 'stalled@example.com', callType: 'QC', date: bizDate(gas, 2026, 1, 1) })
+  ];
+  const today = bizDate(gas, 2026, 8, 1);
+  const overrides = { 'Bens|email:stalled@example.com': 'cancelled' };
+  assert.equal(gas.findDueReengagements_(rows, col, today, [], overrides).length, 0);
+});
+
+test('findDueReengagements_ still includes a lead whose override action is deprioritized (display-only)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Bens', name: 'Stalled Lead', email: 'stalled@example.com', callType: 'QC', date: bizDate(gas, 2026, 1, 1) })
+  ];
+  const today = bizDate(gas, 2026, 8, 1);
+  const overrides = { 'Bens|email:stalled@example.com': 'deprioritized' };
+  assert.equal(gas.findDueReengagements_(rows, col, today, [], overrides).length, 1);
+});
+
+test('findDueReengagements_ defaults overrideActions to {} when omitted (back-compat)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Bens', name: 'Stalled Lead', email: 'stalled@example.com', callType: 'QC', date: bizDate(gas, 2026, 1, 1) })
+  ];
+  const today = bizDate(gas, 2026, 8, 1);
+  assert.equal(gas.findDueReengagements_(rows, col, today, []).length, 1);
+});
+
+test('reengagementOverrideActionsFromRows_ keeps only the LAST action per rep+lead (append-only, last row wins)', () => {
+  const rows = [
+    ['Sean', 'a@example.com', 'Lead A', 'cancelled', 'kris@iconsofrealestate.com', new Date()],
+    ['Sean', 'a@example.com', 'Lead A', 'active', 'kris@iconsofrealestate.com', new Date()],
+    ['Joana', '', 'Lead B', 'deprioritized', 'joana@iconsofrealestate.com', new Date()]
+  ];
+  const actions = gas.reengagementOverrideActionsFromRows_(rows);
+  assert.deepEqual(Object.assign({}, actions), {
+    'Sean|email:a@example.com': 'active',
+    'Joana|name:lead b': 'deprioritized'
+  });
+});
+
+test('reengagementOverrideActionsFromRows_ skips blank rep or action', () => {
+  const rows = [['', 'a@example.com', 'Lead A', 'cancelled', '', new Date()], ['Sean', 'b@example.com', 'Lead B', '', '', new Date()]];
+  assert.deepEqual(Object.assign({}, gas.reengagementOverrideActionsFromRows_(rows)), {});
+});
+
+test('getReengagementOverrideActions_ returns {} when the sheet has no data rows yet', () => {
+  assert.deepEqual(Object.assign({}, gas.getReengagementOverrideActions_({ getLastRow: () => 1 })), {});
+});
+
+test('getReengagementOverrideActions_ reads rows via getRange/getValues and reduces them the same way as reengagementOverrideActionsFromRows_', () => {
+  const fakeSheet = {
+    getLastRow: () => 2,
+    getRange: () => ({ getValues: () => [['Sean', 'a@example.com', 'Lead A', 'cancelled', 'kris@iconsofrealestate.com', new Date()]] })
+  };
+  assert.deepEqual(Object.assign({}, gas.getReengagementOverrideActions_(fakeSheet)), { 'Sean|email:a@example.com': 'cancelled' });
+});
+
+test('getOrCreateReengagementOverridesSheet_ creates the tab with frozen header row if missing', () => {
+  const created = {};
+  const fakeNewSheet = {
+    getRange: () => ({
+      setValues: () => ({ setFontWeight: () => ({ setBackground: () => {} }) })
+    }),
+    setFrozenRows: (n) => { created.frozenRows = n; }
+  };
+  const fakeSs = {
+    getSheetByName: () => null,
+    insertSheet: (name) => { created.name = name; return fakeNewSheet; }
+  };
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  gas.SpreadsheetApp = { openById: () => fakeSs };
+  try {
+    const sheet = gas.getOrCreateReengagementOverridesSheet_();
+    assert.equal(sheet, fakeNewSheet);
+    assert.equal(created.name, 'Re-engagement Overrides');
+    assert.equal(created.frozenRows, 1);
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
 test('getNotifiedReengagementKeys_ reconstructs the leadKey from Lead Email/Lead Name and returns rep|leadKey|step strings', () => {
   const fakeSheet = {
     getLastRow: () => 2,

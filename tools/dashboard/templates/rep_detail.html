@@ -15,6 +15,9 @@
   <a href="/calls?rep={{ rep }}" class="stat"><div class="value">{{ avg_score if avg_score is not none else "—" }}</div><div class="label">Avg score</div></a>
   <a href="/calls?rep={{ rep }}&outcome_disposition={{ outcome_missing_key }}" class="stat {{ 'warn' if outcomes.pct_logged is none or outcomes.pct_logged < 50 else '' }}"><div class="value">{{ outcomes.missing }}</div><div class="label">No outcome logged</div></a>
   <a href="/queue?rep={{ rep }}" class="stat"><div class="value">&rarr;</div><div class="label">Review queue for {{ rep }}</div></a>
+  {% if reengagement_eligible %}
+  <a href="/reps/{{ rep }}/leads" class="stat"><div class="value">&rarr;</div><div class="label">Old leads to re-engage</div></a>
+  {% endif %}
 </div>
 
 {% if outcomes.logged %}

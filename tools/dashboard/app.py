@@ -16,7 +16,7 @@ import html
 import json
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -964,6 +964,161 @@ def current_training_priority_override(rep):
     return dict(row) if row else None
 
 
+# Must mirror SEAN_FOLLOWUP_CONFIG.CADENCE2_REPS/CADENCE2_CALL_TYPES/
+# CADENCE2_STEPS in Phase17_SeanFollowUpAutomation.gs exactly — this is a
+# read-only Python re-derivation of that file's findLastRealCallPerLead_/
+# cadence2ReengagementSchedule_ against the same Sales Call Log data (mirrored
+# here via sync.py), for /reps/{rep}/leads (Kris's ask, 07/09/2026: "would be
+# nice for each rep to be able to see a list of all their old leads, in order
+# of priority"). If Cadence 2's config ever changes over there, update here too.
+REENGAGEMENT_REPS = ["Bens", "Joana", "Sean", "Tomás"]
+REENGAGEMENT_CALL_TYPES = ["QC", "Sales Call"]
+REENGAGEMENT_STEPS = [
+    ("1 week", 0, 7),
+    ("1 month", 1, 0),
+    ("3 months", 3, 0),
+    ("6 months", 6, 0),
+    ("12 months", 12, 0),
+]
+
+
+def reengagement_lead_key(email, name):
+    """Same identity rule as reengagementLeadKey_ (Phase17_SeanFollowUpAutomation.gs):
+    email when present (lowercased/trimmed), else the lowercased/trimmed name —
+    good enough to group rows for one lead without a stable ID column."""
+    email = (email or "").strip().lower()
+    if email:
+        return f"email:{email}"
+    return f"name:{(name or '').strip().lower()}"
+
+
+def _add_months_and_days(d, months, days):
+    y, m = _month_add(d.year, d.month, months)
+    # Clamp the day (e.g. Jan 31 + 1 month must not crash on Feb 31) — plain
+    # calendar arithmetic, same tolerance as addMonthsAndDays_'s JS Date
+    # auto-rollover, just explicit here since Python's date() rejects invalid
+    # day-of-month instead of rolling over.
+    import calendar
+
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day) + timedelta(days=days)
+
+
+def reengagement_schedule(last_call_date):
+    """The full 1wk/1mo/3mo/6mo/12mo schedule for one lead, anchored to their
+    last real call — mirrors cadence2ReengagementSchedule_. Pure."""
+    return [
+        {"label": label, "due_at": _add_months_and_days(last_call_date, months, days)}
+        for label, months, days in REENGAGEMENT_STEPS
+    ]
+
+
+def last_real_call_per_lead(call_rows):
+    """Pure. Mirrors findLastRealCallPerLead_ — for every (rep, lead) pair
+    with at least one Cadence-2-eligible call, keeps only their single most
+    recent one, excluding any lead already Sold. `call_rows` is a list of
+    dicts with rep/call_type/call_date (a date)/prospect_name/prospect_email/
+    outcome_disposition keys."""
+    by_key = {}
+    for row in call_rows:
+        raw_rep = (row.get("rep") or "").strip()
+        rep = next((r for r in REENGAGEMENT_REPS if r.lower() == raw_rep.lower()), None)
+        if not rep:
+            continue
+        call_type = (row.get("call_type") or "").strip()
+        if call_type not in REENGAGEMENT_CALL_TYPES:
+            continue
+        call_date = row.get("call_date")
+        if not isinstance(call_date, date):
+            continue
+        lead_key = reengagement_lead_key(row.get("prospect_email"), row.get("prospect_name"))
+        key = (rep, lead_key)
+        existing = by_key.get(key)
+        if existing is None or call_date > existing["call_date"]:
+            by_key[key] = {
+                "rep": rep,
+                "lead_key": lead_key,
+                "prospect_name": row.get("prospect_name") or "(unnamed)",
+                "prospect_email": (row.get("prospect_email") or "").strip(),
+                "call_type": call_type,
+                "call_date": call_date,
+                "outcome_disposition": (row.get("outcome_disposition") or "").strip(),
+            }
+    return [c for c in by_key.values() if c["outcome_disposition"].strip().lower() != "sold"]
+
+
+def reengagement_leads_for_rep(rep, call_rows, override_actions, today=None):
+    """Every one of `rep`'s stalled leads (from last_real_call_per_lead),
+    each annotated with its current/next Cadence 2 step and override status,
+    sorted so the rep sees what needs attention first: active leads by days
+    stalled (most overdue first), then deprioritized leads (same order),
+    then cancelled leads last. `override_actions` is {(rep, lead_key):
+    action} — same shape write_reengagement_override's mirrored table
+    produces (last row per rep+lead wins, computed by the caller)."""
+    today = today or datetime.now(ZoneInfo(BUSINESS_TIMEZONE)).date()
+    leads = []
+    for c in last_real_call_per_lead(call_rows):
+        if c["rep"] != rep:
+            continue
+        schedule = reengagement_schedule(c["call_date"])
+        due_steps = [s for s in schedule if s["due_at"] <= today]
+        upcoming_steps = [s for s in schedule if s["due_at"] > today]
+        current_step = due_steps[-1] if due_steps else None
+        next_step = upcoming_steps[0] if upcoming_steps else None
+        action = override_actions.get((rep, c["lead_key"]), "active")
+        leads.append(
+            {
+                "prospect_name": c["prospect_name"],
+                "prospect_email": c["prospect_email"],
+                "lead_key": c["lead_key"],
+                "call_type": c["call_type"],
+                "call_date": c["call_date"],
+                "days_since_call": (today - c["call_date"]).days,
+                "current_step": current_step["label"] if current_step else None,
+                "next_step": next_step["label"] if next_step else None,
+                "next_step_due_at": next_step["due_at"] if next_step else None,
+                "action": action,
+            }
+        )
+    status_rank = {"active": 0, "deprioritized": 1, "cancelled": 2}
+    leads.sort(key=lambda item: (status_rank.get(item["action"], 0), -item["days_since_call"]))
+    return leads
+
+
+def reengagement_override_actions():
+    """{(rep, lead_key): last action} across every rep — last row per
+    (rep, lead_email/lead_name) wins, same "append-only, last write wins"
+    convention as current_training_priority_override above."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, lead_email, lead_name, action FROM reengagement_overrides ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    actions = {}
+    for r in rows:
+        if not r["rep"] or not r["action"]:
+            continue
+        actions[(r["rep"], reengagement_lead_key(r["lead_email"], r["lead_name"]))] = r["action"]
+    return actions
+
+
+def rep_call_rows_for_reengagement():
+    """Every sales_call_log row shaped for last_real_call_per_lead, with
+    Call Date already parsed into a real date (or None, filtered out by
+    last_real_call_per_lead's own isinstance check)."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT rep, call_type, call_date, prospect_name, prospect_email, outcome_disposition FROM sales_call_log"
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["call_date"] = parse_call_date(d["call_date"])
+        out.append(d)
+    return out
+
+
 def rep_playbook(rep):
     """The one PLAYBOOKS doc that belongs to this rep, or None if none exists
     (Joana) — a single doc, not the full list /training used to dump on one
@@ -1005,6 +1160,7 @@ def rep_detail_page(request: Request, rep: str):
             "playbook": rep_playbook(rep),
             "current_priority_override": current_training_priority_override(rep),
             "training_priority_options": TRAINING_PRIORITY_OPTIONS,
+            "reengagement_eligible": rep in REENGAGEMENT_REPS,
         },
     )
 
@@ -1033,6 +1189,66 @@ def set_priority_override(request: Request, rep: str, priority: str = Form(...))
             status_code=500,
         )
     return RedirectResponse(url=f"/reps/{rep}", status_code=303)
+
+
+REENGAGEMENT_OVERRIDE_ACTIONS = {"cancel": "cancelled", "deprioritize": "deprioritized", "reactivate": "active"}
+
+
+@app.get("/reps/{rep}/leads", response_class=HTMLResponse)
+def rep_leads_page(request: Request, rep: str):
+    """Kris's ask (07/09/2026): "would be nice for each rep to be able to see
+    a list of all their old leads, in order of priority and the rep can then
+    lower the priority or cancel the follow up." Ranked list of every stalled
+    (non-Sold, non-fresh) lead this rep owns, re-derived from the Sales Call
+    Log the same way Phase17_SeanFollowUpAutomation.gs's Cadence 2 detection
+    does (reengagement_leads_for_rep). Only Bens/Joana/Sean/Tomás have
+    Cadence-2-eligible leads at all (REENGAGEMENT_REPS)."""
+    leads = reengagement_leads_for_rep(rep, rep_call_rows_for_reengagement(), reengagement_override_actions())
+    return render(
+        request,
+        "rep_leads.html",
+        {
+            "active_page": "",
+            "freshness": freshness_status(),
+            "rep": rep,
+            "leads": leads,
+        },
+    )
+
+
+@app.post("/reps/{rep}/leads/override")
+def set_reengagement_override(
+    request: Request,
+    rep: str,
+    lead_key: str = Form(...),
+    lead_email: str = Form(""),
+    lead_name: str = Form(""),
+    action: str = Form(...),
+):
+    """Writes one Cancel/Lower Priority/Reactivate decision straight to the
+    "Re-engagement Overrides" sheet tab (sheets_write.py) — Phase17_
+    SeanFollowUpAutomation.gs's Cadence 2 digest (findDueReengagements_) reads
+    it back and skips a 'cancelled' lead entirely; 'deprioritized' only
+    affects this page's own sort order. lead_key isn't written anywhere (the
+    sheet stores email/name, same as everything else) — it's only here so the
+    form can echo back which row was acted on if the write fails."""
+    if action not in REENGAGEMENT_OVERRIDE_ACTIONS:
+        return HTMLResponse(f"Unknown action {html.escape(action)!r}.", status_code=400)
+    try:
+        sheets_write.write_reengagement_override(
+            rep, lead_email, lead_name, REENGAGEMENT_OVERRIDE_ACTIONS[action],
+            request.session.get("user_email") or "",
+        )
+    except Exception as e:
+        # Same "surface it, don't pretend it worked" rule as /review/decide
+        # and /reps/{rep}/priority-override above.
+        return HTMLResponse(
+            f"<p>Could not save that to the spreadsheet:</p>"
+            f"<pre style='white-space:pre-wrap;'>{html.escape(str(e))}</pre>"
+            f"<p><a href='/reps/{rep}/leads'>Back to {html.escape(rep)}'s leads</a></p>",
+            status_code=500,
+        )
+    return RedirectResponse(url=f"/reps/{rep}/leads", status_code=303)
 
 
 def _rep_score_series(rep):

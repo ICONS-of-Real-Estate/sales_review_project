@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/reps/{{ rep }}" class="muted">&larr; Back to {{ rep }}</a></p>
+<h1>{{ rep }}'s old leads</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced — run sync.py
+  {% endif %}
+</span>
+<p class="muted">
+  Every non-Sold lead from {{ rep }}'s last QC or Sales Call, ranked by how long it's been stalled.
+  This is what Phase 17's Cadence 2 re-engagement digest (weekly email to Tomás) is watching — cancel
+  a lead here and it drops out of that digest for good; lowering its priority just moves it down this list.
+</p>
+
+{% if leads %}
+<div class="chart-card">
+  <table>
+    <thead>
+      <tr>
+        <th>Lead</th>
+        <th>Last call</th>
+        <th>Days stalled</th>
+        <th>Re-engagement step</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lead in leads %}
+      <tr>
+        <td>
+          {{ lead.prospect_name }}
+          {% if lead.prospect_email %}<br><span class="muted">{{ lead.prospect_email }}</span>{% endif %}
+        </td>
+        <td>{{ lead.call_type }}<br><span class="muted">{{ lead.call_date }}</span></td>
+        <td>{{ lead.days_since_call }}</td>
+        <td>
+          {% if lead.current_step %}
+            <strong>{{ lead.current_step }}</strong> due
+          {% elif lead.next_step %}
+            <span class="muted">{{ lead.next_step }} on {{ lead.next_step_due_at }}</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if lead.action == "cancelled" %}<span class="stat warn" style="padding:2px 8px;">Cancelled</span>
+          {% elif lead.action == "deprioritized" %}<span class="stat" style="padding:2px 8px;">Lower priority</span>
+          {% else %}<span class="muted">Active</span>
+          {% endif %}
+        </td>
+        <td>
+          <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+            {% if lead.action != "deprioritized" %}
+            <form method="post" action="/reps/{{ rep }}/leads/override">
+              <input type="hidden" name="lead_key" value="{{ lead.lead_key }}">
+              <input type="hidden" name="lead_email" value="{{ lead.prospect_email }}">
+              <input type="hidden" name="lead_name" value="{{ lead.prospect_name }}">
+              <input type="hidden" name="action" value="deprioritize">
+              <button type="submit">Lower priority</button>
+            </form>
+            {% endif %}
+            {% if lead.action != "cancelled" %}
+            <form method="post" action="/reps/{{ rep }}/leads/override">
+              <input type="hidden" name="lead_key" value="{{ lead.lead_key }}">
+              <input type="hidden" name="lead_email" value="{{ lead.prospect_email }}">
+              <input type="hidden" name="lead_name" value="{{ lead.prospect_name }}">
+              <input type="hidden" name="action" value="cancel">
+              <button type="submit">Cancel follow-up</button>
+            </form>
+            {% endif %}
+            {% if lead.action != "active" %}
+            <form method="post" action="/reps/{{ rep }}/leads/override">
+              <input type="hidden" name="lead_key" value="{{ lead.lead_key }}">
+              <input type="hidden" name="lead_email" value="{{ lead.prospect_email }}">
+              <input type="hidden" name="lead_name" value="{{ lead.prospect_name }}">
+              <input type="hidden" name="action" value="reactivate">
+              <button type="submit">Reactivate</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="muted">No stalled leads for {{ rep }} right now.</p>
+{% endif %}
+{% endblock %}

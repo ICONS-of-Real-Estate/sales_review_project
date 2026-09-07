@@ -119,6 +119,84 @@ class TestTrainingPriorityOverride:
         assert "403" in resp.text
 
 
+class TestReengagementLeadsPage:
+    """Kris's ask (07/09/2026): "would be nice for each rep to be able to see
+    a list of all their old leads, in order of priority and the rep can then
+    lower the priority or cancel the follow up.\""""
+
+    def test_rep_detail_links_to_leads_page_only_for_reengagement_eligible_reps(self, client, seeded_db):
+        # Alice isn't one of Bens/Joana/Sean/Tomás.
+        resp = client.get("/reps/Alice")
+        assert "Old leads to re-engage" not in resp.text
+
+    def test_leads_page_renders_stalled_lead(self, client, db_path, conn):
+        insert_call(
+            conn, rep="Bens", call_type="QC", prospect_name="Stalled Lead",
+            prospect_email="stalled@example.com", call_date="01/01/2026", outcome_disposition="Not Sold",
+        )
+        conn.commit()
+        resp = client.get("/reps/Bens/leads")
+        assert resp.status_code == 200
+        assert "Stalled Lead" in resp.text
+        assert "stalled@example.com" in resp.text
+
+    def test_leads_page_renders_with_no_leads(self, client, db_path):
+        resp = client.get("/reps/Bens/leads")
+        assert resp.status_code == 200
+        assert "No stalled leads" in resp.text
+
+    def test_leads_page_shows_current_override_status(self, client, db_path, conn):
+        insert_call(
+            conn, rep="Bens", call_type="QC", prospect_name="Cancelled Lead",
+            prospect_email="c@example.com", call_date="01/01/2026",
+        )
+        conn.execute(
+            "INSERT INTO reengagement_overrides (rep, lead_email, lead_name, action, set_by, set_at) "
+            "VALUES ('Bens', 'c@example.com', 'Cancelled Lead', 'cancelled', 'bens@iconsofrealestate.com', ?)",
+            (app_module.datetime.now(app_module.timezone.utc).isoformat(),),
+        )
+        conn.commit()
+        resp = client.get("/reps/Bens/leads")
+        assert "Cancelled" in resp.text
+
+    def test_set_reengagement_override_writes_through_sheets_write_and_redirects(self, client, db_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            app_module.sheets_write, "write_reengagement_override",
+            lambda rep, lead_email, lead_name, action, set_by: calls.append((rep, lead_email, lead_name, action, set_by)),
+        )
+        resp = client.post(
+            "/reps/Bens/leads/override",
+            data={"lead_key": "email:c@example.com", "lead_email": "c@example.com", "lead_name": "Some Lead", "action": "cancel"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/reps/Bens/leads"
+        assert len(calls) == 1
+        rep, lead_email, lead_name, action, set_by = calls[0]
+        assert rep == "Bens"
+        assert lead_email == "c@example.com"
+        assert action == "cancelled"
+
+    def test_set_reengagement_override_rejects_unknown_action(self, client, db_path):
+        resp = client.post(
+            "/reps/Bens/leads/override",
+            data={"lead_key": "email:c@example.com", "lead_email": "c@example.com", "lead_name": "Some Lead", "action": "nonsense"},
+        )
+        assert resp.status_code == 400
+
+    def test_set_reengagement_override_surfaces_sheet_write_failure_instead_of_pretending_success(self, client, db_path, monkeypatch):
+        def _boom(rep, lead_email, lead_name, action, set_by):
+            raise Exception("403 The caller does not have permission")
+        monkeypatch.setattr(app_module.sheets_write, "write_reengagement_override", _boom)
+        resp = client.post(
+            "/reps/Bens/leads/override",
+            data={"lead_key": "email:c@example.com", "lead_email": "c@example.com", "lead_name": "Some Lead", "action": "cancel"},
+        )
+        assert resp.status_code == 500
+        assert "403" in resp.text
+
+
 def test_calls_page_renders(client, seeded_db):
     resp = client.get("/calls")
     assert resp.status_code == 200

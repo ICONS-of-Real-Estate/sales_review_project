@@ -56,6 +56,22 @@ TRAINING_PRIORITY_OVERRIDES_COLUMNS = {
     "Set At": "set_at",
 }
 
+# Must match REENGAGEMENT_OVERRIDES_HEADERS in Phase17_SeanFollowUpAutomation.gs
+# (and sheets_write.py's own copy, which is what actually writes rows here).
+# Read-only mirror: /reps/{rep}/leads (app.py) shows the current action per
+# lead, but the Cancel/Lower Priority/Reactivate buttons write through
+# sheets_write.write_reengagement_override, same one-write-path rule as
+# every other writable tab in this file.
+REENGAGEMENT_OVERRIDES_TAB = "Re-engagement Overrides"
+REENGAGEMENT_OVERRIDES_COLUMNS = {
+    "Rep": "rep",
+    "Lead Email": "lead_email",
+    "Lead Name": "lead_name",
+    "Action": "action",
+    "Set By": "set_by",
+    "Set At": "set_at",
+}
+
 SALES_CALL_LOG_TAB = "Sales Call Log"
 TRAINING_ASSIGNMENTS_TAB = "Training Assignments"
 DAILY_PRACTICE_FOLLOWUP_TAB = "Daily Practice Follow-ups"
@@ -421,6 +437,10 @@ def init_schema(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rep TEXT, week_start TEXT, priority TEXT, set_by TEXT, set_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS reengagement_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rep TEXT, lead_email TEXT, lead_name TEXT, action TEXT, set_by TEXT, set_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS training_assignments (
             rep TEXT PRIMARY KEY,
             training_objections_json TEXT,
@@ -581,6 +601,7 @@ def main():
         "lead_reconciliation": (LEAD_RECONCILIATION_TAB, LEAD_RECONCILIATION_COLUMNS),
         "bens_podcast_tracker": (BENS_PODCAST_TRACKER_TAB, BENS_PODCAST_TRACKER_COLUMNS),
         "training_priority_overrides": (TRAINING_PRIORITY_OVERRIDES_TAB, TRAINING_PRIORITY_OVERRIDES_COLUMNS),
+        "reengagement_overrides": (REENGAGEMENT_OVERRIDES_TAB, REENGAGEMENT_OVERRIDES_COLUMNS),
     }
 
     try:
