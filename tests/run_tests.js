@@ -2607,6 +2607,34 @@ test('installPlaybookReviewTrigger installs both a Tuesday reminder trigger and 
   }
 });
 
+test('installPlaybookReviewTrigger deletes the OLD single runWeeklyPlaybookReview trigger too, not just the two new handler names (real bug, live 08/09/2026: left at 19/20 triggers, this function left the old one in place, created the reminder trigger to hit exactly 20, then the final trigger\'s own .create() pushed to 21 and Apps Script threw "This script has too many triggers")', () => {
+  const originalScriptApp = gas.ScriptApp;
+  // Simulate the exact live state Kris hit: 19 total triggers, including the
+  // old playbook one (18 unrelated + it) -- one slot free under the 20 cap.
+  const unrelated = [];
+  for (let i = 0; i < 18; i++) unrelated.push('unrelatedTrigger' + i);
+  gas.ScriptApp = fakeScriptAppTriggers_(unrelated.concat(['runWeeklyPlaybookReview']));
+  const originalCreate = gas.ScriptApp.newTrigger;
+  // Enforce the real 20-trigger cap inside the fake, so this test would have
+  // reproduced the live exception before the fix (fail-before/pass-after).
+  gas.ScriptApp.newTrigger = function (fnName) {
+    if (gas.ScriptApp.getProjectTriggers().length >= 20) {
+      throw new Error('This script has too many triggers. Triggers must be deleted from the script before more can be added.');
+    }
+    return originalCreate(fnName);
+  };
+  try {
+    gas.installPlaybookReviewTrigger();
+    const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.equal(handlers.indexOf('runWeeklyPlaybookReview'), -1, 'the old single trigger must be deleted, not left as an orphan');
+    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewReminder') !== -1);
+    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewFinal') !== -1);
+    assert.equal(handlers.length, 20, '18 unrelated + reminder + final, at exactly the cap -- old trigger correctly removed, not just superseded');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
 test('STANDING_AUTOMATION_HANDLERS_ has both playbook-review handlers, not the old single one (real sweep-as-orphan risk otherwise)', () => {
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewReminder') !== -1);
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewFinal') !== -1);

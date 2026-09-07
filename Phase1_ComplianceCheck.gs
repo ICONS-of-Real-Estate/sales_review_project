@@ -3729,10 +3729,27 @@ function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, stage
   }, 2);
 }
 
-/** Installs BOTH the reminder and final triggers (two-stage schedule — see PLAYBOOK_REVIEW_CONFIG's own header). */
+/**
+ * Installs BOTH the reminder and final triggers (two-stage schedule — see
+ * PLAYBOOK_REVIEW_CONFIG's own header).
+ *
+ * Real bug found live (08/09/2026): this only ever deleted the two NEW
+ * handler names before creating them — it never accounted for the OLD
+ * single 'runWeeklyPlaybookReview' trigger from before the two-stage split,
+ * which nothing else deletes either (installAllReadyTriggers_'s own orphan
+ * sweep only runs at the very end, AFTER every install*Trigger() call, so it
+ * can't save this function from itself). Live consequence: at 19/20
+ * triggers already in use, this left the old one in place, created the
+ * reminder trigger (hitting exactly 20), then the final trigger's own
+ * .create() call pushed to 21 and Apps Script threw "This script has too
+ * many triggers." Fixed by deleting the old handler name too — same
+ * "delete every superseded handler name, not just the new one" pattern
+ * installOngoingScoringTrigger already uses for its own 5-old-handlers ->
+ * 1-new-handler consolidation (Phase2_CallScoring.gs).
+ */
 function installPlaybookReviewTrigger() {
   RUN_TAG = 'installPlaybookReviewTrigger';
-  ['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal'].forEach(function (handler) {
+  ['runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal'].forEach(function (handler) {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
     });
