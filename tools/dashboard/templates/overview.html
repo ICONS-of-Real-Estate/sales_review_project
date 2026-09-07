@@ -119,6 +119,52 @@
   </tbody>
 </table>
 
+<h2>Call length vs. score</h2>
+<p class="muted" style="margin-top:-0.5rem;">
+  Min / max / average measured call length at each Call Quality Score, split by call type — a call with
+  no measured length isn't counted, never treated as 0.
+</p>
+<div style="display:flex;gap:2rem;flex-wrap:wrap;">
+  <div>
+    <h3>Qualification calls (QC)</h3>
+    <table>
+      <thead><tr><th>Score</th><th>Calls</th><th>Min</th><th>Avg</th><th>Max</th></tr></thead>
+      <tbody>
+        {% for s in call_length_by_score_qc %}
+        <tr>
+          <td><a href="/calls?call_type_display=QC&min_score={{ s.score }}&max_score={{ s.score }}">{{ s.score }}</a></td>
+          <td>{{ s.count }}</td>
+          <td>{{ s.min_minutes }}m</td>
+          <td>{{ s.avg_minutes }}m</td>
+          <td>{{ s.max_minutes }}m</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="muted">No QC calls with a measured length yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div>
+    <h3>Sales calls (closing)</h3>
+    <table>
+      <thead><tr><th>Score</th><th>Calls</th><th>Min</th><th>Avg</th><th>Max</th></tr></thead>
+      <tbody>
+        {% for s in call_length_by_score_sales_call %}
+        <tr>
+          <td><a href="/calls?min_score={{ s.score }}&max_score={{ s.score }}">{{ s.score }}</a></td>
+          <td>{{ s.count }}</td>
+          <td>{{ s.min_minutes }}m</td>
+          <td>{{ s.avg_minutes }}m</td>
+          <td>{{ s.max_minutes }}m</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="muted">No Sales Call calls with a measured length yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <h2>Primary failure mode (all reps)</h2>
 <table>
   <thead><tr><th>Failure mode</th><th>Count</th></tr></thead>

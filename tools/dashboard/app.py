@@ -210,6 +210,47 @@ def bens_qc_booking_stats():
     }
 
 
+def call_length_by_score(call_type):
+    """Kris's ask (07/09/2026): "I've got a strong suspicion that the longer
+    the call, the higher the close rate... min time, max time, average time
+    for every level [Call Quality Score 1-5]." Split by call_type — QC and
+    Sales Call ("qualification calls and closing calls" in his own words) —
+    since combining them would mix two structurally different call lengths
+    together and hide whatever real pattern exists in either one. Only calls
+    with a measured length count (see extractCallLengthMinutes_'s own "no
+    signal, never a fabricated 0" comment) — a score with zero measured
+    calls simply doesn't appear, rather than showing a misleading blank row.
+    Minutes are rounded for display; the underlying average is still a real
+    mean, not a rounded-then-averaged approximation."""
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT
+            call_quality_score AS score,
+            COUNT(*) AS n,
+            MIN(call_length_minutes) AS min_minutes,
+            MAX(call_length_minutes) AS max_minutes,
+            AVG(call_length_minutes) AS avg_minutes
+        FROM sales_call_log
+        WHERE call_type = ? AND call_quality_score IS NOT NULL AND call_length_minutes IS NOT NULL
+        GROUP BY call_quality_score
+        ORDER BY call_quality_score
+        """,
+        (call_type,),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "score": r["score"],
+            "count": r["n"],
+            "min_minutes": round(r["min_minutes"]),
+            "max_minutes": round(r["max_minutes"]),
+            "avg_minutes": round(r["avg_minutes"]),
+        }
+        for r in rows
+    ]
+
+
 def rep_summary():
     conn = get_conn()
     rows = conn.execute(
@@ -678,6 +719,8 @@ def overview(request: Request):
             "outcomes": outcome_breakdown(),
             "outcome_missing_key": OUTCOME_MISSING,
             "framework_gaps": framework_gap_breakdown(),
+            "call_length_by_score_qc": call_length_by_score("QC"),
+            "call_length_by_score_sales_call": call_length_by_score("Sales Call"),
         },
     )
 

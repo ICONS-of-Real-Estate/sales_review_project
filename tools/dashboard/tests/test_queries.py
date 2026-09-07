@@ -109,6 +109,44 @@ class TestRepSummary:
         assert bens["pct_qc_booked"] == 50
 
 
+class TestCallLengthByScore:
+    """Kris's ask (07/09/2026): "I've got a strong suspicion that the
+    longer the call, the higher the close rate... min time, max time,
+    average time for every level" — split by call type (QC vs Sales Call)
+    since the two have structurally different lengths."""
+
+    def test_groups_by_score_with_min_max_avg(self, db_path, conn):
+        insert_call(conn, rep="Alice", call_type="QC", call_quality_score=3, call_length_minutes=10)
+        insert_call(conn, rep="Alice", call_type="QC", call_quality_score=3, call_length_minutes=20)
+        insert_call(conn, rep="Alice", call_type="QC", call_quality_score=5, call_length_minutes=40)
+        conn.commit()
+        rows = {r["score"]: r for r in app_module.call_length_by_score("QC")}
+        assert rows[3]["count"] == 2
+        assert rows[3]["min_minutes"] == 10
+        assert rows[3]["max_minutes"] == 20
+        assert rows[3]["avg_minutes"] == 15
+        assert rows[5]["count"] == 1
+        assert rows[5]["min_minutes"] == 40
+
+    def test_excludes_calls_with_no_measured_length(self, db_path, conn):
+        insert_call(conn, rep="Alice", call_type="QC", call_quality_score=3, call_length_minutes=None)
+        conn.commit()
+        rows = app_module.call_length_by_score("QC")
+        assert rows == []
+
+    def test_only_includes_the_requested_call_type(self, db_path, conn):
+        insert_call(conn, rep="Alice", call_type="QC", call_quality_score=3, call_length_minutes=10)
+        insert_call(conn, rep="Alice", call_type="Sales Call", call_quality_score=3, call_length_minutes=50)
+        conn.commit()
+        qc_rows = {r["score"]: r for r in app_module.call_length_by_score("QC")}
+        sales_rows = {r["score"]: r for r in app_module.call_length_by_score("Sales Call")}
+        assert qc_rows[3]["avg_minutes"] == 10
+        assert sales_rows[3]["avg_minutes"] == 50
+
+    def test_no_calls_at_all_returns_empty_list_not_error(self, db_path, conn):
+        assert app_module.call_length_by_score("QC") == []
+
+
 class TestFailureModeBreakdown:
     def test_counts_by_mode_excluding_none(self, seeded_db):
         breakdown = {r["mode"]: r["count"] for r in app_module.failure_mode_breakdown()}

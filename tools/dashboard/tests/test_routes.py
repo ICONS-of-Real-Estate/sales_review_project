@@ -25,6 +25,19 @@ def test_overview_page_renders_with_empty_db(client, db_path):
     assert resp.status_code == 200
 
 
+def test_overview_shows_call_length_vs_score_split_by_call_type(client, db_path, conn):
+    insert_call(conn, rep="Alice", call_type="QC", call_quality_score=4, call_length_minutes=12)
+    insert_call(conn, rep="Alice", call_type="Sales Call", call_quality_score=5, call_length_minutes=55)
+    conn.commit()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "Call length vs. score" in resp.text
+    assert "Qualification calls (QC)" in resp.text
+    assert "Sales calls (closing)" in resp.text
+    assert "12m" in resp.text
+    assert "55m" in resp.text
+
+
 def test_rep_detail_page_renders(client, seeded_db):
     resp = client.get("/reps/Alice")
     assert resp.status_code == 200
