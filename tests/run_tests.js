@@ -8566,3 +8566,304 @@ test('getOrCreateSeanFollowUpTrackerSheet_ creates the tab with frozen bold head
     gas.SpreadsheetApp = originalSpreadsheetApp;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase18_PitchGuideReview.gs — Kris's ask (07/09/2026), confirming the
+// recurring monthly cycle: "YES we are about to do the first pitch guide
+// training today. I will send you the recording so you can suggest updates
+// to the SOP. Then moving forward once per month, you send suggestions to
+// the SOP based on all the sales calls. Tomas will approve or not." Same
+// Drive-folder-driven, video-in/transcript-appears/judge-it shape as
+// Phase16_CalibrationFeedback.gs, but comparing a training transcript
+// against the live Pitch Guide doc instead of grading one sales call.
+// ---------------------------------------------------------------------------
+
+test('collectPitchGuideTrainingVideos_ returns only video/* files from the training folder, ignoring transcript/marker Docs already sitting there', () => {
+  const folder = fakeCalibrationFolder_([
+    { name: 'Pitch Guide 1.mp4', mimeType: 'video/mp4' },
+    { name: 'Pitch Guide 1.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' },
+    { name: 'Pitch Guide 1.mp4 — Reviewed', mimeType: 'application/vnd.google-apps.document' }
+  ]);
+  const videos = Array.prototype.slice.call(gas.collectPitchGuideTrainingVideos_(folder)).map((f) => f.getName());
+  assert.deepEqual(videos, ['Pitch Guide 1.mp4']);
+});
+
+test('findPitchGuideTranscript_ finds the exact "<video name> — Transcript" sibling', () => {
+  const folder = fakeCalibrationFolder_([
+    { name: 'Pitch Guide 1.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' }
+  ]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4');
+  assert.ok(gas.findPitchGuideTranscript_(folder, video));
+});
+
+test('findPitchGuideTranscript_ returns null when no transcript exists yet — the driver must wait for tools/transcribe_pitch_guide_training.py, not fail', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4');
+  assert.equal(gas.findPitchGuideTranscript_(folder, video), null);
+});
+
+test('pitchGuideTrainingAlreadyReviewed_ is true only once the "— Reviewed" marker exists', () => {
+  const reviewedFolder = fakeCalibrationFolder_([{ name: 'Pitch Guide 1.mp4 — Reviewed', mimeType: 'application/vnd.google-apps.document' }]);
+  const freshFolder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4');
+  assert.equal(gas.pitchGuideTrainingAlreadyReviewed_(reviewedFolder, video), true);
+  assert.equal(gas.pitchGuideTrainingAlreadyReviewed_(freshFolder, video), false);
+});
+
+test('isValidPitchGuideReviewSchema_ accepts a well-formed suggestions/outdatedFlags object and rejects a malformed one', () => {
+  assert.equal(gas.isValidPitchGuideReviewSchema_({
+    suggestions: [{ gap: 'x', quote: 'y', suggestedEdit: 'z', confidence: 'High' }],
+    outdatedFlags: [{ quote: 'the deck needs a revolution' }]
+  }), true);
+  assert.equal(gas.isValidPitchGuideReviewSchema_({ suggestions: [{ gap: 'x' }], outdatedFlags: [] }), false, 'missing quote/suggestedEdit/confidence');
+  assert.equal(gas.isValidPitchGuideReviewSchema_({ suggestions: [{ gap: 'x', quote: 'y', suggestedEdit: 'z', confidence: 'Extreme' }], outdatedFlags: [] }), false, 'confidence must be High/Medium/Low');
+  assert.equal(gas.isValidPitchGuideReviewSchema_(null), false);
+});
+
+test('gradePitchGuideTraining_ retries once with a "raw JSON only" reminder on a parse failure, and succeeds if the retry parses', () => {
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  const promptsSeen = [];
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 1 };
+    let call = 0;
+    gas.callKimiJudge_ = (systemPrompt, userPrompt) => {
+      promptsSeen.push(userPrompt);
+      call++;
+      if (call === 1) return 'not json';
+      return JSON.stringify({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
+    };
+    const result = gas.gradePitchGuideTraining_('Pitch Guide 1.mp4', 'transcript text', 'pitch guide doc text');
+    assert.equal(result.suggestions.length, 1);
+    assert.equal(promptsSeen.length, 2);
+    assert.ok(promptsSeen[1].indexOf('raw JSON') !== -1, 'the retry prompt must include the "raw JSON only" reminder');
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
+
+test('gradePitchGuideTraining_ falls back to empty suggestions/outdatedFlags (never throws) when every attempt fails — one bad model response must not stop the whole monthly run', () => {
+  const originalConfig = gas.PHASE2_CONFIG;
+  const originalCallKimiJudge = gas.callKimiJudge_;
+  try {
+    gas.PHASE2_CONFIG = { MAX_PARSE_RETRIES: 1 };
+    gas.callKimiJudge_ = () => { throw new Error('LlmTransportError_: boom'); };
+    const result = gas.gradePitchGuideTraining_('Pitch Guide 1.mp4', 'transcript text', 'pitch guide doc text');
+    assert.equal(result.suggestions.length, 0);
+    assert.equal(result.outdatedFlags.length, 0);
+  } finally {
+    gas.PHASE2_CONFIG = originalConfig;
+    gas.callKimiJudge_ = originalCallKimiJudge;
+  }
+});
+
+test('appendPitchGuideSuggestionRows_ writes one row per suggestion, numbered in order, with a blank Tomás Verdict and Applied=false', () => {
+  const rows = [];
+  const fakeSheet = { appendRow: (r) => rows.push(r) };
+  const graded = {
+    suggestions: [
+      { gap: 'no pre-call sequence', quote: 'we have those emails', suggestedEdit: 'add a pre-call section', confidence: 'High' },
+      { gap: 'no VA question', quote: 'I always ask about a VA', suggestedEdit: 'add VA question', confidence: 'Medium' }
+    ]
+  };
+  gas.appendPitchGuideSuggestionRows_(fakeSheet, 'Pitch Guide 1.mp4', '07/09/2026', graded);
+  assert.equal(rows.length, 2);
+  // Compared field-by-field, not via deepEqual — the row arrays are built inside the vm
+  // sandbox's own realm (see gas_env.js's Date comment for the same reasoning), so a
+  // realm/constructor-identity check against these plain outer-literal arrays would fail
+  // even though the contents match exactly.
+  assert.equal(Array.prototype.join.call(rows[0], '|'), ['Pitch Guide 1.mp4', '07/09/2026', 1, 'no pre-call sequence', 'we have those emails', 'add a pre-call section', 'High', '', false].join('|'));
+  assert.equal(Array.prototype.join.call(rows[1], '|'), ['Pitch Guide 1.mp4', '07/09/2026', 2, 'no VA question', 'I always ask about a VA', 'add VA question', 'Medium', '', false].join('|'));
+});
+
+test('buildPitchGuideReviewEmail_ links the recording and the tracking sheet, and lists any explicitly-flagged outdated quotes', () => {
+  const graded = {
+    suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }],
+    outdatedFlags: [{ quote: 'this needs a revolution' }]
+  };
+  const email = gas.buildPitchGuideReviewEmail_('Pitch Guide 1.mp4', 'https://drive.google.com/x', 'https://docs.google.com/spreadsheets/d/sheet', graded);
+  assert.ok(email.subject.indexOf('1 suggestion') !== -1);
+  assert.ok(email.body.indexOf('https://drive.google.com/x') !== -1);
+  assert.ok(email.body.indexOf('https://docs.google.com/spreadsheets/d/sheet') !== -1);
+  assert.ok(email.body.indexOf('this needs a revolution') !== -1);
+  assert.ok(email.htmlBody.indexOf('<a href="https://drive.google.com/x">') !== -1);
+  assert.ok(email.htmlBody.indexOf('this needs a revolution') !== -1);
+});
+
+test('buildPitchGuideReviewEmail_ omits the outdated-flags section entirely when nothing was flagged', () => {
+  const graded = { suggestions: [], outdatedFlags: [] };
+  const email = gas.buildPitchGuideReviewEmail_('Pitch Guide 1.mp4', 'https://drive.google.com/x', 'https://docs.google.com/spreadsheets/d/sheet', graded);
+  assert.ok(email.body.indexOf('explicitly flagged') === -1);
+  assert.ok(email.htmlBody.indexOf('explicitly flagged') === -1);
+});
+
+test('processPitchGuideTrainingVideo_ writes suggestion rows, emails Tomás (cc Kris), and drops a "Reviewed" marker only after a successful send', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4', { url: 'https://drive.google.com/file/d/xyz' });
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradePitchGuideTraining_;
+  const originalGetSheet = gas.getOrCreatePitchGuideSuggestionsSheet_;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalDocumentApp = gas.DocumentApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalUtilities = gas.Utilities;
+  const originalConfig = gas.CONFIG;
+
+  let sendArgs = null;
+  const writtenRows = [];
+  const movedMarkers = [];
+  gas.getTranscriptText_ = () => 'training transcript text';
+  gas.gradePitchGuideTraining_ = () => ({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
+  gas.getOrCreatePitchGuideSuggestionsSheet_ = () => ({
+    appendRow: (r) => writtenRows.push(r),
+    getSheetId: () => 42
+  });
+  gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
+  const fakeMarkerDoc = { getBody: () => ({ setText: () => {} }), saveAndClose: () => {}, getId: () => 'marker-id' };
+  gas.DocumentApp = { create: () => fakeMarkerDoc };
+  gas.DriveApp = { getFileById: (id) => ({ moveTo: (f) => movedMarkers.push({ id, folder: f }) }) };
+  gas.Utilities = { formatDate: () => '07/09/2026' };
+  gas.CONFIG = Object.assign({}, originalConfig, { TOMAS_EMAIL: 'tomas@iconsofrealestate.com', KRIS_EMAIL: 'kris@iconsofrealestate.com' });
+
+  try {
+    const didWork = gas.processPitchGuideTrainingVideo_(folder, video, transcriptFile, 'pitch guide doc text', false);
+    assert.equal(didWork, true);
+    assert.equal(writtenRows.length, 1);
+    assert.equal(sendArgs[0], 'tomas@iconsofrealestate.com', 'must send to Tomás');
+    assert.equal(sendArgs[3].cc, 'kris@iconsofrealestate.com');
+    assert.equal(movedMarkers.length, 1, 'the Reviewed marker must be moved into the training folder');
+    assert.equal(movedMarkers[0].folder, folder);
+  } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradePitchGuideTraining_ = originalGrade;
+    gas.getOrCreatePitchGuideSuggestionsSheet_ = originalGetSheet;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.DocumentApp = originalDocumentApp;
+    gas.DriveApp = originalDriveApp;
+    gas.Utilities = originalUtilities;
+    gas.CONFIG = originalConfig;
+  }
+});
+
+test('processPitchGuideTrainingVideo_ still writes the suggestion rows even when the send fails, but does not drop a "Reviewed" marker — so a retry does not lose the analysis but does re-attempt notifying Tomás', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradePitchGuideTraining_;
+  const originalGetSheet = gas.getOrCreatePitchGuideSuggestionsSheet_;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalDocumentApp = gas.DocumentApp;
+  const originalUtilities = gas.Utilities;
+  const writtenRows = [];
+  gas.getTranscriptText_ = () => 'transcript text';
+  gas.gradePitchGuideTraining_ = () => ({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
+  gas.getOrCreatePitchGuideSuggestionsSheet_ = () => ({ appendRow: (r) => writtenRows.push(r), getSheetId: () => 1 });
+  gas.guardedSend_ = () => false;
+  gas.DocumentApp = { create: () => { throw new Error('must not create a Reviewed marker — send failed'); } };
+  gas.Utilities = { formatDate: () => '07/09/2026' };
+  try {
+    const didWork = gas.processPitchGuideTrainingVideo_(folder, video, transcriptFile, 'pitch guide doc text', false);
+    assert.equal(didWork, false);
+    assert.equal(writtenRows.length, 1, 'suggestions already computed must still be persisted even though the email failed');
+  } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradePitchGuideTraining_ = originalGrade;
+    gas.getOrCreatePitchGuideSuggestionsSheet_ = originalGetSheet;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.DocumentApp = originalDocumentApp;
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('processPitchGuideTrainingVideo_ in dry-run logs but never writes rows, sends, or creates a marker', () => {
+  const folder = fakeCalibrationFolder_([]);
+  const video = fakeCalibrationVideoFile_('Pitch Guide 1.mp4');
+  const transcriptFile = { getMimeType: () => 'application/vnd.google-apps.document', getId: () => 'transcript-doc-id' };
+  const originalGetTranscriptText = gas.getTranscriptText_;
+  const originalGrade = gas.gradePitchGuideTraining_;
+  const originalGetSheet = gas.getOrCreatePitchGuideSuggestionsSheet_;
+  const originalGuardedSend = gas.guardedSend_;
+  gas.getTranscriptText_ = () => 'transcript text';
+  gas.gradePitchGuideTraining_ = () => ({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
+  gas.getOrCreatePitchGuideSuggestionsSheet_ = () => { throw new Error('must not touch the sheet in dry-run'); };
+  gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
+  try {
+    const didWork = gas.processPitchGuideTrainingVideo_(folder, video, transcriptFile, 'pitch guide doc text', true);
+    assert.equal(didWork, false);
+  } finally {
+    gas.getTranscriptText_ = originalGetTranscriptText;
+    gas.gradePitchGuideTraining_ = originalGrade;
+    gas.getOrCreatePitchGuideSuggestionsSheet_ = originalGetSheet;
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('buildAndMaybeSendPitchGuideReview_ skips an already-reviewed video and one with no transcript yet, only processing the one genuinely pending video', () => {
+  const folder = fakeCalibrationFolder_([
+    { name: 'Old Training.mp4', mimeType: 'video/mp4' },
+    { name: 'Old Training.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' },
+    { name: 'Old Training.mp4 — Reviewed', mimeType: 'application/vnd.google-apps.document' },
+    { name: 'No Transcript Yet.mp4', mimeType: 'video/mp4' },
+    { name: 'Pitch Guide 1.mp4', mimeType: 'video/mp4' },
+    { name: 'Pitch Guide 1.mp4 — Transcript', mimeType: 'application/vnd.google-apps.document' }
+  ]);
+  const originalDriveApp = gas.DriveApp;
+  const originalFetch = gas.fetchPitchGuideDocText_;
+  const originalProcess = gas.processPitchGuideTrainingVideo_;
+  const processed = [];
+  gas.DriveApp = { getFolderById: () => folder };
+  gas.fetchPitchGuideDocText_ = () => 'pitch guide doc text';
+  gas.processPitchGuideTrainingVideo_ = (folderArg, videoFile) => { processed.push(videoFile.getName()); return true; };
+  try {
+    const count = gas.buildAndMaybeSendPitchGuideReview_(false);
+    assert.deepEqual(processed, ['Pitch Guide 1.mp4']);
+    assert.equal(count, 1);
+  } finally {
+    gas.DriveApp = originalDriveApp;
+    gas.fetchPitchGuideDocText_ = originalFetch;
+    gas.processPitchGuideTrainingVideo_ = originalProcess;
+  }
+});
+
+test('fetchPitchGuideDocText_ throws a clear "share the doc" error rather than a bare permission exception when the live Apps Script account cannot open the Pitch Guide doc', () => {
+  const originalDocumentApp = gas.DocumentApp;
+  gas.DocumentApp = { openById: () => { throw new Error('You do not have permission'); } };
+  try {
+    assert.throws(() => gas.fetchPitchGuideDocText_(), /share it with whichever account|Make sure it is shared/);
+  } finally {
+    gas.DocumentApp = originalDocumentApp;
+  }
+});
+
+test('installPitchGuideReviewTrigger removes any existing runPitchGuideReview trigger before creating the new monthly one', () => {
+  const deleted = [];
+  let createdConfig = null;
+  const fakeTriggerBuilder = {
+    timeBased: () => fakeTriggerBuilder,
+    onMonthDay: (d) => { createdConfig = { onMonthDay: d }; return fakeTriggerBuilder; },
+    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
+    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
+    create: () => { createdConfig.created = true; }
+  };
+  const oldTrigger = { getHandlerFunction: () => 'runPitchGuideReview' };
+  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = {
+    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
+    deleteTrigger: (t) => deleted.push(t),
+    newTrigger: () => fakeTriggerBuilder
+  };
+  try {
+    gas.installPitchGuideReviewTrigger();
+    assert.deepEqual(deleted, [oldTrigger]);
+    assert.equal(createdConfig.onMonthDay, gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH);
+    assert.equal(createdConfig.atHour, gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR);
+    assert.equal(createdConfig.created, true);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});

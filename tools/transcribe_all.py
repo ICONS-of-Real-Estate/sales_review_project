@@ -58,6 +58,7 @@ from transcribe_joana_calls import JOANA_FOLDERS
 from transcribe_tomas_calls import TOMAS_FOLDERS, clean_title_, log_completed_
 from transcribe_daily_practice import DAILY_PRACTICE_FOLDERS
 from transcribe_calibration_feedback import CALIBRATION_FEEDBACK_FOLDERS
+from transcribe_pitch_guide_training import PITCH_GUIDE_TRAINING_FOLDERS
 
 BATCHES = [
     ("Sean", SOURCE_FOLDERS, None, None),
@@ -73,6 +74,10 @@ BATCHES = [
     # daily trigger reads whatever "<name> — Transcript" Doc lands here, same
     # convention as every batch above. Added 06/09/2026.
     ("Calibration Feedback", CALIBRATION_FEEDBACK_FOLDERS, None, None),
+    # Tomás's Pitch Guide training walkthroughs — Phase18_PitchGuideReview.gs's
+    # monthly trigger reads whatever "<name> — Transcript" Doc lands here, same
+    # convention as every batch above. Added 07/09/2026.
+    ("Pitch Guide Training", PITCH_GUIDE_TRAINING_FOLDERS, None, None),
 ]
 
 
