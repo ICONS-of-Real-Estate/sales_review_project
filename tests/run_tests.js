@@ -2487,6 +2487,33 @@ test('buildPlaybookReviewNewMaterialEmail_ handles a flagged call with no transc
   assert.equal(email.htmlBody.indexOf('undefined'), -1);
 });
 
+test('buildPlaybookReviewNoNewCallsEmail_ names the scheduled topic when given one, and stays generic without it', () => {
+  const withSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
+  assert.equal(withSchedule.subject, 'Sean — no flagged calls last week');
+  assert.ok(withSchedule.body.indexOf('scheduled topic is "Discovery"') !== -1);
+
+  const withoutSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null);
+  assert.ok(withoutSchedule.body.indexOf('none of the graded elements') !== -1);
+  assert.equal(withoutSchedule.body.indexOf('scheduled topic'), -1);
+});
+
+test('sendPlaybookReviewNoNewCallsEmail_ sends exactly what buildPlaybookReviewNoNewCallsEmail_ builds, to Tomás cc Kris (real risk after the buildX/sendX split: the two silently drifting apart)', () => {
+  const originalGuardedSend = gas.guardedSend_;
+  const calls = [];
+  gas.guardedSend_ = (to, subject, body, opts, n) => { calls.push({ to, subject, body, opts, n }); return true; };
+  try {
+    const expected = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].to, gas.CONFIG.TOMAS_EMAIL);
+    assert.equal(calls[0].subject, expected.subject);
+    assert.equal(calls[0].body, expected.body);
+    assert.equal(calls[0].opts.cc, gas.CONFIG.KRIS_EMAIL);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
 test('stripYearFromDateRangeLabel_ strips every /yyyy year suffix out of a date-range label', () => {
   assert.equal(gas.stripYearFromDateRangeLabel_('24/08/2026 - 30/08/2026'), '24/08 - 30/08');
   assert.equal(gas.stripYearFromDateRangeLabel_('01/09/2026'), '01/09');

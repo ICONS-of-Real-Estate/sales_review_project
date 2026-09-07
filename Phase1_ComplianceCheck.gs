@@ -3473,6 +3473,19 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
         '. All elements: ' + ranking.map(function (r) {
           return r.label + ' ' + r.failed + '/' + r.scored;
         }).join(', ') + '.');
+
+      // Kris's ask (08/09/2026): "I want to see the test email that will go
+      // to Tomas tomorrow" — the summary line above says WHAT would be
+      // sent, not the actual wording. Build the exact email (same builder
+      // the real Tuesday send uses) and log it in full so the Execution
+      // log shows precisely what Tomás/Kris would receive, without sending
+      // anything.
+      var previewEmail = flagged.length
+        ? buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
+        : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null);
+      log_('----- ' + repCfg.name + ': exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
+        ', cc ' + CONFIG.KRIS_EMAIL + ') -----\nSubject: ' + previewEmail.subject + '\n\n' +
+        previewEmail.body + '\n----- end -----');
       return;
     }
 
@@ -3624,8 +3637,8 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranki
   }, 2);
 }
 
-/** `schedule` is optional (one entry of WEEKLY_TRAINING_ROTATION_) — named in the body so "nothing to train" still says what topic was scheduled. */
-function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
+/** `schedule` is optional (one entry of WEEKLY_TRAINING_ROTATION_) — named in the body so "nothing to train" still says what topic was scheduled. Pure content builder, same buildX/sendX split as buildPlaybookReviewNewMaterialEmail_/sendPlaybookReviewNewMaterialEmail_ above — lets buildAndMaybeSendPlaybookReview_'s preview path show the real email text without sending anything. */
+function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
   var body =
     'Tomás,\n\n' +
     'Nothing flagged for ' + repCfg.name + ' last week (' + windowLabel + ')' +
@@ -3636,7 +3649,12 @@ function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
     'happened last week.\n\n' +
     '— Sent automatically ahead of this week\'s session.';
 
-  return guardedSend_(CONFIG.TOMAS_EMAIL, repCfg.name + ' — no flagged calls last week', body, {
+  return { subject: repCfg.name + ' — no flagged calls last week', body: body };
+}
+
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
+  var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule);
+  return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
     cc: CONFIG.KRIS_EMAIL,
     name: 'Training Prep Bot'
   }, 2);
