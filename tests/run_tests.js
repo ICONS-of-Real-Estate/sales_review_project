@@ -8967,6 +8967,199 @@ test('installSeanHandoffDetectionTrigger removes any existing runSeanHandoffDete
 });
 
 // ---------------------------------------------------------------------------
+// Phase17 Cadence 2 — re-engagement, generalized to all reps. Kris's ask
+// (07/09/2026): "build it with his guidelines but also Bens and Joana old
+// leads, and Tomas too." Reads the Sales Call Log directly (already has the
+// "which stage, when" signal the plan doc said was missing) instead of GHL.
+// ---------------------------------------------------------------------------
+
+function reengagementCol_(gas) {
+  var col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  return col;
+}
+
+function reengagementRow_(gas, { rep, name, email, callType, date, outcome }) {
+  var col = reengagementCol_(gas);
+  var row = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  row[col['Rep'] - 1] = rep;
+  row[col['Prospect Name'] - 1] = name;
+  row[col['Prospect Email'] - 1] = email || '';
+  row[col['Call Type'] - 1] = callType;
+  row[col['Call Date'] - 1] = date;
+  row[col['Outcome Disposition'] - 1] = outcome || '';
+  return row;
+}
+
+test('findLastRealCallPerLead_ picks the MOST RECENT eligible call per (rep, lead), across Bens/Joana/Sean/Tomás', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Bens', name: 'Lead A', email: 'a@example.com', callType: 'QC', date: bizDate(gas, 2026, 6, 1) }),
+    reengagementRow_(gas, { rep: 'Bens', name: 'Lead A', email: 'a@example.com', callType: 'QC', date: bizDate(gas, 2026, 7, 1) }), // later QC, same lead -- supersedes
+    reengagementRow_(gas, { rep: 'Joana', name: 'Lead B', email: 'b@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 6, 15) }),
+    reengagementRow_(gas, { rep: 'Sean', name: 'Lead C', email: 'c@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 6, 20) }),
+    reengagementRow_(gas, { rep: 'Tomás', name: 'Lead D', email: 'd@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 6, 25) }),
+    reengagementRow_(gas, { rep: 'Other Rep', name: 'Not Tracked', email: 'x@example.com', callType: 'QC', date: bizDate(gas, 2026, 6, 1) })
+  ];
+  const lastCalls = gas.findLastRealCallPerLead_(rows, col);
+  const byRep = {};
+  lastCalls.forEach((c) => { byRep[c.rep] = c; });
+  assert.equal(Object.keys(byRep).length, 4, 'only Bens/Joana/Sean/Tomás, not "Other Rep"');
+  assert.equal(byRep['Bens'].callDate.getTime(), bizDate(gas, 2026, 7, 1).getTime(), 'the LATER of two QCs for the same lead must win');
+  assert.ok(byRep['Joana']);
+  assert.ok(byRep['Sean']);
+  assert.ok(byRep['Tomás']);
+});
+
+test('findLastRealCallPerLead_ excludes a lead whose most recent call already resulted in Sold', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Sean', name: 'Closed Lead', email: 'closed@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 6, 1), outcome: 'Sold' }),
+    reengagementRow_(gas, { rep: 'Sean', name: 'Open Lead', email: 'open@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 6, 1), outcome: 'Not Sold' })
+  ];
+  const lastCalls = gas.findLastRealCallPerLead_(rows, col);
+  assert.equal(lastCalls.length, 1);
+  assert.equal(lastCalls[0].prospectName, 'Open Lead');
+});
+
+test('findLastRealCallPerLead_ ignores Discovery calls -- not a Cadence 2 stage per the plan doc', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [reengagementRow_(gas, { rep: 'Sean', name: 'Lead A', callType: 'Discovery', date: bizDate(gas, 2026, 6, 1) })];
+  assert.equal(gas.findLastRealCallPerLead_(rows, col).length, 0);
+});
+
+test('dueReengagementStepFor_ returns the LATEST due-and-unnotified step, not every overdue step at once', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const lastCall = { rep: 'Sean', leadKey: 'email:a@example.com', callDate: bizDate(gas, 2026, 1, 1) };
+  const today = bizDate(gas, 2026, 8, 1); // ~7 months later -- 1wk/1mo/3mo/6mo all overdue, 12mo not yet
+  const step = gas.dueReengagementStepFor_(lastCall, today, []);
+  assert.equal(step.label, '6 months', 'must catch up on the latest overdue step, not backfill from the earliest');
+});
+
+test('dueReengagementStepFor_ returns null once the latest due step is already in notifiedKeys', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const lastCall = { rep: 'Sean', leadKey: 'email:a@example.com', callDate: bizDate(gas, 2026, 1, 1) };
+  const today = bizDate(gas, 2026, 1, 10); // only "1 week" is due
+  const notifiedKey = 'Sean|email:a@example.com|1 week';
+  assert.equal(gas.dueReengagementStepFor_(lastCall, today, [notifiedKey]), null);
+});
+
+test('findDueReengagements_ combines last-call lookup and due-step check end to end', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = reengagementCol_(gas);
+  const rows = [
+    reengagementRow_(gas, { rep: 'Bens', name: 'Stalled Lead', email: 'stalled@example.com', callType: 'QC', date: bizDate(gas, 2026, 1, 1) }),
+    reengagementRow_(gas, { rep: 'Sean', name: 'Fresh Lead', email: 'fresh@example.com', callType: 'Sales Call', date: bizDate(gas, 2026, 7, 30) })
+  ];
+  const today = bizDate(gas, 2026, 8, 1);
+  const due = gas.findDueReengagements_(rows, col, today, []);
+  assert.equal(due.length, 1, 'only the stalled lead is due; the fresh one has not hit even the 1-week mark');
+  assert.equal(due[0].rep, 'Bens');
+  assert.equal(due[0].prospectName, 'Stalled Lead');
+});
+
+test('getNotifiedReengagementKeys_ reconstructs the leadKey from Lead Email/Lead Name and returns rep|leadKey|step strings', () => {
+  const fakeSheet = {
+    getLastRow: () => 2,
+    getRange: () => ({
+      getValues: () => [['Sean', 'Some Lead', 'lead@example.com', 'Sales Call', '01/07/2026', '1 week', '08/07/2026', new Date()]]
+    })
+  };
+  const keys = gas.getNotifiedReengagementKeys_(fakeSheet);
+  assert.deepEqual(Array.from(keys), ['Sean|email:lead@example.com|1 week']);
+});
+
+test('getNotifiedReengagementKeys_ returns empty array when the tracker has no data rows yet', () => {
+  assert.deepEqual(Array.from(gas.getNotifiedReengagementKeys_({ getLastRow: () => 1 })), []);
+});
+
+test('appendReengagementTrackerRow_ writes rep/lead/call/step/due-date columns in order', () => {
+  const rows = [];
+  const fakeSheet = { appendRow: (r) => rows.push(r) };
+  const originalUtilities = gas.Utilities;
+  gas.Utilities = { formatDate: (d, tz, fmt) => 'FORMATTED' };
+  try {
+    gas.appendReengagementTrackerRow_(fakeSheet, {
+      rep: 'Sean', prospectName: 'Some Lead', prospectEmail: 'lead@example.com',
+      callType: 'Sales Call', callDate: new Date(), stepLabel: '1 week', dueAt: new Date()
+    }, 'America/New_York');
+    assert.equal(rows.length, 1);
+    assert.deepEqual(Array.from(rows[0]).slice(0, 6), ['Sean', 'Some Lead', 'lead@example.com', 'Sales Call', 'FORMATTED', '1 week']);
+  } finally {
+    gas.Utilities = originalUtilities;
+  }
+});
+
+test('buildReengagementDigestEmail_ groups due leads by rep', () => {
+  gas.Utilities = { formatDate: () => '01/07/2026' };
+  const dueItems = [
+    { rep: 'Bens', prospectName: 'Lead A', prospectEmail: 'a@example.com', callType: 'QC', callDate: new Date(), stepLabel: '1 week' },
+    { rep: 'Sean', prospectName: 'Lead B', prospectEmail: 'b@example.com', callType: 'Sales Call', callDate: new Date(), stepLabel: '1 month' }
+  ];
+  const email = gas.buildReengagementDigestEmail_(dueItems, 'America/New_York');
+  assert.ok(email.subject.indexOf('2 lead(s)') !== -1);
+  assert.ok(email.body.indexOf('Bens:') !== -1);
+  assert.ok(email.body.indexOf('Sean:') !== -1);
+  assert.ok(email.body.indexOf('Lead A') !== -1);
+  assert.ok(email.htmlBody.indexOf('<strong>Bens</strong>') !== -1);
+});
+
+test('buildReengagementDigestEmail_ says plainly when nothing is due', () => {
+  const email = gas.buildReengagementDigestEmail_([], 'America/New_York');
+  assert.ok(email.body.indexOf('No leads due for re-engagement') !== -1);
+  assert.ok(email.htmlBody.indexOf('No leads due for re-engagement') !== -1);
+});
+
+test('runReengagementDigest is gated by CADENCE2_ENABLED specifically', () => {
+  const originalConfig = gas.SEAN_FOLLOWUP_CONFIG;
+  const originalBuild = gas.buildAndMaybeSendReengagementDigest_;
+  gas.buildAndMaybeSendReengagementDigest_ = () => { throw new Error('must not run when CADENCE2_ENABLED is false'); };
+  gas.SEAN_FOLLOWUP_CONFIG = Object.assign({}, originalConfig, { CADENCE2_ENABLED: false });
+  try {
+    assert.equal(gas.runReengagementDigest(), 0);
+  } finally {
+    gas.SEAN_FOLLOWUP_CONFIG = originalConfig;
+    gas.buildAndMaybeSendReengagementDigest_ = originalBuild;
+  }
+});
+
+test('installReengagementDigestTrigger removes any existing runReengagementDigest trigger before creating the new daily 9am one', () => {
+  const deleted = [];
+  let createdConfig = null;
+  const fakeTriggerBuilder = {
+    timeBased: () => fakeTriggerBuilder,
+    everyDays: (d) => { createdConfig = { everyDays: d }; return fakeTriggerBuilder; },
+    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
+    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
+    create: () => { createdConfig.created = true; }
+  };
+  const oldTrigger = { getHandlerFunction: () => 'runReengagementDigest' };
+  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = {
+    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
+    deleteTrigger: (t) => deleted.push(t),
+    newTrigger: () => fakeTriggerBuilder
+  };
+  try {
+    gas.installReengagementDigestTrigger();
+    assert.deepEqual(deleted, [oldTrigger]);
+    assert.equal(createdConfig.everyDays, 1);
+    assert.equal(createdConfig.atHour, 9);
+    assert.equal(createdConfig.created, true);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('STANDING_AUTOMATION_HANDLERS_ includes runReengagementDigest (Phase 17 Cadence 2) -- same sweep-as-orphan risk as every other phase', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runReengagementDigest') !== -1);
+});
+
+// ---------------------------------------------------------------------------
 // Phase18_PitchGuideReview.gs — Kris's ask (07/09/2026), confirming the
 // recurring monthly cycle: "YES we are about to do the first pitch guide
 // training today. I will send you the recording so you can suggest updates

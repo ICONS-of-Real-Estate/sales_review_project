@@ -18,9 +18,36 @@
  *     Closing) but didn't convert gets re-engaged at 1 week / 1 month /
  *     3 months / 6 months / 12 months after that call, to rebook the NEXT
  *     call in the sequence. Confirmed unblocked 06/09/2026 (Kris: "All calls
- *     are made through GHL and everything's tracked") — reads stage/timing
- *     from GHL's existing read-only plumbing (ghlListOpportunitiesForContact_,
- *     Phase9_GhlSync.gs), no new tracking needed.
+ *     are made through GHL and everything's tracked"). Built 07/09/2026
+ *     against the Sales Call Log directly instead — it already carries
+ *     exactly the "which call stage, and when" signal the original plan doc
+ *     (see TOMÁS'S GUIDELINES below) said was missing (Rep/Call Type/Call
+ *     Date/Outcome Disposition, all already scored by Phase 2), so no GHL
+ *     round-trip is actually needed for detection. Per Kris's explicit ask
+ *     (07/09/2026): generalized to EVERY rep's stalled leads (Bens/Joana/
+ *     Sean/Tomás — CADENCE2_REPS below), not just Sean's — the plan doc's
+ *     cadence itself was never Sean-specific, only Cadence 1 (the Joana->
+ *     Sean handoff) is.
+ *
+ * TOMÁS'S GUIDELINES (comments on the "Automating Follow-Ups for Sean —
+ * Plan (v2)" doc, confirmed 04/09/2026 — read in full 07/09/2026):
+ *   - "When Joana brings Sean in, it's because the lead needs calling, so
+ *     it's Call Attempt first, then email." Corrects the plan's own listed
+ *     order (outreach email drafted before the call attempt) — the call
+ *     comes first; the email side exists so the email channel never goes
+ *     stale while Sean's making calls, not as step 1. Applies once drafting
+ *     itself is built (still blocked on gmail.compose) — noted here so it
+ *     isn't lost before that step exists.
+ *   - "2 business days later after Sean outreach" — clarifies the Cadence 1
+ *     follow-up's anchor: 2 business days after SEAN'S OWN outreach send
+ *     time, not the lead's original (pre-handoff) reply time. The detection
+ *     built below still records the handoff moment as Anchor Date (that's
+ *     genuinely when the lead became Sean's), but once drafting exists, the
+ *     follow-up/breakup schedule must be recomputed off Sean's actual send
+ *     timestamp for that lead's outreach email, not off Anchor Date.
+ *   - "just need to teach Sean how to schedule, easy" — on how Sean should
+ *     actually book the call once he reaches someone; a training note, not
+ *     something this automation builds.
  * Marking a lead dead: a Gmail label (per Kris's confirmation 06/09/2026)
  * checked before any draft is generated — same STOPPED-state-machine spirit
  * as lead_followup_sequences.gs's other queues, just label-based since that
@@ -59,7 +86,8 @@
 
 var SEAN_FOLLOWUP_CONFIG = {
   ENABLED: false, // full pipeline (drafting) — still blocked on gmail.compose, see file header
-  DETECTION_ENABLED: false, // handoff detection/tracking only — flip after previewSeanHandoffDetection() looks right; does NOT need gmail.compose
+  DETECTION_ENABLED: false, // Cadence 1 handoff detection/tracking only — flip after previewSeanHandoffDetection() looks right; does NOT need gmail.compose
+  CADENCE2_ENABLED: false, // Cadence 2 re-engagement digest — flip after previewReengagementDigest() looks right; does NOT need gmail.compose either (detection + email only, no drafting)
   DEAD_LABEL: 'Dead',
   // Tomás's confirmed answer (07/09/2026) — see file header. Joana's own
   // mailbox, not Sean's: labels are per-mailbox in Gmail, so this only shows
@@ -81,7 +109,21 @@ var SEAN_FOLLOWUP_CONFIG = {
     { label: '3 months', months: 3, days: 0 },
     { label: '6 months', months: 6, days: 0 },
     { label: '12 months', months: 12, days: 0 }
-  ]
+  ],
+  // Kris's explicit ask (07/09/2026): "build it with his guidelines but also
+  // Bens and Joana old leads, and Tomas too" — every rep's stalled leads, not
+  // just Sean's. The plan doc's Cadence 2 was never Sean-specific; only
+  // Cadence 1 (the handoff itself) is.
+  CADENCE2_REPS: ['Bens', 'Joana', 'Sean', 'Tomás'],
+  // "A real call" for Cadence 2 purposes, per the plan doc: "QC, Sales Call,
+  // or Closing/2nd Sales Call." This codebase has no separate call_type for
+  // a closing call — it's Call Type = 'Sales Call' with Rep = Tomás (see
+  // _display_call_type, tools/dashboard/app.py) — so both plain 'Sales Call'
+  // and Tomás's own closing calls are already covered by including
+  // 'Sales Call' once. Discovery is deliberately excluded — the plan doc
+  // never names it, and it's the account manager's own call, not a stage in
+  // this rep's sales sequence.
+  CADENCE2_CALL_TYPES: ['QC', 'Sales Call']
 };
 
 var SEAN_FOLLOWUP_TRACKER_SHEET_NAME = 'Sean Follow-Up Tracker';
@@ -167,6 +209,282 @@ function cadence2ReengagementSchedule_(lastCallDate) {
   return SEAN_FOLLOWUP_CONFIG.CADENCE2_STEPS.map(function (step) {
     return { label: step.label, dueAt: addMonthsAndDays_(lastCallDate, step.months, step.days) };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Cadence 2 detection — Kris's ask (07/09/2026): "build it with his
+// guidelines but also Bens and Joana old leads, and Tomas too." Reads the
+// Sales Call Log directly (Rep/Call Type/Call Date/Outcome Disposition,
+// already scored by Phase 2) rather than GHL — it already has exactly the
+// "which stage, when" signal the original plan doc said was missing.
+// Detection-only, same shape as Cadence 1: finds who's due, records it, and
+// emails a digest — never auto-drafts (drafting is a distinct future step,
+// same gmail.compose blocker as Cadence 1).
+// ---------------------------------------------------------------------------
+
+/** A stable key for "this lead" across rows — email when present (more reliable across a name typo/nickname), else the normalized prospect name. */
+function reengagementLeadKey_(prospectEmail, prospectName) {
+  var email = String(prospectEmail || '').trim().toLowerCase();
+  if (email) return 'email:' + email;
+  return 'name:' + normalize_(prospectName);
+}
+
+/**
+ * Pure. For every (rep, lead) pair with at least one Cadence-2-eligible call
+ * (SEAN_FOLLOWUP_CONFIG.CADENCE2_CALL_TYPES) in `rows`, finds their single
+ * MOST RECENT such call — that's the stage they're currently stalled at; an
+ * earlier call for the same lead is superseded, not a separate stage to
+ * re-engage on its own schedule. Excludes any lead whose most recent call
+ * already resulted in "Sold" — a closed deal needs no re-engagement.
+ * Rep matching is case-insensitive (same convention as computeRepWeeklyStats_,
+ * Phase5_WeeklyScorecard.gs) but returns SEAN_FOLLOWUP_CONFIG.CADENCE2_REPS'
+ * own canonical spelling, so "Tomas"/"Tomás" typed variants group together.
+ */
+function findLastRealCallPerLead_(rows, col) {
+  var byKey = {};
+  rows.forEach(function (row) {
+    var rawRep = String(row[col['Rep'] - 1] || '').trim();
+    var rep = SEAN_FOLLOWUP_CONFIG.CADENCE2_REPS.filter(function (r) {
+      return r.toLowerCase() === rawRep.toLowerCase();
+    })[0];
+    if (!rep) return;
+    var callType = String(row[col['Call Type'] - 1] || '').trim();
+    if (SEAN_FOLLOWUP_CONFIG.CADENCE2_CALL_TYPES.indexOf(callType) === -1) return;
+    var callDate = row[col['Call Date'] - 1];
+    if (!(callDate instanceof Date)) return;
+
+    var leadKey = reengagementLeadKey_(row[col['Prospect Email'] - 1], row[col['Prospect Name'] - 1]);
+    var key = rep + '|' + leadKey;
+    var existing = byKey[key];
+    if (!existing || callDate > existing.callDate) {
+      byKey[key] = {
+        rep: rep,
+        leadKey: leadKey,
+        prospectName: row[col['Prospect Name'] - 1] || '(unnamed)',
+        prospectEmail: String(row[col['Prospect Email'] - 1] || '').trim(),
+        callType: callType,
+        callDate: callDate,
+        outcomeDisposition: String(row[col['Outcome Disposition'] - 1] || '').trim()
+      };
+    }
+  });
+  return Object.keys(byKey).map(function (k) { return byKey[k]; }).filter(function (c) {
+    return c.outcomeDisposition.toLowerCase() !== 'sold';
+  });
+}
+
+/**
+ * Pure. Which (if any) Cadence 2 step is due for one lead's last-call record,
+ * as of `today`, that isn't already in `notifiedKeys` (strings shaped
+ * "rep|leadKey|stepLabel" — see getNotifiedReengagementKeys_). Returns the
+ * LATEST due-and-unnotified step, not every one that's technically overdue —
+ * a lead stalled 4 months (e.g. because this phase was off) gets caught up
+ * once on the 3-month step, not backfilled with 1-week AND 1-month AND
+ * 3-month all at once.
+ */
+function dueReengagementStepFor_(lastCall, today, notifiedKeys) {
+  var schedule = cadence2ReengagementSchedule_(lastCall.callDate);
+  var due = schedule.filter(function (s) { return s.dueAt <= today; });
+  for (var i = due.length - 1; i >= 0; i--) {
+    var key = lastCall.rep + '|' + lastCall.leadKey + '|' + due[i].label;
+    if (notifiedKeys.indexOf(key) === -1) {
+      return { label: due[i].label, dueAt: due[i].dueAt, notifiedKey: key };
+    }
+  }
+  return null;
+}
+
+/** Combines findLastRealCallPerLead_ + dueReengagementStepFor_ into the final due list. Pure. */
+function findDueReengagements_(rows, col, today, notifiedKeys) {
+  var due = [];
+  findLastRealCallPerLead_(rows, col).forEach(function (c) {
+    var step = dueReengagementStepFor_(c, today, notifiedKeys);
+    if (step) {
+      due.push({
+        rep: c.rep, prospectName: c.prospectName, prospectEmail: c.prospectEmail,
+        callType: c.callType, callDate: c.callDate,
+        stepLabel: step.label, dueAt: step.dueAt, notifiedKey: step.notifiedKey
+      });
+    }
+  });
+  return due;
+}
+
+var REENGAGEMENT_TRACKER_SHEET_NAME = 'Re-engagement Tracker';
+var REENGAGEMENT_TRACKER_HEADERS = [
+  'Rep', 'Lead Name', 'Lead Email', 'Last Call Type', 'Last Call Date',
+  'Step', 'Due Date', 'Notified At'
+];
+
+/** Same getOrCreate-plus-frozen-header pattern as every other phase's own tab. */
+function getOrCreateReengagementTrackerSheet_() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(REENGAGEMENT_TRACKER_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(REENGAGEMENT_TRACKER_SHEET_NAME);
+    sheet.getRange(1, 1, 1, REENGAGEMENT_TRACKER_HEADERS.length).setValues([REENGAGEMENT_TRACKER_HEADERS])
+      .setFontWeight('bold').setBackground('#e8eef7');
+    sheet.setFrozenRows(1);
+    log_('Created "' + REENGAGEMENT_TRACKER_SHEET_NAME + '" tab.');
+  }
+  return sheet;
+}
+
+/** Every "rep|leadKey|step" already recorded — checked before treating a due step as NEW, so a re-run never double-notifies the same lead/step. Reconstructs leadKey from the tracker's own Lead Email/Lead Name columns via reengagementLeadKey_, rather than storing a redundant column. */
+function getNotifiedReengagementKeys_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  var values = sheet.getRange(2, 1, lastRow - 1, REENGAGEMENT_TRACKER_HEADERS.length).getValues();
+  var repCol = REENGAGEMENT_TRACKER_HEADERS.indexOf('Rep');
+  var nameCol = REENGAGEMENT_TRACKER_HEADERS.indexOf('Lead Name');
+  var emailCol = REENGAGEMENT_TRACKER_HEADERS.indexOf('Lead Email');
+  var stepCol = REENGAGEMENT_TRACKER_HEADERS.indexOf('Step');
+  return values.map(function (row) {
+    var leadKey = reengagementLeadKey_(row[emailCol], row[nameCol]);
+    return row[repCol] + '|' + leadKey + '|' + row[stepCol];
+  });
+}
+
+function appendReengagementTrackerRow_(sheet, item, tz) {
+  sheet.appendRow([
+    item.rep,
+    item.prospectName,
+    item.prospectEmail,
+    item.callType,
+    Utilities.formatDate(item.callDate, tz, 'dd/MM/yyyy'),
+    item.stepLabel,
+    Utilities.formatDate(item.dueAt, tz, 'dd/MM/yyyy'),
+    new Date()
+  ]);
+}
+
+/** Grouped by rep so Kris/Tomás can scan one rep's leads at a time — same "org by the thing a human will act on" pattern as buildSeanEscalationReportEmail_. */
+function buildReengagementDigestEmail_(dueItems, tz) {
+  var subject = dueItems.length + ' lead(s) due for re-engagement (Cadence 2)';
+  var byRep = {};
+  dueItems.forEach(function (item) {
+    byRep[item.rep] = byRep[item.rep] || [];
+    byRep[item.rep].push(item);
+  });
+  var repNames = Object.keys(byRep).sort();
+
+  var itemLine = function (item) {
+    return item.prospectName + (item.prospectEmail ? ' (' + item.prospectEmail + ')' : '') + ' — last ' +
+      item.callType + ' on ' + Utilities.formatDate(item.callDate, tz, 'dd/MM/yyyy') +
+      ', due for the "' + item.stepLabel + '" re-engagement.';
+  };
+
+  var body = dueItems.length
+    ? repNames.map(function (rep) {
+        return rep + ':\n' + byRep[rep].map(function (item) { return '  - ' + itemLine(item); }).join('\n');
+      }).join('\n\n') + '\n\n— Sent automatically.'
+    : 'No leads due for re-engagement right now.\n\n— Sent automatically.';
+
+  var htmlBody = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    (dueItems.length
+      ? repNames.map(function (rep) {
+          return '<p style="margin:0 0 4px;"><strong>' + escapeHtml_(rep) + '</strong></p>' +
+            '<ul style="margin:0 0 14px;padding-left:20px;">' +
+            byRep[rep].map(function (item) { return '<li>' + escapeHtml_(itemLine(item)) + '</li>'; }).join('') +
+            '</ul>';
+        }).join('')
+      : '<p>No leads due for re-engagement right now.</p>') +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically.</i></p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+function sendReengagementDigestEmail_(dueItems, tz) {
+  var email = buildReengagementDigestEmail_(dueItems, tz);
+  return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
+    cc: CONFIG.KRIS_EMAIL,
+    htmlBody: email.htmlBody,
+    name: 'Re-engagement Bot'
+  }, 2); // Tomás + Kris
+}
+
+/** Shared by preview and live paths. dryRun=true never writes or sends. */
+function buildAndMaybeSendReengagementDigest_(dryRun) {
+  RUN_TAG = 'buildAndMaybeSendReengagementDigest_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('buildAndMaybeSendReengagementDigest_: no Sales Call Log tab found.'); return 0; }
+
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  var rows = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var trackerSheet = getOrCreateReengagementTrackerSheet_();
+  var notifiedKeys = getNotifiedReengagementKeys_(trackerSheet);
+  var dueItems = findDueReengagements_(rows, col, new Date(), notifiedKeys);
+
+  if (dryRun) {
+    log_('(preview) ' + dueItems.length + ' lead(s) due for re-engagement — nothing written or sent.');
+    dueItems.forEach(function (item) {
+      log_('  ' + item.rep + ' — ' + item.prospectName + ' (' + item.prospectEmail + '), last ' + item.callType +
+        ' on ' + Utilities.formatDate(item.callDate, tz, 'dd/MM/yyyy') + ', step "' + item.stepLabel + '"');
+    });
+    return dueItems.length;
+  }
+
+  if (!dueItems.length) {
+    log_('buildAndMaybeSendReengagementDigest_: nothing due — no email sent this run.');
+    return 0;
+  }
+
+  var sent = sendReengagementDigestEmail_(dueItems, tz);
+  if (!sent) {
+    log_('buildAndMaybeSendReengagementDigest_: send failed/skipped — tracker not updated, will retry next run.');
+    return 0;
+  }
+  dueItems.forEach(function (item) { appendReengagementTrackerRow_(trackerSheet, item, tz); });
+  log_('buildAndMaybeSendReengagementDigest_: sent and recorded ' + dueItems.length + ' due re-engagement(s).');
+  return dueItems.length;
+}
+
+/** Run this FIRST from the editor. Logs what it would send/record — nothing is written or sent. */
+function previewReengagementDigest() {
+  return previewReengagementDigest_();
+}
+
+function previewReengagementDigest_() {
+  RUN_TAG = 'previewReengagementDigest_';
+  log_('PREVIEW MODE — checking for due re-engagements, nothing will be written or sent.');
+  return buildAndMaybeSendReengagementDigest_(/*dryRun=*/true);
+}
+
+/** Trigger target — gated by its own flag, independent of Cadence 1's ENABLED/DETECTION_ENABLED (neither cadence's drafting is ready, but this one's detection has no gmail.compose dependency at all — it's pure Sales Call Log + email). */
+function runReengagementDigest() {
+  RUN_TAG = 'runReengagementDigest';
+  if (!SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED) {
+    log_('runReengagementDigest: SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED is false, skipping.');
+    return 0;
+  }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runReengagementDigest: another run holds the lock, skipping this firing.');
+    return 0;
+  }
+  try {
+    return buildAndMaybeSendReengagementDigest_(/*dryRun=*/false);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function installReengagementDigestTrigger() {
+  RUN_TAG = 'installReengagementDigestTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runReengagementDigest') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runReengagementDigest')
+    .timeBased()
+    .everyDays(1)
+    .atHour(9)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
+    .create();
+  log_('Re-engagement digest trigger installed: daily 9:00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
 }
 
 /** True if the Gmail thread's labels include the configured dead-lead label — checked before any draft is generated, for either cadence. */

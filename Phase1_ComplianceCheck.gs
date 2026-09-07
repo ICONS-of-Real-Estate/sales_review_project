@@ -3893,7 +3893,8 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runCalibrationFeedback',                                                // Phase 16
   'runPitchGuideReview',                                                   // Phase 18
   'runSeanEscalationReport',                                               // Phase 19
-  'runSeanHandoffDetection'                                                // Phase 17
+  'runSeanHandoffDetection',                                               // Phase 17 (Cadence 1)
+  'runReengagementDigest'                                                  // Phase 17 (Cadence 2)
 ];
 
 /**
@@ -4096,10 +4097,18 @@ function installAllReadyTriggers_() {
   // propagation — see Phase17_SeanFollowUpAutomation.gs's own header).
   if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED) {
     installSeanHandoffDetectionTrigger();
-    installed.push('Phase 17: Sean handoff detection (tracking only, drafting still blocked)');
+    installed.push('Phase 17: Sean handoff detection (Cadence 1 — tracking only, drafting still blocked)');
   } else {
     skipped.push('Phase 17 (Sean handoff detection) — SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED is false. Run ' +
       'previewSeanHandoffDetection() first, confirm it looks right, then flip DETECTION_ENABLED and re-run this.');
+  }
+
+  if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED) {
+    installReengagementDigestTrigger();
+    installed.push('Phase 17: re-engagement digest (Cadence 2 — Bens/Joana/Sean/Tomás stalled leads)');
+  } else {
+    skipped.push('Phase 17 (re-engagement digest) — SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED is false. Run ' +
+      'previewReengagementDigest() first, confirm it looks right, then flip CADENCE2_ENABLED and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own
