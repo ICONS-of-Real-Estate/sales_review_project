@@ -251,6 +251,20 @@ function extractLeadEmailFromParticipants_(fromHeader, toHeader, ccHeader) {
  * "the" reply; the moment the label appears (thread's latest activity) is
  * the practical, available proxy for "when the handoff happened."
  * format=metadata only (never full/raw) — no message body is ever read.
+ *
+ * The lead's own address is NOT assumed to be on the thread's chronologically
+ * LAST message — Tomás's own description of the handoff ("Joana adds Sean to
+ * the thread and updates SPAM - Sean") is consistent with an internal-only
+ * note From Joana To Sean (no lead address at all) landing as the newest
+ * message. This exact "the last message isn't necessarily the right one"
+ * mistake was already made and fixed once in this codebase, for this same
+ * mailbox (getThreadLastMessageFull_, Phase8_ReplyTracker.gs — "Gmail thread
+ * order is purely chronological, not directional"). Trusting only the last
+ * message here would silently drop the handoff entirely the moment Joana's
+ * handoff note is the newest message — exactly the "looks done, is actually
+ * invisible" failure this file's own header warns about — so this scans
+ * every message's participants, walking backward from the newest, and stops
+ * at the first one with an external address.
  */
 function fetchSeanHandoffThreadInfo_(accessToken, threadId) {
   var thread = gmailApiGet_(accessToken,
@@ -262,24 +276,32 @@ function fetchSeanHandoffThreadInfo_(accessToken, threadId) {
     return null;
   }
   var last = messages[messages.length - 1];
-  var headers = {};
+  var lastHeaders = {};
   (last.payload && last.payload.headers || []).forEach(function (h) {
-    headers[String(h.name).toLowerCase()] = h.value;
+    lastHeaders[String(h.name).toLowerCase()] = h.value;
   });
   var internalDateMs = Number(last.internalDate);
   if (!isFinite(internalDateMs)) {
     log_('  fetchSeanHandoffThreadInfo_: thread ' + threadId + ' has a non-numeric internalDate — skipped.');
     return null;
   }
-  var leadEmail = extractLeadEmailFromParticipants_(headers['from'], headers['to'], headers['cc']);
+
+  var leadEmail = null;
+  for (var i = messages.length - 1; i >= 0 && !leadEmail; i--) {
+    var msgHeaders = {};
+    (messages[i].payload && messages[i].payload.headers || []).forEach(function (h) {
+      msgHeaders[String(h.name).toLowerCase()] = h.value;
+    });
+    leadEmail = extractLeadEmailFromParticipants_(msgHeaders['from'], msgHeaders['to'], msgHeaders['cc']);
+  }
   if (!leadEmail) {
-    log_('  fetchSeanHandoffThreadInfo_: thread ' + threadId + ' has no external participant — skipped.');
+    log_('  fetchSeanHandoffThreadInfo_: thread ' + threadId + ' has no external participant on any message — skipped.');
     return null;
   }
   return {
     threadId: threadId,
     leadEmail: leadEmail,
-    subject: headers['subject'] || '',
+    subject: lastHeaders['subject'] || '',
     anchorDate: new Date(internalDateMs)
   };
 }

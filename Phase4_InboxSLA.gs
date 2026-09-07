@@ -383,12 +383,24 @@ function extractEmailAddress_(headerValue) {
  * as extractEmailAddress_ above.
  */
 function extractEmailAddresses_(headerValue) {
+  // Real bug found live (07/09/2026 code review): the old all-or-nothing
+  // branch — every address bracketed, or none — silently dropped every bare
+  // address in a header that mixes the two forms (e.g. "Name <a@x.com>,
+  // b@y.com"), since finding ANY bracketed match short-circuited into
+  // returning ONLY the bracketed ones. Phase17_SeanFollowUpAutomation.gs's
+  // extractLeadEmailFromParticipants_ (07/09/2026) is exactly this kind of
+  // caller: a dropped bare lead address there means a real handoff silently
+  // never gets detected. Bracketed and bare addresses are now found
+  // independently and combined, so either form (or a mix of both in the
+  // same header) is captured.
   var raw = String(headerValue || '');
-  var bracketed = raw.match(/<([^>]+)>/g);
-  if (bracketed) {
-    return bracketed.map(function (m) { return m.slice(1, -1).trim().toLowerCase(); });
-  }
-  return raw.split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  var addresses = [];
+  var bracketed = raw.match(/<[^>]+>/g) || [];
+  bracketed.forEach(function (m) { addresses.push(m.slice(1, -1).trim().toLowerCase()); });
+  var withoutBracketed = raw.replace(/<[^>]+>/g, '');
+  var bare = withoutBracketed.match(/[^\s,]+@[^\s,]+/g) || [];
+  bare.forEach(function (m) { addresses.push(m.trim().toLowerCase()); });
+  return addresses;
 }
 
 /**

@@ -3378,6 +3378,13 @@ test('extractEmailAddresses_ pulls every address out of a comma-separated To/Cc 
   assert.equal(gas.extractEmailAddresses_(undefined).length, 0);
 });
 
+test('extractEmailAddresses_ captures BOTH forms when a header mixes a bracketed "Name <email>" entry with a bare address (real bug, 07/09/2026 code review: the old all-or-nothing branch silently dropped every bare address the moment ANY bracketed one was found in the same header)', () => {
+  const mixed = gas.extractEmailAddresses_('Sean Church <sean@iconsofrealestate.com>, external.cc@lead.com');
+  assert.equal(mixed.length, 2, 'the bare address must not be silently dropped just because the header also has a bracketed one');
+  assert.ok(mixed.indexOf('sean@iconsofrealestate.com') !== -1);
+  assert.ok(mixed.indexOf('external.cc@lead.com') !== -1);
+});
+
 test('formatEmailAgeLabel_ stays in hours under 48h, switches to rounded days at/over 48h (Kris\'s ask 02/09/2026: "hours get a bit crazy" past 48h)', () => {
   assert.equal(gas.formatEmailAgeLabel_(0), '0h old');
   assert.equal(gas.formatEmailAgeLabel_(24), '24h old');
@@ -8762,6 +8769,38 @@ test('fetchSeanHandoffThreadInfo_ returns null (never throws) for a thread with 
   });
   try {
     assert.equal(gas.fetchSeanHandoffThreadInfo_('token', 'thread-internal'), null);
+  } finally {
+    gas.gmailApiGet_ = originalGmailApiGet;
+  }
+});
+
+test('fetchSeanHandoffThreadInfo_ still finds the lead\'s address when the thread\'s chronologically LAST message is Joana\'s own internal handoff note to Sean (real bug, 07/09/2026 code review: this is exactly the "Gmail thread order is purely chronological, not directional" mistake already made and fixed once for this same mailbox in Phase8_ReplyTracker.gs — trusting only the last message would have silently dropped every handoff whose newest message is Joana\'s internal note)', () => {
+  const originalGmailApiGet = gas.gmailApiGet_;
+  gas.gmailApiGet_ = () => ({
+    messages: [
+      {
+        internalDate: '1757250000000', // earlier message — has the real lead
+        payload: { headers: [
+          { name: 'From', value: 'Lead Person <lead@example.com>' },
+          { name: 'To', value: 'joana@iconsofrealestate.com' }
+        ] }
+      },
+      {
+        internalDate: '1757260800000', // newest message — Joana's internal handoff note, no lead address at all
+        payload: { headers: [
+          { name: 'From', value: 'joana@iconsofrealestate.com' },
+          { name: 'To', value: 'sean@iconsofrealestate.com' },
+          { name: 'Subject', value: 'Re: your podcast strategy call' }
+        ] }
+      }
+    ]
+  });
+  try {
+    const info = gas.fetchSeanHandoffThreadInfo_('token', 'thread-mixed');
+    assert.ok(info, 'the handoff must still be detected even though the last message has no external participant');
+    assert.equal(info.leadEmail, 'lead@example.com');
+    // Anchor stays the NEWEST message's timestamp — only the lead-email lookup scans backward, not the anchor.
+    assert.equal(info.anchorDate.getTime(), 1757260800000);
   } finally {
     gas.gmailApiGet_ = originalGmailApiGet;
   }
