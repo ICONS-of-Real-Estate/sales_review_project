@@ -3891,10 +3891,14 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runBensPodcastSync_',                                                   // Phase 11
   'runGhlNoteSync_',                                                       // Phase 12
   'runCalibrationFeedback',                                                // Phase 16
-  'runPitchGuideReview',                                                   // Phase 18
-  'runSeanEscalationReport',                                               // Phase 19
-  'runSeanHandoffDetection',                                               // Phase 17 (Cadence 1)
-  'runReengagementDigest'                                                  // Phase 17 (Cadence 2)
+  // Phase 17 (both cadences)/18/19 share ONE every-2-hour trigger as of
+  // 07/09/2026 (trigger-cap consolidation — see runPhase17To19StandingChecks_'s
+  // own header, Phase17_SeanFollowUpAutomation.gs) instead of 4 separate
+  // handlers/triggers. Do NOT add 'runPitchGuideReview'/'runSeanEscalationReport'/
+  // 'runSeanHandoffDetection'/'runReengagementDigest' back here individually —
+  // they're still real functions (callable directly for preview/manual runs),
+  // just no longer each have their own standing trigger.
+  'runPhase17To19StandingChecks_'
 ];
 
 /**
@@ -4076,39 +4080,30 @@ function installAllReadyTriggers_() {
       'previewCalibrationFeedback() first, then flip ENABLED and re-run this.');
   }
 
-  if (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) {
-    installPitchGuideReviewTrigger();
-    installed.push('Phase 18: monthly Pitch Guide SOP-suggestion review');
+  // Phase 17 (both cadences)/18/19 share ONE every-2-hour trigger
+  // (runPhase17To19StandingChecks_, Phase17_SeanFollowUpAutomation.gs) —
+  // trigger-cap consolidation, 07/09/2026 (see that function's own header:
+  // the project hit Apps Script's 20-trigger cap with only 1 slot free and
+  // 4 pending automations of different cadences). Install it as soon as ANY
+  // of the four is ready — each one still checks its own ENABLED/
+  // DETECTION_ENABLED/CADENCE2_ENABLED flag internally before doing real
+  // work, so installing the shared trigger early never bypasses any of
+  // their own live-send gates.
+  var phase17To19Ready = (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) ||
+    (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) ||
+    (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && (SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED || SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED));
+  if (phase17To19Ready) {
+    installPhase17To19StandingChecksTrigger();
+    var readyParts = [];
+    if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED) readyParts.push('Phase 17 Cadence 1 (Sean handoff detection)');
+    if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED) readyParts.push('Phase 17 Cadence 2 (re-engagement digest)');
+    if (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) readyParts.push('Phase 19 (Sean escalation report)');
+    if (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) readyParts.push('Phase 18 (Pitch Guide review)');
+    installed.push('Phase 17-19 standing checks (every 2h, internally gated): ' + readyParts.join(', '));
   } else {
-    skipped.push('Phase 18 (Pitch Guide review) — PITCH_GUIDE_REVIEW_CONFIG.ENABLED is false. Run ' +
-      'previewPitchGuideReview() first, confirm it looks right, then flip ENABLED and re-run this.');
-  }
-
-  if (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) {
-    installSeanEscalationReportTrigger();
-    installed.push('Phase 19: Sean booking-decision escalation report');
-  } else {
-    skipped.push('Phase 19 (Sean escalation report) — SEAN_ESCALATION_REPORT_CONFIG.ENABLED is false. Run ' +
-      'previewSeanEscalationReport() first, confirm it looks right, then flip ENABLED and re-run this.');
-  }
-
-  // Detection only (DETECTION_ENABLED) — separate from SEAN_FOLLOWUP_CONFIG.ENABLED,
-  // which still gates the full draft-composing pipeline (blocked on gmail.compose
-  // propagation — see Phase17_SeanFollowUpAutomation.gs's own header).
-  if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED) {
-    installSeanHandoffDetectionTrigger();
-    installed.push('Phase 17: Sean handoff detection (Cadence 1 — tracking only, drafting still blocked)');
-  } else {
-    skipped.push('Phase 17 (Sean handoff detection) — SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED is false. Run ' +
-      'previewSeanHandoffDetection() first, confirm it looks right, then flip DETECTION_ENABLED and re-run this.');
-  }
-
-  if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED) {
-    installReengagementDigestTrigger();
-    installed.push('Phase 17: re-engagement digest (Cadence 2 — Bens/Joana/Sean/Tomás stalled leads)');
-  } else {
-    skipped.push('Phase 17 (re-engagement digest) — SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED is false. Run ' +
-      'previewReengagementDigest() first, confirm it looks right, then flip CADENCE2_ENABLED and re-run this.');
+    skipped.push('Phase 17-19 standing checks — none of Phase 17 DETECTION_ENABLED/CADENCE2_ENABLED, ' +
+      'Phase 18 PITCH_GUIDE_REVIEW_CONFIG.ENABLED, or Phase 19 SEAN_ESCALATION_REPORT_CONFIG.ENABLED is true yet. ' +
+      'Run that phase\'s own preview*() function first, confirm it looks right, then flip its flag and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own

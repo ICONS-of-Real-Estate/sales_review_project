@@ -97,6 +97,11 @@ var SEAN_FOLLOWUP_CONFIG = {
   HANDOFF_IMPERSONATE_EMAIL: 'joana@iconsofrealestate.com',
   CADENCE1_FOLLOWUP_BUSINESS_DAYS: 2,
   CADENCE1_BREAKUP_BUSINESS_DAYS: 4,
+  // Was a standalone daily trigger's own atHour(9) — now the hour
+  // runPhase17To19StandingChecks_ (below) gates on, since Cadence 2 shares
+  // a trigger with Cadence 1/Phase 18/Phase 19 (trigger-cap consolidation,
+  // 07/09/2026 — see that function's own header).
+  CADENCE2_TRIGGER_HOUR: 9,
   // Cadence 2's own steps — re-engage this long after the lead's last real
   // call (QC/Sales Call/Closing), aiming to rebook the next one in sequence.
   // Unlike Cadence 1's business-day math, this doesn't need time-of-day
@@ -540,19 +545,11 @@ function runReengagementDigest() {
   }
 }
 
-function installReengagementDigestTrigger() {
-  RUN_TAG = 'installReengagementDigestTrigger';
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runReengagementDigest') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('runReengagementDigest')
-    .timeBased()
-    .everyDays(1)
-    .atHour(9)
-    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
-    .create();
-  log_('Re-engagement digest trigger installed: daily 9:00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
-}
+// installReengagementDigestTrigger (its own standalone daily-9am trigger) was
+// removed 07/09/2026 — Cadence 2 now shares one every-2-hour trigger with
+// Cadence 1/Phase 18/Phase 19 via runPhase17To19StandingChecks_ below (see
+// its header for why: the project hit Apps Script's 20-trigger cap with only
+// 1 slot free and 4 pending automations).
 
 /** True if the Gmail thread's labels include the configured dead-lead label — checked before any draft is generated, for either cadence. */
 function isThreadMarkedDead_(labelNames) {
@@ -787,14 +784,99 @@ function runSeanHandoffDetection() {
   }
 }
 
-function installSeanHandoffDetectionTrigger() {
-  RUN_TAG = 'installSeanHandoffDetectionTrigger';
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runSeanHandoffDetection') ScriptApp.deleteTrigger(t);
+// installSeanHandoffDetectionTrigger (its own standalone every-2-hour
+// trigger) was removed 07/09/2026 — see runPhase17To19StandingChecks_ below,
+// which now covers this handler's cadence exactly (every 2 hours,
+// ungated — this is the one of the four actually meant to run that often).
+
+// ---------------------------------------------------------------------------
+// Trigger-cap consolidation (07/09/2026) — Kris hit Apps Script's 20-trigger
+// project cap with only 1 slot free and 4 pending automations of different
+// cadences (Cadence 1 detection: every 2h: Cadence 2 digest: daily; Phase 19
+// escalation report: weekly; Phase 18 Pitch Guide review: monthly). Fix:
+// ONE every-2-hour trigger (runPhase17To19StandingChecks_) instead of 4
+// separate ones — same "consolidate onto one trigger, gate internally"
+// pattern already used for Phase 2's 5 scoring passes
+// (runAllOngoingScoringPasses_, Phase2_CallScoring.gs), just with explicit
+// day/hour-window gates added here since these four don't all want to run
+// on every firing the way the 5 scoring passes do.
+//
+// Cadence 1 handoff detection has NO extra gate — every 2 hours IS its real
+// cadence. The other three get a day/hour-window check before running:
+//   - Cadence 2 digest: any firing in the [CADENCE2_TRIGGER_HOUR,
+//     CADENCE2_TRIGGER_HOUR+2) window, any day. Safe to call more than once
+//     in that window even so — findDueReengagements_'s own notifiedKeys
+//     dedup means a lead already notified this cycle is silently skipped,
+//     so at worst this does a harmless extra Sales Call Log scan.
+//   - Phase 19 escalation report: Fridays only, in its own TRIGGER_HOUR
+//     window. This one is NOT safe to leave ungated — unlike the other two,
+//     buildAndMaybeSendSeanEscalationReport_ has no dedup of its own at all;
+//     calling it every firing would re-email Tomás/Kris the same weekly
+//     report every 2 hours, all week.
+//   - Phase 18 Pitch Guide review: day-of-month === TRIGGER_DAY_OF_MONTH
+//     only, in its own TRIGGER_HOUR window. Safe either way (each training
+//     video's own "reviewed" marker makes an extra call a no-op), gated
+//     anyway to avoid needless Drive folder scans every 2 hours.
+// A 2-hour-wide window (not an exact-hour match) tolerates Apps Script's own
+// documented trigger-time jitter without risking a job silently never firing
+// because its exact target hour was skipped.
+// ---------------------------------------------------------------------------
+
+/** True if `now` (in tz) falls in [targetHour, targetHour + windowHours) — see header comment above for why a window, not an exact-hour match. */
+function isWithinHourWindow_(now, tz, targetHour, windowHours) {
+  var hour = Number(Utilities.formatDate(now, tz, 'HH'));
+  return hour >= targetHour && hour < targetHour + windowHours;
+}
+
+/**
+ * Which of the four consolidated passes are due right now — pure (given
+ * `now`), so testable without faking triggers/config globals for every
+ * combination. Returns an array of {name, fn} for exactly the passes
+ * runPhase17To19StandingChecks_ should call this firing.
+ */
+function duePhase17To19Passes_(now, tz) {
+  var passes = [
+    { name: 'runSeanHandoffDetection', fn: runSeanHandoffDetection, due: true },
+    {
+      name: 'runReengagementDigest', fn: runReengagementDigest,
+      due: isWithinHourWindow_(now, tz, SEAN_FOLLOWUP_CONFIG.CADENCE2_TRIGGER_HOUR, 2)
+    },
+    {
+      name: 'runSeanEscalationReport', fn: runSeanEscalationReport,
+      due: Utilities.formatDate(now, tz, 'EEEE') === 'Friday' &&
+        isWithinHourWindow_(now, tz, SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR, 2)
+    },
+    {
+      name: 'runPitchGuideReview', fn: runPitchGuideReview,
+      due: Number(Utilities.formatDate(now, tz, 'dd')) === PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH &&
+        isWithinHourWindow_(now, tz, PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR, 2)
+    }
+  ];
+  return passes.filter(function (p) { return p.due; });
+}
+
+/** Trigger target for all four consolidated standing checks. Each pass still has its own ENABLED/DETECTION_ENABLED/CADENCE2_ENABLED gate inside its own run*() function — duePhase17To19Passes_ only adds the day/hour-window gates the three non-Cadence-1 passes need now that they share a trigger. Failures in one pass never block the others (same isolate-and-continue pattern as runAllOngoingScoringPasses_). */
+function runPhase17To19StandingChecks_() {
+  RUN_TAG = 'runPhase17To19StandingChecks_';
+  duePhase17To19Passes_(new Date(), CONFIG.BUSINESS_TIMEZONE).forEach(function (pass) {
+    try {
+      pass.fn();
+    } catch (e) {
+      log_('runPhase17To19StandingChecks_: ' + pass.name + ' threw: ' + e + ' -- continuing to the next pass.');
+      sendOpsAlert_('Standing check error: ' + pass.name, String(e));
+    }
   });
-  ScriptApp.newTrigger('runSeanHandoffDetection')
+}
+
+function installPhase17To19StandingChecksTrigger() {
+  RUN_TAG = 'installPhase17To19StandingChecksTrigger';
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runPhase17To19StandingChecks_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runPhase17To19StandingChecks_')
     .timeBased()
     .everyHours(2)
     .create();
-  log_('Sean handoff detection trigger installed: every 2 hours.');
+  log_('Phase 17-19 standing checks trigger installed: every 2 hours (Cadence 1 detection every firing; ' +
+    'Cadence 2 digest/Phase 19 report/Phase 18 review each internally gated to their own day/hour window).');
 }

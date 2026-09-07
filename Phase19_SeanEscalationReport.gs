@@ -29,7 +29,11 @@
  *   1. Run previewSeanEscalationReport() from the editor — logs what it
  *      would send, sends nothing.
  *   2. Flip SEAN_ESCALATION_REPORT_CONFIG.ENABLED to true, run
- *      installSeanEscalationReportTrigger().
+ *      installAllReadyTriggers() (Phase1_ComplianceCheck.gs) — this phase
+ *      shares Phase 17/18's consolidated every-2-hour trigger
+ *      (runPhase17To19StandingChecks_, Phase17_SeanFollowUpAutomation.gs),
+ *      not a standalone trigger of its own (trigger-cap consolidation,
+ *      07/09/2026 — see that function's own header).
  */
 
 var SEAN_ESCALATION_REPORT_CONFIG = {
@@ -185,17 +189,14 @@ function runSeanEscalationReport() {
   }
 }
 
-function installSeanEscalationReportTrigger() {
-  RUN_TAG = 'installSeanEscalationReportTrigger';
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runSeanEscalationReport') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('runSeanEscalationReport')
-    .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.FRIDAY)
-    .atHour(SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR)
-    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
-    .create();
-  log_('Sean escalation report trigger installed: Fridays ' + SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR +
-    ':00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
-}
+// installSeanEscalationReportTrigger (its own standalone Friday trigger) was
+// removed 07/09/2026 — this phase now shares Phase 17/18's consolidated
+// every-2-hour trigger (runPhase17To19StandingChecks_,
+// Phase17_SeanFollowUpAutomation.gs), which calls runSeanEscalationReport()
+// only on Fridays within its own TRIGGER_HOUR window above (see that
+// function's own header for why: the project hit Apps Script's 20-trigger
+// cap with only 1 slot free and 4 pending automations of different
+// cadences — this one in particular has no dedup of its own, so it must
+// never run ungated on a shared trigger). Install via
+// installAllReadyTriggers() (Phase1_ComplianceCheck.gs), not a
+// phase-specific installer.

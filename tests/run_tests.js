@@ -6487,13 +6487,12 @@ test('STANDING_AUTOMATION_HANDLERS_ includes runGhlNoteSync_ (Phase 12) -- a mis
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') !== -1);
 });
 
-test('STANDING_AUTOMATION_HANDLERS_ includes runPitchGuideReview (Phase 18) and runSeanEscalationReport (Phase 19) -- missing here means installAllReadyTriggers_ would both never install them AND sweep them away as orphans the moment someone installs either by hand', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPitchGuideReview') !== -1);
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runSeanEscalationReport') !== -1);
-});
-
-test('STANDING_AUTOMATION_HANDLERS_ includes runSeanHandoffDetection (Phase 17) -- same sweep-as-orphan risk as Phase 18/19 above', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runSeanHandoffDetection') !== -1);
+test('STANDING_AUTOMATION_HANDLERS_ includes the consolidated runPhase17To19StandingChecks_ handler, not the four individual Phase 17/18/19 handlers (trigger-cap consolidation, 07/09/2026) -- missing here means installAllReadyTriggers_ would both never install it AND sweep it away as an orphan the moment someone installs it by hand', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPhase17To19StandingChecks_') !== -1);
+  ['runPitchGuideReview', 'runSeanEscalationReport', 'runSeanHandoffDetection', 'runReengagementDigest'].forEach((h) => {
+    assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf(h) === -1,
+      h + ' must NOT have its own standing-trigger entry anymore -- it runs as one of the passes inside runPhase17To19StandingChecks_');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -8940,31 +8939,10 @@ test('runSeanHandoffDetection is gated by DETECTION_ENABLED specifically, not th
   }
 });
 
-test('installSeanHandoffDetectionTrigger removes any existing runSeanHandoffDetection trigger before creating the new every-2-hours one', () => {
-  const deleted = [];
-  let createdConfig = null;
-  const fakeTriggerBuilder = {
-    timeBased: () => fakeTriggerBuilder,
-    everyHours: (h) => { createdConfig = { everyHours: h }; return fakeTriggerBuilder; },
-    create: () => { createdConfig.created = true; }
-  };
-  const oldTrigger = { getHandlerFunction: () => 'runSeanHandoffDetection' };
-  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
-  const originalScriptApp = gas.ScriptApp;
-  gas.ScriptApp = {
-    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
-    deleteTrigger: (t) => deleted.push(t),
-    newTrigger: () => fakeTriggerBuilder
-  };
-  try {
-    gas.installSeanHandoffDetectionTrigger();
-    assert.deepEqual(deleted, [oldTrigger]);
-    assert.equal(createdConfig.everyHours, 2);
-    assert.equal(createdConfig.created, true);
-  } finally {
-    gas.ScriptApp = originalScriptApp;
-  }
-});
+// installSeanHandoffDetectionTrigger's own standalone-trigger test was
+// replaced 07/09/2026 by the installPhase17To19StandingChecksTrigger tests
+// further down (trigger-cap consolidation — Cadence 1 now shares one
+// every-2-hour trigger with Cadence 2/Phase 18/Phase 19).
 
 // ---------------------------------------------------------------------------
 // Phase17 Cadence 2 — re-engagement, generalized to all reps. Kris's ask
@@ -9212,38 +9190,10 @@ test('runReengagementDigest is gated by CADENCE2_ENABLED specifically', () => {
   }
 });
 
-test('installReengagementDigestTrigger removes any existing runReengagementDigest trigger before creating the new daily 9am one', () => {
-  const deleted = [];
-  let createdConfig = null;
-  const fakeTriggerBuilder = {
-    timeBased: () => fakeTriggerBuilder,
-    everyDays: (d) => { createdConfig = { everyDays: d }; return fakeTriggerBuilder; },
-    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
-    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
-    create: () => { createdConfig.created = true; }
-  };
-  const oldTrigger = { getHandlerFunction: () => 'runReengagementDigest' };
-  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
-  const originalScriptApp = gas.ScriptApp;
-  gas.ScriptApp = {
-    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
-    deleteTrigger: (t) => deleted.push(t),
-    newTrigger: () => fakeTriggerBuilder
-  };
-  try {
-    gas.installReengagementDigestTrigger();
-    assert.deepEqual(deleted, [oldTrigger]);
-    assert.equal(createdConfig.everyDays, 1);
-    assert.equal(createdConfig.atHour, 9);
-    assert.equal(createdConfig.created, true);
-  } finally {
-    gas.ScriptApp = originalScriptApp;
-  }
-});
-
-test('STANDING_AUTOMATION_HANDLERS_ includes runReengagementDigest (Phase 17 Cadence 2) -- same sweep-as-orphan risk as every other phase', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runReengagementDigest') !== -1);
-});
+// installReengagementDigestTrigger's own standalone-trigger test was
+// replaced 07/09/2026 by the installPhase17To19StandingChecksTrigger tests
+// further down (trigger-cap consolidation). The STANDING_AUTOMATION_HANDLERS_
+// coverage for Cadence 2 is folded into the consolidated-handler test above.
 
 // ---------------------------------------------------------------------------
 // Phase18_PitchGuideReview.gs — Kris's ask (07/09/2026), confirming the
@@ -9517,34 +9467,9 @@ test('fetchPitchGuideDocText_ throws a clear "share the doc" error rather than a
   }
 });
 
-test('installPitchGuideReviewTrigger removes any existing runPitchGuideReview trigger before creating the new monthly one', () => {
-  const deleted = [];
-  let createdConfig = null;
-  const fakeTriggerBuilder = {
-    timeBased: () => fakeTriggerBuilder,
-    onMonthDay: (d) => { createdConfig = { onMonthDay: d }; return fakeTriggerBuilder; },
-    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
-    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
-    create: () => { createdConfig.created = true; }
-  };
-  const oldTrigger = { getHandlerFunction: () => 'runPitchGuideReview' };
-  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
-  const originalScriptApp = gas.ScriptApp;
-  gas.ScriptApp = {
-    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
-    deleteTrigger: (t) => deleted.push(t),
-    newTrigger: () => fakeTriggerBuilder
-  };
-  try {
-    gas.installPitchGuideReviewTrigger();
-    assert.deepEqual(deleted, [oldTrigger]);
-    assert.equal(createdConfig.onMonthDay, gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH);
-    assert.equal(createdConfig.atHour, gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR);
-    assert.equal(createdConfig.created, true);
-  } finally {
-    gas.ScriptApp = originalScriptApp;
-  }
-});
+// installPitchGuideReviewTrigger's own standalone-trigger test was replaced
+// 07/09/2026 by the installPhase17To19StandingChecksTrigger tests further
+// down (trigger-cap consolidation).
 
 // ---------------------------------------------------------------------------
 // Phase19_SeanEscalationReport.gs — Kris's confirmed ask (07/09/2026): "YES
@@ -9654,30 +9579,113 @@ test('sendSeanEscalationReportEmail_ sends to Tomás, cc Kris', () => {
   }
 });
 
-test('installSeanEscalationReportTrigger removes any existing runSeanEscalationReport trigger before creating the new Friday one', () => {
+// installSeanEscalationReportTrigger's own standalone-trigger test was
+// replaced 07/09/2026 by the installPhase17To19StandingChecksTrigger tests
+// below (trigger-cap consolidation).
+
+// ---------------------------------------------------------------------------
+// Trigger-cap consolidation (07/09/2026) — Phase 17 (both cadences)/18/19
+// share ONE every-2-hour trigger (runPhase17To19StandingChecks_) instead of
+// 4 separate ones, after Kris hit Apps Script's 20-trigger project cap with
+// only 1 slot free and 4 pending automations of different cadences.
+// ---------------------------------------------------------------------------
+
+test('isWithinHourWindow_ is true only within [targetHour, targetHour+windowHours)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  assert.equal(gas.isWithinHourWindow_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 9, 0, 0), tz, 9, 2), true);
+  assert.equal(gas.isWithinHourWindow_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 10, 59, 0), tz, 9, 2), true);
+  assert.equal(gas.isWithinHourWindow_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 11, 0, 0), tz, 9, 2), false);
+  assert.equal(gas.isWithinHourWindow_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 8, 59, 0), tz, 9, 2), false);
+});
+
+test('duePhase17To19Passes_ always includes runSeanHandoffDetection regardless of day/hour', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const names = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 3, 0, 0), 'America/New_York').map((p) => p.name);
+  assert.ok(names.indexOf('runSeanHandoffDetection') !== -1);
+});
+
+test('duePhase17To19Passes_ includes runReengagementDigest only within its own trigger-hour window, any day', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  const inWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, gas.SEAN_FOLLOWUP_CONFIG.CADENCE2_TRIGGER_HOUR, 0, 0), tz)
+    .map((p) => p.name);
+  const outOfWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, gas.SEAN_FOLLOWUP_CONFIG.CADENCE2_TRIGGER_HOUR + 5, 0, 0), tz)
+    .map((p) => p.name);
+  assert.ok(inWindow.indexOf('runReengagementDigest') !== -1);
+  assert.ok(outOfWindow.indexOf('runReengagementDigest') === -1);
+});
+
+test('duePhase17To19Passes_ includes runSeanEscalationReport only on Friday within its own trigger-hour window', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  // 02/01/2026 is a Friday.
+  const fridayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 2, gas.SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR, 0, 0), tz)
+    .map((p) => p.name);
+  const fridayOutOfWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 2, gas.SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR + 5, 0, 0), tz)
+    .map((p) => p.name);
+  const saturdayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 3, gas.SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR, 0, 0), tz)
+    .map((p) => p.name);
+  assert.ok(fridayInWindow.indexOf('runSeanEscalationReport') !== -1);
+  assert.ok(fridayOutOfWindow.indexOf('runSeanEscalationReport') === -1);
+  assert.ok(saturdayInWindow.indexOf('runSeanEscalationReport') === -1, 'must not fire on a non-Friday even within the right hour window');
+});
+
+test('duePhase17To19Passes_ includes runPitchGuideReview only on TRIGGER_DAY_OF_MONTH within its own trigger-hour window', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  const day = gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH;
+  const hour = gas.PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR;
+  const onDayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 2, day, hour, 0, 0), tz).map((p) => p.name);
+  const onDayOutOfWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 2, day, hour + 5, 0, 0), tz).map((p) => p.name);
+  const wrongDayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 2, day + 1, hour, 0, 0), tz).map((p) => p.name);
+  assert.ok(onDayInWindow.indexOf('runPitchGuideReview') !== -1);
+  assert.ok(onDayOutOfWindow.indexOf('runPitchGuideReview') === -1);
+  assert.ok(wrongDayInWindow.indexOf('runPitchGuideReview') === -1);
+});
+
+test('runPhase17To19StandingChecks_ calls only the due passes and isolates one pass throwing from the others', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const originalDue = gas.duePhase17To19Passes_;
+  const originalAlert = gas.sendOpsAlert_;
+  const calls = [];
+  const alerts = [];
+  gas.sendOpsAlert_ = (subject, body) => alerts.push(subject);
+  gas.duePhase17To19Passes_ = () => ([
+    { name: 'passA', fn: () => calls.push('passA') },
+    { name: 'passB', fn: () => { throw new Error('boom'); } },
+    { name: 'passC', fn: () => calls.push('passC') }
+  ]);
+  try {
+    gas.runPhase17To19StandingChecks_();
+    assert.deepEqual(calls, ['passA', 'passC']);
+    assert.deepEqual(alerts, ['Standing check error: passB']);
+  } finally {
+    gas.duePhase17To19Passes_ = originalDue;
+    gas.sendOpsAlert_ = originalAlert;
+  }
+});
+
+test('installPhase17To19StandingChecksTrigger removes any existing runPhase17To19StandingChecks_ trigger before creating the new every-2-hours one', () => {
   const deleted = [];
   let createdConfig = null;
   const fakeTriggerBuilder = {
     timeBased: () => fakeTriggerBuilder,
-    onWeekDay: (d) => { createdConfig = { onWeekDay: d }; return fakeTriggerBuilder; },
-    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
-    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
+    everyHours: (h) => { createdConfig = { everyHours: h }; return fakeTriggerBuilder; },
     create: () => { createdConfig.created = true; }
   };
-  const oldTrigger = { getHandlerFunction: () => 'runSeanEscalationReport' };
+  const oldTrigger = { getHandlerFunction: () => 'runPhase17To19StandingChecks_' };
   const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
   const originalScriptApp = gas.ScriptApp;
   gas.ScriptApp = {
     getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
     deleteTrigger: (t) => deleted.push(t),
-    newTrigger: () => fakeTriggerBuilder,
-    WeekDay: { FRIDAY: 'FRIDAY' }
+    newTrigger: () => fakeTriggerBuilder
   };
   try {
-    gas.installSeanEscalationReportTrigger();
+    gas.installPhase17To19StandingChecksTrigger();
     assert.deepEqual(deleted, [oldTrigger]);
-    assert.equal(createdConfig.onWeekDay, 'FRIDAY');
-    assert.equal(createdConfig.atHour, gas.SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR);
+    assert.equal(createdConfig.everyHours, 2);
     assert.equal(createdConfig.created, true);
   } finally {
     gas.ScriptApp = originalScriptApp;

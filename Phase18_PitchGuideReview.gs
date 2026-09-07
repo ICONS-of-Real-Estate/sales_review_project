@@ -58,7 +58,11 @@
  *   3. Run previewPitchGuideReview() from the editor — logs what it would
  *      write/send, writes/sends nothing.
  *   4. Flip PITCH_GUIDE_REVIEW_CONFIG.ENABLED to true, run
- *      installPitchGuideReviewTrigger().
+ *      installAllReadyTriggers() (Phase1_ComplianceCheck.gs) — this phase
+ *      shares Phase 17/19's consolidated every-2-hour trigger
+ *      (runPhase17To19StandingChecks_, Phase17_SeanFollowUpAutomation.gs),
+ *      not a standalone trigger of its own (trigger-cap consolidation,
+ *      07/09/2026 — see that function's own header).
  */
 
 var PITCH_GUIDE_REVIEW_CONFIG = {
@@ -371,17 +375,12 @@ function runPitchGuideReview() {
   }
 }
 
-function installPitchGuideReviewTrigger() {
-  RUN_TAG = 'installPitchGuideReviewTrigger';
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runPitchGuideReview') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('runPitchGuideReview')
-    .timeBased()
-    .onMonthDay(PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH)
-    .atHour(PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR)
-    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
-    .create();
-  log_('Pitch Guide review trigger installed: monthly on day ' + PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH +
-    ' at ' + PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + '.');
-}
+// installPitchGuideReviewTrigger (its own standalone monthly trigger) was
+// removed 07/09/2026 — this phase now shares Phase 17/19's consolidated
+// every-2-hour trigger (runPhase17To19StandingChecks_,
+// Phase17_SeanFollowUpAutomation.gs), which calls runPitchGuideReview() only
+// when the current day-of-month/hour matches TRIGGER_DAY_OF_MONTH/
+// TRIGGER_HOUR above (see that function's own header for why: the project
+// hit Apps Script's 20-trigger cap with only 1 slot free and 4 pending
+// automations of different cadences). Install via installAllReadyTriggers()
+// (Phase1_ComplianceCheck.gs), not a phase-specific installer.
