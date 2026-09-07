@@ -8958,3 +8958,141 @@ test('installPitchGuideReviewTrigger removes any existing runPitchGuideReview tr
     gas.ScriptApp = originalScriptApp;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase19_SeanEscalationReport.gs — Kris's confirmed ask (07/09/2026): "YES
+// a report to Tomas and I is useful" — which of Sean's Sales Calls should
+// have escalated to a Second Sales Call with Tomás instead of an AM
+// Discovery call. Reuses the existing "Flag: Booking Decision Appropriate"/
+// "Booking Decision Gap" scored dimension (Phase2_CallScoring.gs).
+// ---------------------------------------------------------------------------
+
+function seanEscalationCol_(gas) {
+  var col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach(function (h, i) { col[h] = i + 1; });
+  return col;
+}
+
+function seanEscalationRow_(gas, { rep, name, date, score, bookingAppropriate, gap, transcriptUrl }) {
+  var col = seanEscalationCol_(gas);
+  var row = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  row[col['Rep'] - 1] = rep;
+  row[col['Prospect Name'] - 1] = name;
+  row[col['Call Date'] - 1] = date;
+  row[col['Call Quality Score'] - 1] = score;
+  row[col['Flag: Booking Decision Appropriate'] - 1] = bookingAppropriate;
+  row[col['Booking Decision Gap'] - 1] = gap || '';
+  row[col['Transcript URL'] - 1] = transcriptUrl || '';
+  return row;
+}
+
+test('findSeanEscalationMisses_ flags only Sean\'s calls this week with Booking Decision Appropriate explicitly false', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = seanEscalationCol_(gas);
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const fakeSheet = { getSheetId: () => 42 };
+  const rows = [
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Miss A', date: bizDate(gas, 2026, 8, 11), score: 2, bookingAppropriate: false, gap: 'Should have gone to Tomás' }),
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Fine B', date: bizDate(gas, 2026, 8, 12), score: 4, bookingAppropriate: true }),
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Not Scored C', date: bizDate(gas, 2026, 8, 12), score: 3, bookingAppropriate: '' }), // blank = no signal, never a miss
+    seanEscalationRow_(gas, { rep: 'Joana', name: 'Different Rep', date: bizDate(gas, 2026, 8, 11), score: 1, bookingAppropriate: false }),
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Before Week', date: bizDate(gas, 2026, 8, 3), score: 1, bookingAppropriate: false })
+  ];
+  const misses = gas.findSeanEscalationMisses_(rows, col, fakeSheet, weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(misses.length, 1);
+  assert.equal(misses[0].prospectName, 'Miss A');
+  assert.equal(misses[0].gap, 'Should have gone to Tomás');
+});
+
+test('findSeanEscalationMisses_ treats a text "FALSE"/"No" cell the same as a real boolean false (hand-corrected cells)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = seanEscalationCol_(gas);
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const fakeSheet = { getSheetId: () => 1 };
+  const rows = [
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Text False', date: bizDate(gas, 2026, 8, 11), score: 2, bookingAppropriate: 'FALSE' }),
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Text No', date: bizDate(gas, 2026, 8, 12), score: 2, bookingAppropriate: 'No' })
+  ];
+  const misses = gas.findSeanEscalationMisses_(rows, col, fakeSheet, weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(misses.length, 2);
+});
+
+test('findSeanEscalationMisses_ returns rowLink pointing at the real sheet row (accounting for the header)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const col = seanEscalationCol_(gas);
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const fakeSheet = { getSheetId: () => 99 };
+  const rows = [
+    seanEscalationRow_(gas, { rep: 'Other', name: 'Filler', date: bizDate(gas, 2026, 8, 11), score: 3, bookingAppropriate: '' }),
+    seanEscalationRow_(gas, { rep: 'Sean', name: 'Miss A', date: bizDate(gas, 2026, 8, 11), score: 2, bookingAppropriate: false })
+  ];
+  const misses = gas.findSeanEscalationMisses_(rows, col, fakeSheet, weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(misses.length, 1);
+  assert.ok(misses[0].rowLink.indexOf('range=A3') !== -1, 'row 2 of data (index 1) is real sheet row 3');
+});
+
+test('buildSeanEscalationReportEmail_ lists every miss with score/gap/links when there are some', () => {
+  const misses = [
+    { prospectName: 'Miss A', callDate: '11/08/2026', score: 2, gap: 'Should have gone to Tomás', transcriptUrl: 'https://drive.google.com/x', rowLink: 'https://sheet/row3' }
+  ];
+  const email = gas.buildSeanEscalationReportEmail_(misses, '10/08/2026 - 16/08/2026');
+  assert.ok(email.subject.indexOf('1 booking-decision miss') !== -1);
+  assert.ok(email.body.indexOf('Miss A') !== -1);
+  assert.ok(email.body.indexOf('Should have gone to Tomás') !== -1);
+  assert.ok(email.body.indexOf('https://drive.google.com/x') !== -1);
+  assert.ok(email.htmlBody.indexOf('Miss A') !== -1);
+  assert.ok(email.htmlBody.indexOf('Second Sales Call with Tomás') !== -1);
+});
+
+test('buildSeanEscalationReportEmail_ says plainly when there are no misses this week, rather than an empty list', () => {
+  const email = gas.buildSeanEscalationReportEmail_([], '10/08/2026 - 16/08/2026');
+  assert.ok(email.body.indexOf('No booking-decision misses for Sean this week') !== -1);
+  assert.ok(email.htmlBody.indexOf('No booking-decision misses for Sean this week') !== -1);
+});
+
+test('sendSeanEscalationReportEmail_ sends to Tomás, cc Kris', () => {
+  const originalGuardedSend = gas.guardedSend_;
+  let sendArgs = null;
+  gas.guardedSend_ = (...args) => { sendArgs = args; return true; };
+  try {
+    const sent = gas.sendSeanEscalationReportEmail_([], '10/08/2026 - 16/08/2026');
+    assert.equal(sent, true);
+    assert.equal(sendArgs[0], gas.CONFIG.TOMAS_EMAIL);
+    assert.equal(sendArgs[3].cc, gas.CONFIG.KRIS_EMAIL);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('installSeanEscalationReportTrigger removes any existing runSeanEscalationReport trigger before creating the new Friday one', () => {
+  const deleted = [];
+  let createdConfig = null;
+  const fakeTriggerBuilder = {
+    timeBased: () => fakeTriggerBuilder,
+    onWeekDay: (d) => { createdConfig = { onWeekDay: d }; return fakeTriggerBuilder; },
+    atHour: (h) => { createdConfig.atHour = h; return fakeTriggerBuilder; },
+    inTimezone: (tz) => { createdConfig.tz = tz; return fakeTriggerBuilder; },
+    create: () => { createdConfig.created = true; }
+  };
+  const oldTrigger = { getHandlerFunction: () => 'runSeanEscalationReport' };
+  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = {
+    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
+    deleteTrigger: (t) => deleted.push(t),
+    newTrigger: () => fakeTriggerBuilder,
+    WeekDay: { FRIDAY: 'FRIDAY' }
+  };
+  try {
+    gas.installSeanEscalationReportTrigger();
+    assert.deepEqual(deleted, [oldTrigger]);
+    assert.equal(createdConfig.onWeekDay, 'FRIDAY');
+    assert.equal(createdConfig.atHour, gas.SEAN_ESCALATION_REPORT_CONFIG.TRIGGER_HOUR);
+    assert.equal(createdConfig.created, true);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});

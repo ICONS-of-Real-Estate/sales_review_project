@@ -39,7 +39,8 @@ const GAS_FILES = [
   'Phase15_CrmOrganizationReview.gs',
   'Phase16_CalibrationFeedback.gs',
   'Phase17_SeanFollowUpAutomation.gs',
-  'Phase18_PitchGuideReview.gs'
+  'Phase18_PitchGuideReview.gs',
+  'Phase19_SeanEscalationReport.gs'
 ];
 
 function stubApi(name) {
