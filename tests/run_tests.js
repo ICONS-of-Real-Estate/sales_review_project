@@ -2514,6 +2514,105 @@ test('sendPlaybookReviewNoNewCallsEmail_ sends exactly what buildPlaybookReviewN
   }
 });
 
+// ---------------------------------------------------------------------------
+// Two-stage playbook review schedule (Kris's ask, 08/09/2026): Tomás trains
+// from Portugal, Joana's first session is 10am Spain — so a reminder goes
+// out at 8am Portugal (3am ET) and a final, recomputed confirmation at 10am
+// Portugal (5am ET), so what's in his inbox right before the session
+// reflects any last-minute override.
+// ---------------------------------------------------------------------------
+
+test('subjectPrefixForPlaybookStage_ prefixes only the reminder stage', () => {
+  assert.equal(gas.subjectPrefixForPlaybookStage_('reminder'), '[Reminder] ');
+  assert.equal(gas.subjectPrefixForPlaybookStage_('final'), '');
+  assert.equal(gas.subjectPrefixForPlaybookStage_(undefined), '', 'no stage given must behave like "final" — the plain subject this function had before the two-stage schedule existed');
+});
+
+test('sendPlaybookReviewNewMaterialEmail_ prefixes the subject and appends the override note only for the reminder stage', () => {
+  const originalGuardedSend = gas.guardedSend_;
+  const calls = [];
+  gas.guardedSend_ = (to, subject, body, opts) => { calls.push({ subject, body, htmlBody: opts.htmlBody }); return true; };
+  const repCfg = { name: 'Sean' };
+  const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
+  try {
+    gas.sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], null, 'reminder');
+    gas.sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], null, 'final');
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].subject.indexOf('[Reminder] ') === 0);
+    assert.ok(calls[0].body.indexOf('final confirmation') !== -1);
+    assert.ok(calls[0].htmlBody.indexOf('final confirmation') !== -1);
+    assert.equal(calls[1].subject.indexOf('[Reminder]'), -1, 'the final stage must keep the plain, unprefixed subject');
+    assert.equal(calls[1].body.indexOf('final confirmation'), -1);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('sendPlaybookReviewNoNewCallsEmail_ prefixes the subject and appends the override note only for the reminder stage', () => {
+  const originalGuardedSend = gas.guardedSend_;
+  const calls = [];
+  gas.guardedSend_ = (to, subject, body) => { calls.push({ subject, body }); return true; };
+  try {
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 'reminder');
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 'final');
+    assert.ok(calls[0].subject.indexOf('[Reminder] ') === 0);
+    assert.ok(calls[0].body.indexOf('final confirmation') !== -1);
+    assert.equal(calls[1].subject.indexOf('[Reminder]'), -1);
+    assert.equal(calls[1].body.indexOf('final confirmation'), -1);
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('previewWeeklyPlaybookReview_ builds both the reminder and final stages, not just one', () => {
+  const originalBuild = gas.buildAndMaybeSendPlaybookReview_;
+  const stagesSeen = [];
+  gas.buildAndMaybeSendPlaybookReview_ = (forcePreview, stage) => { stagesSeen.push({ forcePreview, stage }); };
+  try {
+    gas.previewWeeklyPlaybookReview_();
+    assert.deepEqual(stagesSeen, [{ forcePreview: true, stage: 'reminder' }, { forcePreview: true, stage: 'final' }]);
+  } finally {
+    gas.buildAndMaybeSendPlaybookReview_ = originalBuild;
+  }
+});
+
+test('runWeeklyPlaybookReviewReminder/runWeeklyPlaybookReviewFinal each call buildAndMaybeSendPlaybookReview_ with their own stage, under a lock', () => {
+  const originalBuild = gas.buildAndMaybeSendPlaybookReview_;
+  const originalLockService = gas.LockService;
+  gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+  const stagesSeen = [];
+  gas.buildAndMaybeSendPlaybookReview_ = (forcePreview, stage) => { stagesSeen.push({ forcePreview, stage }); };
+  try {
+    gas.runWeeklyPlaybookReviewReminder();
+    gas.runWeeklyPlaybookReviewFinal();
+    assert.deepEqual(stagesSeen, [{ forcePreview: false, stage: 'reminder' }, { forcePreview: false, stage: 'final' }]);
+  } finally {
+    gas.buildAndMaybeSendPlaybookReview_ = originalBuild;
+    gas.LockService = originalLockService;
+  }
+});
+
+test('installPlaybookReviewTrigger installs both a Tuesday reminder trigger and a Tuesday final trigger at their own configured hours, removing any prior copies first', () => {
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = fakeScriptAppTriggers_(['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal', 'someOtherTrigger']);
+  try {
+    gas.installPlaybookReviewTrigger();
+    const remaining = gas.ScriptApp.getProjectTriggers();
+    const handlers = remaining.map((t) => t.getHandlerFunction());
+    assert.ok(handlers.indexOf('someOtherTrigger') !== -1, 'unrelated trigger must be left alone');
+    assert.equal(handlers.filter((h) => h === 'runWeeklyPlaybookReviewReminder').length, 1, 'exactly one reminder trigger, old copy removed');
+    assert.equal(handlers.filter((h) => h === 'runWeeklyPlaybookReviewFinal').length, 1, 'exactly one final trigger, old copy removed');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('STANDING_AUTOMATION_HANDLERS_ has both playbook-review handlers, not the old single one (real sweep-as-orphan risk otherwise)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewReminder') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewFinal') !== -1);
+  assert.equal(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReview'), -1);
+});
+
 test('stripYearFromDateRangeLabel_ strips every /yyyy year suffix out of a date-range label', () => {
   assert.equal(gas.stripYearFromDateRangeLabel_('24/08/2026 - 30/08/2026'), '24/08 - 30/08');
   assert.equal(gas.stripYearFromDateRangeLabel_('01/09/2026'), '01/09');
@@ -3128,7 +3227,8 @@ test('installAllReadyTriggers_ now installs the three phases that used to requir
     gas.installAllReadyTriggers_();
 
     const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
-    assert.ok(handlers.indexOf('runWeeklyPlaybookReview') !== -1, 'playbook review trigger must now be installed');
+    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewReminder') !== -1, 'playbook review reminder trigger must now be installed');
+    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewFinal') !== -1, 'playbook review final trigger must now be installed');
     assert.ok(handlers.indexOf('runWeeklyTrainingSummaries') !== -1, 'weekly training summary trigger must now be installed');
     assert.ok(handlers.indexOf('syncGhlEmailAndDisposition_') !== -1, 'GHL sync trigger must now be installed');
   } finally {

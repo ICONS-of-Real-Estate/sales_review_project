@@ -3003,9 +3003,31 @@ function sendDashboardAccessEmail() {
 //      installPlaybookReviewTrigger().
 // ---------------------------------------------------------------------------
 
+// Kris's ask (08/09/2026): Tomás runs training from Portugal, and Joana's
+// first session is 10am Spain time — so the schedule below is two emails,
+// not one. Both hours are given in CONFIG.BUSINESS_TIMEZONE (America/
+// New_York) because every trigger in this project is scheduled off that one
+// timezone — Kris confirmed converting Portugal wall-clock times to their
+// EST/EDT equivalent themselves rather than giving this one phase its own
+// timezone (which would've meant a second "which clock is this trigger on"
+// question for every future person reading this file).
+//   - 8:00am Portugal = 3:00am America/New_York -> REMINDER_TRIGGER_HOUR.
+//     Sends Tomás the auto-computed pick, so he has it and can override it
+//     on the dashboard if he wants something different.
+//   - 10:00am Portugal = 5:00am America/New_York -> FINAL_TRIGGER_HOUR.
+//     Recomputes (picking up any override Tomás set in between) and sends a
+//     second, final email — what's in his inbox right before he actually
+//     runs Joana's session is guaranteed current, not whatever was true 2
+//     hours earlier at reminder time.
+// Caveat, not urgent enough to solve now: Portugal and the US don't end
+// daylight saving on the same date (Portugal: last Sunday of October;
+// US: first Sunday of November), so for about one week a year the true
+// Portugal-local time these hours land on drifts by an extra hour. Revisit
+// if that week ever actually causes a problem.
 var PLAYBOOK_REVIEW_CONFIG = {
-  ENABLED: true, // Flipped true 27/08/2026 per Kris's ask — last-week-only training material, no all-time fallback. Still needs installPlaybookReviewTrigger() run once to actually schedule it.
-  TRIGGER_HOUR: 8 // Tuesday morning, CONFIG.BUSINESS_TIMEZONE — ahead of that day's training session
+  ENABLED: true, // Flipped true 27/08/2026 per Kris's ask — last-week-only training material, no all-time fallback.
+  REMINDER_TRIGGER_HOUR: 3, // 8am Portugal — see comment above
+  FINAL_TRIGGER_HOUR: 5     // 10am Portugal — see comment above
 };
 
 /**
@@ -3335,32 +3357,51 @@ function stripYearFromDateRangeLabel_(label) {
 }
 
 /** Run this FIRST from the editor. Builds this week's review and only logs it — sends nothing. */
+/** Previews BOTH stages, in send order — the reminder and the final email are built from the exact same data when run back-to-back like this (nothing to override in between), but showing both lets you check the reminder's extra note and the final's plain subject look right. */
 function previewWeeklyPlaybookReview() {
   return previewWeeklyPlaybookReview_();
 }
 
 function previewWeeklyPlaybookReview_() {
   RUN_TAG = 'previewWeeklyPlaybookReview_';
-  log_('PREVIEW MODE — building this week\'s playbook review, nothing will be sent.');
-  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true);
+  log_('PREVIEW MODE — building this week\'s playbook review (both the reminder and final stages), nothing will be sent.');
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'reminder');
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'final');
 }
 
-/** Trigger target. Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
-function runWeeklyPlaybookReview() {
-  RUN_TAG = 'runWeeklyPlaybookReview';
+/** Trigger target for the 8am-Portugal reminder (see PLAYBOOK_REVIEW_CONFIG's own header). Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
+function runWeeklyPlaybookReviewReminder() {
+  RUN_TAG = 'runWeeklyPlaybookReviewReminder';
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
-    log_('runWeeklyPlaybookReview: another run holds the lock, skipping this firing.');
+    log_('runWeeklyPlaybookReviewReminder: another run holds the lock, skipping this firing.');
     return;
   }
   try {
-    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false);
+    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'reminder');
   } finally {
     lock.releaseLock();
   }
 }
 
-function buildAndMaybeSendPlaybookReview_(forcePreview) {
+/** Trigger target for the 10am-Portugal final confirmation — recomputes from scratch, so any override Tomás set since the reminder is picked up. */
+function runWeeklyPlaybookReviewFinal() {
+  RUN_TAG = 'runWeeklyPlaybookReviewFinal';
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    log_('runWeeklyPlaybookReviewFinal: another run holds the lock, skipping this firing.');
+    return;
+  }
+  try {
+    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'final');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** `stage` is 'reminder' or 'final' (defaults to 'final' — the plain, unprefixed subject, matching this function's behavior before the two-stage schedule existed) — see PLAYBOOK_REVIEW_CONFIG's own header comment. */
+function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
+  stage = stage || 'final';
   if (!forcePreview && !PLAYBOOK_REVIEW_CONFIG.ENABLED) {
     log_('buildAndMaybeSendPlaybookReview_: PLAYBOOK_REVIEW_CONFIG.ENABLED is false, skipping.');
     return;
@@ -3483,15 +3524,16 @@ function buildAndMaybeSendPlaybookReview_(forcePreview) {
       var previewEmail = flagged.length
         ? buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
         : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null);
-      log_('----- ' + repCfg.name + ': exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
-        ', cc ' + CONFIG.KRIS_EMAIL + ') -----\nSubject: ' + previewEmail.subject + '\n\n' +
-        previewEmail.body + '\n----- end -----');
+      var previewIsReminder = stage === 'reminder';
+      log_('----- ' + repCfg.name + ' [' + stage + ']: exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
+        ', cc ' + CONFIG.KRIS_EMAIL + ') -----\nSubject: ' + subjectPrefixForPlaybookStage_(stage) + previewEmail.subject + '\n\n' +
+        previewEmail.body + (previewIsReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : '') + '\n----- end -----');
       return;
     }
 
     var sent = flagged.length
-      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
-      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null);
+      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage)
+      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, stage);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
@@ -3628,11 +3670,36 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   return { subject: subject, body: body, htmlBody: htmlBody };
 }
 
-function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus) {
+/**
+ * Two-email schedule (Kris's ask, 08/09/2026 — see PLAYBOOK_REVIEW_CONFIG's
+ * own header comment): 'reminder' at REMINDER_TRIGGER_HOUR (8am Portugal)
+ * gets a "[Reminder]" subject prefix and a note that a second, final email
+ * is coming; 'final' at FINAL_TRIGGER_HOUR (10am Portugal, recomputed so any
+ * override Tomás set in between is picked up) sends the plain, unprefixed
+ * subject — unchanged from before this two-stage schedule existed, so
+ * nothing downstream that keyed off the old single email's subject breaks.
+ */
+function subjectPrefixForPlaybookStage_(stage) {
+  return stage === 'reminder' ? '[Reminder] ' : '';
+}
+
+var PLAYBOOK_REVIEW_REMINDER_NOTE_ =
+  '\n\nThis is the auto-computed pick — if you want a different focus for this rep, set it on the ' +
+  'dashboard before the final confirmation goes out (10am Portugal / 2 hours from now). That final ' +
+  'email is the one to actually use for the session; this reminder may not reflect a last-minute change.';
+var PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ =
+  '<p style="color:#666;font-size:12px;margin-top:12px;">This is the auto-computed pick — if you want a ' +
+  'different focus for this rep, set it on the dashboard before the final confirmation goes out (10am ' +
+  'Portugal / 2 hours from now). That final email is the one to actually use for the session; this ' +
+  'reminder may not reflect a last-minute change.</p>';
+
+function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage) {
   var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus);
-  return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
+  var isReminder = stage === 'reminder';
+  return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
+    email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
     cc: CONFIG.KRIS_EMAIL,
-    htmlBody: email.htmlBody,
+    htmlBody: email.htmlBody + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
     name: 'Training Prep Bot'
   }, 2);
 }
@@ -3652,26 +3719,38 @@ function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
   return { subject: repCfg.name + ' — no flagged calls last week', body: body };
 }
 
-function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, stage) {
   var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule);
-  return guardedSend_(CONFIG.TOMAS_EMAIL, email.subject, email.body, {
+  var isReminder = stage === 'reminder';
+  return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
+    email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
     cc: CONFIG.KRIS_EMAIL,
     name: 'Training Prep Bot'
   }, 2);
 }
 
+/** Installs BOTH the reminder and final triggers (two-stage schedule — see PLAYBOOK_REVIEW_CONFIG's own header). */
 function installPlaybookReviewTrigger() {
   RUN_TAG = 'installPlaybookReviewTrigger';
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runWeeklyPlaybookReview') ScriptApp.deleteTrigger(t);
+  ['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal'].forEach(function (handler) {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
+    });
   });
-  ScriptApp.newTrigger('runWeeklyPlaybookReview')
+  ScriptApp.newTrigger('runWeeklyPlaybookReviewReminder')
     .timeBased()
     .onWeekDay(ScriptApp.WeekDay.TUESDAY)
-    .atHour(PLAYBOOK_REVIEW_CONFIG.TRIGGER_HOUR)
+    .atHour(PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR)
     .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
-  log_('Playbook review trigger installed: Tuesdays ' + PLAYBOOK_REVIEW_CONFIG.TRIGGER_HOUR + ':00 ' +
+  ScriptApp.newTrigger('runWeeklyPlaybookReviewFinal')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .atHour(PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR)
+    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
+    .create();
+  log_('Playbook review triggers installed: Tuesdays reminder ' + PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR +
+    ':00 (8am Portugal) + final ' + PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR + ':00 (10am Portugal) ' +
     CONFIG.BUSINESS_TIMEZONE + '.');
 }
 
@@ -3897,7 +3976,10 @@ function installAutomation() {
  */
 var STANDING_AUTOMATION_HANDLERS_ = [
   'runDailyComplianceCheck', 'selfHealTriggers_',                          // Phase 1
-  'runWeeklyPlaybookReview',                                               // Phase 1 — Playbook Review
+  // Phase 1 — Playbook Review: two-stage schedule (Kris's ask, 08/09/2026 —
+  // see PLAYBOOK_REVIEW_CONFIG's own header) replaced the old single
+  // runWeeklyPlaybookReview trigger with these two.
+  'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal',
   'runAllOngoingScoringPasses_', 'runRandomCalibrationSample',             // Phase 2
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4
