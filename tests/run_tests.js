@@ -6480,6 +6480,11 @@ test('STANDING_AUTOMATION_HANDLERS_ includes runGhlNoteSync_ (Phase 12) -- a mis
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') !== -1);
 });
 
+test('STANDING_AUTOMATION_HANDLERS_ includes runPitchGuideReview (Phase 18) and runSeanEscalationReport (Phase 19) -- missing here means installAllReadyTriggers_ would both never install them AND sweep them away as orphans the moment someone installs either by hand', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPitchGuideReview') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runSeanEscalationReport') !== -1);
+});
+
 // ---------------------------------------------------------------------------
 // callKimiJudge_ rename fallback + LLM Cost Log (05/09/2026, external review:
 // "LITELLM_PROXY_URL pointing at api.moonshot.ai... will burn someone

@@ -3890,7 +3890,9 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'syncGhlEmailAndDisposition_',                                           // Phase 9
   'runBensPodcastSync_',                                                   // Phase 11
   'runGhlNoteSync_',                                                       // Phase 12
-  'runCalibrationFeedback'                                                 // Phase 16
+  'runCalibrationFeedback',                                                // Phase 16
+  'runPitchGuideReview',                                                   // Phase 18
+  'runSeanEscalationReport'                                                // Phase 19
 ];
 
 /**
@@ -4070,6 +4072,22 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 16 (calibration feedback) — CALIBRATION_FEEDBACK_CONFIG.ENABLED is false. Run ' +
       'previewCalibrationFeedback() first, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) {
+    installPitchGuideReviewTrigger();
+    installed.push('Phase 18: monthly Pitch Guide SOP-suggestion review');
+  } else {
+    skipped.push('Phase 18 (Pitch Guide review) — PITCH_GUIDE_REVIEW_CONFIG.ENABLED is false. Run ' +
+      'previewPitchGuideReview() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  if (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) {
+    installSeanEscalationReportTrigger();
+    installed.push('Phase 19: Sean booking-decision escalation report');
+  } else {
+    skipped.push('Phase 19 (Sean escalation report) — SEAN_ESCALATION_REPORT_CONFIG.ENABLED is false. Run ' +
+      'previewSeanEscalationReport() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own
