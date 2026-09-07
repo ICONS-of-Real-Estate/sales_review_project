@@ -975,11 +975,55 @@ function scoreTranscript_(ctx) {
  * text. Route to DocumentApp for the former, getBlob() for everything
  * else, so a mixed folder of both kinds doesn't silently fail every Doc.
  */
-function getTranscriptText_(file) {
+function readRawTranscriptFileText_(file) {
   if (file.getMimeType() === MimeType.GOOGLE_DOCS) {
     return DocumentApp.openById(file.getId()).getBody().getText();
   }
   return file.getBlob().getDataAsString();
+}
+
+/**
+ * tools/transcribe_sean_calls.py's shared run_whisper_batch (used by every
+ * Sean/Joana/Tomás/Calibration-Feedback transcription run) stashes a
+ * "[Call length: MM:SS]" line at the very top of every transcript doc it
+ * saves — the actual measured call duration, added 07/09/2026 per Kris:
+ * "seems to be the length of the calls, Tomas calls are longer than the
+ * others. We need to measure the call length and the average — that is a
+ * key indicator." Stripped out here, in the one shared accessor every judge/
+ * training-review/calibration prompt in this project reads through, so no
+ * caller has to remember to strip it and none can accidentally leak it into
+ * a prompt as if someone had said it out loud on the call.
+ */
+function stripLeadingCallLengthLine_(text) {
+  return String(text || '').replace(/^\[Call length:\s*\d+:\d{2}\]\s*\n+/, '');
+}
+
+function getTranscriptText_(file) {
+  return stripLeadingCallLengthLine_(readRawTranscriptFileText_(file));
+}
+
+/**
+ * Parses the same leading "[Call length: MM:SS]" line back OUT as a real
+ * number of minutes, for the write path that stores it in the Sales Call
+ * Log's own "Call Length (Minutes)" column. Kept separate from
+ * getTranscriptText_ (which strips the line and discards it) rather than
+ * having that one function return both — its dozen-odd existing callers
+ * don't care about duration, so none of them need a signature change; the
+ * couple of call sites that DO need the number just re-open the same file
+ * and ask for it here. Returns null when the line isn't present (an older
+ * transcript predating this, or one from a source that doesn't route
+ * through run_whisper_batch, e.g. Bens' Riverside legacy folder) — never a
+ * fabricated 0, which would read as a genuine zero-length call.
+ */
+function getCallLengthMinutesFromTranscriptFile_(file) {
+  return extractCallLengthMinutes_(readRawTranscriptFileText_(file));
+}
+
+/** Pure parse — split out so it's testable without a fake Drive file. */
+function extractCallLengthMinutes_(rawText) {
+  var m = /^\[Call length:\s*(\d+):(\d{2})\]/.exec(String(rawText || ''));
+  if (!m) return null;
+  return Math.round((Number(m[1]) + Number(m[2]) / 60) * 10) / 10;
 }
 
 /**
@@ -1080,7 +1124,9 @@ function scoreNewlyLoggedCalls_() {
 
       try {
         var fileId = extractDriveFileId_(transcriptUrl);
-        var text = getTranscriptText_(DriveApp.getFileById(fileId));
+        var transcriptFile = DriveApp.getFileById(fileId);
+        var text = getTranscriptText_(transcriptFile);
+        var callLengthMinutes = getCallLengthMinutesFromTranscriptFile_(transcriptFile);
         var rawCallType = row[col['Call Type'] - 1];
         if (!rawCallType) {
           log_('  Row ' + rowIndex + ' (' + prospectName + '): blank Call Type — defaulting to QC. ' +
@@ -1102,7 +1148,7 @@ function scoreNewlyLoggedCalls_() {
         // resolveRubricVariantForRow_'s own comment for the dispatch order.
         var variant = rubricVariantForNewScore_(ctx.rep, ctx.callType);
         var result = scoreTranscriptByVariant_(variant, ctx);
-        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant);
+        writeScoreToRow_(sheet, rowIndex, col, result, /*forceManualReview=*/false, prospectName, variant, callLengthMinutes);
         scored++;
         Utilities.sleep(300);
       } catch (e) {
@@ -1262,7 +1308,9 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
 
       try {
         var fileId = extractDriveFileId_(item.transcriptUrl);
-        var text = getTranscriptText_(DriveApp.getFileById(fileId));
+        var transcriptFile = DriveApp.getFileById(fileId);
+        var text = getTranscriptText_(transcriptFile);
+        var callLengthMinutes = getCallLengthMinutesFromTranscriptFile_(transcriptFile);
         var ctx = {
           rep: item.rep,
           prospectName: prospectName,
@@ -1281,7 +1329,7 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
         }
 
         var result = scoreTranscriptByVariant_(item.variant, ctx);
-        writeScoreToRow_(sheet, item.rowIndex, col, result, /*forceManualReview=*/false, prospectName, item.variant);
+        writeScoreToRow_(sheet, item.rowIndex, col, result, /*forceManualReview=*/false, prospectName, item.variant, callLengthMinutes);
         rescored++;
         log_('  [' + rescored + '/' + eligible.length + '] Rescored row ' + item.rowIndex + ' (' + prospectName + ', ' +
           item.rep + ', ' + item.callType + ') under "' + item.variant + '" — score ' + item.existingScore + ' -> ' +
@@ -1477,7 +1525,7 @@ function extractDriveFileId_(url) {
  * dimensions (discovery/booking/framework for 'qc', etc.), same as the
  * Sean/Bens/Tomás backfill functions already do for their own append paths.
  */
-function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prospectName, variant) {
+function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prospectName, variant, callLengthMinutes) {
   variant = variant || 'shared';
   var objectionsHandled = result.flags.objections_uncovered && result.flags.objections_overcome;
   var manualReview = forceManualReview || result.manual_review_recommended;
@@ -1551,6 +1599,13 @@ function writeScoreToRow_(sheet, rowIndex, col, result, forceManualReview, prosp
   // before this column existed, same "no signal" pattern as every column
   // added before it.
   sheet.getRange(rowIndex, col['Rubric Version']).setValue(RUBRIC_VERSION);
+  // Kris's ask (07/09/2026) — see extractCallLengthMinutes_'s own comment.
+  // callLengthMinutes is undefined for any caller that hasn't been updated to
+  // pass it (none currently) and null for a transcript with no measured
+  // duration line — both write blank, same "no signal" convention as every
+  // other column above, never a fabricated 0.
+  sheet.getRange(rowIndex, col['Call Length (Minutes)'])
+    .setValue(callLengthMinutes === null || callLengthMinutes === undefined ? '' : callLengthMinutes);
 }
 
 /**

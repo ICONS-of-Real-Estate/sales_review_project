@@ -188,10 +188,19 @@ function isSalesCallTypeForScorecard_(callType) {
  * alongside its own n so a rolling average built on 3 calls doesn't get
  * mistaken for one built on 30.
  */
+/** "Xh Ym" / "Xm" display for a minutes value that may carry a fractional minute (e.g. 42.5 -> "42m 30s" would be over-precise for a weekly digest; rounds to the nearest whole minute instead). */
+function formatMinutesLabel_(totalMinutes) {
+  var rounded = Math.round(totalMinutes);
+  var hours = Math.floor(rounded / 60);
+  var minutes = rounded % 60;
+  return hours > 0 ? (hours + 'h ' + minutes + 'm') : (minutes + 'm');
+}
+
 function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
   var allScores = [];
   var priorScores = []; // all-time excluding this week — basis for the trend line
   var weekCalls = [];
+  var weekCallLengths = [];
   var weekFailureModes = [];
   var weekFlagMiss = { askedForClose: 0, objectionsHandled: 0 };
   var weekMissingOutcomeDisposition = 0;
@@ -293,6 +302,13 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
         // a real, gradable call now.
         transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim()
       });
+      // Kris's ask (07/09/2026), watching Tomás's calls run long: "seems to
+      // be the length of the calls. Tomas calls are longer than the others.
+      // We need to measure the call length and the average — that is a key
+      // indicator." Only real measured lengths count (blank = no signal,
+      // e.g. a transcript from before this was tracked) — never treated as 0.
+      var callLength = row[col['Call Length (Minutes)'] - 1];
+      if (typeof callLength === 'number') weekCallLengths.push(callLength);
       // Real bug found live (26/08/2026 silent-failure audit): 'none' was
       // compared case-sensitively — a model-returned "None" (no enum
       // validation upstream on this free-text column) used to be pushed as
@@ -338,6 +354,8 @@ function computeRepWeeklyStats_(rows, col, repName, weekStart, weekEnd, tz) {
 
   return {
     weekCalls: weekCalls,
+    weekAvgCallLengthMinutes: mean_(weekCallLengths),
+    weekCallLengthCount: weekCallLengths.length,
     weeklyAvg: mean_(weekCalls.map(function (c) { return c.score; })),
     historicAvg: mean_(allScores),
     historicAvgBeforeThisWeek: mean_(priorScores),
@@ -484,6 +502,15 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
     : 'not enough data yet') + '\n\n';
 
+  // Kris's ask (07/09/2026): "seems to be the length of the calls. Tomas
+  // calls are longer than the others. We need to measure the call length and
+  // the average — that is a key indicator." Only calls with a measured
+  // duration count (see extractCallLengthMinutes_'s own comment on why a
+  // missing measurement is never treated as 0).
+  var callLengthSection = 'Avg call length this week: ' + (stats.weekAvgCallLengthMinutes != null
+    ? formatMinutesLabel_(stats.weekAvgCallLengthMinutes) + ' across ' + stats.weekCallLengthCount + ' call(s) with a measured length'
+    : 'no measured call length yet this week') + '\n\n';
+
   // Data-hygiene ask, not a coaching point — kept separate from "One thing to
   // work on" above so that stays a single behavior, per the report.
   var outcomeSection = stats.weekMissingOutcomeDisposition
@@ -502,6 +529,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     thisWeekSection +
     rollingSection +
     historicSection +
+    callLengthSection +
     outcomeSection +
     '— This is an automated weekly report. This email was drafted by AI and sent automatically; ' +
     'reply to Kris or Tomás with any issues.';
@@ -586,12 +614,68 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     '<li><strong>All-time average:</strong> ' + (stats.historicAvg !== null
       ? stats.historicAvg.toFixed(1) + '/5 across ' + stats.historicCount + ' scored call(s)'
       : 'not enough data yet') + '</li>' +
+    '<li><strong>Avg call length this week:</strong> ' + (stats.weekAvgCallLengthMinutes != null
+      ? escapeHtml_(formatMinutesLabel_(stats.weekAvgCallLengthMinutes)) + ' across ' + stats.weekCallLengthCount + ' call(s) with a measured length'
+      : 'no measured call length yet this week') + '</li>' +
     '</ul>' +
     (stats.weekMissingOutcomeDisposition
       ? '<p>' + stats.weekMissingOutcomeDisposition + ' of this week\'s call(s) still need an <strong>Outcome ' +
         'Disposition</strong> (Sold/Not Sold/Follow-up/No-show) logged on the Sales Call Log — when you get a ' +
         'chance.</p>'
       : '') +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated weekly report. This email ' +
+    'was drafted by AI and sent automatically; reply to Kris or Tomás with any issues.</i></p>' +
+    '</div>';
+
+  return { subject: subject, body: body, htmlBody: htmlBody };
+}
+
+/**
+ * Every rep whose call length is worth comparing — CONFIG.REPS only lists
+ * Bens/Joana/Sean (Phase1_ComplianceCheck.gs's own comment: "the brief
+ * scopes the compliance check to Bens, Joana, Sean"), but Tomás takes real
+ * sales calls too (confirmed live, 36 of a recent 62-row sample) and is
+ * exactly the rep Kris's own ask (07/09/2026) named: "Tomas calls are longer
+ * than the others." Same 4 names used elsewhere for this exact reason (e.g.
+ * CALIBRATION_FEEDBACK_CONFIG.FOLDERS, Phase16_CalibrationFeedback.gs).
+ */
+var CALL_LENGTH_COMPARISON_REPS_ = ['Bens', 'Joana', 'Sean', 'Tomás'];
+
+/**
+ * Kris's ask (07/09/2026): "seems to be the length of the calls. Tomas calls
+ * are longer than the others. We need to measure the call length and the
+ * average. That is a key indicator." Each rep's own scorecard already shows
+ * their own avg call length (buildWeeklyScorecardEmail_'s "For the record"
+ * section) — this is the side-by-side view that actually answers the
+ * question, sent once to Kris/Tomás rather than folded into any one rep's
+ * own email.
+ */
+function buildCallLengthComparisonEmail_(statsByRep, weekLabel) {
+  var subject = 'Weekly Call Length Comparison — week of ' + weekLabel;
+  var rows = CALL_LENGTH_COMPARISON_REPS_.map(function (rep) {
+    var s = statsByRep[rep];
+    return { rep: rep, avg: s ? s.weekAvgCallLengthMinutes : null, count: s ? s.weekCallLengthCount : 0 };
+  });
+
+  var body = 'Average measured call length by rep, this week (' + weekLabel + '):\n\n' +
+    rows.map(function (r) {
+      return '• ' + r.rep + ': ' + (r.avg != null
+        ? formatMinutesLabel_(r.avg) + ' (' + r.count + ' call(s) with a measured length)'
+        : 'no measured call length yet this week');
+    }).join('\n') + '\n\n' +
+    '— This is an automated weekly report. This email was drafted by AI and sent automatically; ' +
+    'reply to Kris or Tomás with any issues.';
+
+  var htmlRows = rows.map(function (r) {
+    return '<tr>' +
+      '<td style="padding:4px 16px 4px 0;"><strong>' + escapeHtml_(r.rep) + '</strong></td>' +
+      '<td style="padding:4px 16px 4px 0;">' + (r.avg != null ? escapeHtml_(formatMinutesLabel_(r.avg)) : '<i>no data</i>') + '</td>' +
+      '<td style="padding:4px 0;color:#666;">' + r.count + ' call(s)</td>' +
+      '</tr>';
+  }).join('');
+  var htmlBody = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Average measured call length by rep, this week (' + escapeHtml_(weekLabel) + '):</p>' +
+    '<table style="border-collapse:collapse;">' + htmlRows + '</table>' +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— This is an automated weekly report. This email ' +
     'was drafted by AI and sent automatically; reply to Kris or Tomás with any issues.</i></p>' +
     '</div>';
@@ -613,8 +697,10 @@ function buildAndMaybeSendScorecards_(forcePreview) {
   if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
   var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
+  var statsByRep = {};
   CONFIG.REPS.forEach(function (repCfg) {
     var stats = computeRepWeeklyStats_(rows, col, repCfg.name, week.start, week.end, tz);
+    statsByRep[repCfg.name] = stats;
     // Resolved here (not inside computeRepWeeklyStats_) so that function stays
     // a pure, unit-testable computation over already-fetched row values —
     // this is the one live Drive lookup in the whole pipeline, and only ever
@@ -647,6 +733,31 @@ function buildAndMaybeSendScorecards_(forcePreview) {
     appendScorecardHistoryRow_(repCfg.name, week, stats);
     log_('Sent weekly scorecard to ' + repCfg.email + ' (' + stats.weekCalls.length + ' call(s) this week).');
   });
+
+  // Tomás isn't in CONFIG.REPS (he doesn't get his own rep scorecard email —
+  // see CALL_LENGTH_COMPARISON_REPS_'s own comment) but does take real sales
+  // calls, so his call length needs its own computeRepWeeklyStats_ call here
+  // rather than being silently absent from the one report this ask is about.
+  statsByRep['Tomás'] = computeRepWeeklyStats_(rows, col, 'Tomás', week.start, week.end, tz);
+
+  var weekLabel = Utilities.formatDate(week.start, tz, 'dd/MM') + '–' +
+    Utilities.formatDate(new Date(week.end.getTime() - 1), tz, 'dd/MM/yyyy');
+  var comparisonEmail = buildCallLengthComparisonEmail_(statsByRep, weekLabel);
+  if (forcePreview || !WEEKLY_SCORECARD_CONFIG.ENABLED) {
+    log_('(preview) ' + CONFIG.KRIS_EMAIL + ',' + CONFIG.TOMAS_EMAIL + ' <- ' + comparisonEmail.subject + '\n' +
+      comparisonEmail.body + '\n');
+    return;
+  }
+  var comparisonSent = guardedSend_(CONFIG.KRIS_EMAIL, comparisonEmail.subject, comparisonEmail.body, {
+    cc: CONFIG.TOMAS_EMAIL,
+    name: 'Weekly Call Scorecard Bot',
+    htmlBody: comparisonEmail.htmlBody
+  }, 2); // Kris + Tomás
+  if (!comparisonSent) {
+    log_('Weekly call length comparison NOT sent (guardedSend_ refused).');
+    return;
+  }
+  log_('Sent weekly call length comparison to ' + CONFIG.KRIS_EMAIL + ', ' + CONFIG.TOMAS_EMAIL + '.');
 }
 
 // ---------------------------------------------------------------------------
@@ -666,7 +777,8 @@ var SCORECARD_HISTORY_SHEET_NAME = 'Scorecard History';
 var SCORECARD_HISTORY_HEADERS = [
   'Rep', 'Week Start', 'Week End', 'Calls This Week', 'Weekly Avg Score',
   'Rolling 4-Week Avg', 'Historic Avg (before this week)', 'Priority To Improve',
-  'Worst Call', 'Worst Call Score', 'Missing Outcome Disposition', 'Sent At'
+  'Worst Call', 'Worst Call Score', 'Missing Outcome Disposition', 'Sent At',
+  'Avg Call Length (Minutes)' // 07/09/2026, per Kris — see CALL_LENGTH_COMPARISON_REPS_'s own comment
 ];
 
 function getOrCreateScorecardHistorySheet_() {
@@ -723,7 +835,8 @@ function appendScorecardHistoryRow_(repName, week, stats) {
     stats.worstCall ? stats.worstCall.name : '',
     stats.worstCall ? stats.worstCall.score : '',
     stats.weekMissingOutcomeDisposition,
-    new Date()
+    new Date(),
+    stats.weekAvgCallLengthMinutes == null ? '' : stats.weekAvgCallLengthMinutes
   ]);
 }
 

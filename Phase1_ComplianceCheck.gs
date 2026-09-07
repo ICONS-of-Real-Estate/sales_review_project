@@ -1712,7 +1712,20 @@ var SALES_CALL_LOG_HEADERS = [
   // twice. Blank on rows scored before this column existed, same
   // backward-compatible "no signal" pattern as every column above —
   // run migrateAddPrimaryFailureModeColumn() once to backfill the header. ---
-  'GHL Review Synced'      // AM (checkbox)
+  'GHL Review Synced',     // AM (checkbox)
+  // --- 07/09/2026: per Kris, watching Tomás's calls run long — "seems to be
+  // the length of the calls. Tomas calls are longer than the others. We need
+  // to measure the call length and the average. That is a key indicator."
+  // Populated from the "[Call length: MM:SS]" line tools/transcribe_sean_
+  // calls.py's shared run_whisper_batch now stashes at the top of every
+  // transcript it saves (the actual measured video/audio duration, not the
+  // scheduled Calendar Event length) — see extractCallLengthMinutes_ and
+  // getCallLengthMinutesFromTranscriptFile_ (Phase2_CallScoring.gs). Blank on
+  // every row scored before this column existed, and on any transcript from
+  // a source that doesn't route through run_whisper_batch (Bens' Riverside
+  // legacy folder, historical backfills) — same "no signal, never a
+  // fabricated 0" convention as every other column added after the fact.
+  'Call Length (Minutes)'  // AN
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

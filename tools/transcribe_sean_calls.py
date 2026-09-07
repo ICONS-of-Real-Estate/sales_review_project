@@ -28,6 +28,7 @@ import datetime
 import io
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -101,7 +102,10 @@ def list_videos(drive, folder_id):
     scanned the same as the top folder. Each returned video dict carries its
     own "parent_folder_id" (where it actually lives) since that's where its
     transcript doc and lock file need to be created, which can differ from
-    the top-level folder_id callers pass in."""
+    the top-level folder_id callers pass in. Also carries "videoMediaMetadata"
+    (Drive's own duration_millis, when Drive has already computed it) as a
+    fallback source for call_length_line_ below, for whenever
+    probe_duration_seconds_ can't measure the downloaded file itself."""
     videos, existing_names = [], set()
     folders_to_scan = [folder_id]
     while folders_to_scan:
@@ -112,7 +116,7 @@ def list_videos(drive, folder_id):
                 drive.files()
                 .list(
                     q=f"'{current_folder_id}' in parents and trashed = false",
-                    fields="nextPageToken, files(id, name, mimeType, size)",
+                    fields="nextPageToken, files(id, name, mimeType, size, videoMediaMetadata)",
                     pageSize=200,
                     pageToken=page_token,
                 )
@@ -221,6 +225,66 @@ def format_duration_(seconds):
     if m:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+def probe_duration_seconds_(local_path, video_meta=None):
+    """Real elapsed seconds of a call recording, for Kris's ask (07/09/2026):
+    "seems to be the length of the calls. Tomas calls are longer than the
+    others. We need to measure the call length and the average -- that is a
+    key indicator." ffprobe (already a hard dependency of every Whisper
+    variant here, since Whisper itself needs ffmpeg to decode audio) reads
+    the actual downloaded file -- more reliable than Drive's own
+    videoMediaMetadata.durationMillis, which can be missing or stale right
+    after upload. Falls back to that Drive metadata (list_videos' own field,
+    passed in as video_meta) when ffprobe isn't available or the local file
+    is already gone (e.g. the "reuse transcript from an interrupted run"
+    resume path, which can skip the download entirely). Returns None, never
+    raises, on any failure -- a missing duration must never block a
+    transcription or look like a measured zero-length call."""
+    if local_path and os.path.exists(local_path):
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", local_path],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            return float(out.stdout.strip())
+        except Exception:
+            pass
+    if video_meta:
+        millis = (video_meta.get("videoMediaMetadata") or {}).get("durationMillis")
+        if millis:
+            try:
+                return float(millis) / 1000.0
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def with_call_length_line_(transcript, local_path, video_meta=None):
+    """Prepends call_length_line_'s output to transcript, unless it's already
+    there. Needed because the "reuse transcript from a previous, interrupted
+    run" resume path (run_whisper_batch/main, above) reads back a .txt file
+    that save_transcript_doc may have already stamped with this line before a
+    prior run's upload step failed -- without this guard, resuming that file
+    would stack a second "[Call length: ...]" line on top of the first."""
+    if transcript.startswith("[Call length:"):
+        return transcript
+    return call_length_line_(probe_duration_seconds_(local_path, video_meta)) + transcript
+
+
+def call_length_line_(seconds):
+    """A leading "[Call length: MM:SS]" line stashed at the very top of every
+    saved transcript doc -- the cheapest, already-available signal for actual
+    call length. Phase2_CallScoring.gs's getTranscriptText_/
+    getCallLengthMinutesFromTranscriptFile_ parse this back out (and strip it
+    before any judge prompt sees it), so it never reads as something someone
+    said on the call. Returns '' (no line at all) when duration is unknown --
+    a missing measurement must never look like a real "0:00" call."""
+    if not seconds or seconds <= 0:
+        return ""
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"[Call length: {minutes}:{secs:02d}]\n\n"
 
 
 def transcript_temp_path(video_id):
@@ -490,6 +554,8 @@ def run_whisper_batch(folders, transcribe_fn, title_fn=None, log_completed_fn=No
                     print(f"    transcribe: {format_duration_(time.time() - t0)}")
                     fresh = True
 
+                transcript = with_call_length_line_(transcript, local_path, video)
+
                 t0 = time.time()
                 link = save_transcript_doc(drive, video_folder_id, video["id"], title, transcript)
                 print(f"    upload: {format_duration_(time.time() - t0)}")
@@ -585,6 +651,8 @@ def main():
                     transcript = transcribe_with_gemini(client, local_path)
                     print(f"    transcribe: {format_duration_(time.time() - t0)}")
                     fresh = True
+
+                transcript = with_call_length_line_(transcript, local_path, video)
 
                 t0 = time.time()
                 link = save_transcript_doc(drive, video_folder_id, video["id"], title, transcript)

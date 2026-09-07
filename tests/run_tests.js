@@ -1061,6 +1061,57 @@ test('computeRepWeeklyStats_ counts this week\'s calls missing an Outcome Dispos
   assert.equal(stats.weekMissingOutcomeDisposition, 1);
 });
 
+test('computeRepWeeklyStats_ averages this week\'s measured call lengths, ignoring rows with no measured length (real ask, 07/09/2026: "Tomas calls are longer than the others — we need to measure the call length and the average")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const col = Object.assign({}, SCORECARD_COL, { 'Call Length (Minutes)': 13 });
+  const row = (name, date, score, callLength) => {
+    const r = scorecardRow(gas, { rep: 'Tomás', name, date, score });
+    r[12] = callLength; // index 12 = col['Call Length (Minutes)'] - 1
+    return r;
+  };
+  const rows = [
+    row('A', bizDate(gas, 2026, 8, 11), 4, 45),
+    row('B', bizDate(gas, 2026, 8, 12), 3, 55),
+    row('C', bizDate(gas, 2026, 8, 13), 5, '') // no measured length — blank, not 0
+  ];
+  const stats = gas.computeRepWeeklyStats_(rows, col, 'Tomás', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(stats.weekCallLengthCount, 2, 'the blank-length row must not count toward the measured total');
+  assert.equal(stats.weekAvgCallLengthMinutes, 50);
+});
+
+test('computeRepWeeklyStats_ reports weekAvgCallLengthMinutes as null (never 0) when no call this week has a measured length', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const weekStart = bizDate(gas, 2026, 8, 10);
+  const weekEnd = bizDate(gas, 2026, 8, 17);
+  const rows = [scorecardRow(gas, { rep: 'Sean', name: 'A', date: bizDate(gas, 2026, 8, 11), score: 4 })];
+  const stats = gas.computeRepWeeklyStats_(rows, SCORECARD_COL, 'Sean', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(stats.weekAvgCallLengthMinutes, null);
+  assert.equal(stats.weekCallLengthCount, 0);
+});
+
+test('formatMinutesLabel_ formats under an hour as "Xm" and an hour or more as "Xh Ym"', () => {
+  assert.equal(gas.formatMinutesLabel_(42), '42m');
+  assert.equal(gas.formatMinutesLabel_(65), '1h 5m');
+  assert.equal(gas.formatMinutesLabel_(120), '2h 0m');
+});
+
+test('buildCallLengthComparisonEmail_ lists every rep in CALL_LENGTH_COMPARISON_REPS_, including Tomás (not in CONFIG.REPS), with "no data" for a rep with nothing measured', () => {
+  const statsByRep = {
+    Bens: { weekAvgCallLengthMinutes: 20, weekCallLengthCount: 3 },
+    Joana: { weekAvgCallLengthMinutes: 30, weekCallLengthCount: 2 },
+    Sean: { weekAvgCallLengthMinutes: null, weekCallLengthCount: 0 },
+    'Tomás': { weekAvgCallLengthMinutes: 55, weekCallLengthCount: 4 }
+  };
+  const email = gas.buildCallLengthComparisonEmail_(statsByRep, '10/08–16/08/2026');
+  assert.ok(email.subject.indexOf('Call Length Comparison') !== -1);
+  assert.ok(email.body.indexOf('Bens: 20m (3 call(s)') !== -1);
+  assert.ok(email.body.indexOf('Tomás: 55m (4 call(s)') !== -1, 'Tomás must be included even though he is not in CONFIG.REPS');
+  assert.ok(email.body.indexOf('Sean: no measured call length yet this week') !== -1);
+  assert.ok(email.htmlBody.indexOf('<strong>Tom') !== -1);
+});
+
 test('computeRepWeeklyStats_ worstCall is null when the rep had no calls this week', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const weekStart = bizDate(gas, 2026, 8, 10);
@@ -1576,6 +1627,59 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
   assert.equal(cells['7:' + col['Rubric Version']], gas.RUBRIC_VERSION);
   assert.equal(cells['7:' + col['Flag: Delivery Effective']], false, '29/08/2026: one delivery gap must fail the overall Flag: Delivery Effective column');
   assert.equal(cells['7:' + col['Delivery Gaps']], 'reading and adapting to the lead\'s engagement');
+  assert.equal(cells['7:' + col['Call Length (Minutes)']], '', 'no callLengthMinutes argument given must write blank, never a fabricated 0');
+});
+
+test('writeScoreToRow_ writes the given callLengthMinutes into the Call Length (Minutes) column', () => {
+  const cells = {};
+  const fakeSheet = { getRange(row, col) { return { setValue(v) { cells[row + ':' + col] = v; return this; } }; } };
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const result = {
+    lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+    flags: { asked_for_close: true, objections_uncovered: false, objections_overcome: false },
+    delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+    manual_review_recommended: false, severity: 1, feedback_summary: 'x', primary_failure_mode: 'none'
+  };
+  gas.writeScoreToRow_(fakeSheet, 7, col, result, false, 'Prospect', 'shared', 42.5);
+  assert.equal(cells['7:' + col['Call Length (Minutes)']], 42.5);
+});
+
+test('extractCallLengthMinutes_ parses the leading "[Call length: MM:SS]" line tools/transcribe_sean_calls.py stashes at the top of a transcript', () => {
+  assert.equal(gas.extractCallLengthMinutes_('[Call length: 42:30]\n\nHey, thanks for hopping on...'), 42.5);
+  assert.equal(gas.extractCallLengthMinutes_('[Call length: 5:00]\n\nHi'), 5);
+});
+
+test('extractCallLengthMinutes_ returns null (never a fabricated 0) when the line is missing — an older transcript, or one from a source that never routed through run_whisper_batch', () => {
+  assert.equal(gas.extractCallLengthMinutes_('Hey, thanks for hopping on...'), null);
+  assert.equal(gas.extractCallLengthMinutes_(''), null);
+  assert.equal(gas.extractCallLengthMinutes_(undefined), null);
+});
+
+test('stripLeadingCallLengthLine_ removes only the leading call-length line, leaving the rest of the transcript untouched', () => {
+  const stripped = gas.stripLeadingCallLengthLine_('[Call length: 12:05]\n\nHey, thanks for hopping on the call today.');
+  assert.equal(stripped, 'Hey, thanks for hopping on the call today.');
+});
+
+test('stripLeadingCallLengthLine_ is a no-op on a transcript that never had the line (nothing to confuse it into stripping real content)', () => {
+  const text = 'Hey, thanks for hopping on the call today.';
+  assert.equal(gas.stripLeadingCallLengthLine_(text), text);
+});
+
+test('getTranscriptText_ strips the call-length line before returning transcript text, so it can never leak into a judge prompt as something someone said on the call', () => {
+  const fakeFile = {
+    getMimeType: () => 'text/plain',
+    getBlob: () => ({ getDataAsString: () => '[Call length: 30:00]\n\nReal transcript content here.' })
+  };
+  assert.equal(gas.getTranscriptText_(fakeFile), 'Real transcript content here.');
+});
+
+test('getCallLengthMinutesFromTranscriptFile_ reads the same file\'s raw text independently of getTranscriptText_, so the number survives even though getTranscriptText_ strips it', () => {
+  const fakeFile = {
+    getMimeType: () => 'text/plain',
+    getBlob: () => ({ getDataAsString: () => '[Call length: 18:15]\n\nReal transcript content here.' })
+  };
+  assert.equal(gas.getCallLengthMinutesFromTranscriptFile_(fakeFile), 18.3);
 });
 
 // --- Task: frozen regression set / drift detection (25/08/2026) ---
