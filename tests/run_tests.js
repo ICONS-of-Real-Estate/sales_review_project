@@ -6485,6 +6485,10 @@ test('STANDING_AUTOMATION_HANDLERS_ includes runPitchGuideReview (Phase 18) and 
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runSeanEscalationReport') !== -1);
 });
 
+test('STANDING_AUTOMATION_HANDLERS_ includes runSeanHandoffDetection (Phase 17) -- same sweep-as-orphan risk as Phase 18/19 above', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runSeanHandoffDetection') !== -1);
+});
+
 // ---------------------------------------------------------------------------
 // callKimiJudge_ rename fallback + LLM Cost Log (05/09/2026, external review:
 // "LITELLM_PROXY_URL pointing at api.moonshot.ai... will burn someone
@@ -8660,6 +8664,266 @@ test('getOrCreateSeanFollowUpTrackerSheet_ creates the tab with frozen bold head
     assert.deepEqual(created, ['Sean Follow-Up Tracker'], 'must only insert the sheet once');
   } finally {
     gas.SpreadsheetApp = originalSpreadsheetApp;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase17 Cadence 1 handoff detection — Tomás's confirmed answer (07/09/2026):
+// "Joana adds Sean to the thread and updates SPAM - Sean. The subject is the
+// same of the ongoing email exchange and Sean can see the thread." Detection
+// watches Joana's own mailbox (label is per-mailbox) for that label, reusing
+// the same Gmail service-account plumbing Phase4/Phase8 already have live.
+// ---------------------------------------------------------------------------
+
+test('findGmailLabelId_ finds a label by exact name, case-sensitive as Gmail returns it', () => {
+  const originalGmailApiGet = gas.gmailApiGet_;
+  gas.gmailApiGet_ = (token, path) => {
+    assert.equal(path, '/labels');
+    return { labels: [{ id: 'Label_1', name: 'Dead' }, { id: 'Label_2', name: 'SPAM - Sean' }] };
+  };
+  try {
+    assert.equal(gas.findGmailLabelId_('token', 'SPAM - Sean'), 'Label_2');
+    assert.equal(gas.findGmailLabelId_('token', 'spam - sean'), null, 'case must match exactly, like Gmail\'s own label names');
+    assert.equal(gas.findGmailLabelId_('token', 'Does Not Exist'), null);
+  } finally {
+    gas.gmailApiGet_ = originalGmailApiGet;
+  }
+});
+
+test('listThreadIdsByLabelId_ paginates across nextPageToken, same as listInboxThreadIds_', () => {
+  const originalGmailApiGet = gas.gmailApiGet_;
+  const pathsSeen = [];
+  gas.gmailApiGet_ = (token, path) => {
+    pathsSeen.push(path);
+    if (path.indexOf('pageToken') === -1) return { threads: [{ id: 'a' }, { id: 'b' }], nextPageToken: 'p2' };
+    return { threads: [{ id: 'c' }] };
+  };
+  try {
+    const ids = gas.listThreadIdsByLabelId_('token', 'Label_2');
+    assert.deepEqual(Array.from(ids), ['a', 'b', 'c']);
+    assert.equal(pathsSeen.length, 2);
+    assert.ok(pathsSeen[0].indexOf('labelIds=Label_2') !== -1);
+  } finally {
+    gas.gmailApiGet_ = originalGmailApiGet;
+  }
+});
+
+test('extractLeadEmailFromParticipants_ returns the one external (non-iconsofrealestate.com) address across From/To/Cc', () => {
+  const lead = gas.extractLeadEmailFromParticipants_(
+    'Some Lead <lead@example.com>',
+    'Sean <sean@iconsofrealestate.com>, Joana <joana@iconsofrealestate.com>',
+    ''
+  );
+  assert.equal(lead, 'lead@example.com');
+});
+
+test('extractLeadEmailFromParticipants_ returns null when every participant is internal (never guess a fake lead)', () => {
+  const lead = gas.extractLeadEmailFromParticipants_(
+    'Joana <joana@iconsofrealestate.com>', 'Sean <sean@iconsofrealestate.com>', ''
+  );
+  assert.equal(lead, null);
+});
+
+test('fetchSeanHandoffThreadInfo_ builds threadId/leadEmail/subject/anchorDate from the thread\'s last message, format=metadata only', () => {
+  const originalGmailApiGet = gas.gmailApiGet_;
+  let pathSeen = null;
+  gas.gmailApiGet_ = (token, path) => {
+    pathSeen = path;
+    return {
+      messages: [{
+        internalDate: '1757260800000',
+        payload: { headers: [
+          { name: 'From', value: 'Lead Person <lead@example.com>' },
+          { name: 'To', value: 'sean@iconsofrealestate.com, joana@iconsofrealestate.com' },
+          { name: 'Subject', value: 'Re: your podcast strategy call' }
+        ] }
+      }]
+    };
+  };
+  try {
+    const info = gas.fetchSeanHandoffThreadInfo_('token', 'thread-abc');
+    assert.equal(info.threadId, 'thread-abc');
+    assert.equal(info.leadEmail, 'lead@example.com');
+    assert.equal(info.subject, 'Re: your podcast strategy call');
+    assert.equal(info.anchorDate.getTime(), 1757260800000);
+    assert.ok(pathSeen.indexOf('format=metadata') !== -1, 'must never fetch the full message body');
+  } finally {
+    gas.gmailApiGet_ = originalGmailApiGet;
+  }
+});
+
+test('fetchSeanHandoffThreadInfo_ returns null (never throws) for a thread with no external participant', () => {
+  const originalGmailApiGet = gas.gmailApiGet_;
+  gas.gmailApiGet_ = () => ({
+    messages: [{
+      internalDate: '1757260800000',
+      payload: { headers: [{ name: 'From', value: 'joana@iconsofrealestate.com' }, { name: 'To', value: 'sean@iconsofrealestate.com' }] }
+    }]
+  });
+  try {
+    assert.equal(gas.fetchSeanHandoffThreadInfo_('token', 'thread-internal'), null);
+  } finally {
+    gas.gmailApiGet_ = originalGmailApiGet;
+  }
+});
+
+test('getTrackedThreadIds_ reads the Thread ID column, empty array when the tracker has no data rows yet', () => {
+  const col = gas.SEAN_FOLLOWUP_TRACKER_HEADERS.indexOf('Thread ID') + 1;
+  const emptySheet = { getLastRow: () => 1 };
+  assert.deepEqual(Array.from(gas.getTrackedThreadIds_(emptySheet)), []);
+
+  const dataSheet = {
+    getLastRow: () => 3,
+    getRange: (row, c, numRows, numCols) => {
+      assert.equal(c, col);
+      return { getValues: () => [['thread-1'], ['thread-2']] };
+    }
+  };
+  assert.deepEqual(Array.from(gas.getTrackedThreadIds_(dataSheet)), ['thread-1', 'thread-2']);
+});
+
+test('collectNewSeanHandoffThreads_ only returns threads NOT already tracked', () => {
+  const originalGetToken = gas.getGmailAccessTokenForUser_;
+  const originalGmailApiGet = gas.gmailApiGet_;
+  const originalGetSheet = gas.getOrCreateSeanFollowUpTrackerSheet_;
+  gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+  gas.getOrCreateSeanFollowUpTrackerSheet_ = () => ({
+    getLastRow: () => 2,
+    getRange: () => ({ getValues: () => [['thread-already-tracked']] })
+  });
+  gas.gmailApiGet_ = (token, path) => {
+    if (path === '/labels') return { labels: [{ id: 'Label_2', name: 'SPAM - Sean' }] };
+    if (path.indexOf('/threads?labelIds=') === 0) {
+      return { threads: [{ id: 'thread-already-tracked' }, { id: 'thread-new' }] };
+    }
+    // metadata fetch for thread-new
+    return {
+      messages: [{
+        internalDate: '1757260800000',
+        payload: { headers: [
+          { name: 'From', value: 'Lead Person <lead@example.com>' },
+          { name: 'To', value: 'sean@iconsofrealestate.com' },
+          { name: 'Subject', value: 'Re: something' }
+        ] }
+      }]
+    };
+  };
+  try {
+    const found = gas.collectNewSeanHandoffThreads_();
+    assert.equal(found.length, 1, 'the already-tracked thread must not be re-detected');
+    assert.equal(found[0].threadId, 'thread-new');
+  } finally {
+    gas.getGmailAccessTokenForUser_ = originalGetToken;
+    gas.gmailApiGet_ = originalGmailApiGet;
+    gas.getOrCreateSeanFollowUpTrackerSheet_ = originalGetSheet;
+  }
+});
+
+test('collectNewSeanHandoffThreads_ returns an empty array (never throws) when the handoff label does not exist yet in Joana\'s mailbox', () => {
+  const originalGetToken = gas.getGmailAccessTokenForUser_;
+  const originalGmailApiGet = gas.gmailApiGet_;
+  const originalGetSheet = gas.getOrCreateSeanFollowUpTrackerSheet_;
+  gas.getGmailAccessTokenForUser_ = () => 'fake-token';
+  gas.getOrCreateSeanFollowUpTrackerSheet_ = () => ({ getLastRow: () => 1 });
+  gas.gmailApiGet_ = (token, path) => {
+    assert.equal(path, '/labels');
+    return { labels: [{ id: 'Label_1', name: 'Dead' }] }; // no "SPAM - Sean" label
+  };
+  try {
+    assert.deepEqual(Array.from(gas.collectNewSeanHandoffThreads_()), []);
+  } finally {
+    gas.getGmailAccessTokenForUser_ = originalGetToken;
+    gas.gmailApiGet_ = originalGmailApiGet;
+    gas.getOrCreateSeanFollowUpTrackerSheet_ = originalGetSheet;
+  }
+});
+
+test('appendSeanHandoffTrackerRow_ writes Cadence=new_lead, Stage=handed_off, and the real anchor date', () => {
+  const rows = [];
+  const fakeSheet = { appendRow: (r) => rows.push(r) };
+  const col = {};
+  gas.SEAN_FOLLOWUP_TRACKER_HEADERS.forEach((h, i) => { col[h] = i; });
+  const anchor = new Date(2026, 8, 7, 14, 30, 0);
+  gas.appendSeanHandoffTrackerRow_(fakeSheet, { threadId: 'thread-new', leadEmail: 'lead@example.com', subject: 'Re: something', anchorDate: anchor });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row[col['Thread ID']], 'thread-new');
+  assert.equal(row[col['Lead Email']], 'lead@example.com');
+  assert.equal(row[col['Cadence']], 'new_lead');
+  assert.equal(row[col['Stage']], 'handed_off');
+  assert.equal(row[col['Anchor Date']], anchor);
+});
+
+test('buildAndMaybeRecordSeanHandoffs_ in dry-run logs but never writes to the tracker sheet', () => {
+  const originalCollect = gas.collectNewSeanHandoffThreads_;
+  const originalGetSheet = gas.getOrCreateSeanFollowUpTrackerSheet_;
+  gas.collectNewSeanHandoffThreads_ = () => [{ threadId: 't1', leadEmail: 'lead@example.com', subject: 'x', anchorDate: new Date() }];
+  gas.getOrCreateSeanFollowUpTrackerSheet_ = () => { throw new Error('must not touch the sheet in dry-run'); };
+  try {
+    const count = gas.buildAndMaybeRecordSeanHandoffs_(true);
+    assert.equal(count, 1);
+  } finally {
+    gas.collectNewSeanHandoffThreads_ = originalCollect;
+    gas.getOrCreateSeanFollowUpTrackerSheet_ = originalGetSheet;
+  }
+});
+
+test('buildAndMaybeRecordSeanHandoffs_ live path appends one row per new handoff', () => {
+  const originalCollect = gas.collectNewSeanHandoffThreads_;
+  const originalGetSheet = gas.getOrCreateSeanFollowUpTrackerSheet_;
+  const rows = [];
+  gas.collectNewSeanHandoffThreads_ = () => [
+    { threadId: 't1', leadEmail: 'a@example.com', subject: 'x', anchorDate: new Date() },
+    { threadId: 't2', leadEmail: 'b@example.com', subject: 'y', anchorDate: new Date() }
+  ];
+  gas.getOrCreateSeanFollowUpTrackerSheet_ = () => ({ appendRow: (r) => rows.push(r) });
+  try {
+    const count = gas.buildAndMaybeRecordSeanHandoffs_(false);
+    assert.equal(count, 2);
+    assert.equal(rows.length, 2);
+  } finally {
+    gas.collectNewSeanHandoffThreads_ = originalCollect;
+    gas.getOrCreateSeanFollowUpTrackerSheet_ = originalGetSheet;
+  }
+});
+
+test('runSeanHandoffDetection is gated by DETECTION_ENABLED specifically, not the full pipeline ENABLED flag', () => {
+  const originalConfig = gas.SEAN_FOLLOWUP_CONFIG;
+  const originalCollect = gas.collectNewSeanHandoffThreads_;
+  gas.collectNewSeanHandoffThreads_ = () => { throw new Error('must not run when DETECTION_ENABLED is false'); };
+  gas.SEAN_FOLLOWUP_CONFIG = Object.assign({}, originalConfig, { ENABLED: true, DETECTION_ENABLED: false });
+  try {
+    const count = gas.runSeanHandoffDetection();
+    assert.equal(count, 0);
+  } finally {
+    gas.SEAN_FOLLOWUP_CONFIG = originalConfig;
+    gas.collectNewSeanHandoffThreads_ = originalCollect;
+  }
+});
+
+test('installSeanHandoffDetectionTrigger removes any existing runSeanHandoffDetection trigger before creating the new every-2-hours one', () => {
+  const deleted = [];
+  let createdConfig = null;
+  const fakeTriggerBuilder = {
+    timeBased: () => fakeTriggerBuilder,
+    everyHours: (h) => { createdConfig = { everyHours: h }; return fakeTriggerBuilder; },
+    create: () => { createdConfig.created = true; }
+  };
+  const oldTrigger = { getHandlerFunction: () => 'runSeanHandoffDetection' };
+  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = {
+    getProjectTriggers: () => [oldTrigger, unrelatedTrigger],
+    deleteTrigger: (t) => deleted.push(t),
+    newTrigger: () => fakeTriggerBuilder
+  };
+  try {
+    gas.installSeanHandoffDetectionTrigger();
+    assert.deepEqual(deleted, [oldTrigger]);
+    assert.equal(createdConfig.everyHours, 2);
+    assert.equal(createdConfig.created, true);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
   }
 });
 

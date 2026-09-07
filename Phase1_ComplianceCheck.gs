@@ -3892,7 +3892,8 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runGhlNoteSync_',                                                       // Phase 12
   'runCalibrationFeedback',                                                // Phase 16
   'runPitchGuideReview',                                                   // Phase 18
-  'runSeanEscalationReport'                                                // Phase 19
+  'runSeanEscalationReport',                                               // Phase 19
+  'runSeanHandoffDetection'                                                // Phase 17
 ];
 
 /**
@@ -4088,6 +4089,17 @@ function installAllReadyTriggers_() {
   } else {
     skipped.push('Phase 19 (Sean escalation report) — SEAN_ESCALATION_REPORT_CONFIG.ENABLED is false. Run ' +
       'previewSeanEscalationReport() first, confirm it looks right, then flip ENABLED and re-run this.');
+  }
+
+  // Detection only (DETECTION_ENABLED) — separate from SEAN_FOLLOWUP_CONFIG.ENABLED,
+  // which still gates the full draft-composing pipeline (blocked on gmail.compose
+  // propagation — see Phase17_SeanFollowUpAutomation.gs's own header).
+  if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED) {
+    installSeanHandoffDetectionTrigger();
+    installed.push('Phase 17: Sean handoff detection (tracking only, drafting still blocked)');
+  } else {
+    skipped.push('Phase 17 (Sean handoff detection) — SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED is false. Run ' +
+      'previewSeanHandoffDetection() first, confirm it looks right, then flip DETECTION_ENABLED and re-run this.');
   }
 
   // RUN_TAG reset here on purpose: every install*() call above sets its own
