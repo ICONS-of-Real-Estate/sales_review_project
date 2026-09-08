@@ -174,6 +174,9 @@ var PHASE2_CONFIG = {
   // Best-effort default when a legacy filename gives no way to tell QC vs
   // Sales Call vs Discovery apart. Logged loudly per row so a human can
   // correct it in the sheet rather than trusting a silent guess.
+  // NOTE: this is Bens' backfill's default and stays 'QC' — his QC rows
+  // really are QCs. Joana's own default is JOANA_DEFAULT_CALL_TYPE_ below,
+  // which is deliberately different; see scoreJoanaTranscripts's header.
   LEGACY_DEFAULT_CALL_TYPE: 'QC'
 };
 
@@ -1213,6 +1216,105 @@ function scoreNewlyLoggedCalls_() {
 // on — not fixed here, only this file's own constants, since that phase
 // hasn't shown the same evidence yet). Retuned with a real 5-minute margin
 // under the 30-minute Workspace ceiling, not the false 6-minute one.
+/**
+ * Joana's Call Type default — see scoreJoanaTranscripts's header for the full
+ * reasoning. Her leads arrive as ICONS 100 podcast guests, so the call she
+ * runs is the sales call, and her transcript-folder scoring already applies
+ * the shared (sales) rubric regardless of what the label said.
+ */
+var JOANA_DEFAULT_CALL_TYPE_ = 'Sales Call';
+
+/**
+ * Pure. Which of Joana's existing Sales Call Log rows were mislabelled 'QC'
+ * by the pre-08/09/2026 default, and therefore both (a) misreport her work
+ * and (b) get re-dispatched onto the wrong rubric by any future rescore.
+ *
+ * Deliberately narrow: only her rows, only ones currently labelled 'QC', and
+ * only ones this backfill path actually produced (match_method
+ * 'fallback_heuristic' — the marker scoreJoanaTranscripts writes). A QC she
+ * genuinely ran that arrived through some other path is left alone, because
+ * this cannot tell a real QC from a mislabelled one and must not guess on
+ * rows it didn't create.
+ *
+ * Takes already-read rows so it's testable without a sheet.
+ */
+function joanaMislabelledCallTypeRows_(rows, col, weekBounds) {
+  var out = [];
+  (rows || []).forEach(function (row, i) {
+    if (String(row[col['Rep'] - 1] || '').trim() !== 'Joana') return;
+    if (String(row[col['Call Type'] - 1] || '').trim() !== 'QC') return;
+    if (String(row[col['Match Method'] - 1] || '').trim() !== 'fallback_heuristic') return;
+    if (weekBounds) {
+      var d = row[col['Call Date'] - 1];
+      if (!(d instanceof Date) || d < weekBounds.start || d >= weekBounds.end) return;
+    }
+    out.push({
+      rowIndex: i + 2,
+      prospectName: row[col['Prospect Name'] - 1],
+      callDate: row[col['Call Date'] - 1],
+      existingScore: row[col['Call Quality Score'] - 1],
+      rubricVersion: row[col['Rubric Version'] - 1]
+    });
+  });
+  return out;
+}
+
+/**
+ * Relabels those rows to 'Sales Call' and CLEARS their Rubric Version, which
+ * is what makes rescoreLastWeekCalls()/rescoreAllCalls() pick them up again —
+ * a relabel alone would leave the wrong-rubric score sitting in the sheet
+ * looking current. Preview-first like every other write in this project.
+ */
+function backfillJoanaCallTypes_(dryRun, lastWeekOnly) {
+  RUN_TAG = 'backfillJoanaCallTypes_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  var rows = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var week = lastWeekOnly ? getWeekBounds_(new Date(), CONFIG.BUSINESS_TIMEZONE) : null;
+  var hits = joanaMislabelledCallTypeRows_(rows, col, week);
+
+  log_((dryRun ? 'previewJoanaCallTypeBackfill' : 'backfillJoanaCallTypes') +
+    (lastWeekOnly ? ' [last week only]' : ' [all history]') + ': ' + hits.length +
+    ' row(s) currently labelled "QC" that this backfill created and should be "Sales Call".' +
+    (dryRun ? ' Dry run — nothing written.' : ''));
+
+  hits.forEach(function (h) {
+    log_('  row ' + h.rowIndex + ' "' + h.prospectName + '" ' +
+      (h.callDate instanceof Date ? Utilities.formatDate(h.callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') : '(no date)') +
+      ' score=' + h.existingScore + ' rubric=' + (h.rubricVersion || '(none)') +
+      (dryRun ? ' — WOULD relabel to "Sales Call" and clear Rubric Version so it gets rescored.'
+              : ' — relabelled to "Sales Call", Rubric Version cleared for rescore.'));
+    if (dryRun) return;
+    sheet.getRange(h.rowIndex, col['Call Type']).setValue('Sales Call');
+    sheet.getRange(h.rowIndex, col['Rubric Version']).setValue('');
+  });
+
+  if (!dryRun && hits.length) {
+    log_('backfillJoanaCallTypes_: done. Now run rescoreLastWeekCalls() (or rescoreAllCalls()) — these rows ' +
+      'are eligible again and will be scored under the shared/sales rubric this time, not the QC one.');
+  }
+  return hits.length;
+}
+
+/** Dry run — lists which of Joana's rows are mislabelled, writes nothing. Run this first. */
+function previewJoanaCallTypeBackfill() {
+  return backfillJoanaCallTypes_(true, /*lastWeekOnly=*/false);
+}
+
+/** Live relabel across all of Joana's history. */
+function backfillJoanaCallTypes() {
+  return backfillJoanaCallTypes_(false, /*lastWeekOnly=*/false);
+}
+
+/** Live relabel scoped to last week only — the window the training picker reads. */
+function backfillJoanaCallTypesLastWeek() {
+  return backfillJoanaCallTypes_(false, /*lastWeekOnly=*/true);
+}
+
 var RESCORE_ALL_TIME_BUDGET_MS_ = 20 * 60 * 1000;
 var RESCORE_HARD_EXECUTION_CEILING_MS_ = 25 * 60 * 1000; // 5-minute margin under the real ~30-minute Workspace ceiling
 // A single row can retry once on a transport failure (MAX_PARSE_RETRIES),
@@ -3575,11 +3677,36 @@ function previewJoanaTranscripts() {
  * PHASE2_CONFIG.JOANA_FOLDERS against the shared rubric and appends one
  * "Sales Call Log" row per call — same appendRow shape and same
  * fallback_heuristic / forced-manual-review policy as scoreLegacyTranscriptFolder,
- * since these too predate the Calendar-Event-ID-in-title convention. Her one
- * folder mixes QC and Sales Calls with no way to tell them apart by folder
- * alone (unlike Sean's two-folder split), so Call Type falls back to
- * PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE — same best-effort-guess-confirm
- * policy as the Bens backfill.
+ * since these too predate the Calendar-Event-ID-in-title convention.
+ *
+ * CALL TYPE — fixed 08/09/2026 after the Joana training call. This used to
+ * write PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE ('QC') because her one folder
+ * mixes QC and Sales Calls with no way to tell them apart by folder alone
+ * (unlike Sean's two-folder split). Two things were wrong with that:
+ *
+ *   1. It contradicted this function's own scoring. Look below: it calls
+ *      scoreTranscript_ — the SHARED (sales) rubric — unconditionally. So
+ *      every row was scored as a sales call and then labelled a QC.
+ *   2. The label, not the original scoring, is what rescoreAllCalls_ later
+ *      re-dispatches on (rubricVariantForNewScore_ checks Call Type BEFORE
+ *      rep). So a rescore silently moved these rows onto the QC rubric —
+ *      which grades "did you book the Sales Call" and explicitly ignores
+ *      framework — and their scores moved with it. Live on 08/09/2026 a
+ *      rescore took Stacie Staub 5 -> 2 and Lindsey Graves 4 -> 2; Joana had
+ *      in fact CLOSED Stacie, and Lindsey's booking did happen on the call.
+ *
+ * Joana on that call: "it was an ICONS100 lead, so then it was a sales call
+ * for me" — her leads arrive as podcast guests, so the call she runs is the
+ * sales call. Tomás: "all of the calls that Joana has here are graded as a
+ * QC. So that's wrong."
+ *
+ * So the label now matches the rubric actually being applied. She DOES also
+ * take genuine QCs (spam-list leads booking through her own link), and this
+ * folder can't tell those apart — that case is logged loudly per row below
+ * for manual correction, the same best-effort-guess-confirm policy as
+ * before, just now guessing the way her actual mix runs instead of against
+ * it. PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE is deliberately left alone:
+ * Bens' legacy backfill still uses it and his QC rows really are QCs.
  */
 function scoreJoanaTranscripts() {
   RUN_TAG = 'scoreJoanaTranscripts';
@@ -3629,7 +3756,7 @@ function scoreJoanaTranscripts() {
           var ctx = {
             rep: 'Joana',
             prospectName: prospectName,
-            callType: PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE,
+            callType: JOANA_DEFAULT_CALL_TYPE_,
             source: '',
             callDate: dateStr,
             transcriptText: getTranscriptText_(file)
@@ -3656,7 +3783,7 @@ function scoreJoanaTranscripts() {
             '',                               // Source — fill from Joana's tracker
             callDate,                        // Call Date
             'Joana',                          // Rep
-            PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, // Call Type (best-effort guess — confirm)
+            JOANA_DEFAULT_CALL_TYPE_,         // Call Type — see this function's header
             true,                             // Outcome Logged
             '',                               // Outcome Disposition — fill from Joana's tracker
             '',                               // Calendar Event ID — none (predates convention)
@@ -5230,7 +5357,78 @@ function rubricChangedSinceFreeze_(frozenVersion, currentVersion) {
 }
 
 /** Dispatches to the right judge function for a rubric variant string (resolveRubricVariantForRow_'s output). */
+/**
+ * Pure. True when there is no real call in this transcript to grade —
+ * a recording that never captured anything, not a rep who did nothing.
+ *
+ * Kris and Tomás, on the 08/09/2026 training call, looking at Frank Pirrone
+ * scored 1 out of 5 off a transcript that is almost entirely blank audio:
+ *   Tomás: "the worst call, it was graded One, and then you go to the
+ *           transcript, and it's just this... this shouldn't be a grade,
+ *           right?"
+ *   Kris:  "Upload the recording."
+ * A 1/5 says the rep ran a terrible call. The truth was that the recording
+ * failed, and the fix is an upload, not coaching — but it went to Tomás as
+ * the single worst call of Sean's week and the top item in his session.
+ *
+ * Three ways a transcript is unusable, all of them real and already
+ * documented in this project (SYSTEM_OVERVIEW.md's transcription-pipeline
+ * failure modes, Tomas_Playbook.md's two dead recordings):
+ *   - empty or whitespace only
+ *   - [BLANK_AUDIO] markers with essentially nothing else — silence
+ *   - so few words that no rubric question could honestly be answered
+ *
+ * The word floor is deliberately low. This must only ever catch a recording
+ * that plainly failed; a real call that was genuinely short and bad should
+ * still be scored and coached on.
+ */
+var UNUSABLE_TRANSCRIPT_MIN_WORDS_ = 40;
+
+function transcriptIsUnusableForScoring_(text) {
+  var t = String(text || '').trim();
+  if (!t) return true;
+  // Strip the silence markers, then judge what actually remains.
+  var spoken = t.replace(/\[BLANK_AUDIO\]/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (!spoken) return true;
+  return spoken.split(' ').filter(Boolean).length < UNUSABLE_TRANSCRIPT_MIN_WORDS_;
+}
+
+/**
+ * What gets written instead of a score when the recording failed. Shaped
+ * like a judge result so every existing caller keeps working, but with:
+ *   - a BLANK call_quality_score, not a number. Blank means "not scored"
+ *     everywhere else in this system (trainingElementFlagsForRow_'s tri-state
+ *     rule, rescoreAllCalls_'s own eligibility check), so nothing downstream
+ *     reads it as a bad call.
+ *   - no flags at all, so it can never be counted as a failed element.
+ *   - a feedback summary carrying "[BLANK_AUDIO]", which the EXISTING
+ *     callScoreIsUnusableForStats_ (Phase5_WeeklyScorecard.gs) already
+ *     excludes from every stat.
+ */
+function unusableTranscriptResult_() {
+  return {
+    reasoning: 'No usable transcript — the recording captured little or no audio.',
+    lead_quality: { verdict: 'good_to_book', justification: 'Unscored — no usable recording.' },
+    call_quality_score: '',
+    flags: {},
+    delivery: {},
+    primary_failure_mode: 'none',
+    manual_review_recommended: true,
+    severity: 3,
+    feedback_summary: 'RECORDING UNUSABLE — the transcript is empty or [BLANK_AUDIO]. Nothing was graded ' +
+      'and this is NOT a reflection of the rep. Re-upload the recording if it exists, then re-score.',
+    _unusableTranscript: true
+  };
+}
+
 function scoreTranscriptByVariant_(variant, ctx) {
+  // Checked once, here, rather than in each of the six variants — this is the
+  // single point every scoring path already funnels through.
+  if (transcriptIsUnusableForScoring_(ctx && ctx.transcriptText)) {
+    log_('    ↳ SKIPPED (no model call): "' + (ctx && ctx.prospectName) + '" has no usable transcript — ' +
+      'empty or blank audio. Writing "recording unusable" instead of a score.');
+    return unusableTranscriptResult_();
+  }
   switch (variant) {
     case 'sean': return scoreSeanTranscript_(ctx);
     case 'bens': return scoreBensTranscript_(ctx);

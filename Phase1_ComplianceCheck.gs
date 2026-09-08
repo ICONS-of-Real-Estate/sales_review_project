@@ -3804,6 +3804,19 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
       var callDate = row[col['Call Date'] - 1];
       if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
       var judged = trainingElementFlagsForRow_(row, col);
+      var feedbackText = String(row[col['AI Feedback Summary'] - 1] || '').trim();
+      // A row whose SCORE is fake — a parse-failure sentinel, or a judge that
+      // graded silence — must never become a coaching case. Its sentinel
+      // writes every flag false, so without this it ranks as a genuine
+      // failure on every element at once and wins the week's focus outright.
+      // That is exactly how Frank Pirrone's blank-audio recording became the
+      // single worst call of Sean's week (Tomás, 08/09/2026: "you go to the
+      // transcript, and it's just this... this shouldn't be a grade").
+      // Phase2's transcriptIsUnusableForScoring_ now stops NEW rows like this
+      // being created at all; this handles the ones already in the sheet.
+      // Reuses Phase5's existing definition rather than inventing a second
+      // one that could drift from it.
+      var scoreIsFake = callScoreIsUnusableForStats_(feedbackText);
       // Kris's ask (02/09/2026), same as sendRandomCalibrationDigest_'s own
       // fix (29/08/2026): "if you want calls reviewed, add the links" —
       // straight to the call's Transcript URL (the thing being judged) and
@@ -3812,11 +3825,15 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
         prospectName: row[col['Prospect Name'] - 1],
         callDate: Utilities.formatDate(callDate, tz, 'dd/MM/yyyy'),
         score: row[col['Call Quality Score'] - 1],
-        feedback: String(row[col['AI Feedback Summary'] - 1] || '').trim(),
+        feedback: feedbackText,
         transcriptUrl: String(row[col['Transcript URL'] - 1] || '').trim(),
         rowLink: salesCallLogRowLink_(logSheet, i + 2),
-        flags: judged.flags,
-        gaps: judged.gaps
+        // Blanked, not dropped: the call still gets LISTED for Tomás (he
+        // should know a recording failed), it just can't be graded on or
+        // picked as the thing to train.
+        flags: scoreIsFake ? {} : judged.flags,
+        gaps: scoreIsFake ? {} : judged.gaps,
+        scoreIsUnusable: scoreIsFake
       });
     });
 
@@ -4162,6 +4179,9 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
       '<p style="margin:0 0 8px;font-size:15px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
       '</strong> (' + escapeHtml_(c.callDate) + '), score ' +
       '<strong style="color:' + dailyPracticeScoreColor_(c.score) + ';">' + escapeHtml_(String(c.score)) + '</strong></p>' +
+      (c.scoreIsUnusable ? '<p style="margin:0 0 10px;padding:6px 10px;background:#fdf8e8;border-radius:4px;' +
+        'font-size:13px;color:#8a6d1f;"><strong>&#9888; No usable recording</strong> — nothing was graded on ' +
+        'this call, and its score is not a reflection of the rep. Re-upload the recording if it exists.</p>' : '') +
       (gapHtml ? '<p style="margin:0 0 10px;padding:6px 10px;background:#fdeceb;border-radius:4px;' +
         'font-size:13px;color:#c0392b;"><strong>&#9888; Missing:</strong> ' + gapHtml + '</p>' : '') +
       playbookFeedbackHtml_(c.feedback) +

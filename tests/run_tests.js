@@ -77,6 +77,23 @@ function realFormatDate(date, tz, pattern) {
 
 const gas = loadGasProject(path.join(__dirname, '..'));
 
+// A transcript fixture long enough to be a REAL call, not a failed recording.
+// Phase2's transcriptIsUnusableForScoring_ (added 08/09/2026) refuses to send
+// an empty/[BLANK_AUDIO]/near-empty transcript to the model at all, so the old
+// two-word 'transcript text' fixture would now be skipped as a dead recording
+// rather than scored — which is the guard working, not a bug.
+const FAKE_TRANSCRIPT_ = [
+  'Rep: Thanks for jumping on, appreciate the time today. Before I get into anything,',
+  'tell me a bit about how your business is running right now.',
+  'Prospect: Sure. I closed about thirty transactions last year, mostly referral, and',
+  'I am trying to get more consistent lead flow without paying for portal leads.',
+  'Rep: Got it. And what have you already tried on that front?',
+  'Prospect: A bit of social, some door knocking, nothing that really stuck.',
+  'Rep: That makes sense. Let me walk you through how we approach that, and then we',
+  'can talk about whether it fits. Does that work?',
+  'Prospect: Yes, go ahead.'
+].join(' ');
+
 test('idsEqual_ treats a bare ID and its @google.com-suffixed form as equal', () => {
   assert.equal(gas.idsEqual_('abc123', 'abc123@google.com'), true);
   assert.equal(gas.idsEqual_('abc123', 'xyz789'), false);
@@ -1824,12 +1841,127 @@ test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge
   gas.scoreTomasTranscript_ = (ctx) => { calls.push('tomas'); return 'tomas-result'; };
   gas.scoreQcTranscript_ = (ctx) => { calls.push('qc'); return 'qc-result'; };
 
-  assert.equal(gas.scoreTranscriptByVariant_('sean', {}), 'sean-result');
-  assert.equal(gas.scoreTranscriptByVariant_('bens', {}), 'bens-result');
-  assert.equal(gas.scoreTranscriptByVariant_('tomas', {}), 'tomas-result');
-  assert.equal(gas.scoreTranscriptByVariant_('qc', {}), 'qc-result');
-  assert.equal(gas.scoreTranscriptByVariant_('shared', {}), 'shared-result');
+  // Every ctx needs a REAL transcript now — scoreTranscriptByVariant_ refuses
+  // to call any judge on an empty/blank-audio one (see the guard's own test
+  // below), so an empty {} would never reach the dispatch under test.
+  const ctx = { prospectName: 'Test Lead', transcriptText: FAKE_TRANSCRIPT_ };
+  assert.equal(gas.scoreTranscriptByVariant_('sean', ctx), 'sean-result');
+  assert.equal(gas.scoreTranscriptByVariant_('bens', ctx), 'bens-result');
+  assert.equal(gas.scoreTranscriptByVariant_('tomas', ctx), 'tomas-result');
+  assert.equal(gas.scoreTranscriptByVariant_('qc', ctx), 'qc-result');
+  assert.equal(gas.scoreTranscriptByVariant_('shared', ctx), 'shared-result');
   assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'qc', 'shared']);
+});
+
+test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (over) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    Object.keys(over).forEach((k) => { r[col[k] - 1] = over[k]; });
+    return r;
+  };
+  const rows = [
+    row({ Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'fallback_heuristic', 'Prospect Name': 'Mislabelled One' }),
+    // A QC Joana genuinely ran, logged some other way — must be left alone.
+    row({ Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key', 'Prospect Name': 'Real QC' }),
+    // Already correct.
+    row({ Rep: 'Joana', 'Call Type': 'Sales Call', 'Match Method': 'fallback_heuristic', 'Prospect Name': 'Already Right' }),
+    // Another rep's QC — Sean's come from folder labels and are correct.
+    row({ Rep: 'Sean', 'Call Type': 'QC', 'Match Method': 'fallback_heuristic', 'Prospect Name': 'Sean QC' })
+  ];
+  const hits = gas.joanaMislabelledCallTypeRows_(rows, col, null);
+  assert.equal(hits.length, 1, 'exactly one row qualifies');
+  assert.equal(hits[0].prospectName, 'Mislabelled One');
+  assert.equal(hits[0].rowIndex, 2, 'sheet row index, header-offset');
+});
+
+test('joanaMislabelledCallTypeRows_ can scope to last week, the window the training picker actually reads', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const week = gas.getWeekBounds_(new gas.Date(), gas.CONFIG.BUSINESS_TIMEZONE);
+  const inWeek = new gas.Date(week.start.getTime() + 24 * 3600 * 1000);
+  const longAgo = new gas.Date(week.start.getTime() - 60 * 24 * 3600 * 1000);
+  const row = (name, date) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    r[col['Rep'] - 1] = 'Joana';
+    r[col['Call Type'] - 1] = 'QC';
+    r[col['Match Method'] - 1] = 'fallback_heuristic';
+    r[col['Prospect Name'] - 1] = name;
+    r[col['Call Date'] - 1] = date;
+    return r;
+  };
+  const rows = [row('In Window', inWeek), row('Two Months Ago', longAgo)];
+  const scoped = gas.joanaMislabelledCallTypeRows_(rows, col, week);
+  assert.deepEqual(Array.from(scoped).map((h) => h.prospectName), ['In Window']);
+  assert.equal(gas.joanaMislabelledCallTypeRows_(rows, col, null).length, 2, 'unscoped still covers history');
+});
+
+test('JOANA_DEFAULT_CALL_TYPE_ is Sales Call and matches the rubric her scoring actually applies, while Bens keeps the QC legacy default', () => {
+  // The whole bug: her rows were scored under the SHARED (sales) rubric by
+  // scoreJoanaTranscripts and then labelled 'QC', so any later rescore
+  // re-dispatched them onto the QC rubric and the scores moved with it.
+  assert.equal(gas.JOANA_DEFAULT_CALL_TYPE_, 'Sales Call');
+  assert.equal(gas.rubricVariantForNewScore_('Joana', gas.JOANA_DEFAULT_CALL_TYPE_), 'shared',
+    'the label must now resolve to the same rubric her original scoring used');
+  assert.equal(gas.PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, 'QC',
+    'Bens\' legacy backfill default must be untouched — his QC rows really are QCs');
+});
+
+test('a row whose score is fake is listed for Tomás but can never be ranked as a failed element (Frank Pirrone, 08/09/2026)', () => {
+  // The sentinel writes every flag false, so before this it ranked as a real
+  // failure on every element at once and won the week's focus outright.
+  const parseFailure = 'Automated scoring failed twice to return parseable JSON; needs manual review.';
+  assert.equal(gas.callScoreIsUnusableForStats_(parseFailure), true, 'precondition: Phase5 already calls this fake');
+
+  const usable = { score: 2, flags: { discovery: false, framework: false }, gaps: {} };
+  const fake = { score: 1, flags: {}, gaps: {}, scoreIsUnusable: true };
+  const ranking = gas.rankTrainingPriorities_([usable, fake]);
+  const discovery = ranking.filter((r) => r.key === 'discovery')[0];
+  assert.equal(discovery.scored, 1, 'only the usable call counts toward the denominator');
+  assert.equal(discovery.failed, 1, 'and only its failure counts — the fake row contributes nothing');
+  assert.equal(discovery.failedCalls.length, 1);
+  assert.ok(!discovery.failedCalls.some((c) => c.scoreIsUnusable), 'a dead recording must never become a coaching case');
+});
+
+test('transcriptIsUnusableForScoring_ catches a failed recording without catching a genuinely short bad call', () => {
+  assert.equal(gas.transcriptIsUnusableForScoring_(''), true, 'empty');
+  assert.equal(gas.transcriptIsUnusableForScoring_('   \n  '), true, 'whitespace only');
+  assert.equal(gas.transcriptIsUnusableForScoring_('[BLANK_AUDIO] [BLANK_AUDIO] [BLANK_AUDIO]'), true, 'pure silence');
+  assert.equal(gas.transcriptIsUnusableForScoring_(null), true, 'nothing at all');
+
+  // Frank Pirrone's real shape (08/09/2026): a couple of minutes of Zoom
+  // troubleshooting, then blank audio for the rest. Scored 1/5 and served to
+  // Tomás as the worst call of Sean's week.
+  assert.equal(gas.transcriptIsUnusableForScoring_(
+    'Rep: Can you hear me? [BLANK_AUDIO] [BLANK_AUDIO] Prospect: Hello? [BLANK_AUDIO]'), true);
+
+  // The line this must NOT cross: a real call that was short and went badly
+  // is still a real call, and must still be scored and coached on.
+  assert.equal(gas.transcriptIsUnusableForScoring_(FAKE_TRANSCRIPT_), false, 'a real call must still be scored');
+});
+
+test('scoreTranscriptByVariant_ returns the unusable-recording result instead of calling ANY judge when the transcript is dead', () => {
+  const calls = [];
+  gas.scoreTranscript_ = () => { calls.push('shared'); return 'shared-result'; };
+  gas.scoreQcTranscript_ = () => { calls.push('qc'); return 'qc-result'; };
+  const originalLog = gas.log_;
+  gas.log_ = () => {};
+  try {
+    const result = gas.scoreTranscriptByVariant_('qc', { prospectName: 'Frank Pirrone', transcriptText: '[BLANK_AUDIO]' });
+    assert.equal(calls.length, 0, 'no model call may be made — that is the cost saving AND the correctness fix');
+    assert.equal(result._unusableTranscript, true);
+    // Blank, not 1. A number here is what made a failed recording look like
+    // a terrible rep (Tomás: "this shouldn't be a grade").
+    assert.equal(result.call_quality_score, '', 'the score must be BLANK, never a number');
+    assert.deepEqual(Object.assign({}, result.flags), {}, 'no flags, so it can never rank as a failed element');
+    assert.ok(result.feedback_summary.indexOf('[BLANK_AUDIO]') !== -1,
+      'must carry the marker Phase5\'s callScoreIsUnusableForStats_ already excludes on');
+    assert.equal(gas.callScoreIsUnusableForStats_(result.feedback_summary), true,
+      'and that existing exclusion must actually catch it, not just look like it would');
+  } finally {
+    gas.log_ = originalLog;
+  }
 });
 
 test('buildFeedbackSummaryForVariant_ dispatches to each variant\'s own packer, and falls back to the model\'s bare feedback_summary for shared/unrecognized (29/08/2026, closing the gap where the ongoing pipeline used to only ever write the bare model summary regardless of variant)', () => {
@@ -4448,7 +4580,7 @@ test('rescoreAllCalls_ re-scores an already-scored row under the current rubric,
   const originalScoreShared = gas.scoreTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
 
     const scoredVariants = [];
@@ -4508,7 +4640,7 @@ test('rescoreAllCalls_\'s dry-run preview (previewRescoreAllCalls) calls no judg
   const originalScoreQc = gas.scoreQcTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.scoreQcTranscript_ = () => { throw new Error('previewRescoreAllCalls must never call a judge function'); };
 
@@ -4543,7 +4675,7 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
   const lines = [];
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
     gas.scoreQcTranscript_ = () => ({
@@ -4609,7 +4741,7 @@ test('rescoreAllCalls_ groups eligible rows by rubric variant before scoring, no
   const originalScoreSean = gas.scoreSeanTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
 
     const order = [];
@@ -4648,7 +4780,7 @@ test('rescoreAllCalls_ returns true when this pass found eligible rows, and fals
   const originalLockService = gas.LockService;
   const originalScoreQc = gas.scoreQcTranscript_;
   try {
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.scoreQcTranscript_ = () => ({
       reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
@@ -6479,7 +6611,7 @@ test('rescoreAllCalls_ (live) still lets a slow-but-real row (669s, the second r
   const lines = [];
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
 
@@ -9216,7 +9348,7 @@ test('processCalibrationFeedbackVideo_ never merges or marks sent when guardedSe
   const originalGuardedSend = gas.guardedSend_;
   const originalMerge = gas.mergeCalibrationDrillIntoTrainingProperties_;
   const originalUtilities = gas.Utilities;
-  gas.getTranscriptText_ = () => 'transcript text';
+  gas.getTranscriptText_ = () => FAKE_TRANSCRIPT_;
   gas.gradeCalibrationFeedbackTranscript_ = () => ({ headline: 'x', feedback_points: [], objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [] });
   gas.guardedSend_ = () => false;
   gas.mergeCalibrationDrillIntoTrainingProperties_ = () => { throw new Error('must not merge — send failed'); };
@@ -9241,7 +9373,7 @@ test('processCalibrationFeedbackVideo_ in dry-run logs but never sends, merges, 
   const originalGrade = gas.gradeCalibrationFeedbackTranscript_;
   const originalGuardedSend = gas.guardedSend_;
   const originalUtilities = gas.Utilities;
-  gas.getTranscriptText_ = () => 'transcript text';
+  gas.getTranscriptText_ = () => FAKE_TRANSCRIPT_;
   gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
   gas.Utilities = { formatDate: () => '06/09/2026' };
   try {
@@ -10184,7 +10316,7 @@ test('processPitchGuideTrainingVideo_ still writes the suggestion rows even when
   const originalDocumentApp = gas.DocumentApp;
   const originalUtilities = gas.Utilities;
   const writtenRows = [];
-  gas.getTranscriptText_ = () => 'transcript text';
+  gas.getTranscriptText_ = () => FAKE_TRANSCRIPT_;
   gas.gradePitchGuideTraining_ = () => ({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
   gas.getOrCreatePitchGuideSuggestionsSheet_ = () => ({ appendRow: (r) => writtenRows.push(r), getSheetId: () => 1 });
   gas.guardedSend_ = () => false;
@@ -10212,7 +10344,7 @@ test('processPitchGuideTrainingVideo_ in dry-run logs but never writes rows, sen
   const originalGrade = gas.gradePitchGuideTraining_;
   const originalGetSheet = gas.getOrCreatePitchGuideSuggestionsSheet_;
   const originalGuardedSend = gas.guardedSend_;
-  gas.getTranscriptText_ = () => 'transcript text';
+  gas.getTranscriptText_ = () => FAKE_TRANSCRIPT_;
   gas.gradePitchGuideTraining_ = () => ({ suggestions: [{ gap: 'g', quote: 'q', suggestedEdit: 'e', confidence: 'High' }], outdatedFlags: [] });
   gas.getOrCreatePitchGuideSuggestionsSheet_ = () => { throw new Error('must not touch the sheet in dry-run'); };
   gas.guardedSend_ = () => { throw new Error('must not send in dry-run'); };
