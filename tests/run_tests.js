@@ -8236,6 +8236,48 @@ test('playbookFocusGapsText_ names the element only when the focus spans more th
   assert.equal(gas.playbookFocusGapsText_({ keys: ['ask'] }, call), '');
 });
 
+test('playbookElementSeverityColor_ colors by failure RATE, not raw count, and never colors an ungraded element as if it passed', () => {
+  assert.equal(gas.playbookElementSeverityColor_({ failed: 0, scored: 0 }), '#888', 'ungraded must be grey, not green');
+  assert.equal(gas.playbookElementSeverityColor_({ failed: 0, scored: 5 }), '#1a7a3c', 'a real clean pass is green');
+  assert.equal(gas.playbookElementSeverityColor_({ failed: 1, scored: 5 }), '#b8860b', 'a minority failure is amber');
+  assert.equal(gas.playbookElementSeverityColor_({ failed: 3, scored: 5 }), '#c0392b', 'a majority failure is red');
+  assert.equal(gas.playbookElementSeverityColor_({ failed: 1, scored: 2 }), '#c0392b', '50% exactly counts as red, same threshold as >= 0.5');
+});
+
+test('playbookFeedbackLineHtml_ turns an all-flags line into colored pass/fail pills, and leaves prose alone', () => {
+  const pillLine = gas.playbookFeedbackLineHtml_('Discovery adequate: false | Understood lead&#39;s business: true');
+  assert.ok(pillLine.indexOf('&#10007; Discovery adequate: FALSE') !== -1, 'a false flag gets the X mark');
+  assert.ok(pillLine.indexOf('&#10003; Understood lead&#39;s business: TRUE') !== -1, 'a true flag gets the check mark');
+  assert.ok(pillLine.indexOf('#c0392b') !== -1 && pillLine.indexOf('#1a7a3c') !== -1,
+    'false and true segments on the SAME line must get different colors independently');
+
+  const withSuffix = gas.playbookFeedbackLineHtml_('Framework explained: false (missing: recruit agents)');
+  assert.ok(withSuffix.indexOf('(missing: recruit agents)') !== -1, 'the parenthetical detail must survive, not get eaten by the pill regex');
+
+  const rootCause = gas.playbookFeedbackLineHtml_('Root cause if no sale: the call never got past setup.');
+  assert.ok(rootCause.indexOf('background:#f4f7fb') !== -1, 'a Root cause line gets its own muted callout box');
+  assert.equal(rootCause.indexOf('&#10003;'), -1, 'a Root cause line must never be mistaken for a flag pill');
+
+  const prose = gas.playbookFeedbackLineHtml_('That patience was the right instinct given the circumstances.');
+  assert.equal(prose.indexOf('&#10003;'), -1);
+  assert.equal(prose.indexOf('background:#f4f7fb'), -1);
+  assert.ok(prose.indexOf('<p style="margin:0 0 6px;line-height:1.45;">') !== -1, 'ordinary narrative gets normal paragraph spacing, not crammed via <br>');
+});
+
+test('playbookFeedbackHtml_ splits multi-line feedback into separate readable blocks and keeps quote italicization', () => {
+  const html = gas.playbookFeedbackHtml_('"He asked for the money."\nDiscovery adequate: true\nRoot cause if no sale: N/A.');
+  assert.ok(html.indexOf('<i>&quot;He asked for the money.&quot;</i>') !== -1, 'quotes stay italicized');
+  assert.ok(html.indexOf('&#10003; Discovery adequate: TRUE') !== -1);
+  assert.ok(html.indexOf('background:#f4f7fb') !== -1);
+  // Three distinct blank lines in, three distinct <p> blocks out — not one
+  // undifferentiated wall of text (the exact complaint, 08/09/2026: "These
+  // walls of text are hard to read").
+  assert.equal((html.match(/<p /g) || []).length, 3);
+
+  assert.equal(gas.playbookFeedbackHtml_(''), '<p style="margin:0 0 6px;line-height:1.45;">(no AI feedback summary on file)</p>',
+    'missing feedback still renders something rather than an empty block');
+});
+
 test('buildPlaybookReviewNewMaterialEmail_ actually renders the Missing line end to end (it never did before 08/09/2026)', () => {
   const calls = [
     { prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 2, feedback: 'ok',
@@ -8254,7 +8296,7 @@ test('buildPlaybookReviewNewMaterialEmail_ actually renders the Missing line end
     'plain body must carry the per-call gap detail');
   assert.ok(email.body.indexOf('Missing: no budget question at all') !== -1,
     'and for every flagged call, not just the first');
-  assert.ok(email.htmlBody.indexOf('<strong>Missing:</strong> never confirmed what the QC already surfaced') !== -1,
+  assert.ok(email.htmlBody.indexOf('Missing:</strong> never confirmed what the QC already surfaced') !== -1,
     'the HTML version must carry it too');
 });
 

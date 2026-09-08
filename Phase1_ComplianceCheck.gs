@@ -3853,14 +3853,87 @@ function playbookReviewLinksFooter_(repName) {
   return '\n\n' + lines.join('\n');
 }
 
-/** HTML equivalent of playbookReviewLinksFooter_ above. */
+/** HTML equivalent of playbookReviewLinksFooter_ above. Same buttons as the header/per-call links, not plain underlined text, so they read as actionable rather than fine print. */
 function playbookReviewLinksFooterHtml_(repName) {
-  var items = ['<a href="' + escapeHtml_(playbookDashboardUrl_(repName)) + '">Playbook</a>'];
+  var buttonStyle = 'display:inline-block;margin:2px 8px 2px 0;padding:4px 12px;border-radius:4px;' +
+    'background:#1a56db;color:#fff;text-decoration:none;font-size:12px;';
+  var items = ['<a href="' + escapeHtml_(playbookDashboardUrl_(repName)) + '" style="' + buttonStyle + '">Playbook</a>'];
   var recordingUrl = trainingRecordingFolderUrl_(repName);
   if (recordingUrl) {
-    items.push('<a href="' + escapeHtml_(recordingUrl) + '">Drop this week\'s training call recording here after the session</a>');
+    items.push('<a href="' + escapeHtml_(recordingUrl) + '" style="' + buttonStyle +
+      '">Drop this week\'s training recording here</a>');
   }
-  return '<p style="font-size:12px;margin-top:10px;">' + items.join(' &nbsp;|&nbsp; ') + '</p>';
+  return '<p style="margin-top:12px;">' + items.join('') + '</p>';
+}
+
+/**
+ * Pure. Severity color for one ranking element's failure rate — red for a
+ * majority-failed element, amber for a partial failure, green for a clean
+ * pass, grey for "not graded" (never a color that implies a verdict that
+ * wasn't earned). Same red/amber/green vocabulary as dailyPracticeScoreColor_
+ * above, just keyed off a failure RATE instead of a raw score.
+ *
+ * Kris's ask (08/09/2026), reversing his own earlier "no colour, no bold,
+ * no italic" instruction from 02/09/2026 once he actually saw the plain
+ * version land in his inbox: "These walls of text are hard to read.
+ * Highlight, colour, bold. Make it interesting... clearly show Tomas the
+ * mistakes and where to focus training." The later, explicit instruction
+ * wins — noted here so a future session doesn't "fix" this back to plain
+ * text citing the older comment.
+ */
+function playbookElementSeverityColor_(r) {
+  if (!r.scored) return '#888';
+  var rate = r.failed / r.scored;
+  if (rate >= 0.5) return '#c0392b';
+  if (rate > 0) return '#b8860b';
+  return '#1a7a3c';
+}
+
+/**
+ * Pure. Turns one line of raw AI Feedback Summary text into readable HTML.
+ * The scoring prompts (Phase2_CallScoring.gs's buildXFeedbackSummary_
+ * functions) already put each distinct point on its own line and the
+ * structured flag readout as bare "Label: true/false" lines (optionally
+ * several joined with " | ", e.g. "Discovery adequate: false | Understood
+ * lead's business: false") — this only re-renders what's already there
+ * with color and spacing, it does not invent structure the model didn't
+ * already provide.
+ *
+ * A line made ENTIRELY of "Label: true/false" segments becomes a row of
+ * colored pass/fail pills. A line starting with "Root cause" gets its own
+ * muted callout so the diagnosis stands out from the moment-by-moment
+ * narrative. Anything else (the narrative itself, already quote-italicized
+ * by the caller) is left as a normal paragraph, just given breathing room
+ * instead of being crammed into one dense block via <br> alone — the
+ * literal "wall of text" complaint.
+ */
+function playbookFeedbackLineHtml_(escapedLine) {
+  var segments = escapedLine.split(' | ');
+  var flagPattern = /^(.*?):\s*(true|false)(\s*\(.*\))?$/i;
+  var allFlags = segments.length && segments.every(function (s) { return flagPattern.test(s.trim()); });
+  if (allFlags) {
+    var pills = segments.map(function (s) {
+      var m = s.trim().match(flagPattern);
+      var isTrue = m[2].toLowerCase() === 'true';
+      var suffix = m[3] ? ' <span style="color:#666;font-weight:normal;">' + m[3].trim() + '</span>' : '';
+      return '<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border-radius:10px;' +
+        'font-size:12px;background:' + (isTrue ? '#e6f4ea' : '#fdeceb') + ';color:' + (isTrue ? '#1a7a3c' : '#c0392b') +
+        ';">' + (isTrue ? '&#10003;' : '&#10007;') + ' ' + m[1].trim() + ': ' + m[2].toUpperCase() + '</span>' + suffix;
+    });
+    return '<p style="margin:2px 0;">' + pills.join('') + '</p>';
+  }
+  if (/^Root cause/i.test(escapedLine.trim())) {
+    return '<p style="margin:6px 0;padding:8px 10px;background:#f4f7fb;border-radius:4px;font-size:13px;">' +
+      escapedLine + '</p>';
+  }
+  return '<p style="margin:0 0 6px;line-height:1.45;">' + escapedLine + '</p>';
+}
+
+/** HTML rendering of one call's full feedback text — quote-italicized, then split into playbookFeedbackLineHtml_'s per-line treatment instead of one dense <br>-joined block. */
+function playbookFeedbackHtml_(feedback) {
+  var escaped = escapeHtml_(feedback || '(no AI feedback summary on file)')
+    .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
+  return escaped.split('\n').filter(function (l) { return l.trim(); }).map(playbookFeedbackLineHtml_).join('');
 }
 
 function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focusOverride) {
@@ -3917,11 +3990,12 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     return '  - ' + r.label + ': failed ' + r.failed + ' of ' + r.scored + ' graded call(s)';
   });
   var rankingHtml = (ranking || []).map(function (r, i) {
+    var color = playbookElementSeverityColor_(r);
     var text = r.scored
-      ? 'failed <strong>' + r.failed + ' of ' + r.scored + '</strong> graded call(s)'
+      ? 'failed <strong style="color:' + color + ';">' + r.failed + ' of ' + r.scored + '</strong> graded call(s)'
       : '<span style="color:#888;">not graded on any call last week</span>';
-    return '<li style="margin-bottom:3px;' + (i === 0 ? 'font-weight:bold;' : '') + '">' +
-      escapeHtml_(r.label) + ' — ' + text + '</li>';
+    return '<li style="margin-bottom:4px;border-left:3px solid ' + color + ';padding-left:8px;' +
+      (i === 0 ? 'font-weight:bold;' : '') + '">' + escapeHtml_(r.label) + ' — ' + text + '</li>';
   }).join('');
 
   var body =
@@ -3957,21 +4031,24 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     '\n\n— Sent automatically ahead of this week\'s session.';
 
   var callsHtml = flagged.map(function (c, i) {
-    var feedbackHtml = escapeHtml_(c.feedback || '(no AI feedback summary on file)')
-      .replace(/\n/g, '<br>')
-      .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
     var gapHtml = escapeHtml_(playbookFocusGapsText_(focus, c));
     var linksHtml = [];
-    if (c.transcriptUrl) linksHtml.push('<a href="' + escapeHtml_(c.transcriptUrl) + '">Transcript</a>');
-    if (c.rowLink) linksHtml.push('<a href="' + escapeHtml_(c.rowLink) + '">Sheet row</a>');
-    return '<div style="border-left:4px solid #1a56db;background:#f4f7fb;padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
-      '<p style="margin:0 0 6px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
+    if (c.transcriptUrl) {
+      linksHtml.push('<a href="' + escapeHtml_(c.transcriptUrl) + '" style="display:inline-block;margin:2px 6px 2px 0;' +
+        'padding:3px 10px;border-radius:4px;background:#1a56db;color:#fff;text-decoration:none;font-size:12px;">Transcript</a>');
+    }
+    if (c.rowLink) {
+      linksHtml.push('<a href="' + escapeHtml_(c.rowLink) + '" style="display:inline-block;margin:2px 6px 2px 0;' +
+        'padding:3px 10px;border-radius:4px;background:#1a56db;color:#fff;text-decoration:none;font-size:12px;">Sheet row</a>');
+    }
+    return '<div style="border-left:4px solid #1a56db;background:#f4f7fb;padding:12px 14px;margin:0 0 14px;border-radius:4px;">' +
+      '<p style="margin:0 0 8px;font-size:15px;"><strong>' + (i + 1) + '. ' + escapeHtml_(String(c.prospectName)) +
       '</strong> (' + escapeHtml_(c.callDate) + '), score ' +
       '<strong style="color:' + dailyPracticeScoreColor_(c.score) + ';">' + escapeHtml_(String(c.score)) + '</strong></p>' +
-      (gapHtml ? '<p style="margin:0 0 6px;font-size:13px;color:#c0392b;"><strong>Missing:</strong> ' +
-        gapHtml + '</p>' : '') +
-      '<p style="margin:0;">' + feedbackHtml + '</p>' +
-      (linksHtml.length ? '<p style="margin:6px 0 0;font-size:12px;">' + linksHtml.join(' &nbsp;|&nbsp; ') + '</p>' : '') +
+      (gapHtml ? '<p style="margin:0 0 10px;padding:6px 10px;background:#fdeceb;border-radius:4px;' +
+        'font-size:13px;color:#c0392b;"><strong>&#9888; Missing:</strong> ' + gapHtml + '</p>' : '') +
+      playbookFeedbackHtml_(c.feedback) +
+      (linksHtml.length ? '<p style="margin:8px 0 0;">' + linksHtml.join('') + '</p>' : '') +
       '</div>';
   }).join('');
   var htmlBody =
@@ -3986,9 +4063,18 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
         escapeHtml_(windowLabel) + ')'
       : 'Week of ' + escapeHtml_(windowLabel)) +
     escapeHtml_(scheduleNote) + '.</p>' +
+    // Kris's ask (08/09/2026): "The links need to be in the email" — they
+    // already were, but only in the footer, after everything else. Put the
+    // Playbook link where it can't be missed: right in the header, as a
+    // real button, before any of the call detail below it. Kept in the
+    // footer too (playbookReviewLinksFooterHtml_ below) for anyone who
+    // scrolls straight to the bottom looking for the recording-drop link.
+    '<p style="margin:8px 0 0;"><a href="' + escapeHtml_(playbookDashboardUrl_(repCfg.name)) + '" style="display:inline-block;' +
+    'padding:5px 14px;border-radius:4px;background:#b8860b;color:#fff;text-decoration:none;font-size:13px;font-weight:bold;">' +
+    '&#128218; Open the ' + escapeHtml_(focusLabel) + ' Playbook</a></p>' +
     '</div>' +
-    (rankingHtml ? '<p style="margin:0 0 4px;">All elements, worst first:</p>' +
-      '<ul style="margin:0 0 14px;padding-left:20px;font-size:13px;">' + rankingHtml + '</ul>' : '') +
+    (rankingHtml ? '<p style="margin:0 0 4px;"><strong>All elements, worst first:</strong></p>' +
+      '<ul style="margin:0 0 14px;padding-left:0;font-size:13px;list-style:none;">' + rankingHtml + '</ul>' : '') +
     callsIntroHtml +
     callsHtml +
     playbookReviewLinksFooterHtml_(repCfg.name) +
