@@ -2526,7 +2526,7 @@ test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a r
   // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
   // current one — without a bump, no existing row would ever be graded on
   // goal/pain and the change would silently apply to new calls only.
-  assert.equal(gas.RUBRIC_VERSION, '2026-09-08-the-framework');
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-09-repetition-loop-v2');
 });
 
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
