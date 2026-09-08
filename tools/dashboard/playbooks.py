@@ -22,11 +22,18 @@ PLAYBOOKS = [
     {"slug": "sean", "title": "Objection Handling Playbook — Sean", "filename": "Objection_Handling_Playbook_Sean.md"},
     {"slug": "joana", "title": "Objection Handling Playbook — Joana", "filename": "Objection_Handling_Playbook_Joana.md"},
     {"slug": "tomas", "title": "Tomás Playbook — What Other Reps Should Copy", "filename": "Tomas_Playbook.md"},
-    # Not rep-specific like the four above — see rep_playbook() in app.py,
-    # which picks this one for ANY rep when their current training-priority
-    # override for the week is Discovery, instead of the fixed one-doc-per-
-    # rep mapping the objection playbooks use.
+    # Topic playbooks — see rep_playbook() in app.py. A rep whose current
+    # training-priority override is Discovery gets THEIR OWN discovery doc
+    # when one exists, falling back to the shared one when it doesn't.
+    #
+    # Per-rep, not one shared doc, because Tomás rejected exactly that on
+    # 08/09/2026: "the playbook is not just about Joana, it's talking about
+    # Sean. And even the only example that it gives, it was about Sean. About
+    # the Frank Pirrone... this is Joana, so there's not really much to go
+    # for." A generic doc with another rep's worked example in it is worse
+    # than useless in a session.
     {"slug": "discovery", "title": "Discovery Playbook", "filename": "Discovery_Playbook.md"},
+    {"slug": "discovery-sean", "title": "Discovery Playbook — Sean", "filename": "Discovery_Playbook_Sean.md"},
 ]
 
 

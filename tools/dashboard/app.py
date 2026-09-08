@@ -1203,13 +1203,35 @@ def rep_call_rows_for_reengagement():
 TOPIC_TO_PLAYBOOK_SLUG = {"discovery": "discovery"}
 
 
+def topic_playbook_slug_for(rep, current_priority):
+    """The topic playbook to show this rep, preferring THEIR OWN version of
+    it over the shared one.
+
+    Tomás, 08/09/2026, looking at the shared Discovery doc on Joana's page:
+    "the playbook is not just about Joana, it's talking about Sean. And even
+    the only example that it gives, it was about Sean. About the Frank
+    Pirrone... this is Joana, so there's not really much to go for."
+
+    So a rep with a per-rep topic doc gets that one ("discovery-sean"), and
+    everyone else falls back to the shared doc ("discovery") — which is
+    written to be genuinely generic rather than one rep's worked example.
+    Returns None when the priority isn't a topic we have any doc for.
+    """
+    base = TOPIC_TO_PLAYBOOK_SLUG.get(str(current_priority or "").strip().lower())
+    if not base:
+        return None
+    per_rep = f"{base}-{str(rep or '').strip().lower()}"
+    if any(p["slug"] == per_rep for p in PLAYBOOKS):
+        return per_rep
+    return base
+
+
 def rep_playbook(rep, current_priority=None):
-    """The one PLAYBOOKS doc to show for this rep this week: the topic doc
-    when their current training-priority override names one (currently just
-    Discovery), else the fixed per-rep doc (REP_TO_PLAYBOOK_SLUG), else None
-    (Joana has no fixed doc of her own) — a single doc, not the full list
+    """The one PLAYBOOKS doc to show for this rep this week: their own topic
+    doc if one exists, else the shared topic doc, else the fixed per-rep doc
+    (REP_TO_PLAYBOOK_SLUG), else None — a single doc, not the full list
     /training used to dump on one combined page."""
-    topic_slug = TOPIC_TO_PLAYBOOK_SLUG.get(str(current_priority or "").strip().lower())
+    topic_slug = topic_playbook_slug_for(rep, current_priority)
     slug = topic_slug or REP_TO_PLAYBOOK_SLUG.get(rep)
     if not slug:
         return None

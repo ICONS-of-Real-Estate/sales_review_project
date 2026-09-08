@@ -471,6 +471,36 @@ def test_rep_detail_shows_the_discovery_playbook_when_that_is_the_current_priori
     assert "Objection Handling Playbook — Joana" not in resp.text
 
 
+def test_rep_detail_shows_seans_OWN_discovery_playbook_not_the_shared_one(client, db_path, conn):
+    # Tomás, 08/09/2026: "the playbook is not just about Joana, it's talking
+    # about Sean... this is Joana, so there's not really much to go for."
+    # A rep with their own topic doc must get theirs, not the generic one.
+    week_start = app_module.current_week_start_label()
+    conn.execute(
+        "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+        "VALUES ('Sean', ?, 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-08T00:00:00+00:00')",
+        (week_start,),
+    )
+    conn.commit()
+    resp = client.get("/reps/Sean")
+    assert resp.status_code == 200
+    assert "Discovery Playbook — Sean" in resp.text
+    assert "Objection Handling Playbook — Sean" not in resp.text
+
+
+def test_topic_playbook_slug_for_prefers_a_per_rep_doc_and_falls_back_to_the_shared_one():
+    # Sean has his own; Joana does not (yet) and must still get something
+    # useful rather than nothing.
+    assert app_module.topic_playbook_slug_for("Sean", "Discovery") == "discovery-sean"
+    assert app_module.topic_playbook_slug_for("Joana", "Discovery") == "discovery"
+    assert app_module.topic_playbook_slug_for("Bens", "Discovery") == "discovery"
+    # Not a topic we have any doc for — the caller falls back to the fixed
+    # per-rep objection playbook instead.
+    assert app_module.topic_playbook_slug_for("Sean", "Objection handling") is None
+    assert app_module.topic_playbook_slug_for("Sean", None) is None
+    assert app_module.topic_playbook_slug_for("Sean", "") is None
+
+
 def test_rep_detail_falls_back_to_the_fixed_playbook_when_the_override_is_not_discovery(client, db_path, conn):
     week_start = app_module.current_week_start_label()
     conn.execute(
