@@ -4481,7 +4481,11 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
 
     const joined = lines.join('\n');
     assert.match(joined, /1 row\(s\) out of 1 need a rescore this pass/, 'must log the real scope up front, before any model call');
-    assert.match(joined, /\[1\/1\] Rescored row 2 \(Logged Live,.*score 3 -> 4/, 'must log each row as it completes, not stay silent until the end');
+    assert.match(joined, /Queued: 1\. row 2 Logged Live \(Joana, QC/,
+      'must list which row(s) are queued up front, not just a count (08/09/2026: "logging needs to be better")');
+    assert.match(joined, /\[1\/1\] Rescoring row 2 \(Logged Live,.*calling the model now/,
+      'must log BEFORE the model call, since that call can run minutes with nothing else in between');
+    assert.match(joined, /\[1\/1\] Done: row 2 \(Logged Live\).*score 3 -> 4/, 'must log each row as it completes, not stay silent until the end');
   } finally {
     gas.SpreadsheetApp = originalSpreadsheetApp;
     gas.DriveApp = originalDriveApp;

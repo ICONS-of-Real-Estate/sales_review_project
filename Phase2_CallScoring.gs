@@ -1290,7 +1290,21 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
     log_((dryRun ? 'previewRescore' : 'rescore') + (scopeWeek ? 'LastWeekCalls' : 'AllCalls') + scopeLabel + ': ' +
       eligible.length +
       ' row(s) out of ' + values.length + ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
-      (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row; logging each as it completes.'));
+      (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row.'));
+
+    // Kris's ask (08/09/2026, after watching a 6-row live run print exactly
+    // one line and then nothing): the summary line above says HOW MANY rows
+    // are eligible, but not WHICH ones — with a live run, that leaves you
+    // staring at silence for however long the first Moonshot call takes with
+    // zero way to tell what's queued. List them up front, by name, so the
+    // full scope of the run is visible before the first model call even
+    // starts.
+    if (eligible.length) {
+      log_('  Queued: ' + eligible.map(function (item, idx) {
+        return (idx + 1) + '. row ' + item.rowIndex + ' ' + item.row[col['Prospect Name'] - 1] + ' (' +
+          item.rep + ', ' + item.callType + ', "' + item.variant + '")';
+      }).join(' | '));
+    }
 
     var runStart = Date.now();
     var rescored = 0, failed = 0, truncated = false;
@@ -1328,12 +1342,21 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
           continue;
         }
 
+        // The actual reason a live run went silent for minutes at a time:
+        // one row is one real Moonshot call plus a transcript download,
+        // which can each take a couple of minutes on their own — and the
+        // only log line used to land AFTER both finished. This one lands
+        // BEFORE, so "row 3 of 6, been quiet for 90 seconds" reads as
+        // "still working the model call," not "did this hang."
+        log_('  [' + (e + 1) + '/' + eligible.length + '] Rescoring row ' + item.rowIndex + ' (' + prospectName +
+          ', ' + item.rep + ', ' + item.callType + ') under "' + item.variant + '" — calling the model now...');
+
         var result = scoreTranscriptByVariant_(item.variant, ctx);
         writeScoreToRow_(sheet, item.rowIndex, col, result, /*forceManualReview=*/false, prospectName, item.variant, callLengthMinutes);
         rescored++;
-        log_('  [' + rescored + '/' + eligible.length + '] Rescored row ' + item.rowIndex + ' (' + prospectName + ', ' +
-          item.rep + ', ' + item.callType + ') under "' + item.variant + '" — score ' + item.existingScore + ' -> ' +
-          result.call_quality_score + '.');
+        log_('  [' + (e + 1) + '/' + eligible.length + '] Done: row ' + item.rowIndex + ' (' + prospectName + ') — score ' +
+          item.existingScore + ' -> ' + result.call_quality_score + ' (' +
+          Math.round((Date.now() - runStart) / 1000) + 's elapsed so far).');
         Utilities.sleep(300);
       } catch (e2) {
         log_('  Row ' + item.rowIndex + ' (' + prospectName + ') FAILED: ' + e2);
