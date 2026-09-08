@@ -28,6 +28,12 @@ are both untouched and still work -- keep either as a fallback if local
 Whisper's quality, missing diarization, or CPU speed on your machine turns
 out to be a problem.
 
+IMPORTANT: transcribe_with_whisper() below is THE actual production path.
+transcribe_all.py -- what tools/deploy/setup_ovh.sh runs unattended every 6
+hours on the OVH VPS for every rep's real backlog -- imports and calls this
+exact function, not the Gemini or Qwen ones. Any bug found in a real call's
+transcript (confirmed live 09/09/2026) traces back to here first.
+
 Reuses all the Drive plumbing (auth, folder listing, download, upload-back)
 from transcribe_sean_calls.py -- only the transcription step changes, so run
 this from the same tools/ directory with the same credentials.json/token.json.
@@ -48,7 +54,13 @@ then never needs the network again.
 
 import os
 
-from transcribe_sean_calls import SOURCE_FOLDERS, run_whisper_batch
+from transcribe_sean_calls import (
+    MAX_REPETITION_RETRIES,
+    SOURCE_FOLDERS,
+    run_whisper_batch,
+    transcript_is_degenerate_repetition_,
+    transcript_repetition_loop_share_,
+)
 
 _whisper_model = None
 
@@ -77,9 +89,68 @@ def get_whisper_model():
 
 
 def transcribe_with_whisper(local_path):
+    """THE actual production transcription path — every batch in
+    transcribe_all.py (Sean, Joana, Tomás, Daily Practice, Calibration
+    Feedback, Pitch Guide Training) imports and calls this one function, and
+    transcribe_all.py is what runs unattended on the OVH VPS every 6 hours
+    (tools/deploy/setup_ovh.sh). transcribe_sean_calls.py's Gemini path
+    (main()) is a documented fallback, not what's actually deployed.
+
+    Real bug found live (09/09/2026, Kris pasting Frank Pirrone's actual
+    corrupted transcript doc): this is the function that produced it.
+    whisper.cpp has a well-documented failure mode where a difficult stretch
+    of audio (silence, noise, low audio quality) makes it lock onto one
+    hallucinated phrase and repeat it — its own built-in temperature-fallback
+    safety net (entropy_thold/logprob_thold, see get_whisper_model's comment)
+    is tuned to catch LOW-confidence garbage, not a confidently-repeated
+    phrase, which is exactly the failure mode that slipped through here. This
+    used to return whatever came back with no validation at all.
+
+    Now: detect the same repetition-loop shape as everywhere else in this
+    project (transcript_is_degenerate_repetition_, shared with
+    transcribe_sean_calls.py's Gemini path and kept in lockstep with the Apps
+    Script version, Phase2_CallScoring.gs's transcriptRepetitionLoopShare_ —
+    same algorithm, same thresholds, three independent layers now catching
+    the identical failure) and retry with an escalating temperature. Retrying
+    at the SAME temperature=0.0 (whisper.cpp's default, fully greedy/
+    deterministic decoding) would just reproduce the identical failure every
+    time — the temperature bump is what actually gives a retry a real chance
+    of landing somewhere different. Only after MAX_REPETITION_RETRIES straight
+    failures does this give up and raise, so run_whisper_batch's existing
+    "FAILED: ..." handling logs it and moves to the next video rather than
+    silently uploading garbage — a corrupted transcript no longer reaches
+    Drive at all.
+
+    Also: segments are now joined with a real paragraph break rather than a
+    single space (Kris: "it'd be nicer if it formatted the document
+    better") — whisper.cpp's plain transcribe() has no speaker diarization
+    at all (see this file's own docstring above), so real "Sean:"/"Frank:"
+    labels aren't available from this path without a separate diarization
+    step (whisper.cpp does have optional tinydiarize turn-boundary
+    detection via tdrz_enable, but it needs a different, `-tdrz` compiled
+    model and hasn't been validated against a real call here yet — worth
+    doing as a follow-up, not guessed at blind). This at least gives every
+    distinct utterance its own paragraph instead of one unbroken wall of
+    text, which is also exactly the shape that made the original corruption
+    invisible to a line-based detector in the first place.
+    """
     model = get_whisper_model()
-    segments = model.transcribe(local_path)
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    for attempt in range(MAX_REPETITION_RETRIES + 1):
+        params = {"temperature": attempt * 0.4} if attempt else {}
+        segments = model.transcribe(local_path, **params)
+        text = "\n\n".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+        if not transcript_is_degenerate_repetition_(text):
+            return text
+        share = transcript_repetition_loop_share_(text)
+        if attempt < MAX_REPETITION_RETRIES:
+            print(f"    Whisper transcript looped (dominant phrase covers "
+                  f"{share:.0%} of the text) — retrying ({attempt + 1}/{MAX_REPETITION_RETRIES})...")
+        else:
+            raise RuntimeError(
+                f"Whisper transcript still looping after {MAX_REPETITION_RETRIES} retries "
+                f"(dominant phrase covers {share:.0%} of the text) — refusing to save a corrupted "
+                f"transcript. Try again later, or fall back to Zoom's own transcript if one exists."
+            )
 
 
 def main():

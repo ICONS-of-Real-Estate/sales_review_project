@@ -1,0 +1,11 @@
+# Test-only dependencies for tools/tests/ — separate from tools/requirements.txt
+# (the real production deps: google-genai, google-api-python-client,
+# qwen3-asr-toolkit, pywhispercpp) so CI/local test runs don't need the full,
+# heavy production install (whisper.cpp compiled bindings especially) just to
+# run pytest against the pure/mocked logic.
+pytest
+google-genai
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+pywhispercpp
