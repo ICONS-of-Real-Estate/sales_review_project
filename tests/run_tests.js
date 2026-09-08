@@ -7968,6 +7968,123 @@ test('buildPlaybookReviewNoNewCallsEmail_ says the override came up empty when t
   assert.equal(withoutOverride.body.indexOf('You picked'), -1);
 });
 
+test('every focus-producing function carries the element keys it covers, so the per-call Missing line can find its Gaps column', () => {
+  const ranking = gas.rankTrainingPriorities_([
+    { score: 2, flags: { discovery: false, framework: false, delivery: false, ask: false, objections: false },
+      gaps: { discovery: 'no pain uncovered', framework: 'skipped the guarantee', delivery: 'monotone' } }
+  ]);
+
+  const scheduled = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Framework & Delivery', keys: ['framework', 'delivery'] });
+  assert.deepEqual(Array.from(scheduled.keys).sort(), ['delivery', 'framework'],
+    'a two-element rotation week must carry BOTH keys, not one');
+
+  // Urgent override: a single element outranking the schedule.
+  const urgentRanking = gas.rankTrainingPriorities_([
+    { score: 1, flags: { discovery: false, framework: true, delivery: true, ask: true, objections: true }, gaps: {} },
+    { score: 1, flags: { discovery: false, framework: true, delivery: true, ask: true, objections: true }, gaps: {} }
+  ]);
+  const urgent = gas.pickWeeklyTrainingFocus_(urgentRanking, { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] });
+  assert.equal(urgent.isUrgentOverride, true, 'precondition: this is the urgent path');
+  assert.deepEqual(Array.from(urgent.keys), ['discovery']);
+
+  assert.deepEqual(Array.from(gas.legacyTrainingFocusFromRanking_(ranking).keys), [ranking[0].key]);
+  assert.deepEqual(Array.from(gas.legacyTrainingFocusFromRanking_([]).keys), [], 'no ranking at all must not throw');
+
+  assert.deepEqual(Array.from(gas.namedTrainingFocusFromRanking_(ranking, 'Discovery').keys), ['discovery']);
+  assert.deepEqual(Array.from(gas.namedTrainingFocusFromRanking_(ranking, 'Framework & Delivery').keys).sort(),
+    ['delivery', 'framework']);
+  assert.deepEqual(Array.from(gas.namedTrainingFocusFromRanking_(ranking, 'Nonsense Tomás typed').keys), [],
+    'unrecognized text still degrades gracefully rather than throwing');
+
+  // And the override resolver must not drop keys when it copies the auto focus.
+  const fellBack = gas.resolveTrainingFocusWithOverride_(ranking, 'Nonsense Tomás typed', scheduled);
+  assert.equal(fellBack.overrideFellBack, true, 'precondition: this is the fallback path');
+  assert.deepEqual(Array.from(fellBack.keys).sort(), ['delivery', 'framework'],
+    'the fallback carries the auto focus\'s keys, or Missing goes blank again');
+});
+
+test('playbookFocusGapsForCall_ shows the Gaps text only for focus elements the call actually failed', () => {
+  const call = {
+    flags: { discovery: false, framework: true, delivery: false, ask: false, objections: false },
+    gaps: { discovery: 'no pain uncovered', framework: 'skipped the guarantee', delivery: 'monotone' }
+  };
+
+  const single = gas.playbookFocusGapsForCall_({ keys: ['discovery'] }, call);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].text, 'no pain uncovered');
+  assert.equal(single[0].label, 'Discovery');
+
+  // framework PASSED on this call — printing its gap text would invent a
+  // failure the grader never recorded.
+  const pair = gas.playbookFocusGapsForCall_({ keys: ['framework', 'delivery'] }, call);
+  assert.deepEqual(Array.from(pair).map((g) => g.label), ['Delivery'],
+    'the element the call passed must be left out');
+
+  // 'ask'/'objections' have no Gaps column at all by design.
+  assert.equal(gas.playbookFocusGapsForCall_({ keys: ['ask', 'objections'] }, call).length, 0);
+
+  // Defensive shapes must not throw.
+  assert.equal(gas.playbookFocusGapsForCall_(null, call).length, 0);
+  assert.equal(gas.playbookFocusGapsForCall_({ keys: ['discovery'] }, {}).length, 0);
+  assert.equal(gas.playbookFocusGapsForCall_({}, call).length, 0, 'a focus with no keys yields nothing, not a crash');
+
+  // A call with no flags at all (older rows, hand-built fixtures) still shows
+  // its gap text rather than silently dropping it.
+  const noFlags = gas.playbookFocusGapsForCall_({ keys: ['discovery'] }, { gaps: { discovery: 'no pain uncovered' } });
+  assert.equal(noFlags.length, 1);
+});
+
+test('playbookFocusGapsText_ names the element only when the focus spans more than one', () => {
+  const call = {
+    flags: { discovery: false, framework: false, delivery: false },
+    gaps: { discovery: 'no pain uncovered', framework: 'skipped the guarantee', delivery: 'monotone' }
+  };
+  assert.equal(gas.playbookFocusGapsText_({ keys: ['discovery'] }, call), 'no pain uncovered',
+    'single-element focus: the label is already the email headline');
+  assert.equal(gas.playbookFocusGapsText_({ keys: ['framework', 'delivery'] }, call),
+    'Framework explanation — skipped the guarantee; Delivery — monotone');
+  assert.equal(gas.playbookFocusGapsText_({ keys: ['ask'] }, call), '');
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ actually renders the Missing line end to end (it never did before 08/09/2026)', () => {
+  const calls = [
+    { prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 2, feedback: 'ok',
+      flags: { discovery: false, framework: true, delivery: true, ask: true, objections: true },
+      gaps: { discovery: 'never confirmed what the QC already surfaced', framework: '', delivery: '' } },
+    { prospectName: 'Roxy Miles', callDate: '28/08/2026', score: 3, feedback: 'ok',
+      flags: { discovery: false, framework: true, delivery: true, ask: true, objections: true },
+      gaps: { discovery: 'no budget question at all', framework: '', delivery: '' } }
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Discovery', keys: ['discovery'] });
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(
+    { name: 'Joana' }, focus.failedCalls, '24/08/2026 - 30/08/2026', ranking, focus);
+
+  assert.ok(email.body.indexOf('Missing: never confirmed what the QC already surfaced') !== -1,
+    'plain body must carry the per-call gap detail');
+  assert.ok(email.body.indexOf('Missing: no budget question at all') !== -1,
+    'and for every flagged call, not just the first');
+  assert.ok(email.htmlBody.indexOf('<strong>Missing:</strong> never confirmed what the QC already surfaced') !== -1,
+    'the HTML version must carry it too');
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ omits the Missing line for a focus whose elements have no Gaps column', () => {
+  const calls = [
+    { prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 2, feedback: 'ok',
+      flags: { discovery: true, framework: true, delivery: true, ask: false, objections: false },
+      gaps: { discovery: 'not relevant to this focus', framework: '', delivery: '' } }
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const focus = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] });
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(
+    { name: 'Sean' }, focus.failedCalls, '24/08/2026 - 30/08/2026', ranking, focus);
+
+  assert.equal(email.body.indexOf('Missing:'), -1,
+    'ask/objections have gapsColumn:null — no Missing line, and definitely not discovery\'s');
+  assert.equal(email.body.indexOf('not relevant to this focus'), -1,
+    'a gap from an element outside the focus must never leak in');
+});
+
 test('getOrCreateTrainingPriorityOverridesSheet_ creates the tab with frozen bold headers exactly once, reusing it on a second call', () => {
   const created = [];
   let existingSheet = null;

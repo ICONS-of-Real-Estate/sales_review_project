@@ -3150,7 +3150,8 @@ function pickWeeklyTrainingFocus_(ranking, schedule) {
 
   if (urgent) {
     return {
-      label: urgent.label, failed: urgent.failed, scored: urgent.scored, failedCalls: urgent.failedCalls,
+      label: urgent.label, keys: [urgent.key],
+      failed: urgent.failed, scored: urgent.scored, failedCalls: urgent.failedCalls,
       isUrgentOverride: true, scheduleLabel: schedule.label
     };
   }
@@ -3172,7 +3173,8 @@ function pickWeeklyTrainingFocus_(ranking, schedule) {
   });
 
   return {
-    label: schedule.label, failed: failed, scored: scored, failedCalls: failedCalls,
+    label: schedule.label, keys: scheduleKeys.slice(),
+    failed: failed, scored: scored, failedCalls: failedCalls,
     isUrgentOverride: false, scheduleLabel: schedule.label
   };
 }
@@ -3189,6 +3191,7 @@ function legacyTrainingFocusFromRanking_(ranking) {
   var top = (ranking && ranking.length) ? ranking[0] : null;
   return {
     label: top ? top.label : 'Objection handling',
+    keys: top ? [top.key] : [],
     failed: top ? top.failed : 0,
     scored: top ? top.scored : 0,
     failedCalls: top ? top.failedCalls : [],
@@ -3273,7 +3276,7 @@ function namedTrainingFocusFromRanking_(ranking, label) {
   }
   if (!keys) {
     return {
-      label: label, failed: 0, scored: 0, failedCalls: [],
+      label: label, keys: [], failed: 0, scored: 0, failedCalls: [],
       isUrgentOverride: false, scheduleLabel: null, isManualOverride: true
     };
   }
@@ -3292,6 +3295,7 @@ function namedTrainingFocusFromRanking_(ranking, label) {
   });
   return {
     label: schedule ? schedule.label : (scoped[0] ? scoped[0].label : label),
+    keys: keys.slice(),
     failed: failed, scored: scored, failedCalls: failedCalls,
     isUrgentOverride: false, scheduleLabel: null, isManualOverride: true
   };
@@ -3407,6 +3411,62 @@ function playbookOverrideSentence_(focus) {
       focus.overrideRequestedScored + ' graded call(s) passed it, so there was nothing to review there.'
     : ' You picked "' + focus.overrideRequestedLabel + '" via the dashboard — no call was graded on it ' +
       'last week, so there was nothing to review there.';
+}
+
+/**
+ * Pure. The per-call "Missing: ..." detail for the focus element(s) — the
+ * Gaps column text naming which sub-piece actually failed, i.e. the
+ * difference between "discovery was weak" and "he never confirmed what the
+ * QC already surfaced".
+ *
+ * This never rendered on a real email until 08/09/2026: the builders read
+ * `c.gaps[focus.key]`, but no focus-producing function ever set a `key`
+ * (pickWeeklyTrainingFocus_/legacyTrainingFocusFromRanking_/
+ * namedTrainingFocusFromRanking_ all returned label/failed/scored/
+ * failedCalls only), so on every path buildAndMaybeSendPlaybookReview_
+ * actually takes — it always passes an explicit focus — the lookup was
+ * `c.gaps[undefined]` and the line silently never appeared. Only the
+ * builder's own `ranking[0]` fallback, which no caller uses in production,
+ * had a `key` at all. Those functions now carry `keys` — plural, because a
+ * focus can span two elements ("Framework & Delivery") — and this reads
+ * them, still honouring a bare `key` so that fallback shape keeps working.
+ *
+ * Two deliberate filters:
+ *   - Only elements this call actually FAILED (flags[key] === false). A
+ *     two-element focus lists a call that failed either one; printing the
+ *     gaps of the element it passed would invent a failure the grader
+ *     didn't record. No flags on the call at all (older callers, tests)
+ *     falls back to showing whatever gap text exists rather than nothing.
+ *   - Only elements with a non-empty Gaps column. 'ask' and 'objections'
+ *     have gapsColumn:null by design (TRAINING_PRIORITY_ELEMENTS_), so a
+ *     Closing & Objection Handling week legitimately shows no Missing line.
+ *
+ * Returns [{label, text}] so a two-element focus can attribute each gap to
+ * the element it came from instead of running them together.
+ */
+function playbookFocusGapsForCall_(focus, call) {
+  if (!focus || !call || !call.gaps) return [];
+  var keys = focus.keys || (focus.key ? [focus.key] : []);
+  var out = [];
+  keys.forEach(function (key) {
+    var text = String(call.gaps[key] || '').trim();
+    if (!text) return;
+    if (call.flags && call.flags[key] !== false) return;
+    var el = TRAINING_PRIORITY_ELEMENTS_.filter(function (e) { return e.key === key; })[0];
+    out.push({ label: el ? el.label : key, text: text });
+  });
+  return out;
+}
+
+/** Plain-text rendering of playbookFocusGapsForCall_, '' when there's nothing. */
+function playbookFocusGapsText_(focus, call) {
+  var gaps = playbookFocusGapsForCall_(focus, call);
+  if (!gaps.length) return '';
+  // One element: the label is already the email's headline focus, so
+  // repeating it reads as noise. Two: attribute each one.
+  return gaps.length === 1
+    ? gaps[0].text
+    : gaps.map(function (g) { return g.label + ' — ' + g.text; }).join('; ');
 }
 
 /**
@@ -3801,10 +3861,7 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
       var links = [];
       if (c.transcriptUrl) links.push('Transcript: ' + c.transcriptUrl);
       if (c.rowLink) links.push('Sheet row: ' + c.rowLink);
-      // Discovery and framework each carry a Gaps column naming which
-      // sub-piece actually failed — the difference between "discovery was
-      // weak" and "he never confirmed what the QC already surfaced".
-      var gap = (focus && c.gaps) ? c.gaps[focus.key] : '';
+      var gap = playbookFocusGapsText_(focus, c);
       return (i + 1) + '. ' + c.prospectName + ' (' + c.callDate + '), score ' + c.score + '\n   ' +
         (gap ? 'Missing: ' + gap + '\n   ' : '') +
         (c.feedback || '(no AI feedback summary on file)') +
@@ -3817,7 +3874,7 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     var feedbackHtml = escapeHtml_(c.feedback || '(no AI feedback summary on file)')
       .replace(/\n/g, '<br>')
       .replace(/"([^"]+)"/g, '<i>&quot;$1&quot;</i>');
-    var gapHtml = (focus && c.gaps && c.gaps[focus.key]) ? escapeHtml_(c.gaps[focus.key]) : '';
+    var gapHtml = escapeHtml_(playbookFocusGapsText_(focus, c));
     var linksHtml = [];
     if (c.transcriptUrl) linksHtml.push('<a href="' + escapeHtml_(c.transcriptUrl) + '">Transcript</a>');
     if (c.rowLink) linksHtml.push('<a href="' + escapeHtml_(c.rowLink) + '">Sheet row</a>');
