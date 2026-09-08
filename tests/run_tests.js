@@ -1582,12 +1582,25 @@ test('rescoreAllCalls_ in last-week-only mode rescores just the week the trainin
     assert.ok(/1 row\(s\) outside it untouched/.test(all),
       'the log must say how many rows were left alone, so the saving is visible');
 
-    // Unscoped mode is unchanged — both rows are still eligible.
+    // Real confusion caused live (08/09/2026), Kris looking at scoped
+    // output: "There aren't 454 calls last week?" — 454 was values.length,
+    // the WHOLE SHEET's all-time row count, standing in as the denominator
+    // for a message that read like it described the scoped week. The
+    // scoped population here is 1 (In Window only; Two Months Ago is
+    // outside it), and that — not the sheet's total row count of 2 — must
+    // be what "out of N" reports.
+    assert.ok(/1 row\(s\) out of 1 call\(s\) that week need a rescore this pass/.test(all),
+      'the "out of N" denominator must be the scoped week\'s population, not the whole sheet\'s row count');
+
+    // Unscoped mode is unchanged — both rows are still eligible, and reports
+    // against the sheet-wide count instead (this is deliberately not a
+    // "week" in that mode, so it's worded as rows, not calls-that-week).
     logged.length = 0;
     gas.rescoreAllCalls_(true, /*lastWeekOnly=*/false);
     const unscoped = logged.join('\n');
     assert.ok(/In Window/.test(unscoped) && /Two Months Ago/.test(unscoped),
       'the unscoped rescore must still cover all of history');
+    assert.ok(/2 row\(s\) out of 2 row\(s\) in the sheet need a rescore this pass/.test(unscoped));
   } finally {
     gas.log_ = originals.log;
     gas.SpreadsheetApp = originals.ss;
@@ -4480,7 +4493,7 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
     gas.rescoreAllCalls_(false);
 
     const joined = lines.join('\n');
-    assert.match(joined, /1 row\(s\) out of 1 need a rescore this pass/, 'must log the real scope up front, before any model call');
+    assert.match(joined, /1 row\(s\) out of 1 row\(s\) in the sheet need a rescore this pass/, 'must log the real scope up front, before any model call');
     assert.match(joined, /Queued: 1\. row 2 Logged Live \(Joana, QC/,
       'must list which row(s) are queued up front, not just a count (08/09/2026: "logging needs to be better")');
     assert.match(joined, /\[1\/1\] Rescoring row 2 \(Logged Live,.*calling the model now/,

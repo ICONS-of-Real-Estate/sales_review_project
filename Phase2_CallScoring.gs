@@ -1287,9 +1287,18 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
         ' - ' + Utilities.formatDate(shiftBusinessDate_(scopeWeek.end, CONFIG.BUSINESS_TIMEZONE, -1),
           CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + '; ' + skippedOutsideWeek + ' row(s) outside it untouched]'
       : '';
+    // Real confusion caused live (08/09/2026): "6 row(s) out of 454 need a
+    // rescore" read as "454 calls happened last week," when 454 is the
+    // WHOLE SHEET'S all-time row count — scopeWeek narrows what gets
+    // touched, not what this denominator counted. The scoped population
+    // (rows actually inside the week — here, 10) is what belongs in "out
+    // of N," with the sheet-wide total kept as separate, clearly-labeled
+    // context rather than silently standing in for it.
+    var scopedTotal = scopeWeek ? (values.length - skippedOutsideWeek) : values.length;
     log_((dryRun ? 'previewRescore' : 'rescore') + (scopeWeek ? 'LastWeekCalls' : 'AllCalls') + scopeLabel + ': ' +
-      eligible.length +
-      ' row(s) out of ' + values.length + ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
+      eligible.length + ' row(s) out of ' + scopedTotal +
+      (scopeWeek ? ' call(s) that week' : ' row(s) in the sheet') +
+      ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
       (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row.'));
 
     // Kris's ask (08/09/2026, after watching a 6-row live run print exactly
