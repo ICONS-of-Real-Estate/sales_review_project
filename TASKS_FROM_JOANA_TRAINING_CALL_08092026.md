@@ -292,3 +292,34 @@ himself to this too:
 
 _Compiled 08/09/2026 from the training call recording. Anything marked ⚠ needs a
 human decision before I touch it._
+
+
+---
+
+## Follow-up from Tomás, 08/09/2026 10:04 (Slack)
+
+> "Need to figure out a way of signaling leads that were converted and leads that booked a second call and leads that were sold. SO training adjust to the success. Stacie Staub is signaled as a 2/5 and this was the lead Joana closed by herself. Never even met the lady"
+
+**Stacie Staub specifically: already fixed.** That 2/5 was the Call Type bug
+(A1 above) — she scored 5 on the sales rubric, got relabelled `QC`, and the
+rescore re-graded her on the QC rubric. After the backfill and rescore she is
+**back to 5**.
+
+**The general ask is not built.** The training picker ranks on score and
+failed elements only and has no outcome signal, so a call the rep *closed*
+can still be picked as the week's coaching material. Written up with what it
+needs in `GHL_MIGRATION_PLAN.md` §15.1, since the outcome has to come from
+GHL stage rather than the still-empty `Outcome Disposition` column.
+
+
+---
+
+## Training-only transcript
+
+Same treatment as Sean's: `260908 Joana Training Call — Transcript.txt`, the
+coaching half of the session with the bug discussion removed — 153 of the
+call's 244 turns. Goes flat in the **Joana Training Calls** folder
+(`1N88gC2kYBU51Dpb277mdFaIsVxWblSS3`) for `findFlatTrainingTranscripts_`
+(`Phase6_TrainingCallReview.gs`) to pick up. Kept as loose files rather than
+committed to the repo — they are full recordings of a private session,
+including personal conversation that has nothing to do with the training.

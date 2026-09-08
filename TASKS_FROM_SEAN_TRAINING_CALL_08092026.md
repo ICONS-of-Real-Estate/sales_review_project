@@ -184,3 +184,15 @@ piece of work rather than three.
 ---
 
 _Compiled 08/09/2026 from the Sean training call recording. Coaching content from the same call is in `Discovery_Playbook_Sean.md`._
+
+---
+
+## Training-only transcript
+
+The coaching half of this session, with the system/bug discussion stripped
+out, is `260908 Sean Training Call — Transcript.txt` — 172 of the call's 220
+turns. It goes flat in the **Sean Training Calls** Drive folder
+(`1gbFSBxpEL-8YEnFzfZNidIrZF1hIsCTj`), where `findFlatTrainingTranscripts_`
+(`Phase6_TrainingCallReview.gs`) picks it up off the leading `260908` and the
+word "Transcript" in the name. Without the edit, Phase 6 would grade Kris and
+Tomás debugging call ratings as if it were coaching Sean.

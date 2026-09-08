@@ -537,3 +537,72 @@ free practice, and Phase 2 goes last.
   is answered would be guessing.
 - **No phase code changed.** The only code added so far is the read-only
   probe (`previewGhlPerCallObjects()`, `Phase9_GhlSync.gs`).
+
+## 15. Tomás's CRM notes, 08/09/2026 (Slack)
+
+Sent the morning after the two training calls, alongside the task lists in
+`TASKS_FROM_JOANA_TRAINING_CALL_08092026.md` and
+`TASKS_FROM_SEAN_TRAINING_CALL_08092026.md`.
+
+### 15.1 Signal the outcome, so training follows success
+
+> **Tomás, 10:04:** "Need to figure out a way of signaling leads that were converted and leads that booked a second call and leads that were sold. SO training adjust to the success. Stacie Staub is signaled as a 2/5 and this was the lead Joana closed by herself. Never even met the lady"
+
+Two separate things in there, and they need separating.
+
+**The Stacie Staub complaint is already fixed** — it was the Call Type bug
+(A1 in the Joana list). `scoreJoanaTranscripts` scored her on the sales
+rubric but labelled the row `QC`, so the morning's rescore re-dispatched her
+onto the QC rubric and took her 5 → 2. After the backfill and rescore on
+08/09 she is **back to 5**. Nothing further to do on that specific row.
+
+**The general ask stands and is not built.** The training picker
+(`buildTrainingPriorityRanking_` / `resolveTrainingFocusWithOverride_`,
+`Phase1_ComplianceCheck.gs`) currently ranks calls by score and failed
+elements only — it has no idea which calls *converted*. So a call the rep
+closed can still be surfaced as the week's coaching material, which is
+backwards: those are the calls to study, not correct. What's needed:
+
+- Outcome as a first-class signal on the row — **sold**, **second call
+  booked**, **converted** — populated from GHL stage rather than the
+  hand-typed `Outcome Disposition` (still 100% manual, 0% filled in; see
+  §"Outcome Disposition" above). `Flag: Booked 2nd Call w/ Tomás` already
+  exists and is judged per call; sold/converted do not.
+- The picker weighting on it: a call that converted is excluded from "where
+  the rep failed", and ideally surfaced separately as a worked example —
+  Tomás's own framing on the Joana call, about exactly this: *"we're gonna
+  have some calls that were successes… they can check which calls were —
+  what were the, how was the discovery call there? Because that's a winning
+  one."*
+
+Tracked as its own task; it depends on the GHL stage mapping in this
+document, which is why it's recorded here rather than in either task list.
+
+### 15.2 Answers to a five-point list
+
+Tomás answered a numbered list Kris had sent him as a screenshot. **The
+questions themselves were an image in Slack and are not in this repo** — so
+before acting on #2 in particular ("the first option" of what?), find the
+original message. His answers, verbatim:
+
+> **#1** Noted. We need to add tags then, it will take some time
+> **#2** would go with first option
+> **#3** noted
+> **#4** the contact s attached to the opportunity so any opportunity will see all the contact tags
+> **#5** of course the podcasts are different, that's why they have different pipelines
+
+What can be read off them without the questions:
+
+- **#1** confirms the tagging backfill is accepted work with a manual cost —
+  consistent with his position on the Sean call (§9 of that list): tagging is
+  automatic from now on for ICONS 100 on Bens's calendar, historical
+  opportunities need a supplied list.
+- **#4** is a real design fact worth keeping: **tags live on the contact, not
+  the opportunity**, and an opportunity sees all of its contact's tags. So a
+  tag-based join does not need to be repeated per opportunity — one contact
+  tag covers every pipeline that contact appears in. This matters for §B of
+  `GHL_PIPELINE_MAP.md` (the same lead existing in multiple pipelines under
+  name variants).
+- **#5** confirms the podcast pipelines are deliberately separate and should
+  not be merged: ICONS Podcast and the Icons Remarketing/Cold Calling boards
+  are different products, and the pipeline split is the intended modelling.
