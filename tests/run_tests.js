@@ -134,19 +134,31 @@ test('parseLegacyFilename_\'s .date round-trips to the SAME dateStr through load
   assert.equal(dtf.format(parsed.date), parsed.dateStr);
 });
 
-function fakeLegacyFolder_(fileNames) {
+function fakeLegacyFolder_(fileNames, siblingVideosByName) {
   const files = fileNames.map((name) => ({
     getName: () => name,
     getMimeType: () => 'text/plain',
     getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }),
     getUrl: () => 'https://drive.google.com/file/d/fake-' + name + '/view'
   }));
+  const siblings = siblingVideosByName || {};
   return {
     getFiles: () => {
       let i = 0;
       return { hasNext: () => i < files.length, next: () => files[i++] };
     },
-    getFolders: () => ({ hasNext: () => false, next: () => null })
+    getFolders: () => ({ hasNext: () => false, next: () => null }),
+    // Sibling video lookup (findSiblingFileUrl_/findSiblingFileCreatedDate_)
+    // — defaults to "no match found" (siblingVideosByName omitted), same as
+    // the real folder would report for a transcript with no paired video.
+    getFilesByName: (name) => {
+      const url = siblings[name];
+      let served = false;
+      return {
+        hasNext: () => url !== undefined && !served,
+        next: () => { served = true; return { getUrl: () => url, getDateCreated: () => new gas.Date() }; }
+      };
+    }
   };
 }
 
@@ -226,6 +238,68 @@ test('scoreLegacyTranscriptFolder logs an upfront scope count and a per-file pro
     gas.Utilities = originalUtilities;
     gas.Logger.log = originalLog;
     Date.now = originalDateNow;
+  }
+});
+
+test('findSiblingFileUrl_ finds the paired video\'s URL by exact name match, and returns null (never a guessed/constructed URL) when there is no sibling — real ask 09/09/2026, Tomás: "I\'m pretty sure that we can start putting even the recordings there [in the CRM]"', () => {
+  const found = { getFilesByName: (name) => {
+    if (name !== 'Frank Pirrone.mp4') return { hasNext: () => false };
+    let served = false;
+    return { hasNext: () => !served, next: () => { served = true; return { getUrl: () => 'https://drive.google.com/file/d/real-video/view' }; } };
+  } };
+  assert.equal(gas.findSiblingFileUrl_(found, 'Frank Pirrone.mp4'), 'https://drive.google.com/file/d/real-video/view');
+
+  const notFound = { getFilesByName: () => ({ hasNext: () => false }) };
+  assert.equal(gas.findSiblingFileUrl_(notFound, 'Nobody.mp4'), null);
+});
+
+test('scoreLegacyTranscriptFolder captures the sibling video\'s URL into the new "Recording URL" column when one exists in the same folder, and leaves it blank (not a crash, not a guess) when it does not — Kris, 09/09/2026, clarifying scope: "Sales calls and QCs are not done on Riverside. They\'re done on Zoom. It\'s icons one hundred with Bens that is done on Riverside." Either way the recording ends up as a sibling video file next to its transcript, which is what this actually reads', () => {
+  const existingRows = [];
+  const sheet = fakeLegacySheetFor_(existingRows);
+  // Mark Ryan has a real sibling video sitting next to the transcript;
+  // Tammy De Wolfe's transcript has no paired video at all (e.g. she was
+  // scored from a bare transcript upload) — both must be handled cleanly.
+  const folder = fakeLegacyFolder_(
+    ['2026-08-31_MarkRyan_Transcript.txt', '2026-09-02_TammyDeWolfe_Transcript.txt'],
+    { 'Mark Ryan': 'https://drive.google.com/file/d/mark-ryan-recording/view' }
+  );
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalUtilities = gas.Utilities;
+  const originalLog = gas.Logger.log;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFolderById: () => folder };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+    gas.Logger.log = () => {};
+
+    const judgeFn = () => ({
+      reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 5,
+      flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
+      delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+      primary_failure_mode: 'none', manual_review_recommended: false, severity: 1,
+      feedback_summary: 'scored'
+    });
+
+    gas.scoreLegacyTranscriptFolder('Bens', 'fake-folder-id', judgeFn);
+
+    const recordingUrlIndex = gas.SALES_CALL_LOG_HEADERS.indexOf('Recording URL');
+    assert.ok(recordingUrlIndex !== -1, 'precondition: the column must actually exist in the header list');
+    assert.equal(sheet._appended.length, 2);
+    const markRyanRow = sheet._appended.filter((r) => r[0] === 'Mark Ryan')[0];
+    const tammyRow = sheet._appended.filter((r) => r[0] === 'Tammy De Wolfe')[0];
+    assert.equal(markRyanRow[recordingUrlIndex], 'https://drive.google.com/file/d/mark-ryan-recording/view');
+    assert.equal(tammyRow[recordingUrlIndex], '', 'no sibling video found — must be blank, never a fabricated URL');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.Utilities = originalUtilities;
+    gas.Logger.log = originalLog;
   }
 });
 

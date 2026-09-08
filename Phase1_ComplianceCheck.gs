@@ -1753,7 +1753,20 @@ var SALES_CALL_LOG_HEADERS = [
   // a source that doesn't route through run_whisper_batch (Bens' Riverside
   // legacy folder, historical backfills) — same "no signal, never a
   // fabricated 0" convention as every other column added after the fact.
-  'Call Length (Minutes)'  // AN
+  'Call Length (Minutes)', // AN
+  // --- 09/09/2026: per Tomás on the Sean training call — "I'm pretty sure
+  // that we can start putting even the recordings there [in the CRM]." Kris
+  // confirmed the real split: Sales Calls and QCs are Zoom, never Riverside
+  // — only Bens' ICONS 100 recordings actually go through Riverside. Either
+  // way, by the time a call reaches this pipeline the recording is a video
+  // file sitting in Drive right next to its transcript (same folder,
+  // matching filename) — same mechanism the Call Date resolution already
+  // uses to find that sibling file (findSiblingFileCreatedDate_,
+  // Phase2_CallScoring.gs), just also reading its URL now
+  // (findSiblingFileUrl_, same file). Blank whenever no sibling video is
+  // found — never a guessed/constructed URL, same "no signal, not a
+  // fabricated value" convention as every column above. ---
+  'Recording URL'          // AO
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */

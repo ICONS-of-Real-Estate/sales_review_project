@@ -3282,7 +3282,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
       }
       var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr + '|' + normalize_(repName);
       if (existing[key]) { skippedExisting++; continue; }
-      eligible.push({ file: file, parsed: parsed });
+      eligible.push({ file: file, parsed: parsed, folder: files.currentFolder() });
     }
 
     log_('scoreLegacyTranscriptFolder(' + repName + '): ' + eligible.length + ' file(s) need scoring this ' +
@@ -3292,6 +3292,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
     var runStart = Date.now();
     eligible.forEach(function (item, i) {
       var file = item.file, parsed = item.parsed;
+      var recordingUrl = findSiblingFileUrl_(item.folder, parsed.prospectName) || '';
       log_('  [' + (i + 1) + '/' + eligible.length + '] Scoring "' + parsed.prospectName + '" (' +
         parsed.dateStr + ') — calling the model now...');
 
@@ -3354,7 +3355,14 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           bookingFields.appropriate,      // Flag: Booking Decision Appropriate
           bookingFields.gapText,           // Booking Decision Gap
           elevationFields.done,           // Flag: Elevation Done
-          elevationFields.gapText         // Elevation Gap
+          elevationFields.gapText,        // Elevation Gap
+          '',                             // Flag: Discovery Content Covered — n/a, not a Discovery call
+          '',                             // Discovery Content Gaps
+          '',                             // Flag: Payment Collected By Rep — n/a
+          '',                             // Payment Collected By Rep Gap
+          false,                          // GHL Review Synced — not yet synced
+          '',                             // Call Length (Minutes) — not captured on this path
+          recordingUrl                    // Recording URL — sibling video file, blank if none found
         ]);
 
         // Real bug found live (23/08/2026): this in-memory update was missing
@@ -3725,6 +3733,23 @@ function findSiblingFileCreatedDate_(folder, name) {
 }
 
 /**
+ * Same exact-name sibling lookup as findSiblingFileCreatedDate_, reading the
+ * URL instead of the creation date — added 09/09/2026 to populate the new
+ * "Recording URL" column (Phase1_ComplianceCheck.gs's SALES_CALL_LOG_HEADERS
+ * — see that column's own comment for why: Tomás wants recordings in GHL
+ * alongside the transcript, and by this point in the pipeline the recording
+ * is just the video file sitting next to its transcript in the same Drive
+ * folder). Null if no sibling video is found — never guessed or
+ * constructed, same policy as every other "best-effort, blank on
+ * uncertainty" lookup in this file.
+ */
+function findSiblingFileUrl_(folder, name) {
+  var candidates = folder.getFilesByName(name);
+  if (candidates.hasNext()) return candidates.next().getUrl();
+  return null;
+}
+
+/**
  * Best-effort real call date for a legacy transcript: a date parsed from the
  * title wins if present; otherwise falls back to the paired video's own
  * creation date; otherwise (no sibling video found — shouldn't normally
@@ -3851,6 +3876,7 @@ function scoreSeanTranscripts() {
         try {
           var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var recordingUrl = findSiblingFileUrl_(files.currentFolder(), prospectName) || '';
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // normalize_(cleanProspectNameForSheet_(...)), not the raw prospectName:
       // the sheet's own Prospect Name column holds the cleaned value (see
@@ -3921,7 +3947,14 @@ function scoreSeanTranscripts() {
             bookingFields.appropriate,       // Flag: Booking Decision Appropriate
             bookingFields.gapText,            // Booking Decision Gap
             elevationFields.done,            // Flag: Elevation Done
-            elevationFields.gapText          // Elevation Gap
+            elevationFields.gapText,         // Elevation Gap
+            '',                               // Flag: Discovery Content Covered — n/a, not a Discovery call
+            '',                               // Discovery Content Gaps
+            '',                               // Flag: Payment Collected By Rep — n/a
+            '',                               // Payment Collected By Rep Gap
+            false,                            // GHL Review Synced — not yet synced
+            '',                               // Call Length (Minutes) — not captured on this path
+            recordingUrl                      // Recording URL — sibling video file, blank if none found
           ]);
 
           // existing[] would go stale for the rest of THIS run's own folder
@@ -4080,6 +4113,7 @@ function scoreJoanaTranscripts() {
         try {
           var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var recordingUrl = findSiblingFileUrl_(files.currentFolder(), prospectName) || '';
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // See the identical comment on the Sean key above — cleaned name, not raw.
       var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Joana');
@@ -4143,7 +4177,14 @@ function scoreJoanaTranscripts() {
             bookingFields.appropriate,        // Flag: Booking Decision Appropriate
             bookingFields.gapText,             // Booking Decision Gap
             elevationFields.done,             // Flag: Elevation Done
-            elevationFields.gapText           // Elevation Gap
+            elevationFields.gapText,          // Elevation Gap
+            '',                               // Flag: Discovery Content Covered — n/a, not a Discovery call
+            '',                               // Discovery Content Gaps
+            '',                               // Flag: Payment Collected By Rep — n/a
+            '',                               // Payment Collected By Rep Gap
+            false,                            // GHL Review Synced — not yet synced
+            '',                               // Call Length (Minutes) — not captured on this path
+            recordingUrl                      // Recording URL — sibling video file, blank if none found
           ]);
 
           existing[key] = true;
@@ -4596,6 +4637,7 @@ function scoreTomasTranscripts() {
         try {
           var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
+          var recordingUrl = findSiblingFileUrl_(files.currentFolder(), prospectName) || '';
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // See the identical comment on the Sean key above — cleaned name, not raw.
           var key = normalize_(cleanProspectNameForSheet_(prospectName)) + '|' + dateStr + '|' + normalize_('Tomás');
@@ -4660,7 +4702,14 @@ function scoreTomasTranscripts() {
             bookingFields.appropriate,          // Flag: Booking Decision Appropriate
             bookingFields.gapText,               // Booking Decision Gap
             elevationFields.done,                // Flag: Elevation Done
-            elevationFields.gapText              // Elevation Gap
+            elevationFields.gapText,             // Elevation Gap
+            '',                               // Flag: Discovery Content Covered — n/a, not a Discovery call
+            '',                               // Discovery Content Gaps
+            '',                               // Flag: Payment Collected By Rep — n/a
+            '',                               // Payment Collected By Rep Gap
+            false,                            // GHL Review Synced — not yet synced
+            '',                               // Call Length (Minutes) — not captured on this path
+            recordingUrl                      // Recording URL — sibling video file, blank if none found
           ]);
 
           existing[key] = true;
