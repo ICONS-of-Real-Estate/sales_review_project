@@ -104,23 +104,54 @@
 {% endif %}
 
 <h2>All calls</h2>
+<div style="display:flex; gap:0.5rem; margin-bottom:0.75rem;">
+  <a href="/reps/{{ rep }}" class="{{ 'muted' if call_type_filter else '' }}" style="{{ '' if not call_type_filter else 'text-decoration:underline;' }}">All</a>
+  <a href="/reps/{{ rep }}?call_type=QC" class="{{ 'muted' if call_type_filter != 'QC' else '' }}" style="{{ '' if call_type_filter == 'QC' else 'text-decoration:underline;' }}">QC</a>
+  <a href="/reps/{{ rep }}?call_type=Sales%20Call" class="{{ 'muted' if call_type_filter != 'Sales Call' else '' }}" style="{{ '' if call_type_filter == 'Sales Call' else 'text-decoration:underline;' }}">Sales Call</a>
+</div>
 <table>
   <thead>
-    <tr><th>Prospect</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Outcome</th><th>Close?</th><th>Objections?</th><th>Framework</th><th>Failure mode</th><th>Why</th></tr>
+    <tr>
+      <th>Prospect</th>
+      <th>Date</th>
+      <th>Type</th>
+      <th title="good_to_book: the AI judge thinks this lead is worth continuing to pursue. should_screen_out: the judge thinks this lead should be dropped. Note: a call where automated scoring itself failed (see the ⚠ badge in Why) always shows good_to_book here too — that's a fallback placeholder, not a real judgment.">Verdict</th>
+      <th title="Click a score to read the AI's full write-up for that call.">Score</th>
+      <th>Outcome</th>
+      <th title="Did the rep explicitly ask for the booking/commitment on this call? This is NOT whether the deal closed — see Outcome for that.">Asked close?</th>
+      <th title="Yes only when objections came up AND the rep fully overcame them. No is ambiguous by itself — it means EITHER no objections came up, OR they came up and weren't handled. Click the score to read the write-up for which one actually happened.">Objections?</th>
+      <th title="The three pieces of ICONS' pitch framework this rubric checks: recruit agents, ICONS is the #1 podcast, sell more houses. ✓ = all three covered. Otherwise shows which piece(s) were missed. Bens' podcast-interview calls use a different framework entirely, so this column doesn't apply to him.">Framework</th>
+      <th>Failure mode</th>
+      <th>Why</th>
+    </tr>
   </thead>
   <tbody>
     {% for c in calls %}
     <tr>
-      <td>{% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
-      <td>{{ c.call_date }}</td>
+      <td>
+        {% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}
+        {% if c.looks_like_raw_filename %}<span class="muted" title="No name match was ever found for this call (not even the fuzzy fallback) — this is the raw recording filename, not a real prospect name.">⚠</span>{% endif %}
+      </td>
+      <td>{{ c.call_date_short }}</td>
       <td>{{ c.call_type or "—" }}</td>
       <td>{{ c.lead_quality_verdict or "—" }}</td>
-      <td>{{ c.call_quality_score if c.call_quality_score is not none else "—" }}</td>
-      <td>{{ c.outcome_disposition or "—" }}</td>
+      <td>
+        {% if c.call_quality_score is not none %}
+        <button type="button" class="feedback-open" data-feedback="{{ c.full_feedback or '' }}"
+          data-title="{{ c.prospect_name or '(unnamed)' }} — {{ c.call_date }}"
+          style="all: unset; cursor: pointer; text-decoration: underline; text-decoration-style: dotted;"
+          title="Click to see the full AI review of this call">{{ c.call_quality_score }}</button>
+        {% else %}—{% endif %}
+      </td>
+      <td>{% if c.outcome_disposition %}{{ c.outcome_disposition }}{% else %}<span class="muted" title="Reps hand-log this on the Sales Call Log sheet after the fact — most calls don't have one logged yet.">not logged</span>{% endif %}</td>
       <td>{{ "Yes" if c.flag_asked_for_close else "No" }}</td>
       <td>{{ "Yes" if c.flag_objections_handled else "No" }}</td>
       <td>{% if c.flag_framework_explained %}<span title="All three covered">✓</span>{% elif c.framework_gaps %}<span class="clamp-text" style="max-width:180px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>{% else %}—{% endif %}</td>
-      <td>{{ c.primary_failure_mode or "—" }}</td>
+      <td>
+        {% if c.parse_failed %}
+        <span title="Automated scoring failed twice on this call and never actually ran — this row's Primary Failure Mode/Verdict are meaningless placeholders, not real judgments. Fix: run previewFailedParseRows() then deleteFailedParseRows() in Phase2_CallScoring.gs, then let the normal scoring pass re-score it for real.">⚠ needs rescoring</span>
+        {% else %}{{ c.primary_failure_mode or "—" }}{% endif %}
+      </td>
       <td style="max-width: 320px;"><span class="clamp-text" title="{{ c.ai_feedback_summary or '' }}">{{ c.ai_feedback_summary or "—" }}</span></td>
     </tr>
     {% else %}
@@ -128,6 +159,34 @@
     {% endfor %}
   </tbody>
 </table>
+
+<dialog id="feedback-dialog" style="max-width: 560px; width: 90%; border-radius: 10px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4; padding: 1.25rem 1.5rem;">
+  <div style="display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.75rem;">
+    <strong id="feedback-dialog-title" style="font-size: 0.95rem;"></strong>
+    <button type="button" id="feedback-dialog-close" style="all: unset; cursor: pointer; color: #9aa4bb; font-size: 1.1rem; line-height: 1;">✕</button>
+  </div>
+  <div id="feedback-dialog-body" style="white-space: pre-wrap; line-height: 1.5;"></div>
+</dialog>
+<script>
+  (function () {
+    var dialog = document.getElementById('feedback-dialog');
+    var title = document.getElementById('feedback-dialog-title');
+    var body = document.getElementById('feedback-dialog-body');
+    document.querySelectorAll('.feedback-open').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        title.textContent = btn.dataset.title || '';
+        body.textContent = btn.dataset.feedback || '';
+        dialog.showModal();
+      });
+    });
+    document.getElementById('feedback-dialog-close').addEventListener('click', function () {
+      dialog.close();
+    });
+    dialog.addEventListener('click', function (e) {
+      if (e.target === dialog) dialog.close();
+    });
+  })();
+</script>
 
 <script src="/static/chart.umd.min.js"></script>
 <script>

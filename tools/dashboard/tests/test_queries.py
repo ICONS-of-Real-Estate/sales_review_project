@@ -348,12 +348,59 @@ class TestFilteredCalls:
         assert "<mark>" in row["snippet"], "the trusted highlight wrapper itself must still render as real HTML"
 
 
+class TestCallDateShort:
+    def test_formats_as_day_month_abbrev(self):
+        assert app_module.call_date_short("02/09/2026") == "2 Sep"
+        assert app_module.call_date_short("31/12/2026") == "31 Dec"
+
+    def test_falls_back_to_raw_string_when_unparseable(self):
+        assert app_module.call_date_short("not a date") == "not a date"
+
+    def test_falls_back_to_dash_for_blank(self):
+        assert app_module.call_date_short("") == "—"
+        assert app_module.call_date_short(None) == "—"
+
+
 class TestRepDetail:
     def test_returns_only_that_reps_calls_most_recent_first(self, seeded_db):
         calls = app_module.rep_detail("Alice")
         assert len(calls) == 3
         dates = [c["call_date"] for c in calls]
         assert dates == sorted(dates, key=app_module.parse_call_date, reverse=True)
+
+    def test_call_type_filter_restricts_to_the_raw_call_type(self, db_path, conn):
+        insert_call(conn, rep="Alice", call_type="QC", prospect_name="A QC Call")
+        insert_call(conn, rep="Alice", call_type="Sales Call", prospect_name="A Sales Call")
+        conn.commit()
+        assert [c["prospect_name"] for c in app_module.rep_detail("Alice", call_type="QC")] == ["A QC Call"]
+        assert [c["prospect_name"] for c in app_module.rep_detail("Alice", call_type="Sales Call")] == ["A Sales Call"]
+        assert len(app_module.rep_detail("Alice")) == 2
+
+    def test_flags_the_parse_failure_placeholder_row_specifically(self, db_path, conn):
+        insert_call(
+            conn, rep="Alice",
+            ai_feedback_summary="Automated scoring failed twice to return parseable JSON; needs manual review.",
+        )
+        insert_call(conn, rep="Alice", ai_feedback_summary="A normal real review with no failure mode issues.")
+        conn.commit()
+        calls = app_module.rep_detail("Alice")
+        by_feedback = {c["ai_feedback_summary"]: c["parse_failed"] for c in calls}
+        assert by_feedback["Automated scoring failed twice to return parseable JSON; needs manual review."] is True
+        assert by_feedback["A normal real review with no failure mode issues."] is False
+
+    def test_flags_a_prospect_name_still_shaped_like_a_raw_zoom_filename(self, db_path, conn):
+        insert_call(conn, rep="Alice", prospect_name="GMT20260818-162813_Recording_640x360")
+        insert_call(conn, rep="Alice", prospect_name="Bruce Henson")
+        conn.commit()
+        calls = app_module.rep_detail("Alice")
+        by_name = {c["prospect_name"]: c["looks_like_raw_filename"] for c in calls}
+        assert by_name["GMT20260818-162813_Recording_640x360"] is True
+        assert by_name["Bruce Henson"] is False
+
+    def test_full_feedback_mirrors_ai_feedback_summary_for_the_modal(self, db_path, conn):
+        insert_call(conn, rep="Alice", ai_feedback_summary="Some real feedback text.")
+        conn.commit()
+        assert app_module.rep_detail("Alice")[0]["full_feedback"] == "Some real feedback text."
 
 
 class TestLeaderboard:

@@ -15,6 +15,7 @@ Run with: uvicorn app:app --host <bind-host> --port 8000
 import html
 import json
 import os
+import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -830,18 +831,72 @@ def leaderboard():
     return out
 
 
-def rep_detail(rep):
+# Must match PARSE_FAILURE_MARKER_ in Phase2_CallScoring.gs exactly — the
+# fixed feedback-summary prefix stamped on the fabricated placeholder row
+# scoreTranscript_ writes when the judge model fails to return parseable
+# JSON twice in a row. That row's own Primary Failure Mode is hardcoded to
+# 'none' (a lie — it was never actually scored) and Lead Quality Verdict to
+# 'good_to_book' (same reason) — Kris's real question on seeing one of
+# these ("what needs to be done?") is answered by Phase2_CallScoring.gs's
+# own previewFailedParseRows()/deleteFailedParseRows(): delete the
+# placeholder row so the next scoring pass picks the transcript back up and
+# scores it for real, rather than reading anything on this row as a genuine
+# verdict.
+PARSE_FAILURE_MARKER = "Automated scoring failed twice to return parseable JSON"
+
+# Zoom's own recording-filename convention (GMTyyyyMMdd-HHMMSS_Recording...) —
+# what tools/transcribe_*.py's file names look like before any name-matching
+# happens. A Prospect Name still in this shape means no match (exact_key or
+# fallback_heuristic) ever replaced it with a real name.
+RAW_RECORDING_FILENAME_RE = re.compile(r"^GMT\d{8}-\d{6}")
+
+
+def call_date_short(raw):
+    """dd/MM/yyyy (or whatever parse_call_date already handles) rendered as
+    'D Mon' (e.g. "2 Sep") — Kris's ask (08/09/2026): "Date can just be
+    short 2nd Sep." Falls back to the raw string if it doesn't parse, so a
+    genuinely malformed date still shows something rather than going blank."""
+    d = parse_call_date(raw)
+    return f"{d.day} {d.strftime('%b')}" if d else (raw or "—")
+
+
+def rep_detail(rep, call_type=""):
+    """`call_type` optionally restricts to one raw Call Type value (Kris's
+    ask, 08/09/2026: "Split calls All / QC / Sales Call" tabs on the rep
+    page) — matches the raw column, not _display_call_type's Tomás-specific
+    "2nd Sales Call (Closing)" relabeling, since the tabs are meant to be
+    the same three plain choices for every rep."""
     conn = get_conn()
-    rows = conn.execute(
+    sql = (
         "SELECT prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
         "flag_asked_for_close, flag_objections_handled, primary_failure_mode, manual_review_recommended, "
-        "ai_feedback_summary, transcript_url, outcome_disposition, flag_framework_explained, framework_gaps "
-        "FROM sales_call_log WHERE rep = ?",
-        (rep,),
-    ).fetchall()
+        "ai_feedback_summary, transcript_url, outcome_disposition, flag_framework_explained, framework_gaps, "
+        "match_method "
+        "FROM sales_call_log WHERE rep = ?"
+    )
+    params = [rep]
+    if call_type:
+        sql += " AND call_type = ?"
+        params.append(call_type)
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     calls = [dict(r) for r in rows]
     calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
+    for c in calls:
+        c["call_date_short"] = call_date_short(c["call_date"])
+        c["full_feedback"] = c["ai_feedback_summary"]
+        # A row scored for real can still legitimately have Primary Failure
+        # Mode == 'none' (nothing was wrong) — only the parse-failure
+        # placeholder's specific summary text means "this 'none' is fake."
+        c["parse_failed"] = bool(c["ai_feedback_summary"]) and c["ai_feedback_summary"].startswith(PARSE_FAILURE_MARKER)
+        # Kris's ask: "GMT20260818-... some don't have a name." Detected by
+        # shape, not match_method — fallback_heuristic can still land a real
+        # fuzzy-matched name, so match_method alone would over-flag those.
+        # This only catches the specific case Kris saw: the raw Zoom
+        # recording filename (GMTyyyyMMdd-HHMMSS_Recording...) was never
+        # replaced with a real name at all, because nothing — heuristic
+        # included — found one to match against.
+        c["looks_like_raw_filename"] = bool(RAW_RECORDING_FILENAME_RE.match(c["prospect_name"] or ""))
     return calls
 
 
@@ -1137,8 +1192,8 @@ def rep_playbook(rep):
 
 
 @app.get("/reps/{rep}", response_class=HTMLResponse)
-def rep_detail_page(request: Request, rep: str):
-    calls = rep_detail(rep)
+def rep_detail_page(request: Request, rep: str, call_type: str = ""):
+    calls = rep_detail(rep, call_type=call_type)
     total = len(calls)
     scored = [c for c in calls if c["call_quality_score"] is not None]
     avg_score = round(sum(c["call_quality_score"] for c in scored) / len(scored), 2) if scored else None
@@ -1152,6 +1207,7 @@ def rep_detail_page(request: Request, rep: str):
             "total": total,
             "avg_score": avg_score,
             "calls": calls,
+            "call_type_filter": call_type,
             "score_over_time": _rep_score_series(rep),
             "outcomes": outcome_breakdown(rep),
             "outcome_missing_key": OUTCOME_MISSING,

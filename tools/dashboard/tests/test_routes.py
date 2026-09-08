@@ -50,6 +50,24 @@ def test_rep_detail_page_for_unknown_rep_still_200s(client, seeded_db):
     assert resp.status_code == 200
 
 
+def test_rep_detail_page_call_type_tabs_filter_the_calls_table(client, db_path, conn):
+    """Kris's ask (08/09/2026): "Split calls All / QC / Sales Call.\""""
+    insert_call(conn, rep="Alice", call_type="QC", prospect_name="A QC Call")
+    insert_call(conn, rep="Alice", call_type="Sales Call", prospect_name="A Sales Call")
+    conn.commit()
+
+    resp_all = client.get("/reps/Alice")
+    assert "A QC Call" in resp_all.text and "A Sales Call" in resp_all.text
+
+    resp_qc = client.get("/reps/Alice", params={"call_type": "QC"})
+    assert "A QC Call" in resp_qc.text
+    assert "A Sales Call" not in resp_qc.text
+
+    resp_sales = client.get("/reps/Alice", params={"call_type": "Sales Call"})
+    assert "A Sales Call" in resp_sales.text
+    assert "A QC Call" not in resp_sales.text
+
+
 class TestTrainingPriorityOverride:
     """Kris's ask (07/09/2026): "every Tuesday morning... tell him what the
     priority is for each sales rep... if he does nothing, it goes with that.
