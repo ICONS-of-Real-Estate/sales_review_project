@@ -131,6 +131,19 @@ SALES_CALL_LOG_COLUMNS = {
     # before that was tracked.
     "Flag: Booking Decision Appropriate": "flag_booking_decision_appropriate",
     "Call Length (Minutes)": "call_length_minutes",
+    # Added 08/09/2026. These four have existed in the Sales Call Log since
+    # the discovery/delivery rubric shipped (Phase2_CallScoring.gs's
+    # deriveDiscoveryFields_/deriveDeliveryFields_), but were never added
+    # here — so the dashboard mirror has never carried them at all, and no
+    # dashboard page could show discovery or delivery even when the sheet
+    # had it. Found while chasing "Tomas is meant to be training discovery"
+    # (Kris, 08/09/2026). Tri-state like flag_booking_decision_appropriate:
+    # blank means "not graded on this call", never a pass and never a
+    # failure — see NULLABLE_BOOLEAN_COLUMNS below.
+    "Flag: Discovery Adequate": "flag_discovery_adequate",
+    "Discovery Gaps": "discovery_gaps",
+    "Flag: Delivery Effective": "flag_delivery_effective",
+    "Delivery Gaps": "delivery_gaps",
 }
 
 # Bens doesn't take Sales Calls (CLAUDE.md "Who does what") — his real
@@ -262,7 +275,17 @@ BOOLEAN_COLUMNS = {
 # corrupting any rate computed from this column — same "no signal != false"
 # bug class Phase5_WeeklyScorecard.gs's own isExplicitlyFalse_ exists to
 # avoid. Stored as NULL/1/0 instead of always 1/0.
-NULLABLE_BOOLEAN_COLUMNS = {"flag_booking_decision_appropriate"}
+# Discovery/delivery are tri-state for the same reason and then some: the QC
+# rubric legitimately never scores some discovery keys, and a row scored
+# before those columns existed has a blank. Apps Script's own reader
+# (trainingElementFlagsForRow_, Phase1_ComplianceCheck.gs) treats blank as
+# "not graded" — the mirror must agree, or the dashboard and the weekly
+# playbook email will disagree about the same call.
+NULLABLE_BOOLEAN_COLUMNS = {
+    "flag_booking_decision_appropriate",
+    "flag_discovery_adequate",
+    "flag_delivery_effective",
+}
 INT_COLUMNS = {
     "call_quality_score", "severity", "queue_age", "nag_count", "calls_this_week",
     "missing_outcome_disposition", "sheet_row",
@@ -425,7 +448,9 @@ def init_schema(conn):
             manual_review_recommended INTEGER, severity INTEGER, ai_feedback_summary TEXT,
             reviewed_by_kris TEXT, queue_age INTEGER, kris_manual_review_verdict TEXT,
             primary_failure_mode TEXT, flag_framework_explained INTEGER, framework_gaps TEXT,
-            flag_booking_decision_appropriate INTEGER, call_length_minutes REAL
+            flag_booking_decision_appropriate INTEGER, call_length_minutes REAL,
+            flag_discovery_adequate INTEGER, discovery_gaps TEXT,
+            flag_delivery_effective INTEGER, delivery_gaps TEXT
         );
         CREATE TABLE IF NOT EXISTS bens_podcast_tracker (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -513,6 +538,10 @@ def init_schema(conn):
     _add_column_if_missing(conn, "lead_reconciliation", "needs_more_info", "INTEGER")
     # 07/09/2026: rep roster stats (closing rate, booking rate, call length).
     _add_column_if_missing(conn, "sales_call_log", "flag_booking_decision_appropriate", "INTEGER")
+    _add_column_if_missing(conn, "sales_call_log", "flag_discovery_adequate", "INTEGER")
+    _add_column_if_missing(conn, "sales_call_log", "discovery_gaps", "TEXT")
+    _add_column_if_missing(conn, "sales_call_log", "flag_delivery_effective", "INTEGER")
+    _add_column_if_missing(conn, "sales_call_log", "delivery_gaps", "TEXT")
     _add_column_if_missing(conn, "sales_call_log", "call_length_minutes", "REAL")
     conn.commit()
 

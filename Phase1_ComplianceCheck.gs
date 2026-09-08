@@ -3324,20 +3324,20 @@ function namedTrainingFocusFromRanking_(ranking, label) {
  *   - scored > 0 && failed === 0: it WAS graded and the rep passed every
  *     one. A real, positive result.
  *
- * Either way the session still needs material, so this falls back to
- * `autoFocus` — precisely what would have been sent had Tomás set no
- * override at all. Deliberately NOT "whatever element failed the most"
- * (ranking[0]): autoFocus already encodes the policy Kris signed off on
- * (the team-wide WEEKLY_TRAINING_ROTATION_ topic, unless something is
- * urgent enough to deviate per TRAINING_URGENT_OVERRIDE_CONFIG_), so
- * reusing it keeps ONE rule for "what does this rep train on" instead of
- * inventing a second, competing one. Nothing is hidden by that choice
- * either — the email's own "All elements, worst first" list carries every
- * element's real numbers regardless of which one is the focus.
+ * Kris's decision, restated twice on 08/09/2026 after seeing an earlier
+ * version of this function quietly retarget the session ("Joana still came
+ * back as NOT discovery"; "Tomas is meant to be training discovery"): an
+ * override ALWAYS wins. If Tomás picked Discovery, the session is Discovery
+ * — the picker is the human, and a week with no graded discovery data is a
+ * reason to go look at the calls, not a reason for the bot to overrule him
+ * and train something else. So this no longer substitutes `autoFocus`; it
+ * returns Tomás's pick, tagged with WHY it has no graded failures behind
+ * it, and buildAndMaybeSendPlaybookReview_ answers the "he needs a
+ * breakdown of who the leads were and where the rep failed" half by
+ * listing the rep's whole week of calls under that focus rather than
+ * sending a contentless email.
  *
- * The override is never silently discarded: whichever way this goes, the
- * returned focus carries overrideRequestedLabel/overrideFallbackReason so
- * the email can tell Tomás his pick didn't apply and exactly why.
+ * `autoFocus` is still the answer when no override is set at all.
  */
 function resolveTrainingFocusWithOverride_(ranking, overrideLabel, autoFocus) {
   if (!overrideLabel) return autoFocus;
@@ -3345,32 +3345,13 @@ function resolveTrainingFocusWithOverride_(ranking, overrideLabel, autoFocus) {
   var overrideFocus = namedTrainingFocusFromRanking_(ranking, overrideLabel);
   if (overrideFocus.failedCalls && overrideFocus.failedCalls.length) return overrideFocus;
 
-  var reason = overrideFocus.scored ? 'all_passed' : 'not_graded';
-  var autoHasMaterial = !!(autoFocus && autoFocus.failedCalls && autoFocus.failedCalls.length);
-
-  if (!autoHasMaterial) {
-    // Nothing to fall back TO either — a genuinely clean (or wholly
-    // ungraded) week. Keep Tomás's own pick as the label, but still record
-    // why it had nothing, so the "no flagged calls" email can say so rather
-    // than reading identically to a week where he set no override at all.
-    overrideFocus.overrideRequestedLabel = overrideLabel;
-    overrideFocus.overrideRequestedScored = overrideFocus.scored;
-    overrideFocus.overrideFallbackReason = reason;
-    overrideFocus.overrideFellBack = false;
-    return overrideFocus;
-  }
-
-  var fallback = {};
-  Object.keys(autoFocus).forEach(function (k) { fallback[k] = autoFocus[k]; });
-  // The fallback is NOT Tomás's manual pick — saying so would make the
-  // email claim he chose this. playbookFocusNote_ below keys off
-  // overrideFellBack ahead of isManualOverride for exactly this reason.
-  fallback.isManualOverride = false;
-  fallback.overrideRequestedLabel = overrideLabel;
-  fallback.overrideRequestedScored = overrideFocus.scored;
-  fallback.overrideFallbackReason = reason;
-  fallback.overrideFellBack = true;
-  return fallback;
+  // No graded failures behind the pick. Keep the pick; record which of the
+  // two very different reasons it is, so the email says the true one.
+  overrideFocus.overrideRequestedLabel = overrideLabel;
+  overrideFocus.overrideRequestedScored = overrideFocus.scored;
+  overrideFocus.overrideFallbackReason = overrideFocus.scored ? 'all_passed' : 'not_graded';
+  overrideFocus.overrideFellBack = false;
+  return overrideFocus;
 }
 
 /**
@@ -3383,13 +3364,12 @@ function resolveTrainingFocusWithOverride_(ranking, overrideLabel, autoFocus) {
  */
 function playbookFocusNote_(focus) {
   if (!focus) return '';
-  if (focus.overrideFellBack) {
+  if (focus.isManualOverride && focus.overrideFallbackReason) {
     return focus.overrideFallbackReason === 'all_passed'
-      ? ' — you picked "' + focus.overrideRequestedLabel + '" via the dashboard, but all ' +
-        focus.overrideRequestedScored + ' graded call(s) passed it, so this is the ' +
-        'auto-computed focus instead'
-      : ' — you picked "' + focus.overrideRequestedLabel + '" via the dashboard, but no call was graded ' +
-        'on it, so this is the auto-computed focus instead';
+      ? ' — you set this via the dashboard; all ' + focus.overrideRequestedScored +
+        ' graded call(s) passed it, so nothing was flagged automatically'
+      : ' — you set this via the dashboard; no call was graded on it, so nothing could be flagged ' +
+        'automatically';
   }
   if (focus.isManualOverride) return ' — you set this manually via the dashboard';
   if (focus.isUrgentOverride) return ' — urgent override; this week\'s scheduled topic is "' + focus.scheduleLabel + '"';
@@ -3581,6 +3561,75 @@ function runWeeklyPlaybookReviewFinal() {
   }
 }
 
+/**
+ * Diagnostic, read-only, sends nothing. Answers one question with real
+ * numbers instead of theory: for last week, which training elements does
+ * each rep actually have GRADES for?
+ *
+ * Written 08/09/2026 because "Discovery: 0 of 0" on Joana's playbook email
+ * has two completely different explanations — the rubric variant used for
+ * her calls doesn't score discovery, or those rows were scored before the
+ * discovery columns existed and were never rescored — and they need
+ * opposite fixes (a rubric change vs. a `rescoreLastWeekCalls()` run). Per
+ * row it prints the rep, date, call type, rubric version, score, and which
+ * elements carry a real boolean, so the answer is visible rather than
+ * inferred.
+ */
+function previewTrainingElementCoverage() {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var logSheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!logSheet) { log_('previewTrainingElementCoverage: no Sales Call Log tab found.'); return; }
+
+  var col = getValidatedColumnMap_(logSheet);
+  var lastRow = logSheet.getLastRow();
+  var rows = lastRow < 2 ? [] : logSheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var tz = CONFIG.BUSINESS_TIMEZONE;
+  var week = getWeekBounds_(new Date(), tz);
+  var windowLabel = Utilities.formatDate(week.start, tz, 'dd/MM/yyyy') + ' - ' +
+    Utilities.formatDate(shiftBusinessDate_(week.end, tz, -1), tz, 'dd/MM/yyyy');
+
+  log_('previewTrainingElementCoverage: week of ' + windowLabel + '. "graded" means the flag cell holds a ' +
+    'real TRUE/FALSE; blank is "not graded" and is never counted as a pass or a failure.');
+
+  CONFIG.REPS.forEach(function (repCfg) {
+    var lines = [];
+    var totals = {};
+    TRAINING_PRIORITY_ELEMENTS_.forEach(function (el) { totals[el.key] = 0; });
+
+    rows.forEach(function (row, i) {
+      if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== repCfg.name.toLowerCase()) return;
+      var callDate = row[col['Call Date'] - 1];
+      if (!(callDate instanceof Date) || callDate < week.start || callDate >= week.end) return;
+
+      var judged = trainingElementFlagsForRow_(row, col);
+      var graded = [], ungraded = [];
+      TRAINING_PRIORITY_ELEMENTS_.forEach(function (el) {
+        if (judged.flags[el.key] === true || judged.flags[el.key] === false) {
+          graded.push(el.key + '=' + judged.flags[el.key]);
+          totals[el.key]++;
+        } else {
+          ungraded.push(el.key);
+        }
+      });
+      lines.push('    row ' + (i + 2) + ' ' + Utilities.formatDate(callDate, tz, 'dd/MM') + ' ' +
+        (row[col['Call Type'] - 1] || 'QC') + ' "' + row[col['Prospect Name'] - 1] + '"' +
+        ' score=' + row[col['Call Quality Score'] - 1] +
+        ' rubric=' + (row[col['Rubric Version'] - 1] || '(none)') +
+        ' | graded: ' + (graded.length ? graded.join(', ') : 'NOTHING') +
+        (ungraded.length ? ' | blank: ' + ungraded.join(', ') : ''));
+    });
+
+    log_('  ' + repCfg.name + ': ' + lines.length + ' call(s) last week. Graded counts — ' +
+      TRAINING_PRIORITY_ELEMENTS_.map(function (el) {
+        return el.label + ': ' + totals[el.key] + '/' + lines.length;
+      }).join(', ') + (lines.length ? '\n' + lines.join('\n') : ''));
+  });
+
+  log_('previewTrainingElementCoverage: done. An element showing 0/N for a rep with calls means those rows ' +
+    'carry no grade for it — rescoreLastWeekCalls() (Phase2_CallScoring.gs) is what backfills that, and it ' +
+    'only touches rows whose Rubric Version is behind the current one.');
+}
+
 /** `stage` is 'reminder' or 'final' (defaults to 'final' — the plain, unprefixed subject, matching this function's behavior before the two-stage schedule existed) — see PLAYBOOK_REVIEW_CONFIG's own header comment. */
 function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
   stage = stage || 'final';
@@ -3678,13 +3727,20 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
     // for THIS rep, THIS week wins over both the rotation and any urgent
     // override the auto-computed path already applied.
     var overrideLabel = findTrainingPriorityOverride_(overrideRows, repCfg.name, weekStartLabel);
-    // An override that names an element with nothing to show falls back to
-    // the auto-computed focus rather than silently emptying the email —
-    // see resolveTrainingFocusWithOverride_'s own header for the live bug
-    // (Joana/Discovery, 08/09/2026) that made this necessary.
+    // An override always wins, even over an element with no graded data —
+    // see resolveTrainingFocusWithOverride_'s own header.
     focus = resolveTrainingFocusWithOverride_(ranking, overrideLabel, focus);
 
+    // Kris, 08/09/2026: "He needs a breakdown of who the leads were and
+    // where the rep failed." Nothing automatically flagged for the chosen
+    // focus does NOT mean there is nothing to send — a rep who had calls
+    // gets those calls listed, with transcript and sheet-row links, so
+    // Tomás can work the focus off the real week either way. The
+    // contentless email is now reserved strictly for a rep with no calls
+    // at all, which is the only case where there is genuinely nothing to
+    // put in front of him.
     var flagged = focus.failed ? focus.failedCalls : [];
+    var listedCalls = flagged.length ? flagged : calls;
 
     if (forcePreview) {
       log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
@@ -3709,8 +3765,8 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
       // the real Tuesday send uses) and log it in full so the Execution
       // log shows precisely what Tomás/Kris would receive, without sending
       // anything.
-      var previewEmail = flagged.length
-        ? buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
+      var previewEmail = listedCalls.length
+        ? buildPlaybookReviewNewMaterialEmail_(repCfg, listedCalls, windowLabel, ranking, focus)
         : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length, focus);
       var previewIsReminder = stage === 'reminder';
       log_('----- ' + repCfg.name + ' [' + stage + ']: exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
@@ -3719,8 +3775,8 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
       return;
     }
 
-    var sent = flagged.length
-      ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage)
+    var sent = listedCalls.length
+      ? sendPlaybookReviewNewMaterialEmail_(repCfg, listedCalls, windowLabel, ranking, focus, stage)
       : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length,
           stage, focus);
     if (!sent) {
@@ -3825,6 +3881,32 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   // silently missed by the other.
   var scheduleNote = playbookFocusNote_(focus);
 
+  // `flagged` is one of two different things, and saying the wrong one is
+  // how Tomás ends up mistrusting the email. Normally it's the calls that
+  // FAILED the focus element. But when the focus has no graded failures —
+  // Tomás picked an element nothing was graded on, or the rep passed every
+  // graded call — buildAndMaybeSendPlaybookReview_ passes the rep's whole
+  // week instead (Kris, 08/09/2026: "He needs a breakdown of who the leads
+  // were and where the rep failed"), and calling those "the calls that
+  // failed" would be a flat lie about a rep who did nothing wrong.
+  var isFailureList = !!(focus && focus.failed);
+  var callsIntro = isFailureList
+    ? 'The ' + flagged.length + ' call(s) that failed on ' + focusLabel.toLowerCase() + ' — raw data, not a ' +
+      'finished playbook. This week\'s session should focus on just these, not older material already covered.'
+    : 'Nothing was flagged automatically on ' + focusLabel.toLowerCase() + ' — ' +
+      ((focus && focus.scored)
+        ? 'all ' + focus.scored + ' graded call(s) passed it'
+        : 'not one call last week carries a grade for it') +
+      '. Here is ' + repCfg.name + '\'s whole week (' + flagged.length + ' call(s)) so you can work the ' +
+      'session off the real calls anyway — transcripts linked, judge ' + focusLabel.toLowerCase() +
+      ' yourself.';
+  var callsIntroHtml = isFailureList
+    ? '<p>The <strong>' + flagged.length + ' call(s)</strong> that failed on ' +
+      escapeHtml_(focusLabel.toLowerCase()) + ' — raw data, not a finished playbook. This week\'s session ' +
+      'should focus on just these, not older material already covered.</p>'
+    : '<p style="border-left:4px solid #c0392b;background:#fdf0ee;padding:10px 14px;margin:0 0 14px;' +
+      'border-radius:4px;">' + escapeHtml_(callsIntro) + '</p>';
+
   // The full standing across every scored element, so the pick is visible
   // rather than asserted — Tomás can see that e.g. discovery failed 3 of 5
   // while the money-ask failed 1 of 5, and why the session is going where
@@ -3849,12 +3931,16 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     // below. The other order buries the date range inside the note's own
     // sentence ("...so this is the auto-computed focus instead last week
     // (31/08/2026 - 06/09/2026)"), which reads as a sentence fragment.
-    (focus ? ' — failed on ' + focus.failed + ' of ' + focus.scored + ' graded call(s)' : '') +
-    ' last week (' + windowLabel + ')' + scheduleNote + '.\n\n' +
+    // "failed on 0 of 0 graded call(s)" is noise that reads like a broken
+    // template; when nothing was graded, the note carries the real
+    // explanation instead, and "last week" has no failure count to attach
+    // to, so the window is stated plainly.
+    (isFailureList
+      ? ' — failed on ' + focus.failed + ' of ' + focus.scored + ' graded call(s) last week (' + windowLabel + ')'
+      : ', week of ' + windowLabel) +
+    scheduleNote + '.\n\n' +
     (rankingLines.length ? 'All elements, worst first:\n' + rankingLines.join('\n') + '\n\n' : '') +
-    'The ' + flagged.length + ' call(s) that failed on ' + focusLabel.toLowerCase() + ' — raw data, not a ' +
-    'finished playbook. This week\'s session should focus on just these, not older material already ' +
-    'covered.\n\n' +
+    callsIntro + '\n\n' +
     flagged.map(function (c, i) {
       // Kris's ask (02/09/2026): "if you want calls reviewed, add the
       // links" — straight to the transcript and to the Sales Call Log row.
@@ -3895,14 +3981,15 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     '<p style="margin:0 0 4px;font-size:15px;"><strong>This week\'s training focus for ' +
     escapeHtml_(repCfg.name) + ': ' + escapeHtml_(focusLabel) + '</strong></p>' +
     '<p style="margin:0;">' +
-    (focus ? 'Failed on <strong>' + focus.failed + ' of ' + focus.scored + '</strong> graded call(s) ' : '') +
-    'last week (' + escapeHtml_(windowLabel) + ')' + escapeHtml_(scheduleNote) + '.</p>' +
+    (isFailureList
+      ? 'Failed on <strong>' + focus.failed + ' of ' + focus.scored + '</strong> graded call(s) last week (' +
+        escapeHtml_(windowLabel) + ')'
+      : 'Week of ' + escapeHtml_(windowLabel)) +
+    escapeHtml_(scheduleNote) + '.</p>' +
     '</div>' +
     (rankingHtml ? '<p style="margin:0 0 4px;">All elements, worst first:</p>' +
       '<ul style="margin:0 0 14px;padding-left:20px;font-size:13px;">' + rankingHtml + '</ul>' : '') +
-    '<p>The <strong>' + flagged.length + ' call(s)</strong> that failed on ' +
-    escapeHtml_(focusLabel.toLowerCase()) + ' — raw data, not a finished playbook. This week\'s session ' +
-    'should focus on just these, not older material already covered.</p>' +
+    callsIntroHtml +
     callsHtml +
     playbookReviewLinksFooterHtml_(repCfg.name) +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +

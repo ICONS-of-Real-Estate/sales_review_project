@@ -7850,23 +7850,23 @@ test('resolveTrainingFocusWithOverride_ honours an override that HAS failing cal
   assert.ok(!resolved.overrideFellBack, 'an override with real material must never fall back');
 });
 
-test('resolveTrainingFocusWithOverride_ falls back to the auto-computed focus when the override names an element NOBODY was graded on, instead of emptying the email (the Joana/Discovery bug)', () => {
+test('resolveTrainingFocusWithOverride_ KEEPS the override when the element nobody was graded on is picked — Tomás steers, the bot does not overrule him', () => {
   const ranking = joanaUngradedDiscoveryRanking_(gas);
   const auto = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] });
   const resolved = gas.resolveTrainingFocusWithOverride_(ranking, 'Discovery', auto);
 
-  // The whole point: there IS material to train on, so the email must not
-  // degrade to "no flagged calls last week".
-  assert.ok(resolved.failed > 0, 'must carry real failures, not the override\'s 0 of 0');
-  assert.ok(resolved.failedCalls.length > 0, 'must carry real failing calls for the email to list');
-  assert.equal(resolved.label, 'Closing & Objection Handling');
-  assert.equal(resolved.overrideFellBack, true);
-  assert.equal(resolved.overrideRequestedLabel, 'Discovery');
-  assert.equal(resolved.overrideFallbackReason, 'not_graded');
-  assert.equal(resolved.isManualOverride, false, 'the fallback is not Tomás\'s pick, and must not claim to be');
+  // Kris, 08/09/2026: "Tomas is meant to be training discovery." An earlier
+  // version substituted the auto-computed focus here and silently retargeted
+  // the session, which is what he rejected.
+  assert.equal(resolved.label, 'Discovery', 'the human\'s pick wins, full stop');
+  assert.equal(resolved.isManualOverride, true);
+  assert.equal(resolved.overrideFellBack, false, 'nothing falls back any more');
+  assert.equal(resolved.overrideFallbackReason, 'not_graded',
+    'but the email still has to be able to say WHY nothing was flagged');
+  assert.equal(resolved.failed, 0, 'and it is honest that no failure was graded');
 });
 
-test('resolveTrainingFocusWithOverride_ distinguishes "graded and all passed" from "never graded" when falling back', () => {
+test('resolveTrainingFocusWithOverride_ distinguishes "graded and all passed" from "never graded"', () => {
   const call = (score, flags) => ({ score, flags });
   // Delivery WAS graded on all 3 calls and passed every one; framework failed 3 of 3.
   const ranking = gas.rankTrainingPriorities_([
@@ -7876,13 +7876,12 @@ test('resolveTrainingFocusWithOverride_ distinguishes "graded and all passed" fr
   ]);
   const auto = gas.legacyTrainingFocusFromRanking_(ranking);
   const resolved = gas.resolveTrainingFocusWithOverride_(ranking, 'Delivery', auto);
-  assert.equal(resolved.overrideFellBack, true);
+  assert.equal(resolved.label, 'Delivery', 'still his pick, not the worst element');
   assert.equal(resolved.overrideFallbackReason, 'all_passed');
   assert.equal(resolved.overrideRequestedScored, 3, 'reports how many were graded, so "all passed" is checkable');
-  assert.equal(resolved.label, 'Framework explanation');
 });
 
-test('resolveTrainingFocusWithOverride_ keeps Tomás\'s own label when there is nothing to fall back to either, but still records why it was empty', () => {
+test('resolveTrainingFocusWithOverride_ keeps Tomás\'s own label on a genuinely clean week too, and records why it was empty', () => {
   const call = (score, flags) => ({ score, flags });
   // A genuinely clean week: everything graded passed, discovery never graded.
   const ranking = gas.rankTrainingPriorities_([
@@ -7891,26 +7890,25 @@ test('resolveTrainingFocusWithOverride_ keeps Tomás\'s own label when there is 
   const auto = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] });
   const resolved = gas.resolveTrainingFocusWithOverride_(ranking, 'Discovery', auto);
   assert.equal(resolved.label, 'Discovery', 'nothing better to show, so his pick stays on the email');
-  assert.equal(resolved.overrideFellBack, false, 'it did not fall back — there was nowhere to fall back to');
+  assert.equal(resolved.overrideFellBack, false);
   assert.equal(resolved.overrideRequestedLabel, 'Discovery');
   assert.equal(resolved.overrideFallbackReason, 'not_graded', 'the no-flagged-calls email needs this to explain itself');
 });
 
-test('playbookFocusNote_ reports a fallback BEFORE the plain manual-override case (the fallback deliberately carries isManualOverride:false)', () => {
-  const fellBack = {
-    label: 'Closing & Objection Handling', isManualOverride: false, isUrgentOverride: false,
-    overrideFellBack: true, overrideRequestedLabel: 'Discovery', overrideFallbackReason: 'not_graded'
-  };
-  const note = gas.playbookFocusNote_(fellBack);
-  assert.ok(note.indexOf('you picked "Discovery"') !== -1);
+test('playbookFocusNote_ explains an override that nothing was flagged for, without claiming the focus changed', () => {
+  const note = gas.playbookFocusNote_({
+    label: 'Discovery', isManualOverride: true, isUrgentOverride: false,
+    overrideFellBack: false, overrideRequestedLabel: 'Discovery', overrideFallbackReason: 'not_graded'
+  });
+  assert.ok(note.indexOf('you set this via the dashboard') !== -1);
   assert.ok(note.indexOf('no call was graded on it') !== -1);
-  assert.ok(note.indexOf('auto-computed focus instead') !== -1);
+  assert.equal(note.indexOf('instead'), -1, 'the focus did NOT change, so the note must not imply it did');
 
-  const allPassed = {
-    overrideFellBack: true, overrideRequestedLabel: 'Delivery', overrideFallbackReason: 'all_passed',
+  const allPassed = gas.playbookFocusNote_({
+    isManualOverride: true, overrideRequestedLabel: 'Delivery', overrideFallbackReason: 'all_passed',
     overrideRequestedScored: 3
-  };
-  assert.ok(gas.playbookFocusNote_(allPassed).indexOf('all 3 graded call(s) passed it') !== -1);
+  });
+  assert.ok(allPassed.indexOf('all 3 graded call(s) passed it') !== -1);
 });
 
 test('playbookFocusNote_ leaves the existing manual-override/urgent-override/plain wording exactly as it was', () => {
@@ -7931,15 +7929,20 @@ test('playbookOverrideSentence_ is empty unless an override actually came up emp
   assert.ok(sentence.indexOf('no call was graded on it') !== -1);
 });
 
-test('buildPlaybookReviewNewMaterialEmail_ tells Tomás in body AND htmlBody that his override had nothing behind it', () => {
+test('buildPlaybookReviewNewMaterialEmail_ keeps the override as the focus and lists the week\'s calls as review material, not as failures', () => {
   const ranking = joanaUngradedDiscoveryRanking_(gas);
   const auto = gas.pickWeeklyTrainingFocus_(ranking, { label: 'Closing & Objection Handling', keys: ['ask', 'objections'] });
   const focus = gas.resolveTrainingFocusWithOverride_(ranking, 'Discovery', auto);
   const flagged = [{ prospectName: 'April Stephens', callDate: '01/09/2026', score: 2, feedback: 'ok' }];
   const email = gas.buildPlaybookReviewNewMaterialEmail_({ name: 'Joana' }, flagged, '31/08/2026 - 06/09/2026', ranking, focus);
-  assert.ok(email.body.indexOf('you picked "Discovery"') !== -1);
-  assert.ok(email.htmlBody.indexOf('you picked &quot;Discovery&quot;') !== -1 ||
-    email.htmlBody.indexOf('you picked "Discovery"') !== -1, 'the HTML version must say it too, escaped or not');
+
+  assert.ok(email.subject.indexOf('discovery') !== -1, 'the subject must name what Tomás actually picked');
+  assert.ok(email.body.indexOf('you set this via the dashboard') !== -1);
+  assert.equal(email.body.indexOf('that failed on discovery'), -1,
+    'these calls were never graded on discovery — calling them failures would be a lie about the rep');
+  assert.ok(email.body.indexOf('not one call last week carries a grade for it') !== -1,
+    'it must say plainly why nothing was flagged');
+  assert.ok(email.body.indexOf('whole week') !== -1, 'and hand Tomás the calls anyway');
   // And the real material is still there — that is the actual fix.
   assert.ok(email.body.indexOf('April Stephens') !== -1);
 
@@ -7947,11 +7950,12 @@ test('buildPlaybookReviewNewMaterialEmail_ tells Tomás in body AND htmlBody tha
   // a stray date range stapled to its end ("...so this is the auto-computed
   // focus instead last week (31/08/2026 - 06/09/2026)."). The htmlBody
   // always had this order; the plain-text body did not until 08/09/2026.
-  assert.ok(email.body.indexOf('last week (31/08/2026 - 06/09/2026)') <
-    email.body.indexOf('you picked "Discovery"'),
-    'window label must come before the fallback note, same as the htmlBody');
-  assert.equal(email.body.indexOf('instead last week'), -1,
-    'the note must not be followed by the date range mid-sentence');
+  const windowAt = email.body.indexOf('week of 31/08/2026 - 06/09/2026');
+  assert.ok(windowAt !== -1, 'the week window must still be stated');
+  assert.ok(windowAt < email.body.indexOf('you set this via the dashboard'),
+    'window label must come before the focus note, same as the htmlBody');
+  assert.equal(email.body.indexOf('failed on 0 of 0'), -1,
+    'a focus nothing was graded on must not render a 0-of-0 failure count');
 });
 
 test('buildPlaybookReviewNoNewCallsEmail_ says the override came up empty when there was nothing to fall back to, and stays byte-identical when no override was set', () => {
@@ -7966,6 +7970,29 @@ test('buildPlaybookReviewNoNewCallsEmail_ says the override came up empty when t
   const noFocusArg = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Joana' }, '31/08/2026 - 06/09/2026', null, 4, null);
   assert.equal(withoutOverride.body, noFocusArg.body, 'omitting the focus arg entirely must behave like passing null');
   assert.equal(withoutOverride.body.indexOf('You picked'), -1);
+});
+
+test('a rep who HAD calls but nothing flagged gets the calls listed, not a contentless email (Bens, 08/09/2026)', () => {
+  // Bens's real shape: one call, nothing graded on it at all. The old email
+  // said "none of the graded elements failed on any of them", which reads as
+  // a clean week when in fact nothing was ever graded.
+  const calls = [{
+    prospectName: 'Jocelyne Yanez', callDate: '02/09/2026', score: 3, feedback: 'Booked the QC.',
+    transcriptUrl: 'https://example.com/t/1',
+    flags: { discovery: null, framework: null, delivery: null, ask: null, objections: null },
+    gaps: {}
+  }];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const focus = gas.legacyTrainingFocusFromRanking_(ranking);
+  assert.equal(focus.failed, 0, 'precondition: nothing was flagged');
+
+  const email = gas.buildPlaybookReviewNewMaterialEmail_({ name: 'Bens' }, calls, '31/08/2026 - 06/09/2026', ranking, focus);
+  assert.ok(email.body.indexOf('Jocelyne Yanez') !== -1, 'the lead must be named — that is the whole ask');
+  assert.ok(email.body.indexOf('https://example.com/t/1') !== -1, 'with the transcript to actually review');
+  assert.ok(email.body.indexOf('not one call last week carries a grade for it') !== -1,
+    'and it must say the truth: nothing was graded, which is NOT the same as everything passing');
+  assert.equal(email.body.indexOf('that failed on'), -1,
+    'a rep with no graded failures must never be described as having failed calls');
 });
 
 test('every focus-producing function carries the element keys it covers, so the per-call Missing line can find its Gaps column', () => {
@@ -7996,11 +8023,13 @@ test('every focus-producing function carries the element keys it covers, so the 
   assert.deepEqual(Array.from(gas.namedTrainingFocusFromRanking_(ranking, 'Nonsense Tomás typed').keys), [],
     'unrecognized text still degrades gracefully rather than throwing');
 
-  // And the override resolver must not drop keys when it copies the auto focus.
-  const fellBack = gas.resolveTrainingFocusWithOverride_(ranking, 'Nonsense Tomás typed', scheduled);
-  assert.equal(fellBack.overrideFellBack, true, 'precondition: this is the fallback path');
-  assert.deepEqual(Array.from(fellBack.keys).sort(), ['delivery', 'framework'],
-    'the fallback carries the auto focus\'s keys, or Missing goes blank again');
+  // And the override resolver must not drop keys on the way through.
+  const overridden = gas.resolveTrainingFocusWithOverride_(ranking, 'Framework & Delivery', scheduled);
+  assert.deepEqual(Array.from(overridden.keys).sort(), ['delivery', 'framework'],
+    'an override carries its own keys, or Missing goes blank again');
+  const passthrough = gas.resolveTrainingFocusWithOverride_(ranking, null, scheduled);
+  assert.deepEqual(Array.from(passthrough.keys).sort(), ['delivery', 'framework'],
+    'and so does the no-override passthrough');
 });
 
 test('playbookFocusGapsForCall_ shows the Gaps text only for focus elements the call actually failed', () => {
