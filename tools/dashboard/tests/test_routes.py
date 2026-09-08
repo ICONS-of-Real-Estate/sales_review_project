@@ -77,6 +77,31 @@ class TestTrainingPriorityOverride:
         resp = client.get("/reps/Alice")
         assert "No override set for this week" in resp.text
 
+    def test_dropdown_shows_a_selected_placeholder_when_no_override_is_set(self, client, seeded_db):
+        """Real bug, live 08/09/2026 (Kris: "EVERYONE is set to Discovery.
+        This is not discovery!"): with no placeholder option, a plain
+        <select> with nothing marked `selected` renders its first real
+        option as visually selected by default browser behavior — "Discovery"
+        happened to be first in TRAINING_PRIORITY_OPTIONS, so every rep's
+        page looked like it had an active Discovery override when nothing
+        had actually been chosen or submitted."""
+        resp = client.get("/reps/Alice")
+        assert '<option value="" selected disabled>' in resp.text
+        # And "Discovery" itself must NOT be the one marked selected.
+        assert '<option value="Discovery" selected' not in resp.text
+
+    def test_dropdown_placeholder_is_gone_once_a_real_override_is_set(self, client, db_path, conn):
+        week_start = app_module.current_week_start_label()
+        conn.execute(
+            "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+            "VALUES ('Alice', ?, 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T00:00:00+00:00')",
+            (week_start,),
+        )
+        conn.commit()
+        resp = client.get("/reps/Alice")
+        assert '<option value="" selected disabled>' not in resp.text
+        assert '<option value="Discovery" selected' in resp.text
+
     def test_rep_detail_shows_current_weeks_override(self, client, db_path, conn):
         week_start = app_module.current_week_start_label()
         conn.execute(

@@ -70,7 +70,15 @@
   <p class="muted">No override set for this week — the auto-computed pick from Tuesday's email is what will be used.</p>
   {% endif %}
   <form method="post" action="/reps/{{ rep }}/priority-override" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
-    <select name="priority">
+    <select name="priority" required>
+      {% if not current_priority_override %}
+      {# Real bug, live 08/09/2026 (Kris: "EVERYONE is set to Discovery. This is not discovery!"): with no
+         placeholder, an unset dropdown just renders its FIRST real option as visually selected by default
+         browser behavior — which happened to be "Discovery" for every rep, making it look like an active
+         setting when nothing had actually been chosen or submitted. This placeholder is selected instead
+         whenever there's no real override, and is disabled so it can never itself be submitted as a value. #}
+      <option value="" selected disabled>— choose to override —</option>
+      {% endif %}
       {% for opt in training_priority_options %}
       <option value="{{ opt }}" {{ "selected" if current_priority_override and current_priority_override.priority == opt else "" }}>{{ opt }}</option>
       {% endfor %}
