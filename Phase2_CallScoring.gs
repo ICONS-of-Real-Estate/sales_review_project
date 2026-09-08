@@ -1278,6 +1278,20 @@ function scoreNewlyLoggedCalls_() {
 var JOANA_DEFAULT_CALL_TYPE_ = 'Sales Call';
 
 /**
+ * Pure. True when a prospect name (which for these rows is really the
+ * transcript FILENAME) states outright that the call was a qualification
+ * call — "Elizabeth Oluwakemi QC 1", "Someone QC2", "Name - QC".
+ *
+ * Matched as a standalone token, deliberately: a lead genuinely called
+ * "Quincy" or a surname containing those letters must not be caught. The
+ * mirror case ("SC 1", "SC 2" — Jason Pietruszka's two rows) needs no
+ * special handling, since those are sales calls and get the default anyway.
+ */
+function nameSaysQualificationCall_(prospectName) {
+  return /(^|[^A-Za-z])QC\s*\d*([^A-Za-z]|$)/i.test(String(prospectName || ''));
+}
+
+/**
  * Pure. Which of Joana's existing Sales Call Log rows were mislabelled 'QC'
  * by the pre-08/09/2026 default, and therefore both (a) misreport her work
  * and (b) get re-dispatched onto the wrong rubric by any future rescore.
@@ -1297,6 +1311,14 @@ function joanaMislabelledCallTypeRows_(rows, col, weekBounds) {
     if (String(row[col['Rep'] - 1] || '').trim() !== 'Joana') return;
     if (String(row[col['Call Type'] - 1] || '').trim() !== 'QC') return;
     if (String(row[col['Match Method'] - 1] || '').trim() !== 'fallback_heuristic') return;
+    // Found in the real preview run (08/09/2026): her prospect names come
+    // from transcript FILENAMES, and some of those name the call type
+    // outright — "Elizabeth Oluwakemi QC 1" alongside "Jason Pietruszka
+    // SC 1"/"SC 2". A row whose own name says QC is a QC she really ran
+    // (she does take them — spam-list leads booking through her link), and
+    // relabelling it would be the same class of mistake as the bug this
+    // backfill exists to fix, just pointing the other way.
+    if (nameSaysQualificationCall_(row[col['Prospect Name'] - 1])) return;
     if (weekBounds) {
       var d = row[col['Call Date'] - 1];
       if (!(d instanceof Date) || d < weekBounds.start || d >= weekBounds.end) return;

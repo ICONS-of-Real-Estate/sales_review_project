@@ -2140,6 +2140,42 @@ test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, n
   assert.equal(hits[0].rowIndex, 2, 'sheet row index, header-offset');
 });
 
+test('nameSaysQualificationCall_ spots a filename that names the call type, without false-positiving on ordinary names', () => {
+  // Real rows from the 08/09/2026 preview run.
+  assert.equal(gas.nameSaysQualificationCall_('Elizabeth Oluwakemi QC 1'), true);
+  assert.equal(gas.nameSaysQualificationCall_('Someone QC2'), true);
+  assert.equal(gas.nameSaysQualificationCall_('Name - QC'), true);
+  assert.equal(gas.nameSaysQualificationCall_('qc 3 Somebody'), true);
+
+  // The mirror case is fine to miss — SC rows want the default anyway.
+  assert.equal(gas.nameSaysQualificationCall_('Jason Pietruszka SC 1'), false);
+  assert.equal(gas.nameSaysQualificationCall_('Jason Pietruszka SC 2'), false);
+
+  // Must not eat a real person whose name merely contains those letters.
+  assert.equal(gas.nameSaysQualificationCall_('Quincy Adams'), false);
+  assert.equal(gas.nameSaysQualificationCall_('Marija Volkman'), false);
+  assert.equal(gas.nameSaysQualificationCall_('Stacie Staub'), false);
+  assert.equal(gas.nameSaysQualificationCall_(''), false);
+  assert.equal(gas.nameSaysQualificationCall_(null), false);
+});
+
+test('joanaMislabelledCallTypeRows_ leaves a row alone when its own name says QC (found in the real preview run)', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (name) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    r[col['Rep'] - 1] = 'Joana';
+    r[col['Call Type'] - 1] = 'QC';
+    r[col['Match Method'] - 1] = 'fallback_heuristic';
+    r[col['Prospect Name'] - 1] = name;
+    return r;
+  };
+  const hits = gas.joanaMislabelledCallTypeRows_(
+    [row('Elizabeth Oluwakemi QC 1'), row('Jason Pietruszka SC 1'), row('Stacie Staub')], col, null);
+  assert.deepEqual(Array.from(hits).map((h) => h.prospectName), ['Jason Pietruszka SC 1', 'Stacie Staub'],
+    'the row that names itself a QC must be skipped — she does run real QCs');
+});
+
 test('joanaMislabelledCallTypeRows_ can scope to last week, the window the training picker actually reads', () => {
   const col = {};
   gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
