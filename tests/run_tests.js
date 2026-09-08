@@ -2488,26 +2488,37 @@ test('buildPlaybookReviewNewMaterialEmail_ handles a flagged call with no transc
 });
 
 test('buildPlaybookReviewNoNewCallsEmail_ names the scheduled topic when given one, and stays generic without it', () => {
-  const withSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
+  const withSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' }, 4);
   assert.equal(withSchedule.subject, 'Sean — no flagged calls last week');
   assert.ok(withSchedule.body.indexOf('scheduled topic is "Discovery"') !== -1);
 
-  const withoutSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null);
-  assert.ok(withoutSchedule.body.indexOf('none of the graded elements') !== -1);
+  const withoutSchedule = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4);
+  assert.ok(withoutSchedule.body.indexOf('none of the graded elements failed') !== -1);
   assert.equal(withoutSchedule.body.indexOf('scheduled topic'), -1);
 });
 
-test('sendPlaybookReviewNoNewCallsEmail_ sends exactly what buildPlaybookReviewNoNewCallsEmail_ builds, to Tomás cc Kris (real risk after the buildX/sendX split: the two silently drifting apart)', () => {
+test('buildPlaybookReviewNoNewCallsEmail_ distinguishes "had calls, none flagged" from "no calls at all" (real question, live 08/09/2026: "Why are Bens empty?" -- the two used to read identically)', () => {
+  const someCalls = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 3);
+  assert.ok(someCalls.body.indexOf('3 call(s) logged for Bens') !== -1);
+  assert.ok(someCalls.htmlBody.indexOf('3 call(s) logged for Bens') !== -1);
+
+  const noCallsAtAll = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 0);
+  assert.ok(noCallsAtAll.body.indexOf('No calls logged for Bens at all') !== -1);
+  assert.ok(noCallsAtAll.htmlBody.indexOf('No calls logged for Bens at all') !== -1);
+});
+
+test('sendPlaybookReviewNoNewCallsEmail_ sends exactly what buildPlaybookReviewNoNewCallsEmail_ builds (body + htmlBody), to Tomás cc Kris (real risk after the buildX/sendX split: the two silently drifting apart)', () => {
   const originalGuardedSend = gas.guardedSend_;
   const calls = [];
   gas.guardedSend_ = (to, subject, body, opts, n) => { calls.push({ to, subject, body, opts, n }); return true; };
   try {
-    const expected = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
-    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' });
+    const expected = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' }, 4);
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Sean' }, '24/08/2026 - 30/08/2026', { label: 'Discovery' }, 4);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].to, gas.CONFIG.TOMAS_EMAIL);
     assert.equal(calls[0].subject, expected.subject);
     assert.equal(calls[0].body, expected.body);
+    assert.equal(calls[0].opts.htmlBody, expected.htmlBody);
     assert.equal(calls[0].opts.cc, gas.CONFIG.KRIS_EMAIL);
   } finally {
     gas.guardedSend_ = originalGuardedSend;
@@ -2553,8 +2564,8 @@ test('sendPlaybookReviewNoNewCallsEmail_ prefixes the subject and appends the ov
   const calls = [];
   gas.guardedSend_ = (to, subject, body) => { calls.push({ subject, body }); return true; };
   try {
-    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 'reminder');
-    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 'final');
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4, 'reminder');
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4, 'final');
     assert.ok(calls[0].subject.indexOf('[Reminder] ') === 0);
     assert.ok(calls[0].body.indexOf('final confirmation') !== -1);
     assert.equal(calls[1].subject.indexOf('[Reminder]'), -1);

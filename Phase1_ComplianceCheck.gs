@@ -3533,7 +3533,7 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
       // anything.
       var previewEmail = flagged.length
         ? buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
-        : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null);
+        : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length);
       var previewIsReminder = stage === 'reminder';
       log_('----- ' + repCfg.name + ' [' + stage + ']: exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
         ', cc ' + CONFIG.KRIS_EMAIL + ') -----\nSubject: ' + subjectPrefixForPlaybookStage_(stage) + previewEmail.subject + '\n\n' +
@@ -3543,7 +3543,7 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
 
     var sent = flagged.length
       ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage)
-      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, stage);
+      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length, stage);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
@@ -3715,27 +3715,55 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranki
   }, 2);
 }
 
-/** `schedule` is optional (one entry of WEEKLY_TRAINING_ROTATION_) — named in the body so "nothing to train" still says what topic was scheduled. Pure content builder, same buildX/sendX split as buildPlaybookReviewNewMaterialEmail_/sendPlaybookReviewNewMaterialEmail_ above — lets buildAndMaybeSendPlaybookReview_'s preview path show the real email text without sending anything. */
-function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule) {
+/**
+ * `schedule` is optional (one entry of WEEKLY_TRAINING_ROTATION_) — named in
+ * the body so "nothing to train" still says what topic was scheduled.
+ * `totalCalls` is how many of the rep's calls last week were even looked at
+ * (regardless of whether any failed) — Kris's real question, live
+ * 08/09/2026, on getting one of these for Bens ("Why are Bens empty?"):
+ * without this number, "nothing flagged" reads identically whether the rep
+ * had zero calls all week or ten clean ones, and there was no way to tell
+ * which from the email alone. Pure content builder, same buildX/sendX split
+ * as buildPlaybookReviewNewMaterialEmail_/sendPlaybookReviewNewMaterialEmail_
+ * above — lets buildAndMaybeSendPlaybookReview_'s preview path show the real
+ * email text without sending anything.
+ */
+function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls) {
+  var scheduleNote = schedule ? ' — this week\'s scheduled topic is "' + schedule.label + '"' : '';
+  var headline = totalCalls
+    ? totalCalls + ' call(s) logged for ' + repCfg.name + ' last week (' + windowLabel + ')' + scheduleNote +
+      ', and none of the graded elements failed on any of them.'
+    : 'No calls logged for ' + repCfg.name + ' at all last week (' + windowLabel + ')' + scheduleNote + '.';
+
   var body =
     'Tomás,\n\n' +
-    'Nothing flagged for ' + repCfg.name + ' last week (' + windowLabel + ')' +
-    (schedule ? ' — this week\'s scheduled topic is "' + schedule.label + '", and none of its elements' :
-      ' — none of the graded elements') +
-    ' failed on a graded call, so there\'s no new material to train on this session. Per Kris\'s ask, this is ' +
-    'deliberately NOT a pointer back to older material — training should stay scoped to what actually ' +
-    'happened last week.\n\n' +
+    headline + ' There\'s no new material to train on this session. Per Kris\'s ask, this is deliberately ' +
+    'NOT a pointer back to older material — training should stay scoped to what actually happened last ' +
+    'week.\n\n' +
     '— Sent automatically ahead of this week\'s session.';
 
-  return { subject: repCfg.name + ' — no flagged calls last week', body: body };
+  var htmlBody =
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
+    '<p>Tomás,</p>' +
+    '<div style="border-left:4px solid #2e8b57;background:#eef8f0;padding:10px 14px;margin:0 0 14px;border-radius:4px;">' +
+    '<p style="margin:0;">' + escapeHtml_(headline) + '</p>' +
+    '</div>' +
+    '<p>There\'s no new material to train on this session. Per Kris\'s ask, this is deliberately <strong>not</strong> ' +
+    'a pointer back to older material — training should stay scoped to what actually happened last week.</p>' +
+    '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +
+    'session.</i></p>' +
+    '</div>';
+
+  return { subject: repCfg.name + ' — no flagged calls last week', body: body, htmlBody: htmlBody };
 }
 
-function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, stage) {
-  var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule);
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, stage) {
+  var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls);
   var isReminder = stage === 'reminder';
   return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
     email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
     cc: CONFIG.KRIS_EMAIL,
+    htmlBody: email.htmlBody + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
     name: 'Training Prep Bot'
   }, 2);
 }
