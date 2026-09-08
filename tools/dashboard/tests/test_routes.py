@@ -44,6 +44,15 @@ def test_rep_detail_page_renders(client, seeded_db):
     assert "Rebecca Stewart" in resp.text
 
 
+def test_rep_detail_page_playbook_section_has_a_stable_anchor_id(client, seeded_db):
+    """Kris's ask (08/09/2026): the Playbook Review email now links straight
+    to this section (#playbook) — the id has to actually exist on the page
+    for that link to land anywhere, whether or not a real playbook doc was
+    found for this rep."""
+    resp = client.get("/reps/Sean")
+    assert 'id="playbook"' in resp.text
+
+
 def test_rep_detail_page_for_unknown_rep_still_200s(client, seeded_db):
     # No calls for this rep — should render an empty state, not error.
     resp = client.get("/reps/Nobody")

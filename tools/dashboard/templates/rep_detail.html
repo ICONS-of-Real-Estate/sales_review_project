@@ -216,7 +216,7 @@
 </script>
 
 {% if playbook %}
-<div class="chart-card">
+<div class="chart-card" id="playbook">
   <h2>{{ playbook.title }}</h2>
   {% if playbook.sections %}
     <div class="toc">
@@ -237,7 +237,7 @@
 </div>
 {% elif rep != "Joana" %}
 {# Joana intentionally has no playbook entry at all — see REP_TO_PLAYBOOK_SLUG — so no message here for her; any other rep with none is worth a visible note. #}
-<div class="chart-card">
+<div class="chart-card" id="playbook">
   <p class="muted">No objection-handling playbook exists for {{ rep }} yet.</p>
 </div>
 {% endif %}

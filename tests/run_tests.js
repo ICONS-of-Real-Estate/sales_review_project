@@ -2507,6 +2507,59 @@ test('buildPlaybookReviewNoNewCallsEmail_ distinguishes "had calls, none flagged
   assert.ok(noCallsAtAll.htmlBody.indexOf('No calls logged for Bens at all') !== -1);
 });
 
+// ---------------------------------------------------------------------------
+// Playbook + training-recording links in the email itself (Kris's ask,
+// 08/09/2026: "They need to be sent in the fucking email too! The email
+// should also have a link of where Tomas puts the recording after the
+// training.") — previously only lived on the dashboard page / the separate
+// Tuesday transcript-reminder email.
+// ---------------------------------------------------------------------------
+
+test('playbookDashboardUrl_ points at the rep\'s own dashboard page, playbook anchor, URL-encoded for accented names', () => {
+  assert.equal(gas.playbookDashboardUrl_('Sean'), gas.DASHBOARD_URL_ + 'reps/Sean#playbook');
+  assert.equal(gas.playbookDashboardUrl_('Tomás'), gas.DASHBOARD_URL_ + 'reps/Tom%C3%A1s#playbook');
+});
+
+test('trainingRecordingFolderUrl_ returns the real Drive folder link for a rep that has one, null otherwise', () => {
+  assert.equal(gas.trainingRecordingFolderUrl_('Sean'), 'https://drive.google.com/drive/folders/' + gas.TRAINING_REVIEW_CONFIG.FOLDERS.Sean);
+  assert.equal(gas.trainingRecordingFolderUrl_('Bens'), 'https://drive.google.com/drive/folders/' + gas.TRAINING_REVIEW_CONFIG.FOLDERS.Bens);
+  // Tomás has no training-call-recording folder of his own (he doesn't record a training call with himself).
+  assert.equal(gas.trainingRecordingFolderUrl_('Tomás'), null);
+  assert.equal(gas.trainingRecordingFolderUrl_('Nobody'), null);
+});
+
+test('playbookReviewLinksFooter_/playbookReviewLinksFooterHtml_ include the recording-folder link only when one exists for that rep', () => {
+  const withFolder = gas.playbookReviewLinksFooter_('Sean');
+  assert.ok(withFolder.indexOf('Playbook: ' + gas.playbookDashboardUrl_('Sean')) !== -1);
+  assert.ok(withFolder.indexOf('training call recording here after the session') !== -1);
+
+  const withoutFolder = gas.playbookReviewLinksFooter_('Tomás');
+  assert.ok(withoutFolder.indexOf('Playbook: ' + gas.playbookDashboardUrl_('Tomás')) !== -1);
+  assert.equal(withoutFolder.indexOf('training call recording'), -1);
+
+  const htmlWithFolder = gas.playbookReviewLinksFooterHtml_('Sean');
+  assert.ok(htmlWithFolder.indexOf('href="' + gas.playbookDashboardUrl_('Sean') + '"') !== -1);
+  assert.ok(htmlWithFolder.indexOf('href="' + gas.trainingRecordingFolderUrl_('Sean') + '"') !== -1);
+});
+
+test('buildPlaybookReviewNewMaterialEmail_ includes the playbook + recording-folder links in both body and htmlBody', () => {
+  const repCfg = { name: 'Sean' };
+  const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
+  const email = gas.buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026');
+  assert.ok(email.body.indexOf(gas.playbookDashboardUrl_('Sean')) !== -1);
+  assert.ok(email.body.indexOf(gas.trainingRecordingFolderUrl_('Sean')) !== -1);
+  assert.ok(email.htmlBody.indexOf(gas.playbookDashboardUrl_('Sean')) !== -1);
+  assert.ok(email.htmlBody.indexOf(gas.trainingRecordingFolderUrl_('Sean')) !== -1);
+});
+
+test('buildPlaybookReviewNoNewCallsEmail_ includes the playbook + recording-folder links in both body and htmlBody', () => {
+  const email = gas.buildPlaybookReviewNoNewCallsEmail_({ name: 'Joana' }, '24/08/2026 - 30/08/2026', null, 4);
+  assert.ok(email.body.indexOf(gas.playbookDashboardUrl_('Joana')) !== -1);
+  assert.ok(email.body.indexOf(gas.trainingRecordingFolderUrl_('Joana')) !== -1);
+  assert.ok(email.htmlBody.indexOf(gas.playbookDashboardUrl_('Joana')) !== -1);
+  assert.ok(email.htmlBody.indexOf(gas.trainingRecordingFolderUrl_('Joana')) !== -1);
+});
+
 test('sendPlaybookReviewNoNewCallsEmail_ sends exactly what buildPlaybookReviewNoNewCallsEmail_ builds (body + htmlBody), to Tomás cc Kris (real risk after the buildX/sendX split: the two silently drifting apart)', () => {
   const originalGuardedSend = gas.guardedSend_;
   const calls = [];

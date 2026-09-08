@@ -3577,6 +3577,49 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
  * so every existing caller/test that predates the 05/09/2026 rotation ask
  * keeps working unchanged.
  */
+/**
+ * Kris's ask (08/09/2026): "They need to be sent in the fucking email too!
+ * The email should also have a link of where Tomas puts the recording
+ * after the training." Two links every Playbook Review email now carries:
+ *   - The rep's own objection-handling playbook (already lived only on the
+ *     dashboard, /reps/{rep} — Kris wanted it in the email itself too).
+ *   - Where to drop this week's TRAINING call recording afterward
+ *     (TRAINING_REVIEW_CONFIG.FOLDERS, Phase6_TrainingCallReview.gs — the
+ *     same folder sendTomasTranscriptReminder_ already points at, just
+ *     also surfaced here instead of only in that separate Tuesday email).
+ *     Not every rep has one (no folder for Tomás's own training, since he
+ *     doesn't record a training call with himself) — omitted when absent
+ *     rather than showing a broken/blank link.
+ */
+function playbookDashboardUrl_(repName) {
+  return DASHBOARD_URL_ + 'reps/' + encodeURIComponent(repName) + '#playbook';
+}
+
+function trainingRecordingFolderUrl_(repName) {
+  var folderId = (typeof TRAINING_REVIEW_CONFIG !== 'undefined' && TRAINING_REVIEW_CONFIG.FOLDERS)
+    ? TRAINING_REVIEW_CONFIG.FOLDERS[repName]
+    : null;
+  return folderId ? 'https://drive.google.com/drive/folders/' + folderId : null;
+}
+
+/** Plain-text footer lines (playbook + recording-upload links), shared by both the new-material and no-new-calls emails so they never drift apart. */
+function playbookReviewLinksFooter_(repName) {
+  var lines = ['Playbook: ' + playbookDashboardUrl_(repName)];
+  var recordingUrl = trainingRecordingFolderUrl_(repName);
+  if (recordingUrl) lines.push('Drop this week\'s training call recording here after the session: ' + recordingUrl);
+  return '\n\n' + lines.join('\n');
+}
+
+/** HTML equivalent of playbookReviewLinksFooter_ above. */
+function playbookReviewLinksFooterHtml_(repName) {
+  var items = ['<a href="' + escapeHtml_(playbookDashboardUrl_(repName)) + '">Playbook</a>'];
+  var recordingUrl = trainingRecordingFolderUrl_(repName);
+  if (recordingUrl) {
+    items.push('<a href="' + escapeHtml_(recordingUrl) + '">Drop this week\'s training call recording here after the session</a>');
+  }
+  return '<p style="font-size:12px;margin-top:10px;">' + items.join(' &nbsp;|&nbsp; ') + '</p>';
+}
+
 function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focusOverride) {
   // Kris's ask (02/09/2026): "don't need the year in the subject — we know
   // what year it is." Only the subject drops it; the body keeps the full
@@ -3637,6 +3680,7 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
         (c.feedback || '(no AI feedback summary on file)') +
         (links.length ? '\n   ' + links.join(' | ') : '');
     }).join('\n\n') +
+    playbookReviewLinksFooter_(repCfg.name) +
     '\n\n— Sent automatically ahead of this week\'s session.';
 
   var callsHtml = flagged.map(function (c, i) {
@@ -3673,6 +3717,7 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
     escapeHtml_(focusLabel.toLowerCase()) + ' — raw data, not a finished playbook. This week\'s session ' +
     'should focus on just these, not older material already covered.</p>' +
     callsHtml +
+    playbookReviewLinksFooterHtml_(repCfg.name) +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +
     'session.</i></p>' +
     '</div>';
@@ -3739,8 +3784,9 @@ function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, tota
     'Tomás,\n\n' +
     headline + ' There\'s no new material to train on this session. Per Kris\'s ask, this is deliberately ' +
     'NOT a pointer back to older material — training should stay scoped to what actually happened last ' +
-    'week.\n\n' +
-    '— Sent automatically ahead of this week\'s session.';
+    'week.' +
+    playbookReviewLinksFooter_(repCfg.name) +
+    '\n\n— Sent automatically ahead of this week\'s session.';
 
   var htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">' +
@@ -3750,6 +3796,7 @@ function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, tota
     '</div>' +
     '<p>There\'s no new material to train on this session. Per Kris\'s ask, this is deliberately <strong>not</strong> ' +
     'a pointer back to older material — training should stay scoped to what actually happened last week.</p>' +
+    playbookReviewLinksFooterHtml_(repCfg.name) +
     '<p style="color:#666;font-size:12px;margin-top:16px;"><i>— Sent automatically ahead of this week\'s ' +
     'session.</i></p>' +
     '</div>';
