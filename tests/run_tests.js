@@ -1853,6 +1853,70 @@ test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge
   assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'qc', 'shared']);
 });
 
+test('goalAndPainRubricPrompt_ defines pain the way Tomás corrected it, not the way the obvious answer would', () => {
+  const t = gas.goalAndPainRubricPrompt_();
+  assert.ok(t.indexOf('uncovered_goal') !== -1);
+  assert.ok(t.indexOf('uncovered_pain') !== -1);
+
+  // The whole point of the correction. Kris's instinct was "not selling
+  // enough houses"; Tomás: "it's not particularly a pain. It's like a
+  // disease, it's a condition." If the prompt loses this, the flag grades
+  // the wrong thing and every rep passes it trivially.
+  assert.ok(/condition, not\s*\n?\s*.*a pain|is a condition/i.test(t) || t.indexOf('condition') !== -1,
+    'must state that a shortfall against the goal is a condition, not a pain');
+  assert.ok(t.indexOf('Google') !== -1, 'must carry Tomás\'s concrete examples (no profile when Googled)');
+  assert.ok(t.indexOf('engagement') !== -1);
+  assert.ok(t.indexOf('recruiting') !== -1, 'including the recruiting-conversations pain he named');
+  assert.ok(t.indexOf('scores FALSE') !== -1,
+    'must say explicitly that establishing only the numeric gap fails this flag');
+
+  // And a goal has to be specific, not "wants to grow".
+  assert.ok(t.indexOf('"Wants to grow" is not a goal') !== -1);
+});
+
+test('every rubric variant that scores discovery also scores goal and pain, with one shared definition', () => {
+  // Joana's calls now resolve to 'shared' and Sean has his own variant — if
+  // the definition lived in only one of them, the two reps who actually get
+  // discovery training would be graded against different standards.
+  const shared = gas.buildJudgeSystemPrompt_ ? gas.buildJudgeSystemPrompt_() : null;
+  const sean = gas.buildSeanJudgeSystemPrompt_();
+  const tomas = gas.buildTomasJudgeSystemPrompt_();
+  [['sean', sean], ['tomas', tomas]].forEach(([name, prompt]) => {
+    assert.ok(prompt.indexOf('uncovered_goal') !== -1, name + ' must ask for uncovered_goal');
+    assert.ok(prompt.indexOf('uncovered_pain') !== -1, name + ' must ask for uncovered_pain');
+    assert.ok(prompt.indexOf('is a condition') !== -1, name + ' must carry the same pain definition, not its own');
+  });
+  if (shared) {
+    assert.ok(shared.indexOf('uncovered_goal') !== -1, 'the shared rubric (Joana) must ask for it too');
+  }
+});
+
+test('DISCOVERY_GAP_LABELS_ names the new dimensions, so a failure on them shows up in the Missing line', () => {
+  assert.equal(gas.DISCOVERY_GAP_LABELS_.uncovered_goal, 'what the lead is running TOWARDS (their goal)');
+  assert.equal(gas.DISCOVERY_GAP_LABELS_.uncovered_pain, 'what the lead is running FROM (their real pain)');
+
+  // deriveDiscoveryFields_ iterates these keys, so the new ones flow into the
+  // Discovery Gaps column with no further wiring — and a variant that doesn't
+  // return them is still "not judged", never a failure.
+  const failedBoth = gas.deriveDiscoveryFields_({
+    flags: { discovery_adequate: true, understood_leads_business: true, uncovered_goal: false, uncovered_pain: false }
+  });
+  assert.equal(failedBoth.adequate, false);
+  assert.ok(failedBoth.gapsText.indexOf('running TOWARDS') !== -1);
+  assert.ok(failedBoth.gapsText.indexOf('running FROM') !== -1);
+
+  const notJudged = gas.deriveDiscoveryFields_({ flags: { discovery_adequate: true, understood_leads_business: true } });
+  assert.equal(notJudged.gapsText.indexOf('running TOWARDS'), -1,
+    'a variant that never scored goal/pain must not report them as gaps');
+});
+
+test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a rescore', () => {
+  // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
+  // current one — without a bump, no existing row would ever be graded on
+  // goal/pain and the change would silently apply to new calls only.
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-08-goal-and-pain');
+});
+
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
   const col = {};
   gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });

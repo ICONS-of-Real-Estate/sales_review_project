@@ -201,7 +201,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-03-discovery-sop-rubric';
+var RUBRIC_VERSION = '2026-09-08-goal-and-pain';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -677,7 +677,15 @@ function deriveDeliveryFields_(result) {
 var DISCOVERY_GAP_LABELS_ = {
   discovery_adequate: 'depth of discovery questioning',
   understood_leads_business: 'understanding the lead\'s business',
-  confirmed_prior_discovery: 'confirming/deepening what the earlier call surfaced'
+  confirmed_prior_discovery: 'confirming/deepening what the earlier call surfaced',
+  // Added 08/09/2026 from the Joana training call. Tomás: "on the discovery
+  // part, you could put — find the goal. Find the pain, right? Where are they
+  // running towards, and where are they running from?" and "if I know where
+  // you're going, I know where to meet you, and I know how I can take you
+  // there." See discoveryRubricPrompt_ below for the definition that matters,
+  // particularly what does NOT count as a pain.
+  uncovered_goal: 'what the lead is running TOWARDS (their goal)',
+  uncovered_pain: 'what the lead is running FROM (their real pain)'
 };
 
 /**
@@ -704,7 +712,51 @@ function discoveryRubricPrompt_() {
     '      scratch fails this, as does one who never references the earlier conversation at all.',
     '      If the transcript makes clear this was genuine first contact with no earlier call behind it, score',
     '      this TRUE — there was nothing to confirm, and a rep must never be marked down for the absence of a',
-    '      conversation that never happened.'
+    '      conversation that never happened.',
+    goalAndPainRubricPrompt_()
+  ].join('\n');
+}
+
+/**
+ * The goal/pain half of discovery, shared verbatim by every variant that
+ * scores it, so the definition can't drift between reps.
+ *
+ * Added 08/09/2026 from the Joana training call. Kris pushed for pain
+ * ("what's their pain? why are they going to take action?") and Tomás
+ * accepted it but corrected the definition in a way that has to survive into
+ * the prompt or the grading is worse than useless:
+ *
+ *   "the pain of being stuck at 5 calls, it's not particularly a pain. It's
+ *    like a disease, it's a condition. The pain that they have is something
+ *    more peculiar. For example: not having any presence on social media, not
+ *    on Google. When you Google them, you don't find a professional profile.
+ *    Not active on Instagram. Content lacking engagement. Don't have a big
+ *    enough network in the community. Not well known in the community. That's
+ *    where we can help."
+ *
+ * So the numeric shortfall a rep can get to in one question is explicitly NOT
+ * what earns this flag. Tomás's own framing of why both halves matter: "if I
+ * know where you're going, I know where to meet you, and I know how I can
+ * take you there."
+ */
+function goalAndPainRubricPrompt_() {
+  return [
+    '  (d) uncovered_goal — did the rep establish what this lead is running TOWARDS? A real, specific goal',
+    '      the lead stated: a production target, a market position, a team they want to build, a brand they',
+    '      want known. "Wants to grow" is not a goal; "wants to go from 5 transactions a month to 10 by',
+    '      spring" is. Score true only if a specific goal is actually on the transcript, not merely implied.',
+    '  (e) uncovered_pain — did the rep establish what this lead is running FROM? Read this definition',
+    '      carefully, because the obvious answer is the wrong one:',
+    '        A shortfall against the goal is NOT a pain. "Only selling 5 houses a month" is a condition, not',
+    '        a pain — the lead has lived with it for years and it is not what makes them act.',
+    '        A real pain is specific and concrete, and is something a podcast could plausibly address:',
+    '        no professional presence when someone Googles them; nothing on social media, or content that',
+    '        gets no engagement; a network too small or too shallow in their own community; not being known',
+    '        or taken seriously locally; being unable to have qualified recruiting conversations because',
+    '        nobody rates them; losing listings to agents with a bigger profile.',
+    '      Score true only if the rep surfaced something of that kind — an actual, named frustration in the',
+    '      lead\'s own words. A rep who only established the numeric gap scores FALSE here even if they',
+    '      asked plenty of questions about it.'
   ].join('\n');
 }
 
@@ -891,6 +943,7 @@ function buildJudgeSystemPrompt_() {
     '  "call_quality_score": 1,',
     '  "flags": { "asked_for_close": true, "objections_uncovered": true, "objections_overcome": true,',
     '    "discovery_adequate": true, "understood_leads_business": true, "confirmed_prior_discovery": true,',
+    '    "uncovered_goal": true, "uncovered_pain": true,',
     '    "booked_discovery_call": false, "lead_ready_with_money": true },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
@@ -3129,6 +3182,8 @@ function buildSeanJudgeSystemPrompt_() {
     '',
     deliveryRubricPrompt_(),
     '',
+    goalAndPainRubricPrompt_(),
+    '',
     bookingDecisionRubricPrompt_(),
     '',
     'Score anchors for call_quality_score (1-5):',
@@ -3155,6 +3210,8 @@ function buildSeanJudgeSystemPrompt_() {
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true,',
     '    "confirmed_prior_discovery": true,',
+    '    "uncovered_goal": true,',
+    '    "uncovered_pain": true,',
     '    "captured_leads_goals": true,',
     '    "tied_framework_to_goals": true,',
     '    "booked_second_call_with_tomas": true,',
@@ -4066,6 +4123,8 @@ function buildTomasJudgeSystemPrompt_() {
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true,',
     '    "confirmed_prior_discovery": true,',
+    '    "uncovered_goal": true,',
+    '    "uncovered_pain": true,',
     '    "rep_present_on_call": true,',
     '    "elevation_done": true',
     '  },',
