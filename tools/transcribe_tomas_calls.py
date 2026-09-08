@@ -127,7 +127,7 @@ def main():
                         print(f"    download: {format_duration_(time.time() - t0)}")
 
                     t0 = time.time()
-                    transcript = transcribe_with_gemini(client, local_path)
+                    transcript = transcribe_with_gemini(client, local_path, rep_name="Tomás", prospect_name_hint=title)
                     print(f"    transcribe: {format_duration_(time.time() - t0)}")
                     fresh = True
 

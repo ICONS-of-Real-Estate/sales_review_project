@@ -67,17 +67,119 @@ class QuotaExhaustedError(RuntimeError):
     or the quota window resets, so this aborts the whole batch instead of
     burning bandwidth downloading files that are guaranteed to fail."""
 
-TRANSCRIPT_PROMPT = """Transcribe this recorded sales call verbatim, word for word.
-Do not summarize, paraphrase, or clean up filler words — this is for coaching review,
-so accuracy matters more than readability.
+def build_transcript_prompt_(rep_name=None, prospect_name_hint=None):
+    """Real bug found live (09/09/2026, Kris, pointing at Frank Pirrone's
+    actual transcript doc): Gemini's plain "Rep:"/"Prospect:" instruction
+    below was routinely ignored on real calls — the doc Kris pasted used
+    ">>" as its turn marker instead, not the requested labels, and later in
+    the same doc degenerated into one line ("I'm going to do it this way.")
+    repeated 3,933 times with no speaker labels or paragraph breaks at all.
+    Two separate, additive fixes here, both driven by real evidence rather
+    than guessing at what would help:
 
-Format:
-- Label speaker turns as best you can tell (e.g. "Rep:", "Prospect:"). If you can't
-  tell who's speaking, use "Speaker 1:" / "Speaker 2:" consistently.
-- One speaker turn per paragraph.
-- If a stretch of audio is inaudible, write [inaudible] rather than guessing.
+    1. An explicit anti-repetition instruction — nothing in the old prompt
+       ever told the model what to do if it got stuck, and long-form
+       generation looping on itself is a well-known failure mode with no
+       built-in stopping behavior. transcribe_with_gemini (below) is the
+       real backstop (it actually detects and retries a looped result) —
+       this is the cheap first line of defense that costs nothing extra to
+       try.
+    2. Real names instead of generic "Rep:"/"Prospect:" labels, when known
+       — Kris's ask directly: "we know who the speaker is, right? ... you
+       know it's Joanna and what the lead is, then fill in the freaking
+       names of who's speaking." rep_name is always known (this project
+       calls this function once per rep's own script); prospect_name_hint
+       is the video's own filename, which in practice usually already
+       contains the prospect's name (e.g. "1/21 Anthony Camperi") — passed
+       through as a HINT the model can confirm or correct against what it
+       actually hears, never as an assertion, since the filename is
+       sometimes just a date or a cruft-laden video title with no name in
+       it at all.
+    """
+    lines = [
+        "Transcribe this recorded sales call verbatim, word for word.",
+        "Do not summarize, paraphrase, or clean up filler words — this is for coaching review,",
+        "so accuracy matters more than readability.",
+        "",
+        "Format:",
+    ]
+    if rep_name:
+        lines.append(f'- The rep on this call is named {rep_name}. Label their turns "{rep_name}:".')
+        if prospect_name_hint:
+            lines.append(
+                f'- The other speaker is the prospect. The recording is titled "{prospect_name_hint}", '
+                f"which may (or may not) contain their real name — confirm it against what you actually "
+                f'hear on the call. If you can identify their real name, label their turns with it '
+                f'(e.g. "Frank:"); otherwise use "Prospect:".'
+            )
+        else:
+            lines.append(
+                '- The other speaker is the prospect. If you can tell their name from context '
+                '(the rep addressing them by name, an introduction), label their turns with it; '
+                'otherwise use "Prospect:".'
+            )
+    else:
+        lines.append(
+            '- Label speaker turns as best you can tell (e.g. "Rep:", "Prospect:"). If you can\'t '
+            'tell who\'s speaking, use "Speaker 1:" / "Speaker 2:" consistently.'
+        )
+    lines += [
+        "- One speaker turn per paragraph, on its own line.",
+        "- If a stretch of audio is inaudible, write [inaudible] rather than guessing.",
+        "",
+        "IMPORTANT — if you notice yourself about to repeat the same sentence or phrase over and",
+        "over: STOP immediately. Do not continue looping under any circumstances. Either move on to",
+        "the next distinguishable thing actually said, or if the audio genuinely has nothing more to",
+        "transcribe, end the transcript there rather than repeating anything.",
+        "",
+        "Return only the transcript text, nothing else.",
+    ]
+    return "\n".join(lines)
 
-Return only the transcript text, nothing else."""
+
+# Kept as a plain string too (not just the function above) — a handful of
+# older internal tools/tests may still reference the bare prompt text
+# directly; build_transcript_prompt_() with no arguments returns the
+# equivalent generic (no-rep-name) version.
+TRANSCRIPT_PROMPT = build_transcript_prompt_()
+
+
+# ---------------------------------------------------------------------------
+# Repetition-loop detection — same algorithm, same thresholds, as Apps
+# Script's transcriptRepetitionLoopShare_/transcriptIsDegenerateRepetition_
+# (Phase2_CallScoring.gs), added the same day for the same reason: a
+# line-based check misses this failure entirely, since a looped transcript
+# often has few or no line breaks at all. Verified directly against Frank
+# Pirrone's real transcript there (dominant 6-word window "going to do it
+# this way" repeats exactly 3,933 times, covering 82.6% of the transcript)
+# — kept in sync with that implementation rather than reinvented, so a
+# transcript that would be caught downstream in Apps Script is instead
+# caught HERE, before it's ever saved to Drive at all.
+# ---------------------------------------------------------------------------
+
+DEGENERATE_TRANSCRIPT_MIN_WORDS = 150
+DEGENERATE_TRANSCRIPT_NGRAM_SIZE = 6
+DEGENERATE_TRANSCRIPT_DOMINANT_GRAM_SHARE = 0.5
+
+
+def transcript_repetition_loop_share_(text):
+    words = (text or "").split()
+    n = DEGENERATE_TRANSCRIPT_NGRAM_SIZE
+    if len(words) < DEGENERATE_TRANSCRIPT_MIN_WORDS or len(words) < n:
+        return 0.0
+    counts = {}
+    most_count = 0
+    for i in range(len(words) - n + 1):
+        gram = " ".join(words[i:i + n]).lower()
+        c = counts.get(gram, 0) + 1
+        counts[gram] = c
+        if c > most_count:
+            most_count = c
+    return (most_count * n) / len(words)
+
+
+def transcript_is_degenerate_repetition_(text):
+    return transcript_repetition_loop_share_(text) >= DEGENERATE_TRANSCRIPT_DOMINANT_GRAM_SHARE
 
 
 def get_drive_service():
@@ -152,6 +254,15 @@ def generate_with_retry(client, model, contents, max_retries=6):
     max_delay = 120
     config = genai_types.GenerateContentConfig(
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        # Real bug found live (09/09/2026): no temperature was ever set here,
+        # so this ran at Gemini's default (creative-sampling) temperature for
+        # a task that should be as close to deterministic as possible —
+        # verbatim transcription, not generation. Low but nonzero: 0 can
+        # itself increase certain repetition failure modes in some models by
+        # always picking the single most-likely next token; 0.1 keeps output
+        # close to deterministic while still allowing the model to move past
+        # a locally-likely-but-wrong token instead of latching onto it.
+        temperature=0.1,
     )
     for attempt in range(max_retries):
         try:
@@ -203,14 +314,61 @@ def upload_with_retry(client, local_path, max_retries=4):
             delay = min(delay * 2, max_delay)
 
 
-def transcribe_with_gemini(client, local_path):
+MAX_REPETITION_RETRIES = 2
+
+
+def transcribe_with_gemini(client, local_path, rep_name=None, prospect_name_hint=None):
+    """rep_name/prospect_name_hint feed build_transcript_prompt_ so the
+    transcript comes back with real speaker names instead of generic
+    "Rep:"/"Prospect:" labels when we already know who's on the call — see
+    that function's own comment. Both optional and backward-compatible:
+    omitted, this behaves exactly as before.
+
+    Real bug found live (09/09/2026, Kris pasting Frank Pirrone's actual
+    transcript doc): this used to return whatever Gemini produced, even a
+    transcript that degenerated into one line repeated 3,933 times — that
+    corrupted doc got saved to Drive, scored by the Apps Script pipeline as
+    a genuine 1/5 call, and became the single worst call in Sean's training
+    email. The Apps Script side now catches this AFTER the fact
+    (transcriptIsDegenerateRepetition_, Phase2_CallScoring.gs) and blanks
+    the score rather than trusting it — but that still means a real API
+    call was wasted producing garbage, a real API call was wasted scoring
+    it, and Sean's Drive folder has a permanently corrupted "transcript"
+    sitting in it forever.
+
+    Catching it HERE instead: detect the same failure with the same
+    algorithm (transcript_is_degenerate_repetition_, ported directly from
+    the Apps Script fix) before ever saving anything, and retry the
+    generation — a fresh Gemini call is not deterministic even at low
+    temperature, so a retry has a real chance of succeeding outright. Only
+    after MAX_REPETITION_RETRIES straight failures does this give up and
+    raise, so the batch loop's existing "FAILED: ..." handling logs it and
+    moves to the next video rather than silently uploading garbage.
+    """
     gemini_file = upload_with_retry(client, local_path)
     if gemini_file.state.name != "ACTIVE":
         raise RuntimeError(f"Gemini file upload failed: {gemini_file.state.name}")
 
-    response = generate_with_retry(client, GEMINI_MODEL, [gemini_file, TRANSCRIPT_PROMPT])
-    client.files.delete(name=gemini_file.name)
-    return response.text
+    prompt = build_transcript_prompt_(rep_name, prospect_name_hint)
+    try:
+        last_text = None
+        for attempt in range(MAX_REPETITION_RETRIES + 1):
+            response = generate_with_retry(client, GEMINI_MODEL, [gemini_file, prompt])
+            last_text = response.text
+            if not transcript_is_degenerate_repetition_(last_text):
+                return last_text
+            share = transcript_repetition_loop_share_(last_text)
+            if attempt < MAX_REPETITION_RETRIES:
+                print(f"    Gemini transcript looped (dominant phrase covers "
+                      f"{share:.0%} of the text) — retrying ({attempt + 1}/{MAX_REPETITION_RETRIES})...")
+            else:
+                raise RuntimeError(
+                    f"Gemini transcript still looping after {MAX_REPETITION_RETRIES} retries "
+                    f"(dominant phrase covers {share:.0%} of the text) — refusing to save a corrupted "
+                    f"transcript. Try again later, or fall back to the Zoom transcript if one exists."
+                )
+    finally:
+        client.files.delete(name=gemini_file.name)
 
 
 def format_duration_(seconds):
@@ -648,7 +806,7 @@ def main():
                         print(f"    download: {format_duration_(time.time() - t0)}")
 
                     t0 = time.time()
-                    transcript = transcribe_with_gemini(client, local_path)
+                    transcript = transcribe_with_gemini(client, local_path, rep_name="Sean", prospect_name_hint=title)
                     print(f"    transcribe: {format_duration_(time.time() - t0)}")
                     fresh = True
 
