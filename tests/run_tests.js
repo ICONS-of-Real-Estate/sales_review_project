@@ -6358,7 +6358,37 @@ test('shouldStopRescorePass_ refuses to start a row that could plausibly blow th
   assert.equal(gas.shouldStopRescorePass_(250 * 1000, BUDGET, 30 * 1000, CEILING, DEFAULT_EST, MARGIN), false);
 });
 
-test('rescoreAllCalls_ (live) stops a pass one row earlier than the old flat budget would have, once a real row duration makes the next one risky', () => {
+test('the ACTUAL global rescore constants correctly handle both real 08/09/2026 incidents: the 357s near-miss, and the 739s Workspace-account run that proved 6 minutes was the wrong ceiling', () => {
+  // Incident 1 (why the estimate-based check exists): row 1 took 194s.
+  // Against the retuned globals it must still be fine to keep going — a
+  // single 194s row is nowhere near either real limit now.
+  assert.equal(gas.shouldStopRescorePass_(
+    194 * 1000, gas.RESCORE_ALL_TIME_BUDGET_MS_, 194 * 1000,
+    gas.RESCORE_HARD_EXECUTION_CEILING_MS_, gas.RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_,
+    gas.RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_
+  ), false, 'a 194s row is real Workspace-account behavior, not a reason to stop');
+
+  // Incident 2: row 2 (Stacie Staub) took 669s after one transport-timeout
+  // retry, landing the whole pass at 739s total — and the execution
+  // completed normally. The retuned globals must agree it was safe to
+  // have kept going for a 3rd row from there.
+  assert.equal(gas.shouldStopRescorePass_(
+    739 * 1000, gas.RESCORE_ALL_TIME_BUDGET_MS_, 669 * 1000,
+    gas.RESCORE_HARD_EXECUTION_CEILING_MS_, gas.RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_,
+    gas.RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_
+  ), false, '739s total with a 669s worst row so far must still allow one more attempt');
+
+  // But the ceiling must still mean something: a row bad enough to make
+  // the NEXT one plausibly exceed the real ~30-minute Workspace limit must
+  // still stop the pass, not let it ride indefinitely.
+  assert.equal(gas.shouldStopRescorePass_(
+    20 * 60 * 1000, gas.RESCORE_ALL_TIME_BUDGET_MS_, 15 * 60 * 1000,
+    gas.RESCORE_HARD_EXECUTION_CEILING_MS_, gas.RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_,
+    gas.RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_
+  ), true, 'a 15-minute row seen once must still be treated as a real risk for the next one');
+});
+
+test('rescoreAllCalls_ (live) still lets a slow-but-real row (669s, the second real incident) through, now that the ceiling reflects this Workspace account\'s actual ~30-minute limit', () => {
   const col = {};
   gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
   const dataRows = [
@@ -6368,7 +6398,7 @@ test('rescoreAllCalls_ (live) stops a pass one row earlier than the old flat bud
       'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
     }),
     fakeSalesCallLogRow({
-      'Prospect Name': 'Would Be Row Two', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Prospect Name': 'Row Two', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
       'Transcript URL': 'https://docs.google.com/document/d/1KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK/edit',
       'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
     })
@@ -6388,18 +6418,19 @@ test('rescoreAllCalls_ (live) stops a pass one row earlier than the old flat bud
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
 
-    // Simulate row 1 actually taking 194s of wall-clock time, the exact
-    // real duration that produced the 357s near-miss — without the test
-    // really sleeping 194 seconds. Date.now() is monkeypatched to jump
-    // forward by 194s the instant the fake scorer is called (i.e. exactly
-    // where the real model call would have consumed that time), then holds
-    // steady, so the loop's OWN post-row elapsed/duration math sees the
-    // same numbers the real run did.
+    // Simulate row 1 actually taking 669s of wall-clock time — the exact
+    // real duration of the Stacie Staub row (one Moonshot transport-timeout
+    // retry, then a slow success), which is what forced the constants fix
+    // in the first place — without the test really sleeping 669 seconds.
+    // Date.now() is monkeypatched to jump forward the instant the fake
+    // scorer is called (i.e. exactly where the real model call would have
+    // consumed that time), then holds steady, so the loop's OWN post-row
+    // elapsed/duration math sees the same numbers the real run did.
     let simulatedNow = 1000000;
     gas.Date.now = () => simulatedNow;
     Date.now = () => simulatedNow;
     gas.scoreQcTranscript_ = () => {
-      simulatedNow += 194 * 1000;
+      simulatedNow += 669 * 1000;
       return {
         reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
         flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
@@ -6414,10 +6445,15 @@ test('rescoreAllCalls_ (live) stops a pass one row earlier than the old flat bud
 
     const joined = lines.join('\n');
     assert.match(joined, /\[1\/2\] Done: row \d+ \(Slow Row\)/, 'row 1 must complete normally');
-    assert.equal(/Rescoring row \d+ \(Would Be Row Two/.test(joined), false,
-      'row 2 must NOT be started — row 1\'s own 194s duration makes starting another one too risky against the real ceiling');
-    assert.match(joined, /time budget hit after 1 of 2 eligible row\(s\)/,
-      'must report a clean partial result instead of risking the hard-kill near-miss');
+    // 669s elapsed + a 669s+20s estimate for row 2 = 1358s, still under the
+    // real 1500s (25-min) ceiling — this row must be allowed to run. Under
+    // the OLD, wrongly-conservative 6-minute assumption this would have
+    // been refused (exactly the over-caution Kris was pushing back on:
+    // the point of retuning the constants was to stop losing rows the
+    // account can actually still finish).
+    assert.match(joined, /Rescoring row \d+ \(Row Two/,
+      'row 2 must be allowed to start — 669s is real Workspace-account behavior, not a reason to stop early');
+    assert.equal(/time budget hit/.test(joined), false, 'both rows should complete in one pass now');
   } finally {
     gas.SpreadsheetApp = originalSpreadsheetApp;
     gas.DriveApp = originalDriveApp;

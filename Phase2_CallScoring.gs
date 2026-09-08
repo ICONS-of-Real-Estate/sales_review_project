@@ -1191,23 +1191,35 @@ function scoreNewlyLoggedCalls_() {
 //      partial result — a simple re-run picks up exactly where it left off,
 //      since every row it already touched this pass now carries the current
 //      version and gets skipped on the next.
-var RESCORE_ALL_TIME_BUDGET_MS_ = 5 * 60 * 1000; // same margin under the 6-minute ceiling as INBOX_SLA_TIME_BUDGET_MS_
 // Real near-miss, live 08/09/2026: row 2 of a pass finished at 357s elapsed
-// — 3 SECONDS before Apps Script's 6-minute (360,000ms) hard execution
-// ceiling, which kills the whole execution outright (no graceful stop, no
-// final log line) rather than letting it finish. The bug: the budget check
-// above only fires BEFORE starting a row, comparing already-elapsed time
-// against a flat 300s threshold — it never asks "is there enough time left
-// to let ONE MORE row run to completion?" A row that starts at, say, 290s
-// elapsed and then takes 3 more minutes blows straight through the 360s
-// ceiling with no check in between (a live model call can't be interrupted
-// mid-flight). rescoreAllCalls_'s loop now estimates the next row's likely
-// duration (the slowest row seen so far this pass, or this default before
-// any row has completed yet) and refuses to START a row unless there's
-// still enough runway for it to finish under the real ceiling, with its own
-// safety margin on top for the sheet write + logging that follows.
-var RESCORE_HARD_EXECUTION_CEILING_MS_ = 6 * 60 * 1000; // Apps Script's actual execution limit
-var RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_ = 4 * 60 * 1000; // conservative, before any row this pass has finished
+// — 3 SECONDS before a 6-minute (360,000ms) hard execution ceiling this
+// file assumed, which (had it been real) would kill the whole execution
+// outright (no graceful stop, no final log line) rather than letting it
+// finish. The bug then: the budget check only fired BEFORE starting a row,
+// comparing already-elapsed time against a flat threshold — it never asked
+// "is there enough time left to let ONE MORE row run to completion?" A row
+// that starts near the edge and then takes minutes more blows straight
+// through with no check in between (a live model call can't be interrupted
+// mid-flight).
+//
+// Fixed with an estimate-based pre-check below — but the assumed ceiling
+// itself was also wrong, confirmed by two real runs the SAME day: one
+// execution ran 739s (12m19s) total, including a single row that took
+// 669s after one Moonshot transport-timeout retry, and completed normally
+// with no kill. `iconsofrealestate.com` is a Google Workspace domain,
+// which gets a 30-minute Apps Script execution ceiling, not the 6-minute
+// consumer-account limit this file originally assumed (same wrong
+// assumption INBOX_SLA_TIME_BUDGET_MS_, Phase4_InboxSLA.gs, was modeled
+// on — not fixed here, only this file's own constants, since that phase
+// hasn't shown the same evidence yet). Retuned with a real 5-minute margin
+// under the 30-minute Workspace ceiling, not the false 6-minute one.
+var RESCORE_ALL_TIME_BUDGET_MS_ = 20 * 60 * 1000;
+var RESCORE_HARD_EXECUTION_CEILING_MS_ = 25 * 60 * 1000; // 5-minute margin under the real ~30-minute Workspace ceiling
+// A single row can retry once on a transport failure (MAX_PARSE_RETRIES),
+// and each attempt's UrlFetchApp call can itself run a full ~360s before
+// Moonshot/the proxy times out (observed exactly, 08/09/2026) — so a row's
+// real worst case is roughly two of those back to back, not one.
+var RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_ = 12 * 60 * 1000; // conservative, before any row this pass has finished
 var RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_ = 20 * 1000; // sheet write + logging after the model call returns
 
 /**
