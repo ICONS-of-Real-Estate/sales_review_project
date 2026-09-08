@@ -114,8 +114,9 @@
 <h2>All calls</h2>
 <div style="display:flex; gap:0.5rem; margin-bottom:0.75rem;">
   <a href="/reps/{{ rep }}" class="{{ 'muted' if call_type_filter else '' }}" style="{{ '' if not call_type_filter else 'text-decoration:underline;' }}">All</a>
-  <a href="/reps/{{ rep }}?call_type=QC" class="{{ 'muted' if call_type_filter != 'QC' else '' }}" style="{{ '' if call_type_filter == 'QC' else 'text-decoration:underline;' }}">QC</a>
-  <a href="/reps/{{ rep }}?call_type=Sales%20Call" class="{{ 'muted' if call_type_filter != 'Sales Call' else '' }}" style="{{ '' if call_type_filter == 'Sales Call' else 'text-decoration:underline;' }}">Sales Call</a>
+  {% for t in call_types %}
+  <a href="/reps/{{ rep }}?call_type={{ t | urlencode }}" class="{{ 'muted' if call_type_filter != t else '' }}" style="{{ '' if call_type_filter == t else 'text-decoration:underline;' }}">{{ t }}</a>
+  {% endfor %}
 </div>
 <table>
   <thead>
@@ -126,7 +127,7 @@
       <th title="good_to_book: the AI judge thinks this lead is worth continuing to pursue. should_screen_out: the judge thinks this lead should be dropped. Note: a call where automated scoring itself failed (see the ⚠ badge in Why) always shows good_to_book here too — that's a fallback placeholder, not a real judgment.">Verdict</th>
       <th title="Click a score to read the AI's full write-up for that call.">Score</th>
       <th>Outcome</th>
-      <th title="Did the rep explicitly ask for the booking/commitment on this call? This is NOT whether the deal closed — see Outcome for that.">Asked close?</th>
+      <th title="Did the rep explicitly ask for the booking/commitment on this call? This is NOT whether the deal closed — see Outcome for that.">Ask booking?</th>
       <th title="Yes only when objections came up AND the rep fully overcame them. No is ambiguous by itself — it means EITHER no objections came up, OR they came up and weren't handled. Click the score to read the write-up for which one actually happened.">Objections?</th>
       <th title="The three pieces of ICONS' pitch framework this rubric checks: recruit agents, ICONS is the #1 podcast, sell more houses. ✓ = all three covered. Otherwise shows which piece(s) were missed. Bens' podcast-interview calls use a different framework entirely, so this column doesn't apply to him.">Framework</th>
       <th>Failure mode</th>

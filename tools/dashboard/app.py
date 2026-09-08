@@ -900,6 +900,35 @@ def rep_detail(rep, call_type=""):
     return calls
 
 
+# Preferred left-to-right order when present; anything else this rep has
+# (there's no fixed universe of Call Type values — a rep can carry any raw
+# string that ever got written to the sheet) is appended after, alphabetically.
+CALL_TYPE_TAB_ORDER = ["QC", "Sales Call", "Icons 100 Recording"]
+
+
+def rep_call_types(rep):
+    """Which raw Call Type tabs to show on this rep's page — Kris's ask
+    (08/09/2026): "BEns still has QC / sales call. It should be ICONS 100 /
+    QC." The tabs used to be a hardcoded QC/Sales Call pair for every rep,
+    which is simply wrong for Bens — he never runs a Sales Call at all (see
+    CLAUDE.md's "Who does what" section: "Bens does NOT take Sales Calls").
+    Deriving the tab list from what this rep's rows actually contain, instead
+    of a fixed pair, fixes Bens without a rep-name special case here, and
+    keeps working automatically if anyone's Call Type vocabulary changes
+    again later."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT call_type FROM sales_call_log "
+        "WHERE rep = ? AND call_type IS NOT NULL AND call_type != ''",
+        (rep,),
+    ).fetchall()
+    conn.close()
+    present = {r["call_type"] for r in rows}
+    ordered = [t for t in CALL_TYPE_TAB_ORDER if t in present]
+    ordered += sorted(present - set(ordered))
+    return ordered
+
+
 def review_queue(rep=""):
     """A simplified stand-in for Phase 2's actual clustering algorithm
     (buildReviewQueue() in Phase2_CallScoring.gs — capped-count x 1000 +
@@ -1263,6 +1292,7 @@ def rep_detail_page(request: Request, rep: str, call_type: str = ""):
             "avg_score": avg_score,
             "calls": calls,
             "call_type_filter": call_type,
+            "call_types": rep_call_types(rep),
             "score_over_time": _rep_score_series(rep),
             "outcomes": outcome_breakdown(rep),
             "outcome_missing_key": OUTCOME_MISSING,

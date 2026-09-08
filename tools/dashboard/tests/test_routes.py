@@ -77,6 +77,24 @@ def test_rep_detail_page_call_type_tabs_filter_the_calls_table(client, db_path, 
     assert "A QC Call" not in resp_sales.text
 
 
+def test_rep_detail_page_call_type_tabs_reflect_this_reps_own_call_types_not_a_fixed_pair(client, db_path, conn):
+    """Real bug, live 08/09/2026 (Kris: "BEns still has QC / sales call. It
+    should be ICONS 100 / QC"): the tabs used to be a hardcoded QC/Sales Call
+    pair for every rep. Bens never runs a Sales Call at all (CLAUDE.md's "Who
+    does what" section) — his real call types are QC and Icons 100 Recording."""
+    insert_call(conn, rep="Bens", call_type="QC", prospect_name="A Bens QC")
+    insert_call(conn, rep="Bens", call_type="Icons 100 Recording", prospect_name="A Bens Recording")
+    conn.commit()
+
+    resp = client.get("/reps/Bens")
+    assert "Icons 100 Recording" in resp.text
+    assert ">Sales Call<" not in resp.text
+
+    resp_filtered = client.get("/reps/Bens", params={"call_type": "Icons 100 Recording"})
+    assert "A Bens Recording" in resp_filtered.text
+    assert "A Bens QC" not in resp_filtered.text
+
+
 class TestTrainingPriorityOverride:
     """Kris's ask (07/09/2026): "every Tuesday morning... tell him what the
     priority is for each sales rep... if he does nothing, it goes with that.
