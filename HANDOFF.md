@@ -1,3 +1,60 @@
+## ⚠ PENDING — from the 08-09/09/2026 session (read before touching scoring/transcription)
+
+**1. Tomás needs to read and approve the framework rubric wording.** The
+direction ("THE framework, not all the frameworks") is his; the actual
+prompt text (`frameworkRubricPrompt_()`, `Phase2_CallScoring.gs`) is
+Claude's. Sent to him as a Google Doc, 09/09/2026:
+https://docs.google.com/document/d/1ywx8Mx1QHXKDw1e9xzHbNXNg7k-ruB5R2Up3k2dDQG4/edit
+(also covers the CRM-tagging-historical-list ask). No response from him
+logged yet as of this write-up — check before trusting re-scored framework
+numbers in a real session.
+
+**2. Bruce Henson (Sean, row 377) — "booked 2nd call w/ Tomás: false" when
+it's true, per Tomás on the call.** Not yet investigated — needs Sean's
+real transcript for that row the same way Frank Pirrone's needed pasting in
+to find the repetition-loop bug. Check whether it survived the framework/
+repetition-loop rescore first; if still wrong, get the transcript.
+
+**3. `GHL_CONFIG.ENABLED` is still `false`.** Flipping it backfills
+`Outcome Disposition`/`Prospect Email` from GHL at real scale
+(`previewGhlSync()`/`syncGhlEmailAndDisposition_`, `Phase9_GhlSync.gs` —
+already preview-tested, just never turned on). This is a real "trust GHL as
+a data source" call Kris should make at a computer, not something to flip
+in passing. Matters more now than it used to: the sold-call training
+exclusion (§4 below) reads `Outcome Disposition`, and that column is still
+~0% filled sheet-wide without this.
+
+**4. Real speaker diarization for the Whisper transcription pipeline is
+still unbuilt.** `transcribe_with_whisper()` (`tools/transcribe_sean_calls_whisper.py`
+— confirmed via `tools/deploy/setup_ovh.sh` to be THE actual production
+path, not the Gemini one) has no diarization at all. whisper.cpp has an
+optional `tdrz_enable` (tinydiarize) turn-boundary flag, but it needs a
+different `-tdrz`-suffixed model file and hasn't been tested against a real
+call — noted, not attempted blind. Kris's ask: "even if it's not perfect,
+it'd be nice to try an estimate... fill in the freaking names of who's
+speaking."
+
+**5. Deployed and verified live, 09/09/2026** (all three independently):
+Apps Script (`git pull && clasp push`), the dashboard
+(`tools/deploy/redeploy_dashboard.sh`), and the transcription pipeline on
+the VPS (plain `git pull` under `/home/kris/sales_review_project` — already
+running as `kris`, not root, despite Kris's own suspicion otherwise;
+no service restart needed, next timer firing just picks it up). **If you're
+starting a new session and about to touch scoring/transcription, check
+`git log -3` against `main` first** — this session pushed 10 commits in
+one sitting (`af9e632`..`538ddb2`) and it's easy to assume "already
+deployed" incorrectly, or the reverse.
+
+**6. `previewWeeklyPlaybookReview()` needs a fresh run** to confirm Bens'
+two newly-scored calls (Mark Ryan, Tammy De Wolfe) and the sold-call
+exclusion actually produce sane training material before Tomás's session —
+not yet done as of this write-up.
+
+See "Handoff — 09/09/2026 (session 13)" below for the full write-up of what
+changed and why.
+
+---
+
 ## ⚠ PENDING — Bens' GHL Opportunities (added 08/09/2026, deadline EOD Thursday)
 
 **Tomás gave Bens explicit instructions in Slack (07/09/2026, 18:45) to
@@ -39,6 +96,234 @@ replaces the spreadsheet-tracker workflow is live. Check with Kris/Tomás
 before re-enabling, don't just assume "it's been quiet" means it's safe.
 
 ---
+
+# Handoff — 09/09/2026 (session 13 — real transcription bug found and fixed at its actual source, framework rubric reversed, training follows outcomes now)
+
+## 0. What happened this session (read this first)
+
+Started by finishing carryover from the previous session (override-fallback
+reversal, a `focus.key`/gaps rendering bug), then a long real-time debugging
+arc driven almost entirely by Kris pasting actual evidence (a real corrupted
+transcript, a real dashboard screenshot, a real Slack message) rather than
+requests to build features. That evidence discipline is what caught two
+separate wrong-first-attempt fixes below — worth reading those sections even
+if skimming the rest, since the pattern (fix looks right, doesn't survive
+contact with real data) is likely to recur.
+
+10 commits, `af9e632`..`538ddb2`, all pushed straight to `main`. Three
+independent deploy targets, **all confirmed deployed and live** as of this
+write-up (see PENDING §5 above for exact commands/verification).
+
+## 1. The real bug chain: Zoom preference → repetition-loop → wrong pipeline → state leak
+
+Kris, on a training call with Sean (transcript pasted into the session):
+*"Sean and Joana are going to upload the Zoom transcript, and if it's there,
+use that. If it's not, then transcript your own one."* Also on that call,
+Tomás, reading a live feedback email: *"the transcript is basically half a
+page of real transcript. And then it's 3,933 times that it says 'I'm going
+to do it this way.'"*
+
+**Zoom preference** — `Phase2_CallScoring.gs`, all six folder scanners
+(Sean/Joana/Tomás × preview/live) now index `.vtt` files in a folder first
+and skip our own "— Transcript" Doc for any call a Zoom upload covers. Real
+sub-bug caught before shipping: the old file-type guard
+(`name.indexOf('Transcript')`) is case-sensitive, and Zoom names files
+lowercase (`...transcript.vtt`) — so a Zoom upload would have been silently
+ignored by every scanner without also fixing that.
+
+**Repetition-loop detection — built wrong the first time.** First version
+(`transcriptIsDegenerateRepetition_`) checked for a repeated LINE, because
+the only sample transcripts on hand at the time (Sean/Joana's own training
+calls) were cleanly one line per speaker turn. **Then Kris pasted Frank
+Pirrone's actual transcript Doc**, and it has almost no line breaks at all
+— the corrupted tail is one unbroken run of "I'm going to do it this way."
+glued together with plain spaces. The line-based check would have looked at
+~2 "lines" and done nothing; it never would have worked in production.
+Rewritten on sliding 6-word windows instead — verified directly against the
+real doc: dominant window repeats exactly 3,933 times (Tomás's number,
+precisely), covering 82.6% of the transcript. Threshold (50% dominant-share)
+checked against a deliberately adversarial case too: a rep saying only
+"Yeah."/"Right." in strict alternation between real content still lands at
+37.5%, comfortably under.
+
+**Then: fixed the wrong SCRIPT entirely, at first.** Fixed
+`transcribe_sean_calls.py`'s Gemini-based `transcribe_with_gemini()` first —
+reasonable-looking target, it's the one with `main()` and a Kris-facing
+setup docstring. **Traced `tools/deploy/setup_ovh.sh` and confirmed it's not
+what's deployed.** `transcribe_all.py` — what actually runs unattended every
+6h on the OVH VPS — imports `transcribe_with_whisper()` from
+`transcribe_sean_calls_whisper.py`, shared by every batch (Sean, Joana,
+Tomás, Daily Practice, Calibration Feedback, Pitch Guide Training). THAT
+function is the real source: `" ".join(...)` with zero validation, no
+paragraph breaks, no repetition check at all. Same fix ported there
+(shared `transcript_is_degenerate_repetition_`/`transcript_repetition_loop_share_`,
+imported from `transcribe_sean_calls.py`, kept in lockstep with the Apps
+Script version), plus segments now join with `\n\n` instead of a space, plus
+retry with an escalating temperature (whisper.cpp's default decode is
+greedy/deterministic — retrying at the SAME temperature reproduces the
+identical failure).
+
+**Then Opus 5 code review (explicitly requested, high effort) found a real
+bug in THAT fix**, same night: the escalated retry temperature leaked
+across every subsequent video in the same worker process, not just the
+retried one. Verified against the actual installed `pywhispercpp==1.5.1`
+source: `Model.transcribe(**params)` applies whatever keys it's given via
+`setattr` onto a `_params` object that lives on the (cached, reused-per-
+worker) Model instance and is never reset on its own. The old code omitted
+`temperature` on attempt 0 (`{} if attempt else {...}`), so once any video
+in a run needed a retry, every LATER video's "first attempt" for the rest
+of that 6-hour run silently inherited the bumped temperature instead of the
+documented deterministic default. Fixed by passing `temperature=0.0`
+explicitly on every call, never by omission.
+
+**Real speaker names** — `build_transcript_prompt_()` (Gemini path only;
+Whisper has no diarization API at all, see PENDING §4 above) now takes
+`rep_name` (always known) and `prospect_name_hint` (the video's own
+filename, passed as a hint to confirm against the audio, never asserted).
+
+**Net effect**: `Phase2_CallScoring.gs`'s repetition-loop check, the Zoom
+preference, `tools/transcribe_sean_calls.py` (Gemini fallback, not
+deployed but fixed anyway), and `tools/transcribe_sean_calls_whisper.py`
+(the ACTUAL deployed path) all now share the same detection algorithm and
+thresholds, verified against the same real transcript.
+
+**`RUBRIC_VERSION` bump gotcha, caught right before Kris ran the
+verification rescore**: the repetition-loop rewrite changed scoring
+behavior but never bumped `RUBRIC_VERSION`, so rows already scored under
+the framework-fix version (including Frank Pirrone's, from an earlier
+full-history run that predated the repetition-loop rewrite) would have
+been silently skipped by `rescoreAllCalls_`/`rescoreLastWeekCalls_` as
+"already current" — never actually re-evaluated. Bumped to
+`2026-09-09-repetition-loop-v2` in the very next commit. **If a future
+rubric-affecting change ships without a version bump, this exact silent-
+skip bug recurs** — treat "does this change what a row's score/flags would
+be" as the trigger for bumping, not "did I touch the rubric prompt file."
+
+## 2. Framework rubric reversed — Tomás's correction
+
+Tomás, reading a real feedback email out loud on the Sean call: *"we're not
+always going to deliver ALL the frameworks. We're going to deliver THE
+framework... It's never going to be all of them."* The old rule required
+all three legs (recruit agents / #1 podcast / sell more houses); Frank
+Pirrone's feedback read *"Framework explained: false (missing: recruit
+agents, #1 podcast in your city, sell more houses)"* — penalised on all
+three at once for a job nobody was asking him to do.
+
+`frameworkRubricPrompt_()`/`deriveFrameworkFields_()` (`Phase2_CallScoring.gs`):
+the three legs are now a factual record of what was covered, not a
+checklist. A new `framework_matched_to_lead` decides pass/fail — was the
+angle the rep chose right for THIS lead's goal/pain. `RUBRIC_VERSION`
+bumped (then bumped again, see §1). **Tomás hasn't read/approved the exact
+wording yet** — see PENDING §1.
+
+## 3. Training follows outcomes now (partially)
+
+Tomás on Slack: *"Stacie Staub is signaled as a 2/5 and this was the lead
+Joana closed by herself. Never even met the lady."* Two things folded into
+one, worth keeping separate in your head:
+
+- **Stacie's specific 2/5 was actually the Call Type bug** (an earlier
+  session's fix, unrelated) — she's back to 5 after that rescore.
+- **The general ask — a closed deal should never be used as a training
+  failure — was real and unbuilt.** `rankTrainingPriorities_`
+  (`Phase1_ComplianceCheck.gs`) now excludes any call with
+  `Outcome Disposition == 'Sold'` from `failedCalls`, on every element,
+  regardless of what its flags say. Every downstream consumer
+  (`pickWeeklyTrainingFocus_`, `legacyTrainingFocusFromRanking_`,
+  `namedTrainingFocusFromRanking_`, the Training Priority Override path)
+  reads off this one function, so one change point covers the whole
+  picker. Doesn't need GHL — `Outcome Disposition` is a plain dropdown a
+  human can fill by hand — but almost nothing populates it today (see
+  PENDING §3). Not yet built: surfacing a win as a positive worked example
+  (Tomás's "that's a winning one" framing) — this only stops it being used
+  as a negative one.
+
+## 4. Smaller real fixes, same session
+
+- **First-touch handoff brief was lazy, not broken-looking-but-fine.**
+  Kris: *"This email is lazy! No look up of lead / Poorly formatted / Need
+  to CC Tomas and myself."* `PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED` was
+  `false` — the lookup never ran, but the email always said "Nothing found
+  by web search" regardless, indistinguishable from a real empty search.
+  Split into two honest messages depending on whether a search actually
+  ran. Query also now uses the prospect's email when known (Kris's own
+  manual search — name + email — found instantly what name-only search
+  didn't). Added an HTML body (there wasn't one). CC now includes Tomás for
+  first-touch briefs specifically (cold, unqualified leads) — narrower than
+  the 03/09 decision that excludes him from routine briefs; flagged in the
+  commit in case Kris wants it broadened.
+  **Separately found: Custom Search API 403s even after Kris enabled it** —
+  root cause is a project/key mismatch (the error is generated based on
+  whichever project the API KEY belongs to, not whichever project you're
+  looking at in the console) — shelved per Kris's call, `ENABLED` stays
+  `false`. If picked back up: the fastest fix is a fresh key created under
+  a project you explicitly enable Custom Search API on, not more detective
+  work on the old one.
+- **`scoreLegacyTranscriptFolder` (Bens' path) had zero progress logging** —
+  same complaint, same fix shape as `rescoreAllCalls_` got on 29/08: upfront
+  scope count, then a line immediately before AND after each model call.
+  Kris hit this live: "Scored Mark Ryan" landed 3m15s after the file was
+  picked up with nothing in between.
+- **New "Recording URL" column** (`SALES_CALL_LOG_HEADERS`, position AO) —
+  Kris, correcting an assumption: *"Sales calls and QCs are not done on
+  Riverside. They're done on Zoom. It's icons one hundred with Bens that is
+  done on Riverside."* Either way, the recording is a sibling video file
+  next to its transcript in Drive — `findSiblingFileUrl_` (mirrors the
+  existing `findSiblingFileCreatedDate_` used for Call Date) captures it at
+  scoring time across all four write paths (Sean/Joana/Tomás ongoing +
+  Bens/Joana-legacy). Feeds Tomás's "put the recordings in GHL too" ask —
+  not yet wired into `Phase12_GhlNoteSync.gs`'s note body, just captured.
+- **Dashboard date bug** — Kris, looking at Bens' rep page: *"The dates are
+  wrong. It's only September."* Root cause: `tools/dashboard/sync.py`
+  fetched dates via Sheets' `FORMATTED_VALUE`, which follows the live
+  spreadsheet's own locale, not this project's documented DD/MM/YYYY
+  convention — a real 12 August call rendered as "8 Dec" (read D/M when the
+  sheet is actually rendering M/D). Fixed by fetching the raw serial number
+  (`valueRenderOption=UNFORMATTED_VALUE`, `dateTimeRenderOption=SERIAL_NUMBER`)
+  for the `Call Date` column specifically and converting it directly — no
+  locale involved at all.
+- **Training-only transcripts for Sean and Joana** — both training calls
+  were roughly half coaching, half Kris/Tomás debugging the system live.
+  Produced as local `.txt` files (Claude has no Drive write access — could
+  not upload them, had to hand them to Kris), stripped to just the coaching
+  content, for Phase 6's training-call review to actually grade the right
+  thing.
+- **Google Doc sent to Tomás** for his sign-off (see PENDING §1) — created
+  via the Drive MCP connector, shared with `commenter` access. Worth knowing
+  for next time: `create_file` with `contentMimeType: text/html` converts
+  cleanly to a real Doc (headers/bold/blockquotes all landed), but a
+  `<blockquote style="...monospace...">` block loses its internal line
+  breaks in the conversion — content survives, formatting doesn't. If a doc
+  needs to preserve exact line breaks in a quoted code/prompt block, that's
+  worth testing before relying on it, or just accept the paragraph-collapse
+  for prose-shaped content.
+
+## 5. Process notes worth carrying forward
+
+- **The "call it real API cost" moment**: Kris asked directly whether
+  `rescoreAllCalls()` "sends everything to the API" mid-run — yes, every
+  eligible row is a real paid model call. Established pattern going
+  forward: default to the LAST-WEEK-SCOPED rescore
+  (`rescoreLastWeekCalls`/`previewRescoreLastWeekCalls`) rather than the
+  full 462-row backfill, and only run the full one once a scoped batch has
+  actually confirmed a fix works. Kris's own framing: *"Only do the last
+  week of calls until we are sure it's working... we'll go week to week
+  until sure it's perfect."*
+- **Evidence over assumption, repeatedly, this session.** Every real bug
+  found tonight came from Kris pasting something real (a transcript, a
+  screenshot, a Slack message) rather than from guessing what might be
+  wrong. The two wrong-first-attempt fixes above (line-based repetition
+  check, Gemini instead of Whisper) both happened specifically in the gap
+  before real evidence arrived — worth defaulting to "ask for the real
+  artifact" over "reason about the likely shape of the data" when a fix
+  is going to run against real transcripts/calls/leads.
+- **This session ran mostly from Kris's phone.** Code changes, tests, and
+  `git push` don't need a computer; `clasp push` and the two VPS deploy
+  commands do. When a session runs partly phone-only, expect a backlog of
+  undeployed-but-tested commits to hand off at the "okay I'm on my computer
+  now" moment — worth checking `git log` on each of the three targets
+  (Apps Script, dashboard VPS, transcription VPS) rather than assuming
+  all-or-nothing deploy state.
 
 # Handoff — 28/08/2026 (session 12 — GHL integration built, Inbox SLA alias bug fixed, Reply Tracker bug found)
 
