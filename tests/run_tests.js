@@ -3196,6 +3196,33 @@ test('rankTrainingPriorities_ treats a blank flag as "no signal" — never as a 
   assert.equal(ranking[0].scored, 2, 'objections were graded on both calls');
 });
 
+test('rankTrainingPriorities_ never surfaces a SOLD call as "where the rep failed" — real bug, Tomás on Slack 08/09/2026: "Stacie Staub is signaled as a 2/5 and this was the lead Joana closed by herself. Never even met the lady." SO training adjust to the success.\'', () => {
+  const calls = [
+    // Stacie Staub: failed two flags on paper, but the lead closed. Must
+    // never appear in failedCalls or count toward the failed tally.
+    { score: 2, outcomeDisposition: 'Sold',
+      flags: { discovery: false, framework: true, ask: false, objections: true } },
+    // A genuine failure on the same element, not sold — must still count.
+    { score: 2, outcomeDisposition: '',
+      flags: { discovery: false, framework: true, ask: true, objections: true } },
+    { score: 5, outcomeDisposition: 'Not Sold',
+      flags: { discovery: true, framework: true, ask: true, objections: true } }
+  ];
+  const ranking = gas.rankTrainingPriorities_(calls);
+  const discovery = ranking.filter((r) => r.key === 'discovery')[0];
+  const ask = ranking.filter((r) => r.key === 'ask')[0];
+
+  assert.equal(discovery.failed, 1, 'the sold call\'s discovery failure must not count');
+  assert.equal(discovery.failedCalls.length, 1);
+  assert.equal(discovery.failedCalls[0].outcomeDisposition, '', 'the surviving failedCall must be the one that was NOT sold');
+
+  assert.equal(ask.failed, 0, 'the only ask failure was on the sold call, so ask has none left');
+
+  // scored (the element WAS graded on this call) stays unaffected — only
+  // whether it counts as a FAILURE changes, not whether it was graded.
+  assert.equal(discovery.scored, 3);
+});
+
 test('rankTrainingPriorities_ breaks a tie toward the element whose failing calls scored worse', () => {
   const calls = [
     // discovery and objections each fail exactly 2 calls, but discovery's fail at 1-2 and objections' at 4-5.

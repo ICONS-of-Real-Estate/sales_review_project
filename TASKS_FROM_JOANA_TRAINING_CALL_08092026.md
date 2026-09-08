@@ -305,11 +305,15 @@ human decision before I touch it._
 rescore re-graded her on the QC rubric. After the backfill and rescore she is
 **back to 5**.
 
-**The general ask is not built.** The training picker ranks on score and
-failed elements only and has no outcome signal, so a call the rep *closed*
-can still be picked as the week's coaching material. Written up with what it
-needs in `GHL_MIGRATION_PLAN.md` §15.1, since the outcome has to come from
-GHL stage rather than the still-empty `Outcome Disposition` column.
+**The general ask is half-built, 09/09/2026.** `rankTrainingPriorities_`
+(`Phase1_ComplianceCheck.gs`) now excludes any call marked `Sold` in
+`Outcome Disposition` from ever being selected as a coaching failure — a
+call the rep closed can no longer win the week's focus. Doesn't need GHL:
+that column is a real dropdown a human can already fill by hand. What's
+still missing is a way to populate it at scale (`syncGhlEmailAndDisposition_`,
+`Phase9_GhlSync.gs`, exists and is previewed, just gated behind
+`GHL_CONFIG.ENABLED`) and surfacing a win as a positive worked example
+rather than just excluding it. Full detail in `GHL_MIGRATION_PLAN.md` §15.1.
 
 
 ---

@@ -575,8 +575,28 @@ backwards: those are the calls to study, not correct. What's needed:
   what were the, how was the discovery call there? Because that's a winning
   one."*
 
-Tracked as its own task; it depends on the GHL stage mapping in this
-document, which is why it's recorded here rather than in either task list.
+**Half of this is done, 09/09/2026.** `rankTrainingPriorities_`
+(`Phase1_ComplianceCheck.gs`) now reads each call's `Outcome Disposition`
+straight off the sheet and excludes any call marked `Sold` from
+`failedCalls` — a closed deal can never again be selected as this week's
+coaching example, on any element, regardless of what its flags say. It still
+counts toward `scored` (the element genuinely was graded on it), only
+`failed`/`failedCalls` are affected. This did NOT need the GHL stage sync to
+be live: `Outcome Disposition` is a real dropdown column
+(`brief.txt` §2 — Sold/Not Sold/Follow-up/No-show) a human can already set
+by hand, so the fix takes effect the moment that cell is filled in, whether
+by a person or later by `syncGhlEmailAndDisposition_`
+(`Phase9_GhlSync.gs`, currently gated behind `GHL_CONFIG.ENABLED = false`).
+
+**Still open:** nothing currently backfills `Outcome Disposition` at scale —
+it's still mostly blank across the sheet (GHL_PIPELINE_MAP.md: "100%
+manual, 0% filled in" as of 27/08, likely still close to true), so this fix
+has little to bite on yet. The lever to change that already exists and is
+previewed/tested (`previewGhlSync()`, same file) — it just needs
+`GHL_CONFIG.ENABLED` flipped after Kris reviews that preview. Also still
+open: surfacing a sold call as a *positive* worked example (Tomás's "that's
+a winning one" framing) rather than just excluding it — that's additive
+UI/email work, not started.
 
 ### 15.2 Answers to a five-point list
 

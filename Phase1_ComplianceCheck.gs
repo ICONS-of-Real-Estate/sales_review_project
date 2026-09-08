@@ -3545,7 +3545,17 @@ function trainingElementFlagsForRow_(row, col) {
 function rankTrainingPriorities_(calls) {
   return TRAINING_PRIORITY_ELEMENTS_.map(function (el) {
     var scored = calls.filter(function (c) { return c.flags[el.key] === true || c.flags[el.key] === false; });
-    var failedCalls = scored.filter(function (c) { return c.flags[el.key] === false; });
+    // A call that closed is never "where the rep failed" — see this
+    // function's own header on why a sold call still counts in `scored`
+    // (the element WAS graded on it) but can never appear in `failedCalls`
+    // (the list this ranking, the coaching email, and the individual
+    // per-call "Missing:" line all pull their examples from). Real bug
+    // found live (08/09/2026, Tomás on Slack): Stacie Staub, a lead Joana
+    // closed by herself with Tomás never even meeting her, was still
+    // showing up as a training-worthy failure.
+    var failedCalls = scored.filter(function (c) {
+      return c.flags[el.key] === false && c.outcomeDisposition !== 'Sold';
+    });
     var avgFailedScore = failedCalls.length
       ? failedCalls.reduce(function (sum, c) { return sum + (Number(c.score) || 0); }, 0) / failedCalls.length
       : null;
@@ -3861,7 +3871,14 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
         // picked as the thing to train.
         flags: scoreIsFake ? {} : judged.flags,
         gaps: scoreIsFake ? {} : judged.gaps,
-        scoreIsUnusable: scoreIsFake
+        scoreIsUnusable: scoreIsFake,
+        // Tomás, Slack, 08/09/2026: "Need to figure out a way of signaling
+        // leads that were converted... SO training adjust to the success.
+        // Stacie Staub is signaled as a 2/5 and this was the lead Joana
+        // closed by herself. Never even met the lady." Read straight off the
+        // sheet — see rankTrainingPriorities_ for where this actually keeps
+        // a closed deal out of "where the rep failed".
+        outcomeDisposition: String(row[col['Outcome Disposition'] - 1] || '').trim()
       });
     });
 
