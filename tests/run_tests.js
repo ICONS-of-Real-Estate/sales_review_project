@@ -256,7 +256,7 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
       discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true,
       booked_discovery_call: false, lead_ready_with_money: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2
@@ -268,32 +268,52 @@ test('isValidJudgeSchema_ accepts a well-formed object and rejects one missing a
   assert.equal(gas.isValidJudgeSchema_(null), false);
 });
 
-test('deriveFrameworkFields_ — all three explained means no gaps; a missing framework object means every gap listed, not a throw', () => {
+test('deriveFrameworkFields_ grades THE framework, not all three — one well-chosen angle passes, a generic pitch that ignores discovery fails, and a missing framework object still does not throw (reversed 08/09/2026 on Tomás\'s instruction)', () => {
   // Return values come from the vm sandbox's own realm, so assert.deepEqual's
   // prototype-identity check would fail against this file's plain object
   // literals for realm reasons, not a real mismatch — compare fields directly,
   // same convention as stripFencesAndParseJson_'s test above.
-  const allExplained = gas.deriveFrameworkFields_({
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true }
+  const allThreeMatched = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true }
   });
-  assert.equal(allExplained.explained, true);
-  assert.equal(allExplained.gapsText, '');
+  assert.equal(allThreeMatched.explained, true);
+  assert.equal(allThreeMatched.gapsText, '');
 
-  const oneGap = gas.deriveFrameworkFields_({
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: false, sell_more_houses_explained: true }
+  // THE central change (Tomás, 08/09/2026): "We're not always going to deliver
+  // ALL the frameworks. We're going to deliver THE framework... It's never
+  // going to be all of them." One well-chosen angle is a PASS. Under the old
+  // rule this exact result failed and the email told Tomás the rep was
+  // "missing: recruit agents, sell more houses" — for a job nobody asked
+  // them to do.
+  const oneAngleWellChosen = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: true, sell_more_houses_explained: false, framework_matched_to_lead: true }
   });
-  assert.equal(oneGap.explained, false);
-  assert.equal(oneGap.gapsText, '#1 podcast in your city');
+  assert.equal(oneAngleWellChosen.explained, true);
+  assert.equal(oneAngleWellChosen.gapsText, '');
+
+  // What DOES fail now: a framework delivered that ignores what discovery
+  // surfaced. The gap text says what was delivered, not what was skipped.
+  const genericPitch = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: false, framework_matched_to_lead: false }
+  });
+  assert.equal(genericPitch.explained, false);
+  assert.equal(genericPitch.gapsText, "delivered recruit agents + #1 podcast in your city, but not tied to this lead's own goal or pain");
+
+  const noFramework = gas.deriveFrameworkFields_({
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false, framework_matched_to_lead: false }
+  });
+  assert.equal(noFramework.explained, false);
+  assert.equal(noFramework.gapsText, 'no framework delivered at all');
 
   // Parse-failure fallbacks and any result shape predating this field must not throw —
   // conservative default is "nothing explained", same policy as manual_review_recommended.
   const missingObject = gas.deriveFrameworkFields_({});
   assert.equal(missingObject.explained, false);
-  assert.equal(missingObject.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
+  assert.equal(missingObject.gapsText, 'no framework delivered at all');
 
   const nullResult = gas.deriveFrameworkFields_(null);
   assert.equal(nullResult.explained, false);
-  assert.equal(nullResult.gapsText, 'recruit agents, #1 podcast in your city, sell more houses');
+  assert.equal(nullResult.gapsText, 'no framework delivered at all');
 });
 
 test('deriveDiscoveryFields_ — judges only the discovery flags a variant actually returned, so the QC rubric (which never scores confirmed_prior_discovery) is not shown a phantom gap for it (Kris 03/09/2026: discovery is one of the 4 elements every rep must be graded on)', () => {
@@ -504,7 +524,7 @@ test('every judge variant that scores discovery returns flags deriveDiscoveryFie
     lead_quality: { verdict: 'good_to_book', justification: 'x' },
     call_quality_score: 3,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2
@@ -1719,7 +1739,7 @@ test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version
     lead_quality: { verdict: 'good_to_book' },
     call_quality_score: 4,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: false },
     manual_review_recommended: false,
     severity: 1,
@@ -2270,7 +2290,7 @@ test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a r
   // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
   // current one — without a bump, no existing row would ever be graded on
   // goal/pain and the change would silently apply to new calls only.
-  assert.equal(gas.RUBRIC_VERSION, '2026-09-08-goal-and-pain');
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-08-the-framework');
 });
 
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
@@ -2527,7 +2547,7 @@ function perfectSharedResult_() {
   return {
     call_quality_score: 5,
     flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
@@ -2540,7 +2560,7 @@ function perfectSeanResult_() {
       captured_leads_goals: true, tied_framework_to_goals: true,
       booked_second_call_with_tomas: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
@@ -2554,7 +2574,7 @@ function perfectBensResult_() {
       booked_next_step: true, discovery_adequate: true, understood_leads_business: true,
       interview_content_quality_good: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
@@ -2565,7 +2585,7 @@ function perfectTomasResult_() {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
       followed_goal_mirror_map_proof_process: true, stalling_converted_to_date: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
@@ -2576,7 +2596,7 @@ function perfectQcResult_() {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
       booked_next_step: true, discovery_adequate: true, understood_leads_business: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
   };
 }
@@ -2611,7 +2631,10 @@ test('computeSharedAnalyticScore_ core requirement: a close-ask miss alone is we
 
 test('computeSharedAnalyticScore_ framework-not-explained miss alone deducts 1', () => {
   const frameworkMissOnly = perfectSharedResult_();
-  frameworkMissOnly.framework.sell_more_houses_explained = false; // any single gap is enough to fail deriveFrameworkFields_'s "explained"
+  // Reversed 08/09/2026: a leg the rep deliberately left out is no longer a
+  // miss at all (Tomás: "It's never going to be all of them"). What fails the
+  // dimension now is delivering a framework that doesn't fit the lead.
+  frameworkMissOnly.framework.framework_matched_to_lead = false;
   assert.equal(gas.computeSharedAnalyticScore_(frameworkMissOnly), 4);
 });
 
@@ -2625,7 +2648,7 @@ test('computeSharedAnalyticScore_ floors at 1 when every deduction fires', () =>
   const worst = perfectSharedResult_();
   worst.flags.asked_for_close = false;
   worst.flags.objections_uncovered = false;
-  worst.framework.recruit_agents_explained = false;
+  worst.framework.framework_matched_to_lead = false;
   assert.equal(gas.computeSharedAnalyticScore_(worst), 1);
 });
 
@@ -2710,7 +2733,7 @@ test('computeTomasAnalyticScore_ scores a perfect call 5, and each single deduct
   assert.equal(gas.computeTomasAnalyticScore_(objectionsMiss), 4);
 
   const frameworkMiss = perfectTomasResult_();
-  frameworkMiss.framework.number_one_podcast_explained = false;
+  frameworkMiss.framework.framework_matched_to_lead = false;
   assert.equal(gas.computeTomasAnalyticScore_(frameworkMiss), 4);
 });
 
@@ -2803,7 +2826,7 @@ test('writeScoreToRow_ still writes the MODEL\'s own call_quality_score, never t
     lead_quality: { verdict: 'good_to_book' },
     call_quality_score: 5, // model says 5
     flags: { asked_for_close: false, objections_uncovered: false, objections_overcome: false }, // analytic would say 1
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false, framework_matched_to_lead: false },
     manual_review_recommended: false,
     severity: 1,
     feedback_summary: 'string',
@@ -4101,7 +4124,7 @@ test('isValidJudgeSchema_ rejects a schema-shaped object with an invalid verdict
       discovery_adequate: true, understood_leads_business: true, confirmed_prior_discovery: true,
       booked_discovery_call: false, lead_ready_with_money: true
     },
-    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+    framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
     manual_review_recommended: false,
     severity: 2
@@ -5045,7 +5068,7 @@ test('rescoreAllCalls_ re-scores an already-scored row under the current rubric,
       return {
         reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
         flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
-        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
         delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
         primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
         feedback_summary: 'rescored'
@@ -5137,7 +5160,7 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
     gas.scoreQcTranscript_ = () => ({
       reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
       flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
-      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
       delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
       primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
       feedback_summary: 'rescored'
@@ -5206,7 +5229,7 @@ test('rescoreAllCalls_ groups eligible rows by rubric variant before scoring, no
       return {
         reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
         flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true, captured_leads_goals: true, tied_framework_to_goals: true, booked_second_call_with_tomas: true },
-        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
         delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
         primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', root_cause_if_no_sale: 'N/A',
         manual_review_recommended: false, severity: 1, feedback_summary: 'rescored'
@@ -5241,7 +5264,7 @@ test('rescoreAllCalls_ returns true when this pass found eligible rows, and fals
     gas.scoreQcTranscript_ = () => ({
       reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
       flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
-      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+      framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
       delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
       primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
       feedback_summary: 'rescored'
@@ -7087,7 +7110,7 @@ test('rescoreAllCalls_ (live) still lets a slow-but-real row (669s, the second r
       return {
         reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
         flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
-        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
         delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
         primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
         feedback_summary: 'rescored'

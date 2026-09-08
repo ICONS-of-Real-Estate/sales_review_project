@@ -11,7 +11,7 @@ AI work out what to do. Send us a plan."*
 
 ---
 
-## 1. ⚠ The framework rubric is wrong — it wants all three legs, it should want ONE
+## 1. ✅ FIXED — The framework rubric wanted all three legs, it should want ONE
 
 The most consequential finding on the call, and it affects every rep's
 scores right now, not just Sean's.
@@ -36,6 +36,18 @@ escrows statewide."*
 it the right one given this lead's goal/pain", not "were all three
 recited". Needs Tomás's sign-off on the exact wording before it ships,
 since it changes every framework score in the system.
+
+**Done 08/09/2026** — `frameworkRubricPrompt_()` and `deriveFrameworkFields_()`
+(`Phase2_CallScoring.gs`), written up in `Phase2_CallGradingSOP.md` §3D-bis.
+The three per-leg booleans stay as a factual record of what was covered; a new
+`framework_matched_to_lead` is what the flag now hangs on. `Flag: Framework
+Explained` is true when at least one angle was delivered AND it fits the
+lead's goal/pain; false when nothing was delivered, or when what was delivered
+ignored discovery. `RUBRIC_VERSION` → `2026-09-08-the-framework`, so
+`rescoreAllCalls()` re-grades the history.
+
+⚠ **Tomás still needs to read the prompt wording** before the re-scored
+numbers get used in a session. The direction is his; the phrasing is ours.
 
 ---
 

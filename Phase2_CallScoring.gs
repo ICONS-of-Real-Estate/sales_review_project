@@ -201,7 +201,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-08-goal-and-pain';
+var RUBRIC_VERSION = '2026-09-08-the-framework';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -319,6 +319,7 @@ function isValidJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    typeof obj.framework.framework_matched_to_lead === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
@@ -563,16 +564,36 @@ function frameworkRubricPrompt_() {
   return [
     'A third, independently-tracked dimension — separate from the failure mode(s) above, and it must NOT',
     'change your call_quality_score anchors below (those stay anchored to close-ask/objection-handling only).',
-    'Did the rep proactively and accurately explain our actual value proposition (the "framework")? Across the',
-    'whole call, did they cover all three of:',
+    '',
+    'Did the rep deliver A framework — the RIGHT one for this lead — and tie it to what discovery surfaced?',
+    '',
+    'READ THIS FIRST, because it reverses how this dimension used to be graded (Tomás, 08/09/2026):',
+    '  "We\'re not always going to deliver ALL the frameworks. We\'re going to deliver THE framework. It',
+    '   can\'t be something from being the #1 podcast in your city, or selling more houses, or recruiting',
+    '   agents. It\'s never going to be all of them."',
+    'A rep is NOT expected to cover all three angles, and covering all three on a lead who needed one is not',
+    'a better call. NEVER mark a call down for an angle the rep left out on purpose.',
+    '',
+    'The three angles our offer can be framed through:',
     '  (a) how the podcast helps them RECRUIT AGENTS to their team,',
     '  (b) how it can make them the #1 REAL ESTATE PODCAST IN THEIR CITY (an authority/branding angle),',
-    '  (c) how it helps them SELL MORE HOUSES (a production/referral angle)?',
-    'A rep who explains this clearly and proactively is pre-empting the objections that come from a lead not',
-    'understanding the offer in the first place — that\'s the whole point of tracking it. Grade generously for',
-    'substance (did they actually convey the idea, in their own words) over reciting exact marketing language.',
-    'Score each of the three independently in the "framework" object below; do not let a strong explanation of',
-    'one paper over silence on another.'
+    '  (c) how it helps them SELL MORE HOUSES (a production/referral angle).',
+    'Record which of these the rep actually delivered in the "framework" object below. That is a factual',
+    'record of what was covered — not a checklist they were supposed to complete. Grade generously for',
+    'substance (did they convey the idea in their own words) over reciting exact marketing language.',
+    '',
+    'Then judge the thing that actually matters — "framework_matched_to_lead": was the angle the rep chose',
+    'the right one for THIS lead, given the goal and pain established earlier in the call?',
+    'Tomás\'s own worked example, from a real lead running both a loan business and an escrow business:',
+    '"the framework is going to depend if he wants to invest more on his loans or invest more on escrows,',
+    'because you can probably do the loans statewide, he can\'t do the escrows statewide" — and a pitch that',
+    'ignores the half of the business the lead actually cares about loses him.',
+    'Set framework_matched_to_lead FALSE when: no framework was delivered at all; or the rep delivered a',
+    'generic pitch that ignored what discovery surfaced; or the angle plainly does not fit this lead (a',
+    'recruiting pitch to someone who said they never want a team). A call where discovery never established',
+    'a goal or a pain cannot have a matched framework — false.',
+    'Set it TRUE when the rep delivered at least one angle and it fits what this lead said they want, or want',
+    'to get away from — even if they covered only that one, and even in the rep\'s own words.'
   ].join('\n');
 }
 
@@ -585,11 +606,26 @@ function frameworkRubricPrompt_() {
  */
 function deriveFrameworkFields_(result) {
   var f = (result && result.framework) || {};
-  var gapKeys = Object.keys(FRAMEWORK_GAP_LABELS_).filter(function (k) { return !f[k]; });
-  return {
-    explained: gapKeys.length === 0,
-    gapsText: gapKeys.map(function (k) { return FRAMEWORK_GAP_LABELS_[k]; }).join(', ')
-  };
+  var deliveredKeys = Object.keys(FRAMEWORK_GAP_LABELS_).filter(function (k) { return !!f[k]; });
+
+  // Reversed 08/09/2026 (Tomás — see frameworkRubricPrompt_). This used to
+  // read "explained = all three legs recited", and the emails said so out
+  // loud: Frank Pirrone's feedback went to Tomás as "Framework explained:
+  // false (missing: recruit agents, #1 podcast in your city, sell more
+  // houses)" — penalised on all three at once for a job nobody was asking
+  // the rep to do. Delivering ONE well-chosen angle is the job; delivering
+  // three is not a better call.
+  if (!deliveredKeys.length) {
+    return { explained: false, gapsText: 'no framework delivered at all' };
+  }
+  if (f.framework_matched_to_lead !== true) {
+    return {
+      explained: false,
+      gapsText: 'delivered ' + deliveredKeys.map(function (k) { return FRAMEWORK_GAP_LABELS_[k]; }).join(' + ') +
+        ', but not tied to this lead\'s own goal or pain'
+    };
+  }
+  return { explained: true, gapsText: '' };
 }
 
 /**
@@ -945,7 +981,8 @@ function buildJudgeSystemPrompt_() {
     '    "discovery_adequate": true, "understood_leads_business": true, "confirmed_prior_discovery": true,',
     '    "uncovered_goal": true, "uncovered_pain": true,',
     '    "booked_discovery_call": false, "lead_ready_with_money": true },',
-    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true,',
+    '    "framework_matched_to_lead": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | framework_not_explained | delivery_ineffective | multiple",',
     '  "manual_review_recommended": true,',
@@ -1010,7 +1047,8 @@ function scoreTranscript_(ctx) {
       discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
       booked_discovery_call: false, lead_ready_with_money: false
     },
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false,
+      framework_matched_to_lead: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     manual_review_recommended: true,
@@ -2220,7 +2258,8 @@ function buildBensJudgeSystemPrompt_() {
     '    "understood_leads_business": true,',
     '    "interview_content_quality_good": true',
     '  },',
-    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true,',
+    '    "framework_matched_to_lead": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "next_step_type": "QC | Sales Call | none",',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
@@ -2254,6 +2293,7 @@ function isValidBensJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    typeof obj.framework.framework_matched_to_lead === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.next_step_type === 'string' &&
@@ -2295,7 +2335,8 @@ function scoreBensTranscript_(ctx) {
       booked_next_step: false, discovery_adequate: false, understood_leads_business: false,
       interview_content_quality_good: false
     },
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false,
+      framework_matched_to_lead: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     next_step_type: 'none',
     primary_failure_mode: 'none',
@@ -3407,7 +3448,8 @@ function buildSeanJudgeSystemPrompt_() {
     '    "booked_discovery_call": false,',
     '    "lead_ready_with_money": true',
     '  },',
-    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true,',
+    '    "framework_matched_to_lead": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_goal_alignment | no_second_call_booked | framework_not_explained | delivery_ineffective | multiple",',
     '  "root_cause_if_no_sale": "string — the single specific reason money wasn\'t closed and no second call',
@@ -3445,6 +3487,7 @@ function isValidSeanJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    typeof obj.framework.framework_matched_to_lead === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
@@ -3486,7 +3529,8 @@ function scoreSeanTranscript_(ctx) {
       booked_second_call_with_tomas: false,
       booked_discovery_call: false, lead_ready_with_money: false
     },
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false,
+      framework_matched_to_lead: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     root_cause_if_no_sale: 'Unscored — parse failure.',
@@ -4337,7 +4381,8 @@ function buildTomasJudgeSystemPrompt_() {
     '    "rep_present_on_call": true,',
     '    "elevation_done": true',
     '  },',
-    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true },',
+    '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true,',
+    '    "framework_matched_to_lead": true },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | framework_not_explained | delivery_ineffective | multiple",',
     '  "teachable_strength": "string",',
@@ -4375,6 +4420,7 @@ function isValidTomasJudgeSchema_(obj) {
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
     typeof obj.framework.sell_more_houses_explained === 'boolean' &&
+    typeof obj.framework.framework_matched_to_lead === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.teachable_strength === 'string' &&
@@ -4417,7 +4463,8 @@ function scoreTomasTranscript_(ctx) {
       discovery_adequate: false, understood_leads_business: false, confirmed_prior_discovery: false,
       rep_present_on_call: false, elevation_done: false
     },
-    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false },
+    framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false,
+      framework_matched_to_lead: false },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
     teachable_strength: 'Unscored — parse failure.',
