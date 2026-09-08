@@ -3684,6 +3684,20 @@ function runWeeklyPlaybookReviewFinal() {
 }
 
 /**
+ * One-rep send. Kris's ask (08/09/2026): Sean and Joana already had their
+ * training session today, so re-sending the whole-team final email would
+ * put stale/duplicate material for both of them back in Tomás's inbox —
+ * only Bens's session is still ahead, tomorrow. buildAndMaybeSendPlaybookReview_
+ * already computes each rep's section independently inside its own
+ * CONFIG.REPS.forEach loop, so filtering to a single rep name here changes
+ * nothing about how Bens's section itself is built.
+ */
+function runBensWeeklyPlaybookReviewFinal() {
+  RUN_TAG = 'runBensWeeklyPlaybookReviewFinal';
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'final', 'Bens');
+}
+
+/**
  * Friday's "move your recordings into Drive" reminder to the reps.
  *
  * Tomás, on the Joana training call (08/09/2026), after Bens turned up with
@@ -3799,7 +3813,7 @@ function previewTrainingElementCoverage() {
 }
 
 /** `stage` is 'reminder' or 'final' (defaults to 'final' — the plain, unprefixed subject, matching this function's behavior before the two-stage schedule existed) — see PLAYBOOK_REVIEW_CONFIG's own header comment. */
-function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
+function buildAndMaybeSendPlaybookReview_(forcePreview, stage, repNameFilter) {
   stage = stage || 'final';
   if (!forcePreview && !PLAYBOOK_REVIEW_CONFIG.ENABLED) {
     log_('buildAndMaybeSendPlaybookReview_: PLAYBOOK_REVIEW_CONFIG.ENABLED is false, skipping.');
@@ -3846,6 +3860,8 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
   var weekStartLabel = Utilities.formatDate(week.start, tz, 'dd/MM/yyyy');
 
   CONFIG.REPS.forEach(function (repCfg) {
+    if (repNameFilter && repCfg.name.toLowerCase() !== repNameFilter.toLowerCase()) return;
+
     // Every one of the rep's calls last week, not just the objection-flagged
     // ones this used to filter down to — all four elements get graded, then
     // the worst becomes the week's focus (Kris, 03/09/2026).
