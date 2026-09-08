@@ -3298,6 +3298,118 @@ function namedTrainingFocusFromRanking_(ranking, label) {
 }
 
 /**
+ * Pure. Decides the final focus once Tomás's manual override is taken into
+ * account — and, critically, what to do when that override has nothing to
+ * show.
+ *
+ * Real bug found live (08/09/2026): Tomás set "Discovery" as Joana's
+ * override for a week in which NOT ONE of her 4 calls was graded on
+ * discovery at all (a blank flag is "no signal", never a pass — see
+ * trainingElementFlagsForRow_'s own header). namedTrainingFocusFromRanking_
+ * dutifully returned failed:0/scored:0, buildAndMaybeSendPlaybookReview_
+ * read `focus.failed ? ... : []` as "nothing flagged", and Tomás got the
+ * empty "no flagged calls last week" email — for a rep who had in fact
+ * failed framework explanation on 4 of 4 graded calls that week. The
+ * override silently converted a 100%-failure signal into "nothing to train
+ * on", which is the exact opposite of the truth.
+ *
+ * Two distinct ways an override can come up empty, and they mean opposite
+ * things, so they're reported separately rather than both as a bare zero:
+ *   - scored === 0: never graded on any of this rep's calls that week. No
+ *     signal at all (Joana/Discovery above).
+ *   - scored > 0 && failed === 0: it WAS graded and the rep passed every
+ *     one. A real, positive result.
+ *
+ * Either way the session still needs material, so this falls back to
+ * `autoFocus` — precisely what would have been sent had Tomás set no
+ * override at all. Deliberately NOT "whatever element failed the most"
+ * (ranking[0]): autoFocus already encodes the policy Kris signed off on
+ * (the team-wide WEEKLY_TRAINING_ROTATION_ topic, unless something is
+ * urgent enough to deviate per TRAINING_URGENT_OVERRIDE_CONFIG_), so
+ * reusing it keeps ONE rule for "what does this rep train on" instead of
+ * inventing a second, competing one. Nothing is hidden by that choice
+ * either — the email's own "All elements, worst first" list carries every
+ * element's real numbers regardless of which one is the focus.
+ *
+ * The override is never silently discarded: whichever way this goes, the
+ * returned focus carries overrideRequestedLabel/overrideFallbackReason so
+ * the email can tell Tomás his pick didn't apply and exactly why.
+ */
+function resolveTrainingFocusWithOverride_(ranking, overrideLabel, autoFocus) {
+  if (!overrideLabel) return autoFocus;
+
+  var overrideFocus = namedTrainingFocusFromRanking_(ranking, overrideLabel);
+  if (overrideFocus.failedCalls && overrideFocus.failedCalls.length) return overrideFocus;
+
+  var reason = overrideFocus.scored ? 'all_passed' : 'not_graded';
+  var autoHasMaterial = !!(autoFocus && autoFocus.failedCalls && autoFocus.failedCalls.length);
+
+  if (!autoHasMaterial) {
+    // Nothing to fall back TO either — a genuinely clean (or wholly
+    // ungraded) week. Keep Tomás's own pick as the label, but still record
+    // why it had nothing, so the "no flagged calls" email can say so rather
+    // than reading identically to a week where he set no override at all.
+    overrideFocus.overrideRequestedLabel = overrideLabel;
+    overrideFocus.overrideRequestedScored = overrideFocus.scored;
+    overrideFocus.overrideFallbackReason = reason;
+    overrideFocus.overrideFellBack = false;
+    return overrideFocus;
+  }
+
+  var fallback = {};
+  Object.keys(autoFocus).forEach(function (k) { fallback[k] = autoFocus[k]; });
+  // The fallback is NOT Tomás's manual pick — saying so would make the
+  // email claim he chose this. playbookFocusNote_ below keys off
+  // overrideFellBack ahead of isManualOverride for exactly this reason.
+  fallback.isManualOverride = false;
+  fallback.overrideRequestedLabel = overrideLabel;
+  fallback.overrideRequestedScored = overrideFocus.scored;
+  fallback.overrideFallbackReason = reason;
+  fallback.overrideFellBack = true;
+  return fallback;
+}
+
+/**
+ * Pure. The one place the "why is this the focus?" clause is worded, shared
+ * by both the new-material and no-new-calls emails so the two can't drift
+ * apart. Order matters: a fallback (an override that had nothing to show)
+ * must be reported BEFORE the plain manual-override case, since the
+ * fallback focus deliberately carries isManualOverride:false — see
+ * resolveTrainingFocusWithOverride_ above.
+ */
+function playbookFocusNote_(focus) {
+  if (!focus) return '';
+  if (focus.overrideFellBack) {
+    return focus.overrideFallbackReason === 'all_passed'
+      ? ' — you picked "' + focus.overrideRequestedLabel + '" via the dashboard, but all ' +
+        focus.overrideRequestedScored + ' graded call(s) passed it, so this is the ' +
+        'auto-computed focus instead'
+      : ' — you picked "' + focus.overrideRequestedLabel + '" via the dashboard, but no call was graded ' +
+        'on it, so this is the auto-computed focus instead';
+  }
+  if (focus.isManualOverride) return ' — you set this manually via the dashboard';
+  if (focus.isUrgentOverride) return ' — urgent override; this week\'s scheduled topic is "' + focus.scheduleLabel + '"';
+  return '';
+}
+
+/**
+ * Pure. The same fact as playbookFocusNote_ above, phrased as a standalone
+ * sentence for the "no flagged calls" email — which has no focus line to
+ * hang a clause off, but still must not leave Tomás thinking his override
+ * applied when it had nothing behind it. Empty string when no override was
+ * set at all, so that email is byte-identical to before for every rep who
+ * didn't have one.
+ */
+function playbookOverrideSentence_(focus) {
+  if (!focus || !focus.overrideRequestedLabel) return '';
+  return focus.overrideFallbackReason === 'all_passed'
+    ? ' You picked "' + focus.overrideRequestedLabel + '" via the dashboard — all ' +
+      focus.overrideRequestedScored + ' graded call(s) passed it, so there was nothing to review there.'
+    : ' You picked "' + focus.overrideRequestedLabel + '" via the dashboard — no call was graded on it ' +
+      'last week, so there was nothing to review there.';
+}
+
+/**
  * Reads one Sales Call Log row into the four-element shape
  * rankTrainingPriorities_ works on. A cell that isn't an actual boolean is
  * "no signal" (null) — NOT a pass and NOT a failure. Three separate things
@@ -3506,17 +3618,23 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
     // for THIS rep, THIS week wins over both the rotation and any urgent
     // override the auto-computed path already applied.
     var overrideLabel = findTrainingPriorityOverride_(overrideRows, repCfg.name, weekStartLabel);
-    if (overrideLabel) {
-      focus = namedTrainingFocusFromRanking_(ranking, overrideLabel);
-    }
+    // An override that names an element with nothing to show falls back to
+    // the auto-computed focus rather than silently emptying the email —
+    // see resolveTrainingFocusWithOverride_'s own header for the live bug
+    // (Joana/Discovery, 08/09/2026) that made this necessary.
+    focus = resolveTrainingFocusWithOverride_(ranking, overrideLabel, focus);
 
     var flagged = focus.failed ? focus.failedCalls : [];
 
     if (forcePreview) {
       log_('previewWeeklyPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week (' +
         windowLabel + '). ' +
-        (focus.isManualOverride
-          ? 'Focus: ' + focus.label + ' [MANUAL OVERRIDE set by Tomás via the dashboard]'
+        (focus.overrideFellBack
+          ? 'Focus: ' + focus.label + ' [override "' + focus.overrideRequestedLabel + '" had nothing to show (' +
+            focus.overrideFallbackReason + ') — fell back to the auto-computed focus]'
+          : focus.isManualOverride
+          ? 'Focus: ' + focus.label + ' [MANUAL OVERRIDE set by Tomás via the dashboard]' +
+            (focus.overrideFallbackReason ? ' — but it had nothing to show (' + focus.overrideFallbackReason + ')' : '')
           : usesTeamRotation
           ? 'Scheduled topic: ' + schedule.label + '. Focus: ' + focus.label +
             (focus.isUrgentOverride ? ' [URGENT OVERRIDE — outside this week\'s schedule]' : '')
@@ -3533,7 +3651,7 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
       // anything.
       var previewEmail = flagged.length
         ? buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus)
-        : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length);
+        : buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length, focus);
       var previewIsReminder = stage === 'reminder';
       log_('----- ' + repCfg.name + ' [' + stage + ']: exact email text (would go to ' + CONFIG.TOMAS_EMAIL +
         ', cc ' + CONFIG.KRIS_EMAIL + ') -----\nSubject: ' + subjectPrefixForPlaybookStage_(stage) + previewEmail.subject + '\n\n' +
@@ -3543,14 +3661,23 @@ function buildAndMaybeSendPlaybookReview_(forcePreview, stage) {
 
     var sent = flagged.length
       ? sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage)
-      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length, stage);
+      : sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, usesTeamRotation ? schedule : null, calls.length,
+          stage, focus);
     if (!sent) {
       log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' send failed/skipped for the week of ' +
         windowLabel + '.');
       return;
     }
-    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - focus "' + focus.label + '" (' +
-      focus.failed + '/' + focus.scored + ' call(s))' +
+    // Real confusion caused live (08/09/2026): this used to read
+    // 'focus "Discovery" (0/0 call(s))', which Kris reasonably took to mean
+    // "this rep had zero calls last week" — when it actually meant "0 of 0
+    // calls were graded on the CHOSEN ELEMENT", for a rep who had 4 real
+    // calls that week. The rep's actual call count leads now, and the
+    // element's own numbers say what they're counting.
+    log_('buildAndMaybeSendPlaybookReview_: ' + repCfg.name + ' - ' + calls.length + ' call(s) last week, focus "' +
+      focus.label + '" (failed ' + focus.failed + ' of ' + focus.scored + ' graded on that element)' +
+      (focus.overrideFellBack ? ' [override "' + focus.overrideRequestedLabel + '" had nothing to show (' +
+        focus.overrideFallbackReason + '), fell back to the auto-computed focus]' : '') +
       (focus.isUrgentOverride ? ' [urgent override, scheduled topic was "' + schedule.label + '"]' : '') +
       ' for the week of ' + windowLabel + '.');
   });
@@ -3632,11 +3759,11 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   // Delivery -> Closing & Objection Handling weekly; when an individual
   // rep's urgent issue overrides that schedule, say so explicitly rather
   // than silently deviating from the announced curriculum.
-  var scheduleNote = (focus && focus.isManualOverride)
-    ? ' — you set this manually via the dashboard'
-    : (focus && focus.isUrgentOverride)
-    ? ' — urgent override; this week\'s scheduled topic is "' + focus.scheduleLabel + '"'
-    : '';
+  // Centralized in playbookFocusNote_ (08/09/2026) so this and the
+  // no-new-calls email word the same fact identically — and so the new
+  // "your override had nothing to show" case can't be reported by one and
+  // silently missed by the other.
+  var scheduleNote = playbookFocusNote_(focus);
 
   // The full standing across every scored element, so the pick is visible
   // rather than asserted — Tomás can see that e.g. discovery failed 3 of 5
@@ -3658,9 +3785,12 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
   var body =
     'Tomás,\n\n' +
     'This week\'s training focus for ' + repCfg.name + ': ' + focusLabel.toUpperCase() +
+    // Window label before the note, not after it — matching the htmlBody
+    // below. The other order buries the date range inside the note's own
+    // sentence ("...so this is the auto-computed focus instead last week
+    // (31/08/2026 - 06/09/2026)"), which reads as a sentence fragment.
     (focus ? ' — failed on ' + focus.failed + ' of ' + focus.scored + ' graded call(s)' : '') +
-    scheduleNote +
-    ' last week (' + windowLabel + ').\n\n' +
+    ' last week (' + windowLabel + ')' + scheduleNote + '.\n\n' +
     (rankingLines.length ? 'All elements, worst first:\n' + rankingLines.join('\n') + '\n\n' : '') +
     'The ' + flagged.length + ' call(s) that failed on ' + focusLabel.toLowerCase() + ' — raw data, not a ' +
     'finished playbook. This week\'s session should focus on just these, not older material already ' +
@@ -3773,12 +3903,17 @@ function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranki
  * above — lets buildAndMaybeSendPlaybookReview_'s preview path show the real
  * email text without sending anything.
  */
-function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls) {
+function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, focus) {
   var scheduleNote = schedule ? ' — this week\'s scheduled topic is "' + schedule.label + '"' : '';
   var headline = totalCalls
     ? totalCalls + ' call(s) logged for ' + repCfg.name + ' last week (' + windowLabel + ')' + scheduleNote +
       ', and none of the graded elements failed on any of them.'
     : 'No calls logged for ' + repCfg.name + ' at all last week (' + windowLabel + ')' + scheduleNote + '.';
+  // Empty unless Tomás set an override that turned out to have nothing
+  // behind it — without this, his pick silently vanishes into an email that
+  // reads exactly like a week he never touched (see
+  // resolveTrainingFocusWithOverride_'s header).
+  headline += playbookOverrideSentence_(focus);
 
   var body =
     'Tomás,\n\n' +
@@ -3804,8 +3939,8 @@ function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, tota
   return { subject: repCfg.name + ' — no flagged calls last week', body: body, htmlBody: htmlBody };
 }
 
-function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, stage) {
-  var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls);
+function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, stage, focus) {
+  var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, focus);
   var isReminder = stage === 'reminder';
   return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
     email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
