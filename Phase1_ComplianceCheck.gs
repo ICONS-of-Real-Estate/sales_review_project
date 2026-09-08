@@ -3033,10 +3033,40 @@ function sendDashboardAccessEmail() {
 // week or two a year the true Portugal/Pacific-local time these hours land
 // on can drift by an extra hour. Revisit if that ever actually causes a
 // problem.
+// SUPERSEDED 08/09/2026, later the same day, on the Joana training call.
+// Kris proposed and Tomás agreed a full-week cadence instead of cramming
+// both emails into Monday:
+//   Kris:  "How about I change the schedules to do everything over the
+//           weekend, send everything to everyone to review on Monday, to see
+//           that it's okay for training on Tuesday, and if not, reply back on
+//           Monday... I get up hours before you guys, so I can work on it so
+//           that it's tidier."
+//   Tomás: "you'll have a cadence of maybe Monday to Friday, which is
+//           better... [the recording reminder] you can have on Friday, for
+//           example. And then you can work on the playbooks on Saturday
+//           morning."
+// So the week now runs:
+//   FRIDAY   — remind the reps to move their call recordings from Riverside
+//              into Drive, while the week is still fresh in their heads. This
+//              is the fix for Bens having no training material at all one
+//              week ("he didn't have the recordings, so maybe he didn't pass
+//              them over from Riverside to Google Drive").
+//   SATURDAY — build the playbooks and send them to KRIS ONLY, so he can tidy
+//              anything wrong before the team ever sees it. Nothing reaches
+//              Tomás/the reps at this stage.
+//   MONDAY   — send the reviewed playbooks to Tomás (cc Kris) for his own
+//              review, with the whole day to correct anything or set a
+//              different focus on the dashboard.
+//   TUESDAY  — the training sessions actually run, off material two people
+//              have already checked.
+// Kept in CONFIG.BUSINESS_TIMEZONE (America/New_York) like every other
+// trigger in this project — same reasoning, and same daylight-saving caveat,
+// as the superseded comment block above.
 var PLAYBOOK_REVIEW_CONFIG = {
   ENABLED: true, // Flipped true 27/08/2026 per Kris's ask — last-week-only training material, no all-time fallback.
-  REMINDER_TRIGGER_HOUR: 11, // Mondays, 4pm Portugal — see comment above
-  FINAL_TRIGGER_HOUR: 21     // Mondays, 6pm US-Pacific (close of business) — see comment above
+  RECORDINGS_REMINDER_HOUR: 10, // Friday, mid-morning ET — reps still have the week in mind
+  DRAFT_TRIGGER_HOUR: 6,        // Saturday, early ET — Kris is up hours before the others, by his own account
+  REVIEW_TRIGGER_HOUR: 11       // Monday, 11am ET = 4pm Portugal — Tomás's working afternoon, as before
 };
 
 /**
@@ -3519,46 +3549,133 @@ function stripYearFromDateRangeLabel_(label) {
 }
 
 /** Run this FIRST from the editor. Builds this week's review and only logs it — sends nothing. */
-/** Previews BOTH stages, in send order — the reminder and the final email are built from the exact same data when run back-to-back like this (nothing to override in between), but showing both lets you check the reminder's extra note and the final's plain subject look right. */
+/** Previews BOTH stages, in send order — Saturday's Kris-only draft and Monday's reviewed email to Tomás are built from the exact same data when run back-to-back like this (nothing to override in between), but showing both lets you check the draft's extra note and the Monday email's plain subject look right. */
 function previewWeeklyPlaybookReview() {
   return previewWeeklyPlaybookReview_();
 }
 
 function previewWeeklyPlaybookReview_() {
   RUN_TAG = 'previewWeeklyPlaybookReview_';
-  log_('PREVIEW MODE — building this week\'s playbook review (both the reminder and final stages), nothing will be sent.');
-  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'reminder');
+  log_('PREVIEW MODE — building this week\'s playbook review (both the Saturday draft and Monday review stages), nothing will be sent.');
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'draft');
   buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'final');
 }
 
-/** Trigger target for the Monday 4pm-Portugal reminder (see PLAYBOOK_REVIEW_CONFIG's own header). Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
-function runWeeklyPlaybookReviewReminder() {
-  RUN_TAG = 'runWeeklyPlaybookReviewReminder';
+/**
+ * THE weekly training-cycle trigger — one daily firing that decides for
+ * itself which part of the week it is. Consolidated 08/09/2026 from what
+ * were two separate Monday triggers (runWeeklyPlaybookReviewReminder /
+ * runWeeklyPlaybookReviewFinal), for two reasons:
+ *   1. The new Friday/Saturday/Monday cadence (see PLAYBOOK_REVIEW_CONFIG's
+ *      header) needs THREE weekly events, and this project is at Apps
+ *      Script's hard 20-trigger cap — two separate triggers plus a third
+ *      would not fit. One daily trigger with internal day gating does, and
+ *      leaves a slot spare.
+ *   2. It's the pattern this project already uses for exactly this reason —
+ *      see runAllOngoingScoringPasses_ (Phase2) and
+ *      runPhase17To19StandingChecks_ (Phase17).
+ *
+ * Day gating is deliberately explicit rather than clever: each branch says
+ * which real-world event it is, so a future reader can map a log line back
+ * to the cadence Kris and Tomás agreed on the call without reverse-
+ * engineering a day-number comparison.
+ */
+function runWeeklyTrainingCycle() {
+  RUN_TAG = 'runWeeklyTrainingCycle';
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
-    log_('runWeeklyPlaybookReviewReminder: another run holds the lock, skipping this firing.');
+    log_('runWeeklyTrainingCycle: another run holds the lock, skipping this firing.');
     return;
   }
   try {
-    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'reminder');
+    var now = new Date();
+    var day = Utilities.formatDate(now, CONFIG.BUSINESS_TIMEZONE, 'EEE');
+    var hour = Number(Utilities.formatDate(now, CONFIG.BUSINESS_TIMEZONE, 'H'));
+
+    if (day === 'Fri' && hour >= PLAYBOOK_REVIEW_CONFIG.RECORDINGS_REMINDER_HOUR) {
+      log_('runWeeklyTrainingCycle: Friday — sending the upload-your-recordings reminder to the reps.');
+      sendRepRecordingsReminder_();
+      return;
+    }
+    if (day === 'Sat' && hour >= PLAYBOOK_REVIEW_CONFIG.DRAFT_TRIGGER_HOUR) {
+      log_('runWeeklyTrainingCycle: Saturday — building the playbook DRAFT for Kris to tidy (not sent to the team).');
+      buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'draft');
+      return;
+    }
+    if (day === 'Mon' && hour >= PLAYBOOK_REVIEW_CONFIG.REVIEW_TRIGGER_HOUR) {
+      log_('runWeeklyTrainingCycle: Monday — sending the reviewed playbooks to Tomás ahead of Tuesday\'s sessions.');
+      buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'final');
+      return;
+    }
+    log_('runWeeklyTrainingCycle: nothing scheduled for ' + day + ' ' + hour + ':00 ' +
+      CONFIG.BUSINESS_TIMEZONE + ' — the cycle is Friday reminder, Saturday draft, Monday review.');
   } finally {
     lock.releaseLock();
   }
 }
 
-/** Trigger target for the Monday 6pm-US-Pacific (close of business) final confirmation — recomputes from scratch, so any override Tomás set since the reminder is picked up. */
+/**
+ * Kept as callable entry points for a manual/out-of-band send — Kris has
+ * needed exactly this more than once when a week's cycle had to be re-run by
+ * hand. They no longer have their own triggers (runWeeklyTrainingCycle above
+ * owns the schedule now), and are deliberately absent from
+ * STANDING_AUTOMATION_HANDLERS_ so the orphan sweep removes any trigger left
+ * pointing at them from the old two-Monday schedule.
+ */
+function runWeeklyPlaybookReviewDraft() {
+  RUN_TAG = 'runWeeklyPlaybookReviewDraft';
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'draft');
+}
+
 function runWeeklyPlaybookReviewFinal() {
   RUN_TAG = 'runWeeklyPlaybookReviewFinal';
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(30 * 1000)) {
-    log_('runWeeklyPlaybookReviewFinal: another run holds the lock, skipping this firing.');
-    return;
-  }
-  try {
-    buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'final');
-  } finally {
-    lock.releaseLock();
-  }
+  buildAndMaybeSendPlaybookReview_(/*forcePreview=*/false, 'final');
+}
+
+/**
+ * Friday's "move your recordings into Drive" reminder to the reps.
+ *
+ * Tomás, on the Joana training call (08/09/2026), after Bens turned up with
+ * no training material at all for the week: "he didn't have the recordings,
+ * so maybe he didn't pass them over from Riverside to Google Drive, so it
+ * would be nice to have, like, a reminder as well, like, upload your
+ * recordings. And you can have this on Friday, for example."
+ *
+ * Deliberately NOT the same thing as sendTomasTranscriptReminder_
+ * (Phase6_TrainingCallReview.gs), which nags TOMÁS to upload the TRAINING
+ * call recordings. This one goes to the REPS about their own sales/QC call
+ * recordings — the ones that feed the scoring pipeline. Confusing the two is
+ * how "we already have a recordings reminder" would become a wrong reason
+ * not to build this.
+ *
+ * Sent Friday rather than at the weekend on purpose: the reps still have the
+ * week in mind, and it lands a full day before Saturday's draft is built off
+ * whatever actually made it into Drive.
+ */
+function sendRepRecordingsReminder_() {
+  var subject = 'Friday check: are this week\'s call recordings in Drive?';
+  var intro = 'Quick end-of-week check — any call recording still sitting in Riverside (or anywhere ' +
+    'other than your Drive folder) is invisible to the review system. It can\'t be transcribed, it ' +
+    'can\'t be scored, and it won\'t show up in Tuesday\'s training material.\n\n' +
+    'If anything from this week is still outstanding, please move it across today.\n\n';
+  var folders = Object.keys(TRAINING_REVIEW_CONFIG.FOLDERS).map(function (rep) {
+    return rep + ': https://drive.google.com/drive/folders/' + TRAINING_REVIEW_CONFIG.FOLDERS[rep];
+  }).join('\n');
+  var body = intro + folders + '\n\n— Automated Friday reminder. Reply to Kris with any issues.';
+
+  var to = CONFIG.REPS.map(function (r) { return r.email; }).filter(Boolean).join(',');
+  return guardedSend_(to, subject, body, {
+    cc: [CONFIG.KRIS_EMAIL, CONFIG.TOMAS_EMAIL].filter(Boolean).join(','),
+    name: 'Training Prep Bot'
+  }, 2);
+}
+
+/** Preview — logs exactly what Friday's reminder would say, sends nothing. */
+function previewRepRecordingsReminder() {
+  RUN_TAG = 'previewRepRecordingsReminder';
+  var to = CONFIG.REPS.map(function (r) { return r.email; }).filter(Boolean).join(',');
+  log_('PREVIEW — Friday recordings reminder would go to: ' + to + ' (cc ' + CONFIG.KRIS_EMAIL + ', ' +
+    CONFIG.TOMAS_EMAIL + '). Nothing sent.');
 }
 
 /**
@@ -4096,26 +4213,43 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
  * single email's subject breaks.
  */
 function subjectPrefixForPlaybookStage_(stage) {
-  return stage === 'reminder' ? '[Reminder] ' : '';
+  if (stage === 'draft') return '[Draft — Kris review] ';
+  if (stage === 'reminder') return '[Reminder] '; // legacy stage name, kept so an old trigger/manual call still works
+  return '';
+}
+
+/**
+ * Who each stage actually goes to — the point of the Saturday/Monday split
+ * (Kris, 08/09/2026: "send everything to everyone to review on Monday... I
+ * get up hours before you guys, so I can work on it so that it's tidier").
+ * The Saturday draft is Kris's alone to fix before anyone else sees it;
+ * sending it to Tomás too would defeat the entire purpose of having a
+ * tidy-up day. Monday's is the one Tomás actually works from.
+ */
+function playbookStageRecipients_(stage) {
+  return stage === 'draft'
+    ? { to: CONFIG.KRIS_EMAIL, cc: '' }
+    : { to: CONFIG.TOMAS_EMAIL, cc: CONFIG.KRIS_EMAIL };
 }
 
 var PLAYBOOK_REVIEW_REMINDER_NOTE_ =
-  '\n\nThis is the auto-computed pick — if you want a different focus for this rep, set it on the ' +
-  'dashboard before the final confirmation goes out later today. That final email is the one to ' +
-  'actually use for tomorrow\'s session; this reminder may not reflect a last-minute change.';
+  '\n\nDRAFT — auto-computed, sent to Kris only so anything wrong gets fixed before the team sees it. ' +
+  'The reviewed version goes to Tomás on Monday, and that Monday email is the one to use for Tuesday\'s ' +
+  'session. To change a rep\'s focus, set it on the dashboard any time before Monday.';
 var PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ =
-  '<p style="color:#666;font-size:12px;margin-top:12px;">This is the auto-computed pick — if you want a ' +
-  'different focus for this rep, set it on the dashboard before the final confirmation goes out later ' +
-  'today. That final email is the one to actually use for tomorrow\'s session; this reminder may not ' +
-  'reflect a last-minute change.</p>';
+  '<p style="color:#666;font-size:12px;margin-top:12px;"><strong>DRAFT</strong> — auto-computed, sent to ' +
+  'Kris only so anything wrong gets fixed before the team sees it. The reviewed version goes to Tomás on ' +
+  'Monday, and that Monday email is the one to use for Tuesday\'s session. To change a rep\'s focus, set ' +
+  'it on the dashboard any time before Monday.</p>';
 
 function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage) {
   var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus);
-  var isReminder = stage === 'reminder';
-  return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
-    email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
-    cc: CONFIG.KRIS_EMAIL,
-    htmlBody: email.htmlBody + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
+  var isDraft = stage === 'draft' || stage === 'reminder';
+  var who = playbookStageRecipients_(stage);
+  return guardedSend_(who.to, subjectPrefixForPlaybookStage_(stage) + email.subject,
+    email.body + (isDraft ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
+    cc: who.cc,
+    htmlBody: email.htmlBody + (isDraft ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
     name: 'Training Prep Bot'
   }, 2);
 }
@@ -4171,11 +4305,12 @@ function buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, tota
 
 function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, stage, focus) {
   var email = buildPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, totalCalls, focus);
-  var isReminder = stage === 'reminder';
-  return guardedSend_(CONFIG.TOMAS_EMAIL, subjectPrefixForPlaybookStage_(stage) + email.subject,
-    email.body + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
-    cc: CONFIG.KRIS_EMAIL,
-    htmlBody: email.htmlBody + (isReminder ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
+  var isDraft = stage === 'draft' || stage === 'reminder';
+  var who = playbookStageRecipients_(stage);
+  return guardedSend_(who.to, subjectPrefixForPlaybookStage_(stage) + email.subject,
+    email.body + (isDraft ? PLAYBOOK_REVIEW_REMINDER_NOTE_ : ''), {
+    cc: who.cc,
+    htmlBody: email.htmlBody + (isDraft ? PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ : ''),
     name: 'Training Prep Bot'
   }, 2);
 }
@@ -4200,26 +4335,34 @@ function sendPlaybookReviewNoNewCallsEmail_(repCfg, windowLabel, schedule, total
  */
 function installPlaybookReviewTrigger() {
   RUN_TAG = 'installPlaybookReviewTrigger';
-  ['runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal'].forEach(function (handler) {
+  // Every handler this schedule has EVER used, so re-running this cleans up
+  // the old two-Monday pair (and the single pre-08/09 trigger before that)
+  // rather than stacking a third one on top of them — the exact bug that put
+  // this project on the 20-trigger cap once already.
+  ['runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal',
+    'runWeeklyPlaybookReviewDraft', 'runWeeklyTrainingCycle'].forEach(function (handler) {
     ScriptApp.getProjectTriggers().forEach(function (t) {
       if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
     });
   });
-  ScriptApp.newTrigger('runWeeklyPlaybookReviewReminder')
+  // ONE daily trigger; runWeeklyTrainingCycle decides which day does what.
+  // The hour here is the EARLIEST of the three events, since a daily trigger
+  // fires once and the handler's own hour checks gate the rest.
+  var earliestHour = Math.min(
+    PLAYBOOK_REVIEW_CONFIG.RECORDINGS_REMINDER_HOUR,
+    PLAYBOOK_REVIEW_CONFIG.DRAFT_TRIGGER_HOUR,
+    PLAYBOOK_REVIEW_CONFIG.REVIEW_TRIGGER_HOUR);
+  ScriptApp.newTrigger('runWeeklyTrainingCycle')
     .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR)
+    .everyDays(1)
+    .atHour(earliestHour)
     .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
-  ScriptApp.newTrigger('runWeeklyPlaybookReviewFinal')
-    .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR)
-    .inTimezone(CONFIG.BUSINESS_TIMEZONE)
-    .create();
-  log_('Playbook review triggers installed: Mondays reminder ' + PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR +
-    ':00 (4pm Portugal) + final ' + PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR + ':00 (6pm US-Pacific) ' +
-    CONFIG.BUSINESS_TIMEZONE + ', ahead of Tuesday\'s session.');
+  log_('Weekly training cycle installed as ONE daily trigger at ' + earliestHour + ':00 ' +
+    CONFIG.BUSINESS_TIMEZONE + ' (replacing the two Monday triggers): Friday ' +
+    PLAYBOOK_REVIEW_CONFIG.RECORDINGS_REMINDER_HOUR + ':00 recordings reminder to the reps, Saturday ' +
+    PLAYBOOK_REVIEW_CONFIG.DRAFT_TRIGGER_HOUR + ':00 draft to Kris, Monday ' +
+    PLAYBOOK_REVIEW_CONFIG.REVIEW_TRIGGER_HOUR + ':00 reviewed playbooks to Tomás, ahead of Tuesday\'s sessions.');
 }
 
 function setDropdown_(sheet, colIndex, values) {
@@ -4447,7 +4590,12 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   // Phase 1 — Playbook Review: two-stage schedule (Kris's ask, 08/09/2026 —
   // see PLAYBOOK_REVIEW_CONFIG's own header) replaced the old single
   // runWeeklyPlaybookReview trigger with these two.
-  'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal',
+  // Consolidated 08/09/2026 onto ONE daily trigger (Friday reminder /
+  // Saturday draft / Monday review — see PLAYBOOK_REVIEW_CONFIG's header).
+  // runWeeklyPlaybookReviewDraft/Final are still real, manually-callable
+  // functions; they are deliberately NOT listed, so the orphan sweep clears
+  // any trigger still pointing at the old two-Monday schedule.
+  'runWeeklyTrainingCycle',
   'runAllOngoingScoringPasses_', 'runRandomCalibrationSample',             // Phase 2
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4

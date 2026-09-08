@@ -2605,95 +2605,158 @@ test('subjectPrefixForPlaybookStage_ prefixes only the reminder stage', () => {
   assert.equal(gas.subjectPrefixForPlaybookStage_(undefined), '', 'no stage given must behave like "final" — the plain subject this function had before the two-stage schedule existed');
 });
 
-test('sendPlaybookReviewNewMaterialEmail_ prefixes the subject and appends the override note only for the reminder stage', () => {
+test('the Saturday draft goes to KRIS ONLY and carries the draft note; the Monday email goes to Tomás cc Kris, plain', () => {
   const originalGuardedSend = gas.guardedSend_;
   const calls = [];
-  gas.guardedSend_ = (to, subject, body, opts) => { calls.push({ subject, body, htmlBody: opts.htmlBody }); return true; };
+  gas.guardedSend_ = (to, subject, body, opts) => { calls.push({ to, cc: opts.cc, subject, body, htmlBody: opts.htmlBody }); return true; };
   const repCfg = { name: 'Sean' };
   const flagged = [{ prospectName: 'Bruce Henson', callDate: '27/08/2026', score: 4, feedback: 'ok' }];
   try {
-    gas.sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], null, 'reminder');
+    gas.sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], null, 'draft');
     gas.sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, '24/08/2026 - 30/08/2026', [], null, 'final');
     assert.equal(calls.length, 2);
-    assert.ok(calls[0].subject.indexOf('[Reminder] ') === 0);
-    assert.ok(calls[0].body.indexOf('final confirmation') !== -1);
-    assert.ok(calls[0].htmlBody.indexOf('final confirmation') !== -1);
-    assert.equal(calls[1].subject.indexOf('[Reminder]'), -1, 'the final stage must keep the plain, unprefixed subject');
-    assert.equal(calls[1].body.indexOf('final confirmation'), -1);
+
+    // Saturday draft — Kris's tidy-up copy. Sending it to Tomás as well would
+    // defeat the entire point of having a review day (Kris, 08/09/2026: "I get
+    // up hours before you guys, so I can work on it so that it's tidier").
+    assert.equal(calls[0].to, gas.CONFIG.KRIS_EMAIL, 'the draft is Kris-only');
+    assert.ok(!calls[0].cc, 'the draft must not cc Tomás — he sees the reviewed one on Monday');
+    assert.ok(calls[0].subject.indexOf('[Draft — Kris review] ') === 0);
+    assert.ok(calls[0].body.indexOf('DRAFT') !== -1);
+    assert.ok(calls[0].htmlBody.indexOf('DRAFT') !== -1);
+
+    // Monday — the one Tomás actually works from.
+    assert.equal(calls[1].to, gas.CONFIG.TOMAS_EMAIL);
+    assert.equal(calls[1].cc, gas.CONFIG.KRIS_EMAIL);
+    assert.equal(calls[1].subject.indexOf('[Draft'), -1, 'the Monday email keeps the plain, unprefixed subject');
+    assert.equal(calls[1].body.indexOf('DRAFT'), -1);
   } finally {
     gas.guardedSend_ = originalGuardedSend;
   }
 });
 
-test('sendPlaybookReviewNoNewCallsEmail_ prefixes the subject and appends the override note only for the reminder stage', () => {
+test('the no-new-calls email follows the same stage routing as the new-material one', () => {
   const originalGuardedSend = gas.guardedSend_;
   const calls = [];
-  gas.guardedSend_ = (to, subject, body) => { calls.push({ subject, body }); return true; };
+  gas.guardedSend_ = (to, subject, body, opts) => { calls.push({ to, cc: opts.cc, subject, body }); return true; };
   try {
-    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4, 'reminder');
+    gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4, 'draft');
     gas.sendPlaybookReviewNoNewCallsEmail_({ name: 'Bens' }, '24/08/2026 - 30/08/2026', null, 4, 'final');
-    assert.ok(calls[0].subject.indexOf('[Reminder] ') === 0);
-    assert.ok(calls[0].body.indexOf('final confirmation') !== -1);
-    assert.equal(calls[1].subject.indexOf('[Reminder]'), -1);
-    assert.equal(calls[1].body.indexOf('final confirmation'), -1);
+    assert.equal(calls[0].to, gas.CONFIG.KRIS_EMAIL);
+    assert.ok(calls[0].subject.indexOf('[Draft — Kris review] ') === 0);
+    assert.ok(calls[0].body.indexOf('DRAFT') !== -1);
+    assert.equal(calls[1].to, gas.CONFIG.TOMAS_EMAIL);
+    assert.equal(calls[1].cc, gas.CONFIG.KRIS_EMAIL);
+    assert.equal(calls[1].body.indexOf('DRAFT'), -1);
   } finally {
     gas.guardedSend_ = originalGuardedSend;
   }
 });
 
-test('previewWeeklyPlaybookReview_ builds both the reminder and final stages, not just one', () => {
+test('the legacy "reminder" stage name still routes like a draft, so an old trigger or a manual call cannot silently email the team a raw draft', () => {
+  const originalGuardedSend = gas.guardedSend_;
+  const calls = [];
+  gas.guardedSend_ = (to, subject, body, opts) => { calls.push({ to, cc: opts.cc, subject, body }); return true; };
+  try {
+    gas.sendPlaybookReviewNewMaterialEmail_({ name: 'Sean' }, [{ prospectName: 'X', callDate: '27/08/2026', score: 4, feedback: 'ok' }],
+      '24/08/2026 - 30/08/2026', [], null, 'reminder');
+    assert.ok(calls[0].body.indexOf('DRAFT') !== -1, 'an unrecognised-but-known legacy stage must still be treated as unreviewed');
+  } finally {
+    gas.guardedSend_ = originalGuardedSend;
+  }
+});
+
+test('previewWeeklyPlaybookReview_ builds both the draft and final stages, not just one', () => {
   const originalBuild = gas.buildAndMaybeSendPlaybookReview_;
   const stagesSeen = [];
   gas.buildAndMaybeSendPlaybookReview_ = (forcePreview, stage) => { stagesSeen.push({ forcePreview, stage }); };
   try {
     gas.previewWeeklyPlaybookReview_();
-    assert.deepEqual(stagesSeen, [{ forcePreview: true, stage: 'reminder' }, { forcePreview: true, stage: 'final' }]);
+    assert.deepEqual(stagesSeen, [{ forcePreview: true, stage: 'draft' }, { forcePreview: true, stage: 'final' }]);
   } finally {
     gas.buildAndMaybeSendPlaybookReview_ = originalBuild;
   }
 });
 
-test('runWeeklyPlaybookReviewReminder/runWeeklyPlaybookReviewFinal each call buildAndMaybeSendPlaybookReview_ with their own stage, under a lock', () => {
+test('runWeeklyTrainingCycle fires the right event for each day of the Fri/Sat/Mon cadence, and nothing on the other days', () => {
   const originalBuild = gas.buildAndMaybeSendPlaybookReview_;
   const originalLockService = gas.LockService;
+  const originalUtilities = gas.Utilities;
+  const originalReminder = gas.sendRepRecordingsReminder_;
+  const originalLog = gas.log_;
   gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
-  const stagesSeen = [];
-  gas.buildAndMaybeSendPlaybookReview_ = (forcePreview, stage) => { stagesSeen.push({ forcePreview, stage }); };
+  gas.log_ = () => {};
+
+  // Drive the handler's day/hour reads directly — this is what a real firing
+  // sees, without needing a real clock.
+  const runOn = (day, hour) => {
+    const seen = { stages: [], reminders: 0 };
+    gas.Utilities = { formatDate: (d, tz, fmt) => (fmt === 'EEE' ? day : String(hour)), sleep() {} };
+    gas.buildAndMaybeSendPlaybookReview_ = (forcePreview, stage) => seen.stages.push({ forcePreview, stage });
+    gas.sendRepRecordingsReminder_ = () => { seen.reminders++; return true; };
+    gas.runWeeklyTrainingCycle();
+    return seen;
+  };
+
   try {
-    gas.runWeeklyPlaybookReviewReminder();
-    gas.runWeeklyPlaybookReviewFinal();
-    assert.deepEqual(stagesSeen, [{ forcePreview: false, stage: 'reminder' }, { forcePreview: false, stage: 'final' }]);
+    const fri = runOn('Fri', gas.PLAYBOOK_REVIEW_CONFIG.RECORDINGS_REMINDER_HOUR);
+    assert.equal(fri.reminders, 1, 'Friday sends the recordings reminder');
+    assert.equal(fri.stages.length, 0, 'Friday must not build any playbook');
+
+    const sat = runOn('Sat', gas.PLAYBOOK_REVIEW_CONFIG.DRAFT_TRIGGER_HOUR);
+    assert.deepEqual(Array.from(sat.stages), [{ forcePreview: false, stage: 'draft' }], 'Saturday builds the Kris-only draft');
+    assert.equal(sat.reminders, 0);
+
+    const mon = runOn('Mon', gas.PLAYBOOK_REVIEW_CONFIG.REVIEW_TRIGGER_HOUR);
+    assert.deepEqual(Array.from(mon.stages), [{ forcePreview: false, stage: 'final' }], 'Monday sends the reviewed playbooks');
+
+    // Tuesday is when the humans run the sessions — the bot has nothing to do.
+    const tue = runOn('Tue', 12);
+    assert.equal(tue.stages.length, 0);
+    assert.equal(tue.reminders, 0);
+
+    // Before the configured hour on the right day, it must also stay quiet —
+    // the daily trigger fires at the EARLIEST hour of the three, so Monday's
+    // firing happens hours before Monday's own event is due.
+    const monEarly = runOn('Mon', gas.PLAYBOOK_REVIEW_CONFIG.REVIEW_TRIGGER_HOUR - 1);
+    assert.equal(monEarly.stages.length, 0, 'must not send Monday\'s email early just because the trigger fired');
   } finally {
     gas.buildAndMaybeSendPlaybookReview_ = originalBuild;
     gas.LockService = originalLockService;
+    gas.Utilities = originalUtilities;
+    gas.sendRepRecordingsReminder_ = originalReminder;
+    gas.log_ = originalLog;
   }
 });
 
-test('installPlaybookReviewTrigger installs both a Monday reminder trigger and a Monday final trigger at their own configured hours, removing any prior copies first', () => {
+test('installPlaybookReviewTrigger installs ONE daily trigger and clears every handler the schedule has ever used', () => {
   const originalScriptApp = gas.ScriptApp;
-  gas.ScriptApp = fakeScriptAppTriggers_(['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal', 'someOtherTrigger']);
+  // Every historical handler present at once, plus an unrelated one.
+  gas.ScriptApp = fakeScriptAppTriggers_([
+    'runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal',
+    'runWeeklyTrainingCycle', 'someOtherTrigger'
+  ]);
   try {
     gas.installPlaybookReviewTrigger();
-    const remaining = gas.ScriptApp.getProjectTriggers();
-    const handlers = remaining.map((t) => t.getHandlerFunction());
+    const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
     assert.ok(handlers.indexOf('someOtherTrigger') !== -1, 'unrelated trigger must be left alone');
-    assert.equal(handlers.filter((h) => h === 'runWeeklyPlaybookReviewReminder').length, 1, 'exactly one reminder trigger, old copy removed');
-    assert.equal(handlers.filter((h) => h === 'runWeeklyPlaybookReviewFinal').length, 1, 'exactly one final trigger, old copy removed');
+    assert.equal(handlers.filter((h) => h === 'runWeeklyTrainingCycle').length, 1, 'exactly one cycle trigger, old copy removed');
+    ['runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal'].forEach((old) => {
+      assert.equal(handlers.indexOf(old), -1, old + ' must be deleted, not left as an orphan');
+    });
   } finally {
     gas.ScriptApp = originalScriptApp;
   }
 });
 
-test('installPlaybookReviewTrigger deletes the OLD single runWeeklyPlaybookReview trigger too, not just the two new handler names (real bug, live 08/09/2026: left at 19/20 triggers, this function left the old one in place, created the reminder trigger to hit exactly 20, then the final trigger\'s own .create() pushed to 21 and Apps Script threw "This script has too many triggers")', () => {
+test('the consolidated schedule NETS DOWN against the 20-trigger cap rather than adding a third weekly trigger (real bug, live 08/09/2026: the old installer hit "This script has too many triggers")', () => {
   const originalScriptApp = gas.ScriptApp;
-  // Simulate the exact live state Kris hit: 19 total triggers, including the
-  // old playbook one (18 unrelated + it) -- one slot free under the 20 cap.
+  // The exact live shape that broke before: 18 unrelated + the old two-Monday
+  // pair = 20, dead at the cap with a THIRD weekly event now required.
   const unrelated = [];
   for (let i = 0; i < 18; i++) unrelated.push('unrelatedTrigger' + i);
-  gas.ScriptApp = fakeScriptAppTriggers_(unrelated.concat(['runWeeklyPlaybookReview']));
+  gas.ScriptApp = fakeScriptAppTriggers_(unrelated.concat(['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal']));
   const originalCreate = gas.ScriptApp.newTrigger;
-  // Enforce the real 20-trigger cap inside the fake, so this test would have
-  // reproduced the live exception before the fix (fail-before/pass-after).
   gas.ScriptApp.newTrigger = function (fnName) {
     if (gas.ScriptApp.getProjectTriggers().length >= 20) {
       throw new Error('This script has too many triggers. Triggers must be deleted from the script before more can be added.');
@@ -2703,19 +2766,20 @@ test('installPlaybookReviewTrigger deletes the OLD single runWeeklyPlaybookRevie
   try {
     gas.installPlaybookReviewTrigger();
     const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
-    assert.equal(handlers.indexOf('runWeeklyPlaybookReview'), -1, 'the old single trigger must be deleted, not left as an orphan');
-    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewReminder') !== -1);
-    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewFinal') !== -1);
-    assert.equal(handlers.length, 20, '18 unrelated + reminder + final, at exactly the cap -- old trigger correctly removed, not just superseded');
+    assert.equal(handlers.length, 19, '18 unrelated + one consolidated cycle trigger — a slot FREED, not consumed');
+    assert.equal(handlers.filter((h) => h === 'runWeeklyTrainingCycle').length, 1);
   } finally {
     gas.ScriptApp = originalScriptApp;
   }
 });
 
-test('STANDING_AUTOMATION_HANDLERS_ has both playbook-review handlers, not the old single one (real sweep-as-orphan risk otherwise)', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewReminder') !== -1);
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReviewFinal') !== -1);
-  assert.equal(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyPlaybookReview'), -1);
+test('STANDING_AUTOMATION_HANDLERS_ lists the consolidated cycle handler, and NOT the manual-only ones (which must be swept if a trigger still points at them)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runWeeklyTrainingCycle') !== -1);
+  ['runWeeklyPlaybookReview', 'runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal',
+    'runWeeklyPlaybookReviewDraft'].forEach((manual) => {
+    assert.equal(gas.STANDING_AUTOMATION_HANDLERS_.indexOf(manual), -1,
+      manual + ' must not be a standing handler — the sweep has to clear any leftover trigger for it');
+  });
 });
 
 test('stripYearFromDateRangeLabel_ strips every /yyyy year suffix out of a date-range label', () => {
@@ -3332,8 +3396,9 @@ test('installAllReadyTriggers_ now installs the three phases that used to requir
     gas.installAllReadyTriggers_();
 
     const handlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
-    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewReminder') !== -1, 'playbook review reminder trigger must now be installed');
-    assert.ok(handlers.indexOf('runWeeklyPlaybookReviewFinal') !== -1, 'playbook review final trigger must now be installed');
+    assert.ok(handlers.indexOf('runWeeklyTrainingCycle') !== -1, 'the consolidated weekly training cycle trigger must now be installed');
+    assert.equal(handlers.filter((h) => h === 'runWeeklyTrainingCycle').length, 1,
+      'exactly one — the cycle handler owns Friday/Saturday/Monday by itself now');
     assert.ok(handlers.indexOf('runWeeklyTrainingSummaries') !== -1, 'weekly training summary trigger must now be installed');
     assert.ok(handlers.indexOf('syncGhlEmailAndDisposition_') !== -1, 'GHL sync trigger must now be installed');
   } finally {
