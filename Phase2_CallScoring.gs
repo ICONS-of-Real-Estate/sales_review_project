@@ -5748,35 +5748,53 @@ var UNUSABLE_TRANSCRIPT_MIN_WORDS_ = 40;
  * hardest for and was scored 1.5 on. As Tomás put it: "all of the bad
  * ratings that you have are transcripts that did not [work]."
  *
- * Detected on the ratio of DISTINCT lines to total lines rather than
- * distinct words: a genuine call repeats plenty of individual words but
- * almost never repeats whole utterances verbatim, while the loop repeats
- * exactly one. Both thresholds have to trip, which is what keeps a short
- * real call ("yeah" / "right" / "mm-hmm" a dozen times) out of it:
- *   - the transcript is long enough that a human transcript would have
- *     variety in it at all, and
- *   - a single line accounts for most of it.
+ * REVISED 09/09/2026, same day this shipped, after Kris pasted Frank
+ * Pirrone's actual transcript doc. The first version of this check split on
+ * line breaks — and the real doc has almost NONE. The corrupted tail is one
+ * unbroken run of "I'm going to do it this way." glued together with plain
+ * spaces, no delimiter of any kind, for roughly 24,000 of the doc's 28,559
+ * words — a line-based check would have looked at ~2 "lines" and done
+ * nothing. Whatever produces this corruption doesn't reliably emit line
+ * breaks OR any other consistent turn marker, so detection can't depend on
+ * either.
+ *
+ * Now on WORD n-grams instead: slide a 6-word window across the whole
+ * transcript (case-insensitive), and see how much of it is covered by
+ * repeats of the single most common window. Verified directly against
+ * Frank Pirrone's real doc: the dominant 6-word window ("going to do it
+ * this way") repeats exactly 3,933 times — the number Tomás read off his
+ * screen — covering 82.6% of the transcript. A real call never gets close:
+ * Sean's and Joana's own training-call transcripts (08/09/2026) sit at
+ * 0.15%. The threshold (50%) sits with wide margin on both sides — checked
+ * against a deliberately adversarial case too: a rep saying only "Yeah."
+ * and "Right." in strict alternation between 40 otherwise-unique lines
+ * still lands at 37.5%, comfortably under 50%, so short filler repeated
+ * often does NOT trip this on its own; only a large fraction of the whole
+ * transcript being one repeated phrase does. Gated on a minimum transcript
+ * length (150 words) for the same reason as the line-based version this
+ * replaces — a short real transcript shouldn't be flagged on a coincidental
+ * duplicate phrase.
  */
-var DEGENERATE_TRANSCRIPT_MIN_LINES_ = 30;
-var DEGENERATE_TRANSCRIPT_DOMINANT_LINE_SHARE_ = 0.5;
+var DEGENERATE_TRANSCRIPT_MIN_WORDS_ = 150;
+var DEGENERATE_TRANSCRIPT_NGRAM_SIZE_ = 6;
+var DEGENERATE_TRANSCRIPT_DOMINANT_GRAM_SHARE_ = 0.5;
 
 function transcriptRepetitionLoopShare_(text) {
-  var lines = String(text || '')
-    .split(/\r?\n/)
-    .map(function (l) { return l.trim().toLowerCase().replace(/\s+/g, ' '); })
-    .filter(function (l) { return l.length > 0; });
-  if (lines.length < DEGENERATE_TRANSCRIPT_MIN_LINES_) return 0;
+  var words = String(text || '').trim().split(/\s+/).filter(Boolean);
+  var n = DEGENERATE_TRANSCRIPT_NGRAM_SIZE_;
+  if (words.length < DEGENERATE_TRANSCRIPT_MIN_WORDS_ || words.length < n) return 0;
   var counts = {};
-  var most = 0;
-  lines.forEach(function (l) {
-    counts[l] = (counts[l] || 0) + 1;
-    if (counts[l] > most) most = counts[l];
-  });
-  return most / lines.length;
+  var mostCount = 0;
+  for (var i = 0; i <= words.length - n; i++) {
+    var gram = words.slice(i, i + n).join(' ').toLowerCase();
+    counts[gram] = (counts[gram] || 0) + 1;
+    if (counts[gram] > mostCount) mostCount = counts[gram];
+  }
+  return (mostCount * n) / words.length;
 }
 
 function transcriptIsDegenerateRepetition_(text) {
-  return transcriptRepetitionLoopShare_(text) >= DEGENERATE_TRANSCRIPT_DOMINANT_LINE_SHARE_;
+  return transcriptRepetitionLoopShare_(text) >= DEGENERATE_TRANSCRIPT_DOMINANT_GRAM_SHARE_;
 }
 
 /**

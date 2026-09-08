@@ -2033,15 +2033,35 @@ test('transcriptUnusableReason_ catches the repetition loop that made Frank Pirr
   assert.equal(real.split(/\s+/).length > gas.UNUSABLE_TRANSCRIPT_MIN_WORDS_, true);
 });
 
-test('transcriptUnusableReason_ leaves a real call alone, including a short one where the rep says "yeah" and "right" over and over — the check is on repeated whole utterances, not repeated words', () => {
+test('transcriptIsDegenerateRepetition_ catches the ACTUAL Frank Pirrone transcript shape — real bug found 09/09/2026, the SAME DAY the line-based version of this check shipped: Kris pasted the real Google Doc and it has almost no line breaks at all. The corrupted tail is one unbroken run of "I\'m going to do it this way." glued together with plain spaces, no delimiter of any kind — a line-based check sees ~2 "lines" total and does nothing', () => {
+  const opening = 'Hi Sean. >> Hi Frank. Good morning. >> Good morning. >> I am trying to dial into Zoom on my ' +
+    'computer that has audio, so I was not blowing you off. >> Yeah, yeah, it is better so you can see the ' +
+    'slides clearly. >> Gotcha, let me try that now, one second please, thank you. >> Take your time Frank, ' +
+    'no worries, we have got all day for this. >> I appreciate that, let me just find the right link here.';
+  // No newlines anywhere, matching the real doc exactly — this is the whole point of the regression.
+  const corruptedTail = new Array(3933).fill("I'm going to do it this way.").join(' ');
+  const full = opening + ' ' + corruptedTail;
+  assert.equal(full.indexOf('\n'), -1, 'the real corruption has zero line breaks — this must not rely on them');
+  assert.equal(gas.transcriptIsDegenerateRepetition_(full), true);
+  assert.equal(gas.transcriptUnusableReason_(full), 'repetition_loop');
+});
+
+test('transcriptUnusableReason_ leaves a real call alone, including a short one where the rep says "yeah" and "right" over and over — deliberately adversarial for the word-n-gram check: strict alternation lands at 37.5% dominant-window share, comfortably under the 50% threshold but with real margin tested, not just assumed', () => {
   const lines = [];
   for (let i = 0; i < 40; i++) {
     lines.push('Rep: Yeah.');
     lines.push('Rep: Right.');
     lines.push('Lead: So my situation is a little different from that, number ' + i + '.');
   }
-  // A third of the lines are a single repeated utterance — real, and must NOT trip.
-  assert.equal(gas.transcriptUnusableReason_(lines.join('\n')), null);
+  const text = lines.join('\n');
+  assert.equal(gas.transcriptUnusableReason_(text), null);
+  assert.ok(gas.transcriptRepetitionLoopShare_(text) < 0.5);
+});
+
+test('transcriptRepetitionLoopShare_ requires BOTH a long transcript and a real dominant window — a short transcript with one coincidentally-repeated 6-word phrase must not trip on word count alone', () => {
+  // Under the 150-word floor even though the repeat itself looks bad in isolation.
+  const short = 'Rep: thanks for taking the call today. ' + 'Rep: thanks for taking the call today. '.repeat(5);
+  assert.equal(gas.transcriptRepetitionLoopShare_(short), 0);
 });
 
 test('transcriptUnusableReason_ still separates the three original failure modes, so the row can say which one it was — a rep told only "unusable" cannot tell whether to re-upload or wait for a re-transcription', () => {

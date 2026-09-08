@@ -23,7 +23,7 @@ Run on a schedule via sales-dashboard-sync.timer (tools/deploy/setup_dashboard.s
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from google.oauth2 import service_account
@@ -318,7 +318,24 @@ def sheets_client():
     return build('sheets', 'v4', credentials=creds)
 
 
-def fetch_tab(service, tab_name):
+SHEETS_SERIAL_EPOCH = datetime(1899, 12, 30)
+
+
+def sheets_serial_to_iso_date(serial):
+    """Converts a Sheets/Excel date serial (days since 1899-12-30, per
+    valueRenderOption=UNFORMATTED_VALUE + dateTimeRenderOption=SERIAL_NUMBER)
+    into an unambiguous 'YYYY-MM-DD' string. Returns None on anything that
+    isn't a plain number (a blank cell, or genuine free text in a column that
+    isn't always a real Date-typed cell) — caller falls back to the original
+    FORMATTED_VALUE string in that case rather than losing the row."""
+    try:
+        serial = float(serial)
+    except (TypeError, ValueError):
+        return None
+    return (SHEETS_SERIAL_EPOCH + timedelta(days=serial)).date().isoformat()
+
+
+def fetch_tab(service, tab_name, date_columns=()):
     """Returns list[dict] keyed by header name, or None on a genuine fetch
     failure (see below) so the caller can tell "this tab really has zero
     rows" apart from "we couldn't read it this cycle."
@@ -341,21 +358,33 @@ def fetch_tab(service, tab_name):
     already grown additively more than once — see SALES_CALL_LOG_COLUMNS's
     own header comment) is never silently truncated out of the pull.
 
-    Skips any row whose first column is blank, logging how many were
-    skipped (S4) — a renamed/blanked identifying column would otherwise
-    silently drop every row with no signal at all, rather than just the
-    known/expected gap. Real incident live (25/08/2026): the live "Sales
-    Call Log" sheet turned out to have a ~995-row gap of genuinely empty
-    rows above the real data (rows 2 through ~996, real calls starting
-    around row 997) — and since checkbox/dropdown columns like "Outcome
-    Logged" write an actual FALSE into every row in their validated range
-    regardless of whether the row has any real data, those rows aren't
-    blank across every column, just the identifying one. The dashboard was
-    showing ~995 "(unnamed)" ghost calls because of this. Column A is
-    "Prospect Name" for the call log and "Rep" for the other two synced
-    tabs — always the one column a real row can't be blank on — same
-    convention Phase1_ComplianceCheck.gs's setupSalesCallLog() already uses
-    to detect a real vs. placeholder row.
+    date_columns (S8, real bug found live 09/09/2026 — Kris, looking at
+    Bens' dashboard page: "The dates are wrong. It's only September."):
+    FORMATTED_VALUE (the default render option, used above for everything)
+    returns each cell exactly as Sheets DISPLAYS it, which follows the
+    SPREADSHEET's own locale/number-format setting — not this project's
+    documented DD/MM/YYYY convention (brief.txt §2). Every date-writing path
+    in Phase2_CallScoring.gs writes a real JS Date object, so what actually
+    comes back for "8/12/2026" depends on whether the live spreadsheet's
+    locale renders that as 8 December or 12 August — parse_call_date
+    (app.py) assumes DD/MM first per the documented convention, and if the
+    live sheet is actually formatting M/D (a very common default), every
+    two-digit-day-and-month date gets silently misread: Chad Davis's real
+    12 August QC call rendered as "8 Dec", a real 11 June call as "6 Nov" —
+    wrong, and specifically wrong in the direction of reading as a FUTURE
+    date, which is how Kris caught it (no real call could be in November
+    when it's only September).
+
+    The only way to sidestep the locale guess entirely: ask the Sheets API
+    for the cell's raw serial number instead of its locale-formatted string
+    (valueRenderOption=UNFORMATTED_VALUE, dateTimeRenderOption=SERIAL_NUMBER)
+    for whichever columns are named in date_columns, and convert that number
+    ourselves via sheets_serial_to_iso_date — no locale involved at all. A
+    second, cheap fetch of the same range (same for every date column at
+    once) rather than special-casing each one; skipped when date_columns is
+    empty so tabs with no real Date-typed columns (the free-text "May 20"
+    style dates on Bens' own podcast tracker, brief.txt §A — never DD/MM/YYYY
+    to begin with) don't pay for a fetch they can't use anyway.
     """
     try:
         resp = (
@@ -376,6 +405,32 @@ def fetch_tab(service, tab_name):
     if not rows:
         return []
     header = rows[0]
+
+    serial_rows = []
+    if date_columns and any(c in header for c in date_columns):
+        try:
+            serial_resp = (
+                service.spreadsheets()
+                .values()
+                .get(
+                    spreadsheetId=SHEET_ID,
+                    range=f"'{tab_name}'",
+                    valueRenderOption="UNFORMATTED_VALUE",
+                    dateTimeRenderOption="SERIAL_NUMBER",
+                )
+                .execute()
+            )
+            serial_rows = serial_resp.get("values", [])
+        except Exception as e:
+            # Best-effort: fall back to the FORMATTED_VALUE string for every
+            # date cell this cycle (the pre-existing, imperfect behavior)
+            # rather than failing the whole tab over a second, non-essential
+            # fetch.
+            print(f"WARNING: could not fetch unambiguous dates for '{tab_name}' — falling back to locale-formatted "
+                  f"strings this cycle: {e}", file=sys.stderr)
+
+    date_col_indexes = [header.index(c) for c in date_columns if c in header]
+
     out = []
     skipped = 0
     # sheet_row is the row's real 1-indexed position in the spreadsheet
@@ -385,11 +440,28 @@ def fetch_tab(service, tab_name):
     # have to re-derive it. Not a real header, so it never collides with an
     # actual column name; tables that don't map it (columns_map has no
     # "__sheet_row__" key) simply ignore it.
-    for sheet_row, raw in enumerate(rows[1:], start=2):
+    for row_index, raw in enumerate(rows[1:]):
+        sheet_row = row_index + 2
         padded = raw + [""] * (len(header) - len(raw))
         if not str(padded[0]).strip():
             skipped += 1
             continue
+        # Overwrite each date column's locale-ambiguous FORMATTED_VALUE
+        # string with the unambiguous serial-number conversion, when the
+        # second fetch found a real number there — see date_columns' own
+        # comment above. serial_rows can be shorter than rows (Sheets omits
+        # trailing empty cells independently per request) or missing this
+        # row entirely if it was added between the two fetches; both are
+        # just "no serial available this row," never an error.
+        # +1: serial_rows still has its own header row at index 0, same
+        # shape as `rows` — row_index is 0-based into rows[1:].
+        serial_raw = serial_rows[row_index + 1] if row_index + 1 < len(serial_rows) else []
+        for idx in date_col_indexes:
+            if idx >= len(serial_raw):
+                continue
+            iso = sheets_serial_to_iso_date(serial_raw[idx])
+            if iso:
+                padded[idx] = iso
         record = dict(zip(header, padded))
         record["__sheet_row__"] = sheet_row
         out.append(record)
@@ -632,11 +704,19 @@ def main():
         "training_priority_overrides": (TRAINING_PRIORITY_OVERRIDES_TAB, TRAINING_PRIORITY_OVERRIDES_COLUMNS),
         "reengagement_overrides": (REENGAGEMENT_OVERRIDES_TAB, REENGAGEMENT_OVERRIDES_COLUMNS),
     }
+    # Which sheet-header columns need the unambiguous-serial-number treatment
+    # (fetch_tab's date_columns param — see its own comment). Only "Call
+    # Date" today: it's the one real Date-typed column app.py actually
+    # parses/sorts/charts on. The podcast tracker's Booking/Recording/QC/SC
+    # Date columns are known free text ("May 20", brief.txt §A) and were
+    # never DD/MM/YYYY to begin with, so there's nothing for this to fix
+    # there — listing them here would just be a wasted extra fetch.
+    date_columns_by_table = {"sales_call_log": ("Call Date",)}
 
     try:
         counts = {}
         for table, (tab_name, columns_map) in tabs.items():
-            rows = fetch_tab(service, tab_name)
+            rows = fetch_tab(service, tab_name, date_columns=date_columns_by_table.get(table, ()))
             if rows is None:
                 # Genuine fetch failure (C-09/S1) — leave this table exactly as
                 # it was from the last successful sync rather than wiping it.

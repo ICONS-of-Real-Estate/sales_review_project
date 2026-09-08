@@ -87,6 +87,91 @@ class TestFetchTab:
         assert "skipped 2 row(s)" in capsys.readouterr().err
 
 
+def _mock_service_with_serials(formatted_values, serial_values):
+    """A service mock whose .get() responds differently depending on
+    whether valueRenderOption=UNFORMATTED_VALUE was requested — the shape
+    fetch_tab's date_columns handling actually depends on: one call for the
+    normal FORMATTED_VALUE pull, a second for the unambiguous serial-number
+    one."""
+    service = MagicMock()
+
+    def get(spreadsheetId, range, **kwargs):
+        execute_mock = MagicMock()
+        if kwargs.get("valueRenderOption") == "UNFORMATTED_VALUE":
+            execute_mock.execute.return_value = {"values": serial_values}
+        else:
+            execute_mock.execute.return_value = {"values": formatted_values}
+        return execute_mock
+
+    service.spreadsheets.return_value.values.return_value.get.side_effect = get
+    return service
+
+
+class TestFetchTabDateColumns:
+    """Real bug found live 09/09/2026 — Kris, looking at Bens' dashboard
+    page: "The dates are wrong. It's only September." FORMATTED_VALUE
+    returns whatever string Sheets displays a date cell as, which follows
+    the live spreadsheet's own locale — not this project's documented
+    DD/MM/YYYY convention (brief.txt §2, parse_call_date in app.py). A real
+    12 August 2026 call, displayed by a US-locale spreadsheet as "8/12/2026",
+    gets read by parse_call_date's DD/MM-first guess as 8 December — a
+    fabricated FUTURE date. sheets_serial_to_iso_date + fetch_tab's
+    date_columns param sidestep the locale guess entirely by asking the
+    Sheets API for the cell's raw serial number instead."""
+
+    def test_sheets_serial_to_iso_date_matches_the_real_epoch(self):
+        # 12 August 2026 = 46246 days after the Sheets/Excel epoch (30 Dec 1899).
+        assert sync.sheets_serial_to_iso_date(46246) == "2026-08-12"
+
+    def test_sheets_serial_to_iso_date_returns_none_for_non_numeric_cells(self):
+        # A blank cell, or genuine free text — never fabricate a date.
+        assert sync.sheets_serial_to_iso_date("") is None
+        assert sync.sheets_serial_to_iso_date("TBD") is None
+
+    def test_date_column_is_overwritten_with_the_unambiguous_iso_value(self):
+        # The FORMATTED_VALUE response is deliberately the locale-ambiguous,
+        # WRONG-looking string a US-locale spreadsheet would hand back for
+        # 12 August 2026 — reading it DD/MM-first (the code's old-and-only
+        # behavior) would misparse this as 8 December.
+        formatted = [
+            ["Prospect Name", "Call Date", "Rep"],
+            ["Chad Davis", "8/12/2026", "Bens"],
+        ]
+        serials = [
+            ["Prospect Name", "Call Date", "Rep"],
+            ["Chad Davis", 46246, "Bens"],
+        ]
+        service = _mock_service_with_serials(formatted, serials)
+        rows = sync.fetch_tab(service, "Sales Call Log", date_columns=("Call Date",))
+        assert rows[0]["Call Date"] == "2026-08-12"
+
+    def test_no_date_columns_requested_skips_the_second_fetch_entirely(self):
+        """Tabs with no real Date-typed column (date_columns=(), the default)
+        must not pay for a fetch they can't use — asserted by making the
+        UNFORMATTED_VALUE branch return something that would fail the
+        assertion below if it were ever actually used."""
+        formatted = [["Prospect Name", "Call Date"], ["Chad Davis", "8/12/2026"]]
+        serials = [["Prospect Name", "Call Date"], ["Chad Davis", "WRONG-IF-USED"]]
+        service = _mock_service_with_serials(formatted, serials)
+        rows = sync.fetch_tab(service, "Sales Call Log")
+        assert rows[0]["Call Date"] == "8/12/2026"
+
+    def test_a_row_added_between_the_two_fetches_falls_back_to_the_formatted_string_not_a_crash(self):
+        """serial_rows can legitimately be shorter than rows — real Sheets
+        API behavior when the two calls don't see byte-identical state, not
+        something that should ever raise."""
+        formatted = [
+            ["Prospect Name", "Call Date"],
+            ["Chad Davis", "8/12/2026"],
+            ["New Row Mid-Sync", "9/1/2026"],
+        ]
+        serials = [["Prospect Name", "Call Date"], ["Chad Davis", 46246]]
+        service = _mock_service_with_serials(formatted, serials)
+        rows = sync.fetch_tab(service, "Sales Call Log", date_columns=("Call Date",))
+        assert rows[0]["Call Date"] == "2026-08-12"
+        assert rows[1]["Call Date"] == "9/1/2026"  # fallback — no serial available for this row
+
+
 class TestReplaceTable:
     def test_conversion_failure_is_logged_not_silent(self, conn, capsys):
         """Real bug (S5/S6): a manually-typed non-numeric value in an int/float
