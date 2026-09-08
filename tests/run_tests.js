@@ -2176,13 +2176,46 @@ test('buildFirstTouchBriefEmailBody_ says plainly there is no prior call, and as
   assert.equal(body.indexOf('prior call type'), -1);
 });
 
-test('buildFirstTouchBriefEmailBody_ tells the rep to go and look when web search found nothing, rather than sending an empty section', () => {
-  const body = gas.buildFirstTouchBriefEmailBody_({
+test('buildFirstTouchBriefEmailBody_ distinguishes "lookup never ran" from "lookup ran and found nothing" (real bug 09/09/2026, Kris: "This email is lazy! No look up of lead" — the lookup was gated OFF, so the old copy claimed a search happened when none did)', () => {
+  const neverRan = gas.buildFirstTouchBriefEmailBody_({
     nextRepFirstName: 'Joana', prospectName: 'Nobody Findable', prospectEmail: '',
-    nextCallType: 'QC', nextCallDateStr: '09/09/2026', nextCallTimeStr: '10:00', researchLinks: []
+    nextCallType: 'QC', nextCallDateStr: '09/09/2026', nextCallTimeStr: '10:00', researchLinks: [],
+    lookupAttempted: false
   });
-  assert.ok(body.indexOf('Nothing found by web search') !== -1);
-  assert.ok(body.indexOf('Instagram') !== -1, 'and name where to look — the due diligence Tomás teaches');
+  assert.ok(neverRan.indexOf('Automated lookup is off') !== -1);
+  assert.ok(neverRan.indexOf('Nothing found by web search') === -1, 'must never claim a search happened when none did');
+  assert.ok(neverRan.indexOf('Instagram') !== -1, 'and name where to look — the due diligence Tomás teaches');
+
+  const ranButEmpty = gas.buildFirstTouchBriefEmailBody_({
+    nextRepFirstName: 'Joana', prospectName: 'Nobody Findable', prospectEmail: '',
+    nextCallType: 'QC', nextCallDateStr: '09/09/2026', nextCallTimeStr: '10:00', researchLinks: [],
+    lookupAttempted: true
+  });
+  assert.ok(ranButEmpty.indexOf('Searched and found nothing solid') !== -1);
+});
+
+test('prospectSearchQuery_ uses the prospect\'s email when we have one — real bug 09/09/2026: the name-only query found nothing for a lead the same manual search (name + email) found instantly', () => {
+  assert.equal(
+    gas.prospectSearchQuery_('Stephen Barton', 'sbarton@gocoremtg.com'),
+    '"Stephen Barton" sbarton@gocoremtg.com'
+  );
+  // No email known — falls back to the old boilerplate query, unchanged.
+  assert.equal(
+    gas.prospectSearchQuery_('Stephen Barton', ''),
+    '"Stephen Barton" LinkedIn OR website OR real estate agent'
+  );
+});
+
+test('buildFirstTouchBriefEmailHtml_ carries the same real content as the plain-text body, in raw (unescaped) HTML tags — escaped tags render as literal text in Gmail (CLAUDE.md, bitten a prior session)', () => {
+  const html = gas.buildFirstTouchBriefEmailHtml_({
+    nextRepFirstName: 'Joana', prospectName: 'Stephen Barton', prospectEmail: 'sbarton@gocoremtg.com',
+    nextCallType: 'QC', nextCallDateStr: '09/09/2026', nextCallTimeStr: '10:00',
+    lookupAttempted: true, researchLinks: ['https://example.com/steve-barton']
+  });
+  assert.ok(html.indexOf('<p>') !== -1 && html.indexOf('&lt;p&gt;') === -1, 'must be raw HTML, not escaped');
+  assert.ok(html.indexOf('THIS IS A FIRST TOUCH') !== -1);
+  assert.ok(html.indexOf('https://example.com/steve-barton') !== -1);
+  assert.ok(html.indexOf('THE GOAL') !== -1 && html.indexOf('THE PAIN') !== -1);
 });
 
 test('sendFirstTouchHandoffBrief_ respects HANDOFF_CONFIG.ENABLED and never marks an event sent unless a real send happened', () => {
@@ -2215,8 +2248,18 @@ test('sendFirstTouchHandoffBrief_ respects HANDOFF_CONFIG.ENABLED and never mark
     assert.equal(gas.sendFirstTouchHandoffBrief_(repCfg, ev, gas.CONFIG.BUSINESS_TIMEZONE), false);
     assert.equal(marked, 0);
 
-    // Enabled and sent: marked exactly once.
-    gas.guardedSend_ = (to, subject) => { sends++; assert.ok(subject.indexOf('[First Touch]') !== -1); return true; };
+    // Enabled and sent: marked exactly once, CC carries Tomás (Kris,
+    // 09/09/2026: "Need to CC Tomas and ymself" — Kris via
+    // buildHandoffBriefCcList_'s always-on CONFIG.KRIS_EMAIL, Tomás added
+    // explicitly for the first-touch path only), and htmlBody is populated.
+    gas.guardedSend_ = (to, subject, body, opts) => {
+      sends++;
+      assert.ok(subject.indexOf('[First Touch]') !== -1);
+      assert.ok(opts.cc.indexOf(gas.CONFIG.TOMAS_EMAIL) !== -1, 'Tomás must be CC\'d on a first-touch brief');
+      assert.ok(opts.cc.indexOf(gas.CONFIG.KRIS_EMAIL) !== -1, 'Kris stays CC\'d, unchanged');
+      assert.ok(opts.htmlBody && opts.htmlBody.indexOf('<p>') !== -1, 'must send an HTML body, not plain text only');
+      return true;
+    };
     assert.equal(gas.sendFirstTouchHandoffBrief_(repCfg, ev, gas.CONFIG.BUSINESS_TIMEZONE), true);
     assert.equal(marked, 1);
   } finally {

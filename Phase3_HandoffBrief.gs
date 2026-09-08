@@ -416,9 +416,23 @@ function cseResultLooksLikeProspect_(result, prospectName) {
  * nothing," never blocks brief generation over a link that was always a
  * nice-to-have, not the point of the email.
  */
-function findProspectSocialLinks_(prospectName) {
+function prospectSearchQuery_(prospectName, prospectEmail) {
+  // Real bug found live (09/09/2026, Kris): the query used to be name-only
+  // ("LinkedIn OR website OR real estate agent" boilerplate) and turned up
+  // nothing for a lead the same manual search — name PLUS their email —
+  // found in seconds (Stephen Barton / sbarton@gocoremtg.com: his employer,
+  // headshot, LinkedIn, Facebook, all on the first page). An email address
+  // is a far higher-precision search term than a common name ever is, so
+  // use it whenever we have one instead of falling back straight to the
+  // generic boilerplate.
+  return prospectEmail
+    ? '"' + prospectName + '" ' + prospectEmail
+    : '"' + prospectName + '" LinkedIn OR website OR real estate agent';
+}
+
+function findProspectSocialLinks_(prospectName, prospectEmail) {
   try {
-    var res = googleCseSearch_('"' + prospectName + '" LinkedIn OR website OR real estate agent');
+    var res = googleCseSearch_(prospectSearchQuery_(prospectName, prospectEmail));
     if (res.status !== 200) {
       log_('  findProspectSocialLinks_: CSE lookup failed for "' + prospectName + '" — status ' +
         res.status + '. ' + String(res.body).slice(0, 300));
@@ -453,6 +467,27 @@ function findProspectSocialLinks_(prospectName) {
  * "build rapport" advice — the rep is about to be graded on exactly these,
  * so the brief and the scoring should be asking for the same thing.
  */
+/**
+ * The "WHAT WE COULD FIND" line — split out because it must say something
+ * DIFFERENT depending on whether a search actually ran. Real bug found live
+ * (09/09/2026, Kris — "This email is lazy! No look up of lead"):
+ * PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED was false, so findProspectSocialLinks_
+ * never ran at all, yet every first-touch brief said "Nothing found by web
+ * search" regardless — indistinguishable from a real search coming up empty.
+ * Telling a rep "we searched, found nothing" when nothing was ever searched
+ * is worse than saying nothing, because it discourages them from doing the
+ * 5-minute lookup themselves.
+ */
+function prospectResearchLine_(ctx) {
+  if (ctx.researchLinks && ctx.researchLinks.length) return ctx.researchLinks.join('\n');
+  if (!ctx.lookupAttempted) {
+    return 'Automated lookup is off for now — do the 5-minute version yourself before the call: ' +
+      'Instagram, TikTok, YouTube, their Zillow profile, and their brokerage\'s own announcement posts.';
+  }
+  return 'Searched and found nothing solid. Worth 5 minutes yourself before the call — Instagram, ' +
+    'TikTok, YouTube, their Zillow profile, and their brokerage\'s own announcement posts.';
+}
+
 function buildFirstTouchBriefEmailBody_(ctx) {
   var lines = [
     'Hi ' + ctx.nextRepFirstName + ',',
@@ -468,10 +503,7 @@ function buildFirstTouchBriefEmailBody_(ctx) {
     lines.push('Their email: ' + ctx.prospectEmail, '');
   }
   lines.push('WHAT WE COULD FIND (unconfirmed — verify before using any of it):');
-  lines.push(ctx.researchLinks && ctx.researchLinks.length
-    ? ctx.researchLinks.join('\n')
-    : 'Nothing found by web search. Worth 5 minutes yourself before the call — Instagram, TikTok, ' +
-      'YouTube, their Zillow profile, and their brokerage\'s own announcement posts.');
+  lines.push(prospectResearchLine_(ctx));
   lines.push('',
     'GOING IN, YOU NEED TWO THINGS:',
     '  1. THE GOAL — what are they running towards? Specific, in their words. "Wants to grow" is not a ' +
@@ -489,23 +521,75 @@ function buildFirstTouchBriefEmailBody_(ctx) {
 }
 
 /**
+ * HTML twin of buildFirstTouchBriefEmailBody_ — same real content, same
+ * bold/colour treatment Kris asked for on the playbook email (02/09→08/09:
+ * "walls of text are hard to read... highlight, colour, bold"), extended
+ * here after the same complaint about this email's formatting. htmlBody
+ * must carry raw HTML tags, not escaped text (CLAUDE.md — bitten a prior
+ * session already).
+ */
+function buildFirstTouchBriefEmailHtml_(ctx) {
+  var researchHtml = ctx.researchLinks && ctx.researchLinks.length
+    ? '<ul style="margin:4px 0 0;padding-left:20px;">' + ctx.researchLinks.map(function (link) {
+        var safe = escapeHtml_(link);
+        return '<li><a href="' + safe + '">' + safe + '</a></li>';
+      }).join('') + '</ul>'
+    : '<p style="margin:4px 0 0;color:#555;">' + escapeHtml_(prospectResearchLine_(ctx)) + '</p>';
+
+  return [
+    '<p>Hi ' + escapeHtml_(ctx.nextRepFirstName) + ',</p>',
+    '<p>You have a <b>' + escapeHtml_(callTypePhrase_(ctx.nextCallType)) + '</b> with <b>' +
+      escapeHtml_(ctx.prospectName) + '</b> on ' + escapeHtml_(ctx.nextCallDateStr) + ' at ' +
+      escapeHtml_(ctx.nextCallTimeStr) + '.</p>',
+    '<p style="background:#fff3cd;border-left:4px solid #f0ad4e;padding:8px 12px;">' +
+      '<b>THIS IS A FIRST TOUCH</b> — nobody here has spoken to them before, so there is no prior call ' +
+      'to brief you from. Everything below is public research, not something a colleague told us.</p>',
+    ctx.prospectEmail ? '<p>Their email: <a href="mailto:' + escapeHtml_(ctx.prospectEmail) + '">' +
+      escapeHtml_(ctx.prospectEmail) + '</a></p>' : '',
+    '<p><b>WHAT WE COULD FIND</b> <i>(unconfirmed — verify before using any of it)</i>:</p>',
+    researchHtml,
+    '<p><b>GOING IN, YOU NEED TWO THINGS:</b></p>',
+    '<ol style="padding-left:20px;">',
+    '<li><b style="color:#2a6099;">THE GOAL</b> — what are they running towards? Specific, in their ' +
+      'words. "Wants to grow" is not a goal; "from 5 a month to 10 by spring" is.</li>',
+    '<li><b style="color:#b5471b;">THE PAIN</b> — what are they running from? Careful here: falling ' +
+      'short of the goal is a <i>condition</i>, not a pain. The real pain is concrete — no professional ' +
+      'presence when someone Googles them, content nobody engages with, too small a network locally, ' +
+      'not being taken seriously when they try to recruit.</li>',
+    '</ol>',
+    '<p>Write your questions down before you dial, and take notes visibly during the call.</p>',
+    '<p style="color:#777;font-size:0.9em;">— Automated first-touch brief. There is no prior call for ' +
+      'this lead; if you think there should be, tell Kris and it is probably a name-matching problem.</p>'
+  ].filter(Boolean).join('\n');
+}
+
+/**
  * Sends the first-touch brief. Mirrors the main path's safety rules exactly:
  * respects HANDOFF_CONFIG.ENABLED, only marks the event sent when a real
  * send happened, and returns whether it did.
  */
 function sendFirstTouchHandoffBrief_(repCfg, ev, tz) {
+  var prospectEmail = (ev.attendeeEmails && ev.attendeeEmails.length) ? ev.attendeeEmails.join(', ') : '';
+  // A single attendee email is the strongest search term we have — see
+  // prospectSearchQuery_'s own comment. Multiple attendees on the invite
+  // (e.g. the lead plus a spouse/partner) makes "which one is the prospect"
+  // ambiguous, so only pass it through when there's exactly one.
+  var lookupAttempted = !!(typeof PROSPECT_LINKS_LOOKUP_CONFIG !== 'undefined' && PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED);
   var ctx = {
     nextRepFirstName: String(repCfg.name).split(' ')[0],
     prospectName: ev.prospectGuess,
-    prospectEmail: (ev.attendeeEmails && ev.attendeeEmails.length) ? ev.attendeeEmails.join(', ') : '',
+    prospectEmail: prospectEmail,
     nextCallType: guessCallTypeFromTitle_(ev.title),
     nextCallDateStr: Utilities.formatDate(ev.start, tz, 'dd/MM/yyyy'),
     nextCallTimeStr: Utilities.formatDate(ev.start, tz, 'HH:mm'),
-    researchLinks: (typeof PROSPECT_LINKS_LOOKUP_CONFIG !== 'undefined' && PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED)
-      ? findProspectSocialLinks_(ev.prospectGuess)
+    lookupAttempted: lookupAttempted,
+    researchLinks: lookupAttempted
+      ? findProspectSocialLinks_(ev.prospectGuess, ev.attendeeEmails && ev.attendeeEmails.length === 1
+          ? ev.attendeeEmails[0] : '')
       : []
   };
   var body = buildFirstTouchBriefEmailBody_(ctx);
+  var htmlBody = buildFirstTouchBriefEmailHtml_(ctx);
   var subject = repCfg.name + ' — [First Touch] ' + ev.prospectGuess + ' — your ' +
     callTypePhrase_(ctx.nextCallType) + ' in ~24 hrs';
 
@@ -515,8 +599,17 @@ function sendFirstTouchHandoffBrief_(repCfg, ev, tz) {
     log_(body);
     return false;
   }
-  var cc = buildHandoffBriefCcList_(null, ev.additionalTeamGuestEmails || []).join(',');
-  var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, name: 'Call Handoff Brief Bot' }, 4);
+  // Kris, 09/09/2026, looking at a real first-touch brief: "Need to CC Tomas
+  // and ymself" — CONFIG.KRIS_EMAIL is already always on it via
+  // buildHandoffBriefCcList_; Tomás is added here explicitly. This is
+  // narrower than the 03/09/2026 decision documented on
+  // buildHandoffBriefCcList_ (Tomás doesn't need every brief) — that
+  // decision was about briefs for calls a rep ALREADY qualified, where he
+  // has nothing to add; a first-touch brief is a cold, unqualified lead,
+  // which is the case Kris flagged here.
+  var cc = buildHandoffBriefCcList_(CONFIG.TOMAS_EMAIL, ev.additionalTeamGuestEmails || []).join(',');
+  var didSend = guardedSend_(repCfg.email, subject, body,
+    { cc: cc, htmlBody: htmlBody, name: 'Call Handoff Brief Bot' }, 4);
   if (!didSend) {
     log_('  First-touch send blocked/skipped for "' + ev.title + '" — NOT marking sent, will retry.');
     return false;
@@ -561,8 +654,10 @@ function previewProspectLinksLookup_() {
   values.forEach(function (row) {
     var name = row[col['Prospect Name'] - 1];
     if (!name) return;
-    var links = findProspectSocialLinks_(name);
-    log_('  "' + name + '" → ' + (links.length ? links.join(', ') : '(no plausible match found)'));
+    var email = col['Prospect Email'] ? row[col['Prospect Email'] - 1] : '';
+    var links = findProspectSocialLinks_(name, email);
+    log_('  "' + name + '"' + (email ? ' <' + email + '>' : '') + ' → ' +
+      (links.length ? links.join(', ') : '(no plausible match found)'));
   });
   log_('previewProspectLinksLookup_ done.');
 }
