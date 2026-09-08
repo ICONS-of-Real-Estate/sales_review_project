@@ -3263,6 +3263,15 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
     // caller (scoreJoanaLegacyTranscripts passes no judgeFn override).
     var analyticScoreVariant = resolveRubricVariantForRow_(repName, 'fallback_heuristic');
 
+    // Real bug found live (09/09/2026, Kris — "This needs better logging",
+    // same complaint already fixed once on rescoreAllCalls_ for the same
+    // reason): this loop used to log NOTHING until a row actually finished
+    // scoring, so a call taking minutes (real observed: 3m15s for one Bens
+    // row) looked exactly like a hang. Two passes now, same shape as
+    // rescoreAllCalls_ — collect what's actually eligible first (logging
+    // every skip as it's found), announce the real scope up front, THEN
+    // score with a line before AND after each real model call.
+    var eligible = [];
     while (files.hasNext()) {
       var file = files.next();
       var parsed = parseLegacyFilename_(file.getName());
@@ -3273,6 +3282,18 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
       }
       var key = normalize_(parsed.prospectName) + '|' + parsed.dateStr + '|' + normalize_(repName);
       if (existing[key]) { skippedExisting++; continue; }
+      eligible.push({ file: file, parsed: parsed });
+    }
+
+    log_('scoreLegacyTranscriptFolder(' + repName + '): ' + eligible.length + ' file(s) need scoring this ' +
+      'pass (' + skippedExisting + ' already scored, ' + skippedUnparsed + ' unparsed) — one real model ' +
+      'call per file, this can take several minutes each.');
+
+    var runStart = Date.now();
+    eligible.forEach(function (item, i) {
+      var file = item.file, parsed = item.parsed;
+      log_('  [' + (i + 1) + '/' + eligible.length + '] Scoring "' + parsed.prospectName + '" (' +
+        parsed.dateStr + ') — calling the model now...');
 
       try {
         var text = getTranscriptText_(file);
@@ -3347,16 +3368,17 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
         // real, separate gap worth closing regardless.
         existing[key] = true;
 
-        log_('  Scored "' + parsed.prospectName + '" (' + parsed.dateStr + '): ' +
-          result.lead_quality.verdict + ', score ' + result.call_quality_score +
-          ', severity ' + result.severity + (result._parseFailed ? ' [PARSE FAILED]' : ''));
+        log_('  [' + (i + 1) + '/' + eligible.length + '] Done: "' + parsed.prospectName + '" (' +
+          parsed.dateStr + ') — ' + result.lead_quality.verdict + ', score ' + result.call_quality_score +
+          ', severity ' + result.severity + (result._parseFailed ? ' [PARSE FAILED]' : '') +
+          ' (' + Math.round((Date.now() - runStart) / 1000) + 's elapsed so far).');
         scored++;
         Utilities.sleep(300); // be polite to the proxy — no documented rate limit here, but batch responsibly.
       } catch (e) {
-        log_('  FAILED "' + file.getName() + '": ' + e);
+        log_('  [' + (i + 1) + '/' + eligible.length + '] FAILED "' + file.getName() + '": ' + e);
         failed++;
       }
-    }
+    });
 
     log_('scoreLegacyTranscriptFolder(' + repName + ') done — scored ' + scored +
       ', already-present ' + skippedExisting + ', unparsed ' + skippedUnparsed + ', failed ' + failed + '.');

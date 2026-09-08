@@ -45,6 +45,10 @@ function realFormatDate(date, tz, pattern) {
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
       .format(date).replace(/-/g, '/');
   }
+  if (pattern === 'yyyy-MM-dd') {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(date);
+  }
   if (pattern === 'HH:mm') {
     return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
   }
@@ -128,6 +132,101 @@ test('parseLegacyFilename_\'s .date round-trips to the SAME dateStr through load
   const parsed = gas.parseLegacyFilename_('2026-08-18_RebeccaStewart_Transcript.txt');
   const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
   assert.equal(dtf.format(parsed.date), parsed.dateStr);
+});
+
+function fakeLegacyFolder_(fileNames) {
+  const files = fileNames.map((name) => ({
+    getName: () => name,
+    getMimeType: () => 'text/plain',
+    getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }),
+    getUrl: () => 'https://drive.google.com/file/d/fake-' + name + '/view'
+  }));
+  return {
+    getFiles: () => {
+      let i = 0;
+      return { hasNext: () => i < files.length, next: () => files[i++] };
+    },
+    getFolders: () => ({ hasNext: () => false, next: () => null })
+  };
+}
+
+function fakeLegacySheetFor_(existingRows) {
+  const headerRow = gas.SALES_CALL_LOG_HEADERS.slice();
+  const appended = [];
+  return {
+    getLastRow: () => existingRows.length + 1,
+    getRange: (row, col, numRows, numCols) => {
+      if (row === 1) return { getValues: () => [headerRow] };
+      return { getValues: () => existingRows };
+    },
+    appendRow: (values) => { appended.push(values); },
+    _appended: appended
+  };
+}
+
+test('scoreLegacyTranscriptFolder logs an upfront scope count and a per-file progress line, not just failures (real bug 09/09/2026, Kris: "This needs better logging" — a live Bens pass logged nothing for 3m15s while scoring one file, indistinguishable from a hang, the exact complaint already fixed once on rescoreAllCalls_)', () => {
+  // "Mark Ryan" is new; "Tammy De Wolfe" already has a row and must be
+  // skipped without ever reaching the model.
+  const existingRows = [
+    ['Tammy De Wolfe', '', '', new gas.Date(2026, 8, 2, 12, 0, 0), 'Bens']
+  ];
+  const sheet = fakeLegacySheetFor_(existingRows);
+  const folder = fakeLegacyFolder_([
+    '2026-08-31_MarkRyan_Transcript.txt',
+    '2026-09-02_TammyDeWolfe_Transcript.txt'
+  ]);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalUtilities = gas.Utilities;
+  const originalLog = gas.Logger.log;
+  const originalDateNow = Date.now;
+  const lines = [];
+  let judgeCalls = 0;
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFolderById: () => folder };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+    gas.Logger.log = (msg) => lines.push(msg);
+    let now = 1000000;
+    Date.now = () => { now += 5000; return now; }; // fake elapsed time advancing per call
+
+    const judgeFn = () => {
+      judgeCalls++;
+      return {
+        reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 5,
+        flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
+        delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+        primary_failure_mode: 'none', manual_review_recommended: false, severity: 1,
+        feedback_summary: 'scored'
+      };
+    };
+
+    gas.scoreLegacyTranscriptFolder('Bens', 'fake-folder-id', judgeFn);
+
+    assert.equal(judgeCalls, 1, 'only the one new file should ever reach the model');
+    assert.equal(sheet._appended.length, 1);
+
+    const joined = lines.join('\n');
+    assert.match(joined, /scoreLegacyTranscriptFolder\(Bens\): 1 file\(s\) need scoring this pass \(1 already scored, 0 unparsed\)/,
+      'must log the real scope up front, before any model call');
+    assert.match(joined, /\[1\/1\] Scoring "Mark Ryan" \(2026-08-31\) — calling the model now/,
+      'must log BEFORE the model call, since that call can run minutes with nothing else in between');
+    assert.match(joined, /\[1\/1\] Done: "Mark Ryan" \(2026-08-31\) — good_to_book, score 5.*elapsed so far/,
+      'must log each file as it completes, not stay silent until the end');
+    // The upfront scope line must come before the per-file "Scoring" line.
+    assert.ok(joined.indexOf('1 file(s) need scoring this pass') < joined.indexOf('Scoring "Mark Ryan"'));
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.Utilities = originalUtilities;
+    gas.Logger.log = originalLog;
+    Date.now = originalDateNow;
+  }
 });
 
 test('guessProspectFromTitle_ extracts the prospect name from the real calendar title patterns it documents', () => {
