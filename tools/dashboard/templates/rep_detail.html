@@ -235,10 +235,13 @@
     <p class="muted">Not found on this deploy ({{ playbook.slug }}).</p>
   {% endif %}
 </div>
-{% elif rep != "Joana" %}
-{# Joana intentionally has no playbook entry at all — see REP_TO_PLAYBOOK_SLUG — so no message here for her; any other rep with none is worth a visible note. #}
+{% else %}
+{# Joana has no FIXED objection-handling doc of her own (REP_TO_PLAYBOOK_SLUG)
+   — but she does get the topic-based Discovery doc when that's her current
+   priority (rep_playbook() in app.py), so this branch now genuinely means
+   "no playbook applies right now," for any rep, not just her. #}
 <div class="chart-card" id="playbook">
-  <p class="muted">No objection-handling playbook exists for {{ rep }} yet.</p>
+  <p class="muted">No playbook for {{ rep }}'s current training priority yet.</p>
 </div>
 {% endif %}
 {% endblock %}

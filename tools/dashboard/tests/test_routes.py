@@ -444,13 +444,44 @@ def test_rep_detail_shows_joanas_own_playbook(client, db_path):
     resp = client.get("/reps/Joana")
     assert resp.status_code == 200
     assert "Objection Handling Playbook — Joana" in resp.text
-    assert "No objection-handling playbook exists" not in resp.text
+    assert "No playbook for" not in resp.text
 
 
 def test_rep_detail_shows_missing_playbook_notice_for_a_rep_with_none(client, db_path):
     resp = client.get("/reps/SomeoneElse")
     assert resp.status_code == 200
-    assert "No objection-handling playbook exists for SomeoneElse yet." in resp.text
+    assert "No playbook for SomeoneElse's current training priority yet." in resp.text
+
+
+def test_rep_detail_shows_the_discovery_playbook_when_that_is_the_current_priority(client, db_path, conn):
+    # Kris's ask (08/09/2026): "The playbook needs to have a training plan
+    # for Tomas on how to teach discovery." Discovery is a TOPIC, not tied
+    # to one rep — this must override the fixed per-rep doc for ANY rep,
+    # Joana (whose fixed doc is objection handling) included.
+    week_start = app_module.current_week_start_label()
+    conn.execute(
+        "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+        "VALUES ('Joana', ?, 'Discovery', 'tomas@iconsofrealestate.com', '2026-09-07T00:00:00+00:00')",
+        (week_start,),
+    )
+    conn.commit()
+    resp = client.get("/reps/Joana")
+    assert resp.status_code == 200
+    assert "Discovery Playbook" in resp.text
+    assert "Objection Handling Playbook — Joana" not in resp.text
+
+
+def test_rep_detail_falls_back_to_the_fixed_playbook_when_the_override_is_not_discovery(client, db_path, conn):
+    week_start = app_module.current_week_start_label()
+    conn.execute(
+        "INSERT INTO training_priority_overrides (rep, week_start, priority, set_by, set_at) "
+        "VALUES ('Sean', ?, 'Objection handling', 'tomas@iconsofrealestate.com', '2026-09-07T00:00:00+00:00')",
+        (week_start,),
+    )
+    conn.commit()
+    resp = client.get("/reps/Sean")
+    assert "Objection Handling Playbook — Sean" in resp.text
+    assert "Discovery Playbook" not in resp.text
 
 
 def test_outcome_pages_render_on_empty_db(client, db_path):

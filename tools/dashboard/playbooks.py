@@ -22,6 +22,11 @@ PLAYBOOKS = [
     {"slug": "sean", "title": "Objection Handling Playbook — Sean", "filename": "Objection_Handling_Playbook_Sean.md"},
     {"slug": "joana", "title": "Objection Handling Playbook — Joana", "filename": "Objection_Handling_Playbook_Joana.md"},
     {"slug": "tomas", "title": "Tomás Playbook — What Other Reps Should Copy", "filename": "Tomas_Playbook.md"},
+    # Not rep-specific like the four above — see rep_playbook() in app.py,
+    # which picks this one for ANY rep when their current training-priority
+    # override for the week is Discovery, instead of the fixed one-doc-per-
+    # rep mapping the objection playbooks use.
+    {"slug": "discovery", "title": "Discovery Playbook", "filename": "Discovery_Playbook.md"},
 ]
 
 

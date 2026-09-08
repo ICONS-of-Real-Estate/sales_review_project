@@ -1193,11 +1193,24 @@ def rep_call_rows_for_reengagement():
     return out
 
 
-def rep_playbook(rep):
-    """The one PLAYBOOKS doc that belongs to this rep, or None if none exists
-    (Joana) — a single doc, not the full list /training used to dump on one
-    combined page."""
-    slug = REP_TO_PLAYBOOK_SLUG.get(rep)
+#  Kris's ask (08/09/2026): "The playbook needs to have a training plan for
+#  Tomas on how to teach discovery." The fixed rep->playbook mapping below
+#  is wrong for this — it's a one-doc-per-REP scheme built for objection
+#  handling, which is what every rep who takes Sales Calls is trained on by
+#  default, but discovery is a TOPIC, not a rep identity, and any rep can
+#  have it as their priority for a given week. When that's this rep's
+#  current override, show the discovery doc instead of their fixed one.
+TOPIC_TO_PLAYBOOK_SLUG = {"discovery": "discovery"}
+
+
+def rep_playbook(rep, current_priority=None):
+    """The one PLAYBOOKS doc to show for this rep this week: the topic doc
+    when their current training-priority override names one (currently just
+    Discovery), else the fixed per-rep doc (REP_TO_PLAYBOOK_SLUG), else None
+    (Joana has no fixed doc of her own) — a single doc, not the full list
+    /training used to dump on one combined page."""
+    topic_slug = TOPIC_TO_PLAYBOOK_SLUG.get(str(current_priority or "").strip().lower())
+    slug = topic_slug or REP_TO_PLAYBOOK_SLUG.get(rep)
     if not slug:
         return None
     pb = next((p for p in PLAYBOOKS if p["slug"] == slug), None)
@@ -1216,6 +1229,7 @@ def rep_detail_page(request: Request, rep: str, call_type: str = ""):
     total = len(calls)
     scored = [c for c in calls if c["call_quality_score"] is not None]
     avg_score = round(sum(c["call_quality_score"] for c in scored) / len(scored), 2) if scored else None
+    priority_override = current_training_priority_override(rep)
     return render(
         request,
         "rep_detail.html",
@@ -1232,8 +1246,8 @@ def rep_detail_page(request: Request, rep: str, call_type: str = ""):
             "outcome_missing_key": OUTCOME_MISSING,
             "framework_gaps": framework_gap_breakdown(rep),
             "scorecard_history": rep_scorecard_history(rep),
-            "playbook": rep_playbook(rep),
-            "current_priority_override": current_training_priority_override(rep),
+            "playbook": rep_playbook(rep, priority_override["priority"] if priority_override else None),
+            "current_priority_override": priority_override,
             "training_priority_options": TRAINING_PRIORITY_OPTIONS,
             "reengagement_eligible": rep in REENGAGEMENT_REPS,
         },
