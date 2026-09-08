@@ -3,9 +3,16 @@
 # qwen3-asr-toolkit, pywhispercpp) so CI/local test runs don't need the full,
 # heavy production install (whisper.cpp compiled bindings especially) just to
 # run pytest against the pure/mocked logic.
+#
+# Deliberately NOT pywhispercpp (code review, 09/09/2026): get_whisper_model()
+# imports it lazily, inside the function, not at module scope — and
+# test_transcribe_sean_calls_whisper.py monkeypatches get_whisper_model
+# itself before any call, so the real package is never actually imported by
+# the test suite. Listing it here would install the exact heavy
+# compiled-bindings dependency this file's own comment says to avoid, for
+# zero test coverage benefit.
 pytest
 google-genai
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-pywhispercpp

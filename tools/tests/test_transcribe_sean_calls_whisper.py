@@ -67,8 +67,34 @@ class TestTranscribeWithWhisper:
         assert model.transcribe.call_count == 2
         first_call_kwargs = model.transcribe.call_args_list[0].kwargs
         second_call_kwargs = model.transcribe.call_args_list[1].kwargs
-        assert first_call_kwargs.get("temperature", 0) == 0
+        # temperature must be passed EXPLICITLY on every call, attempt 0
+        # included — real bug (code review, 09/09/2026): pywhispercpp's
+        # Model.transcribe(**params) applies each given key via setattr onto
+        # a _params object that lives on the (cached, reused-per-worker)
+        # Model instance and is never reset on its own. Omitting the key on
+        # attempt 0 (instead of passing temperature=0.0) meant a PRIOR
+        # video's retry could leave a raised temperature silently in effect
+        # for every later video's "first attempt" in the same worker
+        # process, for the rest of that run.
+        assert "temperature" in first_call_kwargs, \
+            "temperature must be passed explicitly, even at 0.0, to actually reset any value a prior retry left set"
+        assert first_call_kwargs["temperature"] == 0
         assert second_call_kwargs["temperature"] > 0
+
+    def test_temperature_is_always_explicit_even_on_a_single_clean_call(self, monkeypatch):
+        """Isolated regression for the same state-leak bug: even with no
+        retry involved at all, attempt 0 must still pass temperature=0.0
+        explicitly rather than omitting the key — otherwise a stray
+        `if attempt else {}`-style omission looks correct in this simple
+        case while still leaking state across videos in the real (stateful)
+        pywhispercpp Model object this test's plain MagicMock can't
+        reproduce on its own."""
+        model = _fake_model([CLEAN_SEGMENTS])
+        monkeypatch.setattr(tsw, "get_whisper_model", lambda: model)
+        tsw.transcribe_with_whisper("fake.mp4")
+        kwargs = model.transcribe.call_args.kwargs
+        assert "temperature" in kwargs
+        assert kwargs["temperature"] == 0
 
     def test_gives_up_loudly_after_max_retries_rather_than_saving_corruption(self, monkeypatch):
         model = _fake_model([CORRUPTED_SEGMENTS] * (tsw.MAX_REPETITION_RETRIES + 1))

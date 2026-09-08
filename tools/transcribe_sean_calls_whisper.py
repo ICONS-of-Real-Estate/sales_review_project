@@ -136,8 +136,20 @@ def transcribe_with_whisper(local_path):
     """
     model = get_whisper_model()
     for attempt in range(MAX_REPETITION_RETRIES + 1):
-        params = {"temperature": attempt * 0.4} if attempt else {}
-        segments = model.transcribe(local_path, **params)
+        # Real bug found live (09/09/2026, code review): pywhispercpp's
+        # Model.transcribe(**params) applies each key it's GIVEN via
+        # setattr onto a `_params` object that lives on the Model instance
+        # and is never reset — get_whisper_model() caches one Model per
+        # worker process and reuses it for every video in the whole batch
+        # (run_whisper_batch's loop). Omitting `temperature` on attempt 0
+        # (the old `if attempt else {}`) meant it never got reset back to
+        # 0.0 after an earlier video's retry had bumped it — every
+        # subsequent "first attempt" in that worker, for the rest of the
+        # run, silently inherited whatever temperature the last retry left
+        # behind instead of running at the documented deterministic
+        # default. Passing it explicitly every time, including 0.0 on
+        # attempt 0, is what actually resets it.
+        segments = model.transcribe(local_path, temperature=attempt * 0.4)
         text = "\n\n".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
         if not transcript_is_degenerate_repetition_(text):
             return text
