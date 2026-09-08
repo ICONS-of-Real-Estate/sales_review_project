@@ -3003,31 +3003,40 @@ function sendDashboardAccessEmail() {
 //      installPlaybookReviewTrigger().
 // ---------------------------------------------------------------------------
 
-// Kris's ask (08/09/2026): Tomás runs training from Portugal, and Joana's
-// first session is 10am Spain time — so the schedule below is two emails,
-// not one. Both hours are given in CONFIG.BUSINESS_TIMEZONE (America/
-// New_York) because every trigger in this project is scheduled off that one
-// timezone — Kris confirmed converting Portugal wall-clock times to their
-// EST/EDT equivalent themselves rather than giving this one phase its own
-// timezone (which would've meant a second "which clock is this trigger on"
-// question for every future person reading this file).
-//   - 8:00am Portugal = 3:00am America/New_York -> REMINDER_TRIGGER_HOUR.
-//     Sends Tomás the auto-computed pick, so he has it and can override it
-//     on the dashboard if he wants something different.
-//   - 10:00am Portugal = 5:00am America/New_York -> FINAL_TRIGGER_HOUR.
-//     Recomputes (picking up any override Tomás set in between) and sends a
-//     second, final email — what's in his inbox right before he actually
-//     runs Joana's session is guaranteed current, not whatever was true 2
-//     hours earlier at reminder time.
-// Caveat, not urgent enough to solve now: Portugal and the US don't end
-// daylight saving on the same date (Portugal: last Sunday of October;
-// US: first Sunday of November), so for about one week a year the true
-// Portugal-local time these hours land on drifts by an extra hour. Revisit
-// if that week ever actually causes a problem.
+// Kris's ask (08/09/2026, revised same day after Tomás's real-world
+// feedback — "I chose Discovery, but nothing changed... first training
+// starts at 9am with Joana"): the original 3am/5am ET (8am/10am Portugal)
+// schedule gave Tomás only a 2-hour window between the reminder and the
+// final email, both landing before he was awake — his dashboard override
+// almost certainly missed the window entirely, which explains "nothing
+// changed." Moved to the day BEFORE the actual Tuesday session instead,
+// with real separation between the two emails:
+//   - Notification/reminder: Monday 4:00pm Portugal = 11:00am America/
+//     New_York -> REMINDER_TRIGGER_HOUR. Sends Tomás the auto-computed
+//     pick, so he has it and can override it on the dashboard if he wants
+//     something different — now with hours of daytime to actually do that,
+//     not the middle of the night.
+//   - Training plans/final: Monday 6:00pm US-Pacific (close of business) =
+//     9:00pm America/New_York -> FINAL_TRIGGER_HOUR. Recomputes (picking up
+//     any override Tomás set since the reminder) and sends the final
+//     email — what's in his inbox is guaranteed current well ahead of
+//     Tuesday's 9am session with Joana, not whatever was true hours
+//     earlier at reminder time.
+// Both hours are given in CONFIG.BUSINESS_TIMEZONE (America/New_York)
+// because every trigger in this project is scheduled off that one
+// timezone — Kris confirmed converting Portugal/Pacific wall-clock times to
+// their EST/EDT equivalent himself rather than giving this one phase its
+// own timezone (which would've meant a second "which clock is this trigger
+// on" question for every future person reading this file).
+// Caveat, not urgent enough to solve now: Portugal/US-Pacific and the US
+// Eastern coast don't all end daylight saving on the same date, so for a
+// week or two a year the true Portugal/Pacific-local time these hours land
+// on can drift by an extra hour. Revisit if that ever actually causes a
+// problem.
 var PLAYBOOK_REVIEW_CONFIG = {
   ENABLED: true, // Flipped true 27/08/2026 per Kris's ask — last-week-only training material, no all-time fallback.
-  REMINDER_TRIGGER_HOUR: 3, // 8am Portugal — see comment above
-  FINAL_TRIGGER_HOUR: 5     // 10am Portugal — see comment above
+  REMINDER_TRIGGER_HOUR: 11, // Mondays, 4pm Portugal — see comment above
+  FINAL_TRIGGER_HOUR: 21     // Mondays, 6pm US-Pacific (close of business) — see comment above
 };
 
 /**
@@ -3193,8 +3202,9 @@ function legacyTrainingFocusFromRanking_(ranking) {
 // morning, I want you to send an email to Thomas and tell him what the
 // priority is for each sales rep to make the training plan for them. And
 // then if he does nothing, it goes with that. Otherwise, he can log into the
-// interface and change it." The Tuesday email already exists
-// (sendPlaybookReviewNewMaterialEmail_ below) — this is the override:
+// interface and change it." The email already exists
+// (sendPlaybookReviewNewMaterialEmail_ below — moved to Monday 08/09/2026,
+// see PLAYBOOK_REVIEW_CONFIG's own header) — this is the override:
 // Tomás sets one via the dashboard (tools/dashboard/'s /reps/{rep}/priority-
 // override, writing through sheets_write.py), and buildAndMaybeSendPlaybook
 // Review_ checks for it before falling back to the auto-computed pick.
@@ -3369,7 +3379,7 @@ function previewWeeklyPlaybookReview_() {
   buildAndMaybeSendPlaybookReview_(/*forcePreview=*/true, 'final');
 }
 
-/** Trigger target for the 8am-Portugal reminder (see PLAYBOOK_REVIEW_CONFIG's own header). Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
+/** Trigger target for the Monday 4pm-Portugal reminder (see PLAYBOOK_REVIEW_CONFIG's own header). Gated by PLAYBOOK_REVIEW_CONFIG.ENABLED as a second safety net. */
 function runWeeklyPlaybookReviewReminder() {
   RUN_TAG = 'runWeeklyPlaybookReviewReminder';
   var lock = LockService.getScriptLock();
@@ -3384,7 +3394,7 @@ function runWeeklyPlaybookReviewReminder() {
   }
 }
 
-/** Trigger target for the 10am-Portugal final confirmation — recomputes from scratch, so any override Tomás set since the reminder is picked up. */
+/** Trigger target for the Monday 6pm-US-Pacific (close of business) final confirmation — recomputes from scratch, so any override Tomás set since the reminder is picked up. */
 function runWeeklyPlaybookReviewFinal() {
   RUN_TAG = 'runWeeklyPlaybookReviewFinal';
   var lock = LockService.getScriptLock();
@@ -3672,12 +3682,13 @@ function buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, rank
 
 /**
  * Two-email schedule (Kris's ask, 08/09/2026 — see PLAYBOOK_REVIEW_CONFIG's
- * own header comment): 'reminder' at REMINDER_TRIGGER_HOUR (8am Portugal)
- * gets a "[Reminder]" subject prefix and a note that a second, final email
- * is coming; 'final' at FINAL_TRIGGER_HOUR (10am Portugal, recomputed so any
- * override Tomás set in between is picked up) sends the plain, unprefixed
- * subject — unchanged from before this two-stage schedule existed, so
- * nothing downstream that keyed off the old single email's subject breaks.
+ * own header comment): 'reminder' at REMINDER_TRIGGER_HOUR (Monday, 4pm
+ * Portugal) gets a "[Reminder]" subject prefix and a note that a second,
+ * final email is coming; 'final' at FINAL_TRIGGER_HOUR (Monday, 6pm
+ * US-Pacific, recomputed so any override Tomás set in between is picked
+ * up) sends the plain, unprefixed subject — unchanged from before this
+ * two-stage schedule existed, so nothing downstream that keyed off the old
+ * single email's subject breaks.
  */
 function subjectPrefixForPlaybookStage_(stage) {
   return stage === 'reminder' ? '[Reminder] ' : '';
@@ -3685,13 +3696,13 @@ function subjectPrefixForPlaybookStage_(stage) {
 
 var PLAYBOOK_REVIEW_REMINDER_NOTE_ =
   '\n\nThis is the auto-computed pick — if you want a different focus for this rep, set it on the ' +
-  'dashboard before the final confirmation goes out (10am Portugal / 2 hours from now). That final ' +
-  'email is the one to actually use for the session; this reminder may not reflect a last-minute change.';
+  'dashboard before the final confirmation goes out later today. That final email is the one to ' +
+  'actually use for tomorrow\'s session; this reminder may not reflect a last-minute change.';
 var PLAYBOOK_REVIEW_REMINDER_NOTE_HTML_ =
   '<p style="color:#666;font-size:12px;margin-top:12px;">This is the auto-computed pick — if you want a ' +
-  'different focus for this rep, set it on the dashboard before the final confirmation goes out (10am ' +
-  'Portugal / 2 hours from now). That final email is the one to actually use for the session; this ' +
-  'reminder may not reflect a last-minute change.</p>';
+  'different focus for this rep, set it on the dashboard before the final confirmation goes out later ' +
+  'today. That final email is the one to actually use for tomorrow\'s session; this reminder may not ' +
+  'reflect a last-minute change.</p>';
 
 function sendPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus, stage) {
   var email = buildPlaybookReviewNewMaterialEmail_(repCfg, flagged, windowLabel, ranking, focus);
@@ -3756,19 +3767,19 @@ function installPlaybookReviewTrigger() {
   });
   ScriptApp.newTrigger('runWeeklyPlaybookReviewReminder')
     .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
     .atHour(PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR)
     .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
   ScriptApp.newTrigger('runWeeklyPlaybookReviewFinal')
     .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.TUESDAY)
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
     .atHour(PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR)
     .inTimezone(CONFIG.BUSINESS_TIMEZONE)
     .create();
-  log_('Playbook review triggers installed: Tuesdays reminder ' + PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR +
-    ':00 (8am Portugal) + final ' + PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR + ':00 (10am Portugal) ' +
-    CONFIG.BUSINESS_TIMEZONE + '.');
+  log_('Playbook review triggers installed: Mondays reminder ' + PLAYBOOK_REVIEW_CONFIG.REMINDER_TRIGGER_HOUR +
+    ':00 (4pm Portugal) + final ' + PLAYBOOK_REVIEW_CONFIG.FINAL_TRIGGER_HOUR + ':00 (6pm US-Pacific) ' +
+    CONFIG.BUSINESS_TIMEZONE + ', ahead of Tuesday\'s session.');
 }
 
 function setDropdown_(sheet, colIndex, values) {

@@ -2592,7 +2592,7 @@ test('runWeeklyPlaybookReviewReminder/runWeeklyPlaybookReviewFinal each call bui
   }
 });
 
-test('installPlaybookReviewTrigger installs both a Tuesday reminder trigger and a Tuesday final trigger at their own configured hours, removing any prior copies first', () => {
+test('installPlaybookReviewTrigger installs both a Monday reminder trigger and a Monday final trigger at their own configured hours, removing any prior copies first', () => {
   const originalScriptApp = gas.ScriptApp;
   gas.ScriptApp = fakeScriptAppTriggers_(['runWeeklyPlaybookReviewReminder', 'runWeeklyPlaybookReviewFinal', 'someOtherTrigger']);
   try {
