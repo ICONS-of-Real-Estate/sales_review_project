@@ -1192,6 +1192,35 @@ function scoreNewlyLoggedCalls_() {
 //      since every row it already touched this pass now carries the current
 //      version and gets skipped on the next.
 var RESCORE_ALL_TIME_BUDGET_MS_ = 5 * 60 * 1000; // same margin under the 6-minute ceiling as INBOX_SLA_TIME_BUDGET_MS_
+// Real near-miss, live 08/09/2026: row 2 of a pass finished at 357s elapsed
+// — 3 SECONDS before Apps Script's 6-minute (360,000ms) hard execution
+// ceiling, which kills the whole execution outright (no graceful stop, no
+// final log line) rather than letting it finish. The bug: the budget check
+// above only fires BEFORE starting a row, comparing already-elapsed time
+// against a flat 300s threshold — it never asks "is there enough time left
+// to let ONE MORE row run to completion?" A row that starts at, say, 290s
+// elapsed and then takes 3 more minutes blows straight through the 360s
+// ceiling with no check in between (a live model call can't be interrupted
+// mid-flight). rescoreAllCalls_'s loop now estimates the next row's likely
+// duration (the slowest row seen so far this pass, or this default before
+// any row has completed yet) and refuses to START a row unless there's
+// still enough runway for it to finish under the real ceiling, with its own
+// safety margin on top for the sheet write + logging that follows.
+var RESCORE_HARD_EXECUTION_CEILING_MS_ = 6 * 60 * 1000; // Apps Script's actual execution limit
+var RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_ = 4 * 60 * 1000; // conservative, before any row this pass has finished
+var RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_ = 20 * 1000; // sheet write + logging after the model call returns
+
+/**
+ * Pure — extracted so the near-miss above is a unit test, not something
+ * that only shows up by watching a live Execution log again. True means
+ * "stop before starting the next row." `slowestRowMs` is 0 before any row
+ * this pass has completed, in which case `defaultEstimateMs` stands in.
+ */
+function shouldStopRescorePass_(elapsedMs, budgetMs, slowestRowMs, hardCeilingMs, defaultEstimateMs, overheadMarginMs) {
+  if (elapsedMs > budgetMs) return true;
+  var estimatedNextRowMs = (slowestRowMs || defaultEstimateMs) + overheadMarginMs;
+  return elapsedMs + estimatedNextRowMs > hardCeilingMs;
+}
 
 function rescoreAllCalls_(dryRun, lastWeekOnly) {
   RUN_TAG = 'rescoreAllCalls_';
@@ -1317,15 +1346,24 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
 
     var runStart = Date.now();
     var rescored = 0, failed = 0, truncated = false;
+    var slowestRowMs = 0; // grows as real rows complete this pass, so the estimate gets more accurate as it goes
 
     for (var e = 0; e < eligible.length; e++) {
-      if (Date.now() - runStart > RESCORE_ALL_TIME_BUDGET_MS_) {
+      // Stop the moment starting one more row could plausibly run the WHOLE
+      // execution past the real 6-minute ceiling — not just once the flat
+      // 5-minute budget is already spent. A row already in flight can't be
+      // interrupted, so this has to be checked before it starts, using the
+      // slowest row actually seen this pass (or a conservative default) as
+      // the estimate for the one about to start.
+      if (shouldStopRescorePass_(Date.now() - runStart, RESCORE_ALL_TIME_BUDGET_MS_, slowestRowMs,
+        RESCORE_HARD_EXECUTION_CEILING_MS_, RESCORE_ROW_DURATION_DEFAULT_ESTIMATE_MS_, RESCORE_ROW_OVERHEAD_SAFETY_MARGIN_MS_)) {
         truncated = true;
         log_('  rescoreAllCalls_: time budget hit after ' + rescored + ' of ' + eligible.length +
           ' eligible row(s) — reporting a partial result. Re-run to continue; rows already brought current this pass are skipped automatically.');
         break;
       }
 
+      var rowStartMs = Date.now();
       var item = eligible[e];
       var prospectName = item.row[col['Prospect Name'] - 1];
 
@@ -1363,6 +1401,11 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
         var result = scoreTranscriptByVariant_(item.variant, ctx);
         writeScoreToRow_(sheet, item.rowIndex, col, result, /*forceManualReview=*/false, prospectName, item.variant, callLengthMinutes);
         rescored++;
+        // Feeds RESCORE_HARD_EXECUTION_CEILING_MS_'s check above: the next
+        // row's stop/go decision uses the SLOWEST row actually seen this
+        // pass, not the average — a fast first row must never make the
+        // check overconfident about a slower one still to come.
+        slowestRowMs = Math.max(slowestRowMs, Date.now() - rowStartMs);
         log_('  [' + (e + 1) + '/' + eligible.length + '] Done: row ' + item.rowIndex + ' (' + prospectName + ') — score ' +
           item.existingScore + ' -> ' + result.call_quality_score + ' (' +
           Math.round((Date.now() - runStart) / 1000) + 's elapsed so far).');
@@ -1370,6 +1413,7 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
       } catch (e2) {
         log_('  Row ' + item.rowIndex + ' (' + prospectName + ') FAILED: ' + e2);
         failed++;
+        slowestRowMs = Math.max(slowestRowMs, Date.now() - rowStartMs);
       }
     }
 

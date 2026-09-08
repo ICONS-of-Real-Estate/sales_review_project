@@ -6321,6 +6321,114 @@ test('shouldSkipRemainingScoringPasses_ is false within budget and true once ela
   assert.equal(gas.shouldSkipRemainingScoringPasses_(1000, 1000 + 20 * 60 * 1000, 20 * 60 * 1000), false, 'exactly at budget must not skip yet — only strictly over');
 });
 
+test('shouldStopRescorePass_ refuses to start a row that could plausibly blow through the real 6-minute ceiling, not just once the flat budget is already spent', () => {
+  const BUDGET = 5 * 60 * 1000, CEILING = 6 * 60 * 1000, DEFAULT_EST = 4 * 60 * 1000, MARGIN = 20 * 1000;
+
+  // Real near-miss, live 08/09/2026: row 1 took 194s. At that point the OLD
+  // flat check (194s < 300s budget) let row 2 start, and the pass finished
+  // at 357s — 3 SECONDS under the real 360s ceiling. Using row 1's own
+  // duration as the estimate for row 2, starting it is 194s + (194s + 20s)
+  // = 408s, well past the 360s ceiling — this must now say STOP.
+  assert.equal(
+    gas.shouldStopRescorePass_(194 * 1000, BUDGET, 194 * 1000, CEILING, DEFAULT_EST, MARGIN),
+    true,
+    'must stop before a row whose own precedent this pass makes another blow the ceiling'
+  );
+
+  // Comfortably early, no rows completed yet (slowestRowMs=0) — the
+  // conservative default estimate still leaves headroom, so it's fine to go.
+  assert.equal(gas.shouldStopRescorePass_(10 * 1000, BUDGET, 0, CEILING, DEFAULT_EST, MARGIN), false);
+
+  // A genuinely fast row (say 30s) must not force an early stop just
+  // because the flat budget was already the only signal before this fix —
+  // the estimate should let several fast rows run back-to-back.
+  assert.equal(gas.shouldStopRescorePass_(60 * 1000, BUDGET, 30 * 1000, CEILING, DEFAULT_EST, MARGIN), false);
+
+  // The pre-existing flat-budget stop must still fire on its own, even if
+  // every row so far has been fast (a permanently-slow LATER row is not
+  // knowable in advance, so the flat budget stays as a backstop).
+  assert.equal(gas.shouldStopRescorePass_(BUDGET + 1, BUDGET, 1000, CEILING, DEFAULT_EST, MARGIN), true);
+
+  // Strictly under the flat budget with a real (small) slowest-row estimate
+  // must not stop yet, unlike the "exactly at budget" case above — this one
+  // isolates the flat-budget comparison from the ceiling comparison, which
+  // is a SEPARATE constraint now and can independently say stop even when
+  // the flat budget alone would not (below: elapsed 250s + budget 300s -> ok
+  // by the flat check; small slowestRowMs keeps the ceiling check clear too).
+  assert.equal(gas.shouldStopRescorePass_(250 * 1000, BUDGET, 30 * 1000, CEILING, DEFAULT_EST, MARGIN), false);
+});
+
+test('rescoreAllCalls_ (live) stops a pass one row earlier than the old flat budget would have, once a real row duration makes the next one risky', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Slow Row', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Would Be Row Two', Rep: 'Joana', 'Call Type': 'QC', 'Match Method': 'exact_key',
+      'Transcript URL': 'https://docs.google.com/document/d/1KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK/edit',
+      'Call Quality Score': 3, 'Rubric Version': '2026-08-01-old', 'Kris Manual Review Verdict': ''
+    })
+  ];
+  const sheet = fakeSalesCallLogSheetForRescore(dataRows);
+
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalDriveApp = gas.DriveApp;
+  const originalLockService = gas.LockService;
+  const originalScoreQc = gas.scoreQcTranscript_;
+  const originalLog = gas.Logger.log;
+  const originalDateNow = Date.now;
+  const lines = [];
+  try {
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
+    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => 'transcript text' }) }) };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.Logger.log = (msg) => lines.push(msg);
+
+    // Simulate row 1 actually taking 194s of wall-clock time, the exact
+    // real duration that produced the 357s near-miss — without the test
+    // really sleeping 194 seconds. Date.now() is monkeypatched to jump
+    // forward by 194s the instant the fake scorer is called (i.e. exactly
+    // where the real model call would have consumed that time), then holds
+    // steady, so the loop's OWN post-row elapsed/duration math sees the
+    // same numbers the real run did.
+    let simulatedNow = 1000000;
+    gas.Date.now = () => simulatedNow;
+    Date.now = () => simulatedNow;
+    gas.scoreQcTranscript_ = () => {
+      simulatedNow += 194 * 1000;
+      return {
+        reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
+        flags: { asked_for_close: true, objections_uncovered: true, objections_overcome: true, booked_next_step: true, discovery_adequate: true, understood_leads_business: true },
+        framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true },
+        delivery: { paced_appropriately: true, adapted_to_lead_engagement: true },
+        primary_failure_mode: 'none', root_cause_if_no_booking: 'N/A', manual_review_recommended: false, severity: 1,
+        feedback_summary: 'rescored'
+      };
+    };
+
+    gas.rescoreAllCalls_(false);
+
+    const joined = lines.join('\n');
+    assert.match(joined, /\[1\/2\] Done: row \d+ \(Slow Row\)/, 'row 1 must complete normally');
+    assert.equal(/Rescoring row \d+ \(Would Be Row Two/.test(joined), false,
+      'row 2 must NOT be started — row 1\'s own 194s duration makes starting another one too risky against the real ceiling');
+    assert.match(joined, /time budget hit after 1 of 2 eligible row\(s\)/,
+      'must report a clean partial result instead of risking the hard-kill near-miss');
+  } finally {
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.DriveApp = originalDriveApp;
+    gas.LockService = originalLockService;
+    gas.scoreQcTranscript_ = originalScoreQc;
+    gas.Logger.log = originalLog;
+    gas.Date.now = originalDateNow;
+    Date.now = originalDateNow;
+  }
+});
+
 test('runAllOngoingScoringPasses_ calls all 5 passes, Bens last, and one pass throwing does not stop the rest', () => {
   const order = [];
   const originals = {};

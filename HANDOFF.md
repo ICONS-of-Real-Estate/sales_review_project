@@ -1,3 +1,29 @@
+## ⚠ PENDING — Bens' GHL Opportunities (added 08/09/2026, deadline EOD Thursday)
+
+**Tomás gave Bens explicit instructions in Slack (07/09/2026, 18:45) to
+manually create GHL Opportunities for his own leads** — he has apparently
+been working leads without ever creating an Opportunity record in the
+CRM's Icons 100 pipeline, so stages like "Podcast Recorded" read 0
+opportunities / $0.00 in GHL even though real work is happening (matches
+`GHL_PIPELINE_MAP.md` §1's own open question about the "…Booked" holding
+stages reading 0 while downstream stages hold real numbers — this may be
+the same root cause, not a separate one).
+
+Tomás's steps, verbatim: (1) Opportunities in the left-hand menu, (2)
+choose the "Icons 100" pipeline, (3) Add Opportunity, (4) type the lead's
+email — it should connect to the Contact already created, (5) drag it to
+the correct stage, (6) confirm when done. **Deadline: EOD Thursday**
+(Tomás's words: "you must have all of your calls and all, so you have
+until EOD Thursday").
+
+Nothing for this repo to build here — it's a CRM data-hygiene task for
+Bens, not a code change. Worth a check-in with Tomás/Kris after Thursday:
+if "Podcast Recorded" and the other Icons 100 stages are still reading
+near-zero, either the instructions didn't land or there's a deeper GHL
+permissions/UI issue worth investigating.
+
+---
+
 ## ⚠ PENDING REACTIVATION (added 06/09/2026, still open)
 
 **`COMPLIANCE_CHECK_CONFIG.ENABLED` (`Phase1_ComplianceCheck.gs`) is `false`
