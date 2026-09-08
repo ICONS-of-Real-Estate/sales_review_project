@@ -993,14 +993,33 @@ TRAINING_PRIORITY_OPTIONS = [
 ]
 
 
-def current_week_start_label():
-    """Monday of the current week, in BUSINESS_TIMEZONE, as dd/MM/yyyy — must
-    match Phase1_ComplianceCheck.gs's getWeekBounds_/Utilities.formatDate
-    output exactly, since Apps Script matches an override by this exact
-    string (findTrainingPriorityOverride_)."""
-    now = datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
-    monday = now.date() - timedelta(days=now.weekday())
-    return monday.strftime("%d/%m/%Y")
+def current_week_start_label(now=None):
+    """The Monday of the LAST COMPLETED Mon-Sun week, in BUSINESS_TIMEZONE,
+    as dd/MM/yyyy — must match Phase1_ComplianceCheck.gs's
+    getWeekBounds_(new Date(), tz).start exactly, since that's the value
+    buildAndMaybeSendPlaybookReview_ actually looks an override up by
+    (findTrainingPriorityOverride_) when building the training email: that
+    email always covers last week's calls, never the still-in-progress
+    current week, so "this week's priority" has to mean the week the
+    email is ABOUT, not the calendar week the viewer happens to be sitting
+    in when they set it.
+
+    Real bug, live 08/09/2026 (Tomás: "I chose Discovery, but nothing
+    changed" — then Kris, looking at the same mismatch from the other
+    side: "Why objection handling sent when clearly it is marked
+    discovery"): this used to return the CURRENT week's Monday (one week
+    LATER than the value Apps Script actually reads), so an override set
+    through the dashboard could never match the lookup Apps Script does
+    when building that week's email — every override silently no-op'd,
+    every single time, regardless of which day of the week it was set on.
+
+    `now` is injectable (defaults to the real current time) so tests can
+    pin a specific day of the week without monkeypatching datetime.now.
+    """
+    now = now or datetime.now(ZoneInfo(BUSINESS_TIMEZONE))
+    this_monday = now.date() - timedelta(days=now.weekday())
+    last_completed_week_start = this_monday - timedelta(days=7)
+    return last_completed_week_start.strftime("%d/%m/%Y")
 
 
 def current_training_priority_override(rep):

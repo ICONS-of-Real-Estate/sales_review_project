@@ -3,6 +3,7 @@ Tests for app.py's DB-backed business logic functions, against the shared
 seeded_db fixture (see conftest.py for exactly what's in it).
 """
 import sqlite3
+from datetime import datetime
 
 import app as app_module
 import sync
@@ -874,3 +875,37 @@ class TestReengagementLeadsForRep:
         leads2 = app_module.reengagement_leads_for_rep("Bens", rows, {}, today=dt.date(2026, 1, 4))
         assert leads2[0]["current_step"] is None
         assert leads2[0]["next_step"] == "1 week"
+
+
+class TestCurrentWeekStartLabel:
+    """Real bug, live 08/09/2026: this used to return the CURRENT week's
+    Monday (via `now.date() - timedelta(days=now.weekday())` with no
+    further shift), one week LATER than Phase1_ComplianceCheck.gs's
+    getWeekBounds_(new Date(), tz).start actually is — the value the
+    training email's override lookup (findTrainingPriorityOverride_)
+    reads. An override written under the (wrong) current-week label could
+    never match that lookup, so it silently never took effect, on any day
+    of the week, every single week."""
+
+    def test_on_a_monday_returns_the_monday_seven_days_earlier(self):
+        # Mirrors Apps Script's getWeekBounds_(new Date(), tz) run on a
+        # Monday: end = today (this Monday), start = end - 7 days.
+        monday = datetime(2026, 9, 7, 10, 0)  # a Monday
+        assert app_module.current_week_start_label(now=monday) == "31/08/2026"
+
+    def test_on_a_tuesday_still_returns_last_completed_weeks_monday(self):
+        # This is the exact case Tomás/Kris hit: setting/reading an override
+        # on a Tuesday must still key off last week's Monday, matching
+        # whatever the Monday/Tuesday training emails just used.
+        tuesday = datetime(2026, 9, 8, 9, 0)
+        assert app_module.current_week_start_label(now=tuesday) == "31/08/2026"
+
+    def test_on_a_sunday_still_returns_last_completed_weeks_monday(self):
+        sunday = datetime(2026, 9, 13, 23, 0)
+        assert app_module.current_week_start_label(now=sunday) == "31/08/2026"
+
+    def test_defaults_to_the_real_current_time_when_now_is_omitted(self):
+        # Just confirms the injectable-now plumbing doesn't break the
+        # no-argument production call path.
+        label = app_module.current_week_start_label()
+        assert len(label) == 10 and label[2] == "/" and label[5] == "/"
