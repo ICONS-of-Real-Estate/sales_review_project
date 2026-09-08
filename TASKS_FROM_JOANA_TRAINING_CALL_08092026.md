@@ -254,6 +254,29 @@ himself to this too:
 
 ---
 
+## Status — updated 08/09/2026, same day
+
+| Item | Status |
+|---|---|
+| A1 Call Type mislabelled as QC | **Fixed** — `JOANA_DEFAULT_CALL_TYPE_` + `backfillJoanaCallTypes_` (`Phase2_CallScoring.gs`). Needs the backfill run, then a rescore. |
+| A2/A3 Lindsey + Stacie misgraded | **Unblocked by A1** — relabel + rescore is what corrects them. |
+| A4 Blank transcript scored 1/5 | **Fixed** — `transcriptIsUnusableForScoring_` stops it being scored at all; the training picker also ignores any row whose score is fake. |
+| A5 Joana's playbook showed Sean's material | **Fixed** — `Discovery_Playbook.md` v2 is Tomás's own method, no longer a generic doc with one Sean example. |
+| B1 Handoff briefs stopped | **In progress** |
+| B2 Bens' recordings / Friday reminder | **Fixed** — `sendRepRecordingsReminder_`, Fridays. |
+| C1 Goal + pain in the rubric | **Fixed** — `goalAndPainRubricPrompt_`, with Tomás's "condition, not a pain" correction. `RUBRIC_VERSION` bumped. |
+| C2 Discovery metrics (minutes, question counts) | Not started — needs design |
+| C3 Study which questions lead to wins | Blocked on A3 (Stacie must read as the win she is) |
+| D1 Transcripts into GHL notes | Not started |
+| D2/D3 One evolving handoff doc per contact | Part of B1 |
+| E Schedule reshuffle | **Fixed** — one daily `runWeeklyTrainingCycle` trigger: Friday reminder, Saturday draft to Kris, Monday review to Tomás. |
+
+**Nothing above is live until `clasp push` runs.** After that, in order:
+`previewJoanaCallTypeBackfill()` → `backfillJoanaCallTypes()` →
+`rescoreLastWeekCalls()` → `previewWeeklyPlaybookReview()`.
+
+---
+
 ## Suggested order of work
 
 1. **A1** (Call Type) — everything else in section A is downstream of it
