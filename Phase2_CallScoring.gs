@@ -1035,7 +1035,12 @@ function readRawTranscriptFileText_(file) {
   if (file.getMimeType() === MimeType.GOOGLE_DOCS) {
     return DocumentApp.openById(file.getId()).getBody().getText();
   }
-  return file.getBlob().getDataAsString();
+  var raw = file.getBlob().getDataAsString();
+  // Zoom's own transcript, uploaded by the rep (see isZoomTranscriptFileName_) —
+  // WebVTT, not prose, so it needs its cue numbers and timestamps stripped
+  // before any judge prompt sees it.
+  if (isZoomTranscriptFileName_(file.getName())) return vttToPlainText_(raw);
+  return raw;
 }
 
 /**
@@ -1072,6 +1077,11 @@ function getTranscriptText_(file) {
  * fabricated 0, which would read as a genuine zero-length call.
  */
 function getCallLengthMinutesFromTranscriptFile_(file) {
+  // A Zoom .vtt carries no "[Call length:]" line — its duration is the last
+  // cue's end timestamp instead. See vttDurationMinutes_.
+  if (isZoomTranscriptFileName_(file.getName())) {
+    return vttDurationMinutes_(file.getBlob().getDataAsString());
+  }
   return extractCallLengthMinutes_(readRawTranscriptFileText_(file));
 }
 
@@ -1080,6 +1090,163 @@ function extractCallLengthMinutes_(rawText) {
   var m = /^\[Call length:\s*(\d+):(\d{2})\]/.exec(String(rawText || ''));
   if (!m) return null;
   return Math.round((Number(m[1]) + Number(m[2]) / 60) * 10) / 10;
+}
+
+/**
+ * ── Zoom transcript preference ────────────────────────────────────────────
+ *
+ * Kris's explicit instruction on the Sean training call, 08/09/2026, said
+ * out loud to the recording because he knew it would be transcribed:
+ * "let's just make sure we add the Zoom transcript, and — AI is listening to
+ * this — I'm giving it the command of: Sean and Joana are going to upload the
+ * Zoom transcript, and if it's there, use that. If it's not, then transcript
+ * your own one." Asked whether Zoom's does a better job, Tomás: "Oh, 100%."
+ *
+ * This matters beyond quality: our own Whisper transcription is what produced
+ * the repetition-loop corruption that has been scoring Sean's calls 1/5 on
+ * calls he actually ran well (Frank Pirrone's transcript is half a page of
+ * real content followed by the same sentence 3,933 times — see
+ * TASKS_FROM_SEAN_TRAINING_CALL_08092026.md §2/§3). Preferring Zoom's is the
+ * root fix; degenerateTranscript_ below is the safety net for when we still
+ * fall back to our own.
+ *
+ * Mechanically, a rep drops Zoom's ".vtt" into the same folder the recording
+ * lives in. Both files describe the same call, so they collapse onto the same
+ * transcriptCallKey_ and the Doc is skipped. A Zoom .vtt with no Doc beside it
+ * is scored on its own — that's the steady state once reps upload Zoom's and
+ * we stop transcribing at all.
+ */
+function isZoomTranscriptFileName_(name) {
+  return /\.vtt$/i.test(String(name || '').trim());
+}
+
+/**
+ * Collapses "the Zoom .vtt for this call" and "our own '<video title> —
+ * Transcript' Doc for this call" onto one comparable key, so the two can be
+ * recognised as duplicates of each other. Deliberately aggressive — case,
+ * punctuation and spacing all discarded — because the two names come from
+ * different tools and only ever agree on the words in the video title:
+ *
+ *   "1/21 Anthony Camperi.mp4 — Transcript"  ─┐
+ *   "1/21 Anthony Camperi.transcript.vtt"    ─┴→ "121anthonycamperi"
+ */
+function transcriptCallKey_(name) {
+  var n = String(name || '').trim();
+  n = n.replace(/\.vtt$/i, '');
+  // Order matters, and got this wrong first time round: our Doc's suffix
+  // carries an EM DASH ("...mp4 — Transcript") which Zoom's dot/underscore
+  // character class doesn't cover, so stripping Zoom's form first left the
+  // dash behind and the ".mp4" with it — the Doc and the .vtt then keyed
+  // differently and the whole preference silently no-opped.
+  n = n.replace(/[—–-]?\s*Transcript\s*$/i, '');           // ours
+  n = n.replace(/[.\s_-]*(closed[\s_-]*captions?|cc)\s*$/i, ''); // Zoom's
+  n = n.replace(/[\s—–-]+$/, '');
+  // A trailing source-video extension ("....mp4 — Transcript") — see
+  // cleanProspectNameForSheet_, same cruft, same reason.
+  n = n.replace(/\.[a-z0-9]{2,5}$/i, '');
+  return n.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Prospect name from either kind of transcript filename. The Doc branch is
+ * byte-for-byte the strip every scorer already did inline (so nothing about
+ * existing rows or dedup keys shifts); the .vtt branch is new.
+ */
+function transcriptProspectNameFromFileName_(name) {
+  var n = String(name || '').trim();
+  if (isZoomTranscriptFileName_(n)) {
+    n = n.replace(/\.vtt$/i, '');
+    n = n.replace(/[.\s_-]*(closed[\s_-]*captions?|transcript|cc)\s*$/i, '');
+    return n.trim();
+  }
+  return n.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+}
+
+/**
+ * True for any file one of the folder scanners should consider scoring:
+ * a Zoom .vtt, or one of our own "— Transcript" Docs. Replaces the bare
+ * `name.indexOf('Transcript') === -1` guard repeated in six loops — note
+ * that guard is case-SENSITIVE, and Zoom's files are lowercase
+ * ("...transcript.vtt"), so they were invisible to every scanner before this.
+ */
+function looksLikeScorableTranscriptFile_(name) {
+  var n = String(name || '');
+  return isZoomTranscriptFileName_(n) || n.indexOf('Transcript') !== -1;
+}
+
+/**
+ * Pre-pass over a folder tree, returning { callKey: true } for every Zoom
+ * .vtt in it. A separate iterator from the scoring loop's own on purpose:
+ * getFilesRecursive_ hands back a one-shot iterator, and the loop needs to
+ * know a .vtt exists for a call BEFORE it reaches (and would otherwise
+ * score) our Doc for the same call, which may come first in Drive's order.
+ */
+function indexZoomTranscriptCallKeys_(folder) {
+  var index = {};
+  var files = getFilesRecursive_(folder);
+  while (files.hasNext()) {
+    var name = files.next().getName();
+    if (isZoomTranscriptFileName_(name)) index[transcriptCallKey_(name)] = true;
+  }
+  return index;
+}
+
+/** Our own Doc loses to a Zoom .vtt describing the same call. */
+function ourTranscriptIsSupersededByZoom_(name, zoomIndex) {
+  if (isZoomTranscriptFileName_(name)) return false;
+  return !!(zoomIndex && zoomIndex[transcriptCallKey_(name)]);
+}
+
+/**
+ * WebVTT → plain speaker text. Strips the WEBVTT header, NOTE/STYLE/REGION
+ * blocks, cue numbers, timestamp lines and inline cue tags, leaving the
+ * "Speaker Name: what they said" lines the judges' prompts expect.
+ *
+ * Consecutive identical lines are collapsed: Zoom re-emits the same caption
+ * across several cues while it's on screen, and a judge reading the same
+ * sentence four times in a row draws exactly the wrong conclusion about how
+ * the call went. This is NOT the corruption guard — that's
+ * degenerateTranscript_, which looks at the whole transcript.
+ */
+function vttToPlainText_(raw) {
+  var out = [];
+  var previous = null;
+  String(raw || '').split(/\r?\n/).forEach(function (line) {
+    var t = line.trim();
+    if (!t) return;
+    if (/^WEBVTT/i.test(t)) return;
+    if (/^(NOTE|STYLE|REGION)\b/i.test(t)) return;
+    if (/-->/.test(t)) return;
+    if (/^\d+$/.test(t)) return; // cue number
+    t = t.replace(/<[^>]+>/g, '').trim(); // inline <v Speaker>/<c> cue tags
+    if (!t) return;
+    if (t === previous) return;
+    previous = t;
+    out.push(t);
+  });
+  return out.join('\n');
+}
+
+/**
+ * Call length from a Zoom .vtt's last cue end-timestamp, so the "Call Length
+ * (Minutes)" column keeps working for Zoom-sourced rows. Our own transcripts
+ * carry a "[Call length: MM:SS]" line instead (extractCallLengthMinutes_);
+ * Zoom's don't, and without this every Zoom row would blank a column Kris
+ * called "a key indicator" on 07/09/2026. Returns null when no cue parses —
+ * never a fabricated 0.
+ */
+function vttDurationMinutes_(raw) {
+  var re = /-->\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/g;
+  var text = String(raw || '');
+  var lastSeconds = null;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var hours = m[1] ? Number(m[1]) : 0;
+    var seconds = hours * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    if (lastSeconds === null || seconds > lastSeconds) lastSeconds = seconds;
+  }
+  if (lastSeconds === null) return null;
+  return Math.round((lastSeconds / 60) * 10) / 10;
 }
 
 /**
@@ -3367,11 +3534,16 @@ function previewSeanTranscripts() {
   Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
     var files = getFilesRecursive_(folder);
+    // Built before the scoring loop starts, not inside it: Drive hands files back in
+    // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+    // that supersedes it. See indexZoomTranscriptCallKeys_.
+    var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
     while (files.hasNext()) {
       var file = files.next();
       var name = file.getName();
-      if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
-      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+      if (!looksLikeScorableTranscriptFile_(name)) continue; // skip source videos, only match transcript files
+      if (ourTranscriptIsSupersededByZoom_(name, zoomTranscripts)) continue; // Zoom's own wins — see isZoomTranscriptFileName_
+      var prospectName = transcriptProspectNameFromFileName_(name);
       // Real bug found live (26/08/2026 silent-failure audit): this preview
       // used file.getDateCreated() — the exact bug documented as fixed below
       // for the real scorer (see the comment on resolveRealCallDate_) — so
@@ -3595,10 +3767,15 @@ function scoreSeanTranscripts() {
     Object.keys(PHASE2_CONFIG.SEAN_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.SEAN_FOLDERS[label]);
       var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
+      // Built before the scoring loop starts, not inside it: Drive hands files back in
+      // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+      // that supersedes it. See indexZoomTranscriptCallKeys_.
+      var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
-        if (name.indexOf('Transcript') === -1) continue; // skip source videos
+        if (!looksLikeScorableTranscriptFile_(name)) continue; // skip source videos
+        if (ourTranscriptIsSupersededByZoom_(name, zoomTranscripts)) continue; // Zoom's own wins — see isZoomTranscriptFileName_
 
         // Real bug found live (26/08/2026 silent-failure audit): the per-file
         // try used to start AFTER resolveRealCallDate_ (a Drive call) and the
@@ -3606,7 +3783,7 @@ function scoreSeanTranscripts() {
         // OF THE LOOP entirely, silently abandoning every remaining file in
         // this and every other folder with no summary log and no ops alert.
         try {
-          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // normalize_(cleanProspectNameForSheet_(...)), not the raw prospectName:
@@ -3732,11 +3909,16 @@ function previewJoanaTranscripts() {
   Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
     var files = getFilesRecursive_(folder);
+    // Built before the scoring loop starts, not inside it: Drive hands files back in
+    // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+    // that supersedes it. See indexZoomTranscriptCallKeys_.
+    var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
     while (files.hasNext()) {
       var file = files.next();
       var name = file.getName();
-      if (name.indexOf('Transcript') === -1) continue; // skip source videos, only match transcript docs
-      var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+      if (!looksLikeScorableTranscriptFile_(name)) continue; // skip source videos, only match transcript files
+      if (ourTranscriptIsSupersededByZoom_(name, zoomTranscripts)) continue; // Zoom's own wins — see isZoomTranscriptFileName_
+      var prospectName = transcriptProspectNameFromFileName_(name);
       // Real bug found live (26/08/2026 silent-failure audit): see the
       // identical comment in previewSeanTranscripts above.
       var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
@@ -3815,17 +3997,22 @@ function scoreJoanaTranscripts() {
     Object.keys(PHASE2_CONFIG.JOANA_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.JOANA_FOLDERS[label]);
       var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
+      // Built before the scoring loop starts, not inside it: Drive hands files back in
+      // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+      // that supersedes it. See indexZoomTranscriptCallKeys_.
+      var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
-        if (name.indexOf('Transcript') === -1) continue; // skip source videos
+        if (!looksLikeScorableTranscriptFile_(name)) continue; // skip source videos
+        if (ourTranscriptIsSupersededByZoom_(name, zoomTranscripts)) continue; // Zoom's own wins — see isZoomTranscriptFileName_
 
         // Real bug found live (26/08/2026 silent-failure audit): see the
         // identical comment in scoreSeanTranscripts above — the per-file try
         // must start before any Drive call, or one hiccup silently abandons
         // every remaining file with no summary log and no ops alert.
         try {
-          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // See the identical comment on the Sean key above — cleaned name, not raw.
@@ -4273,9 +4460,14 @@ function previewTomasTranscripts() {
   Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
     var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
     var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
+    // Built before the scoring loop starts, not inside it: Drive hands files back in
+    // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+    // that supersedes it. See indexZoomTranscriptCallKeys_.
+    var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
     while (files.hasNext()) {
       var file = files.next();
-      if (file.getName().indexOf('Transcript') === -1) continue;
+      if (!looksLikeScorableTranscriptFile_(file.getName())) continue;
+      if (ourTranscriptIsSupersededByZoom_(file.getName(), zoomTranscripts)) continue; // Zoom's own wins
       log_('  [' + label + '] ' + file.getName());
       n++;
     }
@@ -4318,17 +4510,22 @@ function scoreTomasTranscripts() {
     Object.keys(PHASE2_CONFIG.TOMAS_FOLDERS).forEach(function (label) {
       var folder = DriveApp.getFolderById(PHASE2_CONFIG.TOMAS_FOLDERS[label]);
       var files = getFilesRecursive_(folder); // recurses into subfolders — see getFilesRecursive_'s comment
+      // Built before the scoring loop starts, not inside it: Drive hands files back in
+      // no useful order, so our own Doc for a call can arrive before the Zoom .vtt
+      // that supersedes it. See indexZoomTranscriptCallKeys_.
+      var zoomTranscripts = indexZoomTranscriptCallKeys_(folder);
       while (files.hasNext()) {
         var file = files.next();
         var name = file.getName();
-        if (name.indexOf('Transcript') === -1) continue; // skip source videos
+        if (!looksLikeScorableTranscriptFile_(name)) continue; // skip source videos
+        if (ourTranscriptIsSupersededByZoom_(name, zoomTranscripts)) continue; // Zoom's own wins — see isZoomTranscriptFileName_
 
         // Real bug found live (26/08/2026 silent-failure audit): see the
         // identical comment in scoreSeanTranscripts above — the per-file try
         // must start before any Drive call, or one hiccup silently abandons
         // every remaining file with no summary log and no ops alert.
         try {
-          var prospectName = name.replace(/[—-]?\s*Transcript\s*$/i, '').trim();
+          var prospectName = transcriptProspectNameFromFileName_(name);
           var callDate = resolveRealCallDate_(files.currentFolder(), prospectName, file);
           var dateStr = Utilities.formatDate(callDate, CONFIG.BUSINESS_TIMEZONE, 'yyyy-MM-dd');
           // See the identical comment on the Sean key above — cleaned name, not raw.
@@ -5465,13 +5662,74 @@ function rubricChangedSinceFreeze_(frozenVersion, currentVersion) {
  */
 var UNUSABLE_TRANSCRIPT_MIN_WORDS_ = 40;
 
-function transcriptIsUnusableForScoring_(text) {
+/**
+ * A FOURTH way, added 08/09/2026 after the Sean training call, and the one
+ * that was actually doing the damage: a transcription that falls into a
+ * repetition loop. Tomás, with the number in front of him:
+ *
+ *   "The transcript is basically half a page of real transcript. And then
+ *    it's 3,933 times that it says 'I'm going to do it this way.'"
+ *   Kris: "Note that, Mr. AI, and work out that bug."
+ *
+ * This sails straight past the word floor above — 3,933 repetitions is
+ * tens of thousands of words — so Frank Pirrone kept scoring 1/5 and kept
+ * leading Sean's training email off a transcript with half a page of real
+ * content in it. Named on the same call as also affected: Anthony Camperi,
+ * Stuart Ramirez, and the "Trojan horse" framework call Sean had studied
+ * hardest for and was scored 1.5 on. As Tomás put it: "all of the bad
+ * ratings that you have are transcripts that did not [work]."
+ *
+ * Detected on the ratio of DISTINCT lines to total lines rather than
+ * distinct words: a genuine call repeats plenty of individual words but
+ * almost never repeats whole utterances verbatim, while the loop repeats
+ * exactly one. Both thresholds have to trip, which is what keeps a short
+ * real call ("yeah" / "right" / "mm-hmm" a dozen times) out of it:
+ *   - the transcript is long enough that a human transcript would have
+ *     variety in it at all, and
+ *   - a single line accounts for most of it.
+ */
+var DEGENERATE_TRANSCRIPT_MIN_LINES_ = 30;
+var DEGENERATE_TRANSCRIPT_DOMINANT_LINE_SHARE_ = 0.5;
+
+function transcriptRepetitionLoopShare_(text) {
+  var lines = String(text || '')
+    .split(/\r?\n/)
+    .map(function (l) { return l.trim().toLowerCase().replace(/\s+/g, ' '); })
+    .filter(function (l) { return l.length > 0; });
+  if (lines.length < DEGENERATE_TRANSCRIPT_MIN_LINES_) return 0;
+  var counts = {};
+  var most = 0;
+  lines.forEach(function (l) {
+    counts[l] = (counts[l] || 0) + 1;
+    if (counts[l] > most) most = counts[l];
+  });
+  return most / lines.length;
+}
+
+function transcriptIsDegenerateRepetition_(text) {
+  return transcriptRepetitionLoopShare_(text) >= DEGENERATE_TRANSCRIPT_DOMINANT_LINE_SHARE_;
+}
+
+/**
+ * Which of the failure modes this transcript hit, or null when it is fine.
+ * Split out from transcriptIsUnusableForScoring_ (kept below, unchanged in
+ * meaning) so the row we write can say WHICH kind of failure it was — "the
+ * recording captured nothing" and "the transcription looped" need different
+ * things done about them, and a rep told only "unusable" can't tell whether
+ * to re-upload or wait for a re-transcription.
+ */
+function transcriptUnusableReason_(text) {
   var t = String(text || '').trim();
-  if (!t) return true;
-  // Strip the silence markers, then judge what actually remains.
+  if (!t) return 'empty';
   var spoken = t.replace(/\[BLANK_AUDIO\]/gi, ' ').replace(/\s+/g, ' ').trim();
-  if (!spoken) return true;
-  return spoken.split(' ').filter(Boolean).length < UNUSABLE_TRANSCRIPT_MIN_WORDS_;
+  if (!spoken) return 'blank_audio';
+  if (spoken.split(' ').filter(Boolean).length < UNUSABLE_TRANSCRIPT_MIN_WORDS_) return 'too_short';
+  if (transcriptIsDegenerateRepetition_(t)) return 'repetition_loop';
+  return null;
+}
+
+function transcriptIsUnusableForScoring_(text) {
+  return transcriptUnusableReason_(text) !== null;
 }
 
 /**
@@ -5486,9 +5744,36 @@ function transcriptIsUnusableForScoring_(text) {
  *     callScoreIsUnusableForStats_ (Phase5_WeeklyScorecard.gs) already
  *     excludes from every stat.
  */
-function unusableTranscriptResult_() {
+var UNUSABLE_TRANSCRIPT_FEEDBACK_ = {
+  empty: 'RECORDING UNUSABLE — the transcript is empty ([BLANK_AUDIO]). Nothing was graded ' +
+    'and this is NOT a reflection of the rep. Re-upload the recording if it exists, then re-score.',
+  blank_audio: 'RECORDING UNUSABLE — the transcript is [BLANK_AUDIO] end to end, i.e. the recording ' +
+    'captured no speech. Nothing was graded and this is NOT a reflection of the rep. Re-upload the ' +
+    'recording if it exists, then re-score.',
+  too_short: 'RECORDING UNUSABLE — the transcript is too short to grade anything against ([BLANK_AUDIO] ' +
+    'or a recording that cut out). Nothing was graded and this is NOT a reflection of the rep. ' +
+    'Re-upload the recording if it exists, then re-score.',
+  repetition_loop: 'TRANSCRIPT FAILED — the transcription looped, repeating one line over and over ' +
+    'instead of transcribing the call ([BLANK_AUDIO]-class failure of our own transcription, not the ' +
+    'recording). Nothing was graded and this is NOT a reflection of the rep — several of the lowest ' +
+    'scores in this system turned out to be exactly this. Upload the Zoom transcript for this call and ' +
+    're-score.'
+};
+
+/**
+ * The message deliberately keeps the literal "[BLANK_AUDIO]" token in every
+ * variant: callScoreIsUnusableForStats_ (Phase5_WeeklyScorecard.gs) keys its
+ * stats exclusion off that string, and a repetition-loop row must be excluded
+ * from the scorecards for exactly the same reason a silent one is. (That
+ * function also now matches "RECORDING UNUSABLE"/"TRANSCRIPT FAILED"
+ * directly, so the token is belt-and-braces rather than load-bearing.)
+ */
+function unusableTranscriptResult_(reason) {
+  var feedback = UNUSABLE_TRANSCRIPT_FEEDBACK_[reason] || UNUSABLE_TRANSCRIPT_FEEDBACK_.empty;
   return {
-    reasoning: 'No usable transcript — the recording captured little or no audio.',
+    reasoning: reason === 'repetition_loop'
+      ? 'No usable transcript — the transcription looped on one line instead of transcribing the call.'
+      : 'No usable transcript — the recording captured little or no audio.',
     lead_quality: { verdict: 'good_to_book', justification: 'Unscored — no usable recording.' },
     call_quality_score: '',
     flags: {},
@@ -5496,19 +5781,20 @@ function unusableTranscriptResult_() {
     primary_failure_mode: 'none',
     manual_review_recommended: true,
     severity: 3,
-    feedback_summary: 'RECORDING UNUSABLE — the transcript is empty or [BLANK_AUDIO]. Nothing was graded ' +
-      'and this is NOT a reflection of the rep. Re-upload the recording if it exists, then re-score.',
-    _unusableTranscript: true
+    feedback_summary: feedback,
+    _unusableTranscript: true,
+    _unusableReason: reason || 'empty'
   };
 }
 
 function scoreTranscriptByVariant_(variant, ctx) {
   // Checked once, here, rather than in each of the six variants — this is the
   // single point every scoring path already funnels through.
-  if (transcriptIsUnusableForScoring_(ctx && ctx.transcriptText)) {
+  var unusableReason = transcriptUnusableReason_(ctx && ctx.transcriptText);
+  if (unusableReason) {
     log_('    ↳ SKIPPED (no model call): "' + (ctx && ctx.prospectName) + '" has no usable transcript — ' +
-      'empty or blank audio. Writing "recording unusable" instead of a score.');
-    return unusableTranscriptResult_();
+      unusableReason + '. Writing "recording unusable" instead of a score.');
+    return unusableTranscriptResult_(unusableReason);
   }
   switch (variant) {
     case 'sean': return scoreSeanTranscript_(ctx);

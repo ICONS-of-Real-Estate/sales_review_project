@@ -93,6 +93,12 @@ function callScoreIsUnusableForStats_(feedbackSummary) {
   var t = String(feedbackSummary || '');
   if (t.indexOf('failed twice to return parseable JSON') !== -1) return true;
   if (/\[BLANK_AUDIO\]/i.test(t)) return true;
+  // A transcription that looped on one line is just as unusable as silence,
+  // and its message doesn't necessarily read like blank audio — matched
+  // directly so the exclusion can't hinge on a wording tweak upstream
+  // (unusableTranscriptResult_, Phase2_CallScoring.gs).
+  if (t.indexOf('RECORDING UNUSABLE') !== -1) return true;
+  if (t.indexOf('TRANSCRIPT FAILED') !== -1) return true;
   return false;
 }
 

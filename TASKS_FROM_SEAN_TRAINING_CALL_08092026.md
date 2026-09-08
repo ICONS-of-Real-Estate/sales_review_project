@@ -39,7 +39,7 @@ since it changes every framework score in the system.
 
 ---
 
-## 2. Frank Pirrone's transcript is corrupted — 3,933 repetitions
+## 2. ✅ FIXED — Frank Pirrone's transcript is corrupted — 3,933 repetitions
 
 Confirmed with a number, and it is NOT the blank-audio case already fixed:
 
@@ -52,6 +52,14 @@ The guard shipped earlier today (`transcriptIsUnusableForScoring_`,
 past a word-count floor. So Frank Pirrone is still scoring 1/5 and still
 leading Sean's training email. Needs a degenerate-repetition check
 (unique-token ratio, or a repeated-n-gram check) on top of the existing one.
+
+**Fixed 08/09/2026** — `transcriptUnusableReason_` / `transcriptIsDegenerateRepetition_`
+(`Phase2_CallScoring.gs`) now trip when one repeated line accounts for half or
+more of a transcript of 30+ lines, and the row gets a BLANK score plus
+"TRANSCRIPT FAILED — the transcription looped... upload the Zoom transcript
+for this call and re-score" instead of a number. `callScoreIsUnusableForStats_`
+(`Phase5_WeeklyScorecard.gs`) excludes those rows from every stat. The
+affected rows below re-score to blank on the next `rescoreAllCalls()` pass.
 
 ## 3. Same corruption on at least three more of Sean's calls
 
@@ -72,7 +80,7 @@ Confirms the direction of today's A4 fix and extends it to §2 above.
 
 ---
 
-## 5. Use the Zoom transcript when there is one
+## 5. ✅ FIXED — Use the Zoom transcript when there is one
 
 > **Kris:** "let's just make sure we add the Zoom transcript, and — AI is listening to this — I'm giving it the command of: Sean and Joana are going to upload the Zoom transcript, and if it's there, use that. If it's not, then transcript your own one."
 > **Kris:** "is the Zoom transcript do a better job?"
@@ -82,6 +90,22 @@ So: prefer an existing Zoom `.vtt` in the recording folder over generating
 one ourselves, and only fall back to our own transcription when Zoom's is
 absent. This is plausibly the root fix for §2/§3 — our own transcription is
 what produced the repetition loops.
+
+**Fixed 08/09/2026** (`Phase2_CallScoring.gs`). All six folder scanners
+(`previewSeanTranscripts`/`scoreSeanTranscripts`, the Joana pair, the Tomás
+pair) now build a `indexZoomTranscriptCallKeys_` index first and skip our own
+"— Transcript" Doc for any call a Zoom `.vtt` covers. Two things worth
+knowing:
+- The old guard (`name.indexOf('Transcript') === -1`) was **case-sensitive**,
+  and Zoom's files are lowercase `...transcript.vtt` — so before this, a rep
+  uploading Zoom's transcript would have had it silently ignored by every
+  scanner. `looksLikeScorableTranscriptFile_` fixes that.
+- Zoom's WebVTT is parsed to plain speaker text (`vttToPlainText_`) before
+  any judge sees it, and call length comes off the last cue's end timestamp
+  (`vttDurationMinutes_`) since a `.vtt` carries no `[Call length:]` line.
+
+**Nothing to do in the sheet — what's needed is the uploads.** Sean and Joana
+dropping Zoom's `.vtt` next to the recording is what actually turns this on.
 
 ---
 

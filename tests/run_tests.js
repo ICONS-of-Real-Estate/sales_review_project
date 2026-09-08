@@ -1772,6 +1772,7 @@ test('stripLeadingCallLengthLine_ is a no-op on a transcript that never had the 
 
 test('getTranscriptText_ strips the call-length line before returning transcript text, so it can never leak into a judge prompt as something someone said on the call', () => {
   const fakeFile = {
+    getName: () => 'Fake Prospect.mp4 — Transcript',
     getMimeType: () => 'text/plain',
     getBlob: () => ({ getDataAsString: () => '[Call length: 30:00]\n\nReal transcript content here.' })
   };
@@ -1780,10 +1781,165 @@ test('getTranscriptText_ strips the call-length line before returning transcript
 
 test('getCallLengthMinutesFromTranscriptFile_ reads the same file\'s raw text independently of getTranscriptText_, so the number survives even though getTranscriptText_ strips it', () => {
   const fakeFile = {
+    getName: () => 'Fake Prospect.mp4 — Transcript',
     getMimeType: () => 'text/plain',
     getBlob: () => ({ getDataAsString: () => '[Call length: 18:15]\n\nReal transcript content here.' })
   };
   assert.equal(gas.getCallLengthMinutesFromTranscriptFile_(fakeFile), 18.3);
+});
+
+// --- Task: prefer Zoom's transcript over our own (Kris, Sean training call 08/09/2026) ---
+
+/** Folder fake with the getFiles()/getFolders() surface getFilesRecursive_ actually walks. */
+function fakeDriveFolder(fileNames, subfolders) {
+  const files = fileNames.map((name) => ({ getName: () => name }));
+  const subs = subfolders || [];
+  return {
+    getFiles: () => {
+      let i = 0;
+      return { hasNext: () => i < files.length, next: () => files[i++] };
+    },
+    getFolders: () => {
+      let i = 0;
+      return { hasNext: () => i < subs.length, next: () => subs[i++] };
+    }
+  };
+}
+
+test('transcriptCallKey_ collapses Zoom\'s .vtt and our own "— Transcript" Doc for the same call onto one key, so the two can be recognised as duplicates despite coming from different tools', () => {
+  assert.equal(
+    gas.transcriptCallKey_('1/21 Anthony Camperi.mp4 — Transcript'),
+    gas.transcriptCallKey_('1/21 Anthony Camperi.transcript.vtt')
+  );
+  assert.equal(
+    gas.transcriptCallKey_('Frank Pirrone — Transcript'),
+    gas.transcriptCallKey_('Frank Pirrone.vtt')
+  );
+  // Different calls must NOT collapse — the whole mechanism is a skip, so a
+  // false match would silently drop a real call from scoring.
+  assert.notEqual(
+    gas.transcriptCallKey_('Frank Pirrone — Transcript'),
+    gas.transcriptCallKey_('Stuart Ramirez.vtt')
+  );
+});
+
+test('looksLikeScorableTranscriptFile_ accepts Zoom\'s lowercase ".transcript.vtt" — the old `indexOf(\'Transcript\')` guard was case-SENSITIVE, so every Zoom transcript was invisible to all six folder scanners', () => {
+  assert.equal(gas.looksLikeScorableTranscriptFile_('GMT20260908-140000_Recording.transcript.vtt'), true);
+  assert.equal(gas.looksLikeScorableTranscriptFile_('Frank Pirrone.mp4 — Transcript'), true);
+  assert.equal(gas.looksLikeScorableTranscriptFile_('Frank Pirrone.mp4'), false);
+});
+
+test('ourTranscriptIsSupersededByZoom_ skips our own Doc when a Zoom .vtt for the same call exists, keeps it when none does, and never skips the .vtt itself', () => {
+  const index = { [gas.transcriptCallKey_('Frank Pirrone.vtt')]: true };
+  assert.equal(gas.ourTranscriptIsSupersededByZoom_('Frank Pirrone.mp4 — Transcript', index), true);
+  assert.equal(gas.ourTranscriptIsSupersededByZoom_('Frank Pirrone.vtt', index), false);
+  assert.equal(gas.ourTranscriptIsSupersededByZoom_('Stuart Ramirez.mp4 — Transcript', index), false);
+  assert.equal(gas.ourTranscriptIsSupersededByZoom_('Frank Pirrone.mp4 — Transcript', {}), false);
+});
+
+test('transcriptProspectNameFromFileName_ leaves the Doc branch byte-for-byte what every scorer already did inline (dedup keys and existing rows must not shift), and strips Zoom\'s suffixes on the .vtt branch', () => {
+  assert.equal(gas.transcriptProspectNameFromFileName_('1/21 Anthony Camperi.mp4 — Transcript'), '1/21 Anthony Camperi.mp4');
+  assert.equal(gas.transcriptProspectNameFromFileName_('Frank Pirrone - Transcript'), 'Frank Pirrone');
+  assert.equal(gas.transcriptProspectNameFromFileName_('Frank Pirrone.transcript.vtt'), 'Frank Pirrone');
+  assert.equal(gas.transcriptProspectNameFromFileName_('Frank Pirrone.vtt'), 'Frank Pirrone');
+});
+
+test('indexZoomTranscriptCallKeys_ walks subfolders too (reps move old calls into dated subfolders — the same reason getFilesRecursive_ exists) and indexes only .vtt files', () => {
+  const folder = fakeDriveFolder(
+    ['Frank Pirrone.mp4', 'Frank Pirrone.mp4 — Transcript'],
+    [fakeDriveFolder(['Stuart Ramirez.transcript.vtt'], [])]
+  );
+  const index = gas.indexZoomTranscriptCallKeys_(folder);
+  assert.equal(Object.keys(index).length, 1);
+  assert.equal(index[gas.transcriptCallKey_('Stuart Ramirez.vtt')], true);
+});
+
+test('vttToPlainText_ strips the WEBVTT header, cue numbers, timestamps and inline cue tags, and collapses the consecutive duplicate lines Zoom emits while a caption stays on screen', () => {
+  const vtt = [
+    'WEBVTT',
+    '',
+    'NOTE recorded by Zoom',
+    '',
+    '1',
+    '00:00:01.000 --> 00:00:04.000',
+    '<v Sean>Sean: Hey Frank, thanks for jumping on.',
+    '',
+    '2',
+    '00:00:04.000 --> 00:00:06.500',
+    'Sean: Hey Frank, thanks for jumping on.',
+    '',
+    '3',
+    '00:00:06.500 --> 00:00:09.000',
+    'Frank: No problem at all.'
+  ].join('\n');
+  assert.equal(
+    gas.vttToPlainText_(vtt),
+    'Sean: Hey Frank, thanks for jumping on.\nFrank: No problem at all.'
+  );
+});
+
+test('vttDurationMinutes_ reads the call length off the last cue\'s end timestamp, so a Zoom-sourced row still fills the "Call Length (Minutes)" column Kris called a key indicator — and returns null (never a fabricated 0) when nothing parses', () => {
+  const vtt = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:04.000\nHi.\n\n2\n00:31:10.000 --> 00:32:30.000\nBye.';
+  assert.equal(gas.vttDurationMinutes_(vtt), 32.5);
+  assert.equal(gas.vttDurationMinutes_('WEBVTT\n\nnothing here'), null);
+  // MM:SS.mmm cues (no hours component) are legal WebVTT too.
+  assert.equal(gas.vttDurationMinutes_('WEBVTT\n\n1\n00:10.000 --> 09:00.000\nHi.'), 9);
+});
+
+test('readRawTranscriptFileText_ routes a Zoom .vtt through the WebVTT parser, so cue numbers and timestamps can never reach a judge prompt as if someone had said them', () => {
+  const vttFile = {
+    getName: () => 'Frank Pirrone.transcript.vtt',
+    getMimeType: () => 'text/vtt',
+    getBlob: () => ({ getDataAsString: () => 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:04.000\nSean: Hello there.' })
+  };
+  assert.equal(gas.readRawTranscriptFileText_(vttFile), 'Sean: Hello there.');
+  assert.equal(gas.getCallLengthMinutesFromTranscriptFile_(vttFile), 0.1);
+});
+
+// --- Task: catch repetition-loop corrupted transcripts (Tomás, 08/09/2026: "3,933 times") ---
+
+test('transcriptUnusableReason_ catches the repetition loop that made Frank Pirrone score 1/5 — half a page of real call followed by one line thousands of times, which sails straight past the word floor', () => {
+  const real = [
+    'Sean: Hey Frank, thanks for jumping on today.',
+    'Frank: Happy to be here, I have been looking at this for a while.',
+    'Sean: Tell me what made you book the call in the first place.',
+    'Frank: Honestly I want more visibility, nobody in my market knows who I am.',
+    'Sean: Got it. And how many transactions did you close last year?',
+    'Frank: About eighteen, but almost all of them came from my brokerage.'
+  ].join('\n');
+  const loop = new Array(400).fill('Frank: I am going to do it this way.').join('\n');
+  assert.equal(gas.transcriptUnusableReason_(real + '\n' + loop), 'repetition_loop');
+  // Long enough to pass the word floor, so this is genuinely the new check
+  // firing and not the old one.
+  assert.equal(real.split(/\s+/).length > gas.UNUSABLE_TRANSCRIPT_MIN_WORDS_, true);
+});
+
+test('transcriptUnusableReason_ leaves a real call alone, including a short one where the rep says "yeah" and "right" over and over — the check is on repeated whole utterances, not repeated words', () => {
+  const lines = [];
+  for (let i = 0; i < 40; i++) {
+    lines.push('Rep: Yeah.');
+    lines.push('Rep: Right.');
+    lines.push('Lead: So my situation is a little different from that, number ' + i + '.');
+  }
+  // A third of the lines are a single repeated utterance — real, and must NOT trip.
+  assert.equal(gas.transcriptUnusableReason_(lines.join('\n')), null);
+});
+
+test('transcriptUnusableReason_ still separates the three original failure modes, so the row can say which one it was — a rep told only "unusable" cannot tell whether to re-upload or wait for a re-transcription', () => {
+  assert.equal(gas.transcriptUnusableReason_(''), 'empty');
+  assert.equal(gas.transcriptUnusableReason_('[BLANK_AUDIO] [BLANK_AUDIO]'), 'blank_audio');
+  assert.equal(gas.transcriptUnusableReason_('Hi there, this is Sean.'), 'too_short');
+});
+
+test('unusableTranscriptResult_(\'repetition_loop\') writes a BLANK score with no flags and tells the rep to upload the Zoom transcript, and Phase5 excludes it from every stat', () => {
+  const result = gas.unusableTranscriptResult_('repetition_loop');
+  assert.equal(result.call_quality_score, '');
+  assert.deepEqual(Object.assign({}, result.flags), {});
+  assert.match(result.feedback_summary, /Zoom transcript/);
+  assert.match(result.feedback_summary, /NOT a reflection of the rep/);
+  assert.equal(gas.callScoreIsUnusableForStats_(result.feedback_summary), true);
+  // And the pre-existing modes keep their own wording and exclusion.
+  assert.equal(gas.callScoreIsUnusableForStats_(gas.unusableTranscriptResult_('blank_audio').feedback_summary), true);
 });
 
 // --- Task: frozen regression set / drift detection (25/08/2026) ---
@@ -4880,7 +5036,7 @@ test('rescoreAllCalls_ re-scores an already-scored row under the current rubric,
   const originalScoreShared = gas.scoreTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
 
     const scoredVariants = [];
@@ -4940,7 +5096,7 @@ test('rescoreAllCalls_\'s dry-run preview (previewRescoreAllCalls) calls no judg
   const originalScoreQc = gas.scoreQcTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.scoreQcTranscript_ = () => { throw new Error('previewRescoreAllCalls must never call a judge function'); };
 
@@ -4975,7 +5131,7 @@ test('rescoreAllCalls_ (live, not dry-run) logs an upfront scope count and a per
   const lines = [];
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
     gas.scoreQcTranscript_ = () => ({
@@ -5041,7 +5197,7 @@ test('rescoreAllCalls_ groups eligible rows by rubric variant before scoring, no
   const originalScoreSean = gas.scoreSeanTranscript_;
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
 
     const order = [];
@@ -5080,7 +5236,7 @@ test('rescoreAllCalls_ returns true when this pass found eligible rows, and fals
   const originalLockService = gas.LockService;
   const originalScoreQc = gas.scoreQcTranscript_;
   try {
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.scoreQcTranscript_ = () => ({
       reasoning: 'r', lead_quality: { verdict: 'good_to_book' }, call_quality_score: 4,
@@ -6911,7 +7067,7 @@ test('rescoreAllCalls_ (live) still lets a slow-but-real row (669s, the second r
   const lines = [];
   try {
     gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }) };
-    gas.DriveApp = { getFileById: () => ({ getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
+    gas.DriveApp = { getFileById: () => ({ getName: () => 'Fake Prospect.mp4 — Transcript', getMimeType: () => 'text/plain', getBlob: () => ({ getDataAsString: () => FAKE_TRANSCRIPT_ }) }) };
     gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
 
