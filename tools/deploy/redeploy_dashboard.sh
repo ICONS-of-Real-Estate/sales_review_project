@@ -53,13 +53,26 @@ sudo systemctl restart sales-dashboard
 # deployments bind to this box's Tailscale IP instead (see
 # tools/dashboard/README.md), and hitting 127.0.0.1 there would report a
 # false failure even on a perfectly healthy restart.
+#
+# Real bug (08/09/2026, hit live): $ENV_FILE is 0600 root-owned by design
+# (it holds DASHBOARD_SESSION_SECRET/GOOGLE_OAUTH_CLIENT_SECRET — see
+# setup_dashboard.sh) — this script itself runs as the invoking user, not
+# root, so a plain `source "$ENV_FILE"` failed with "Permission denied" and
+# killed the whole script under `set -e`, even though the restart two lines
+# above had already succeeded. Read it through `sudo` instead, pulling out
+# only the two vars actually needed rather than sourcing the whole file
+# (which would also export the secrets into this script's environment for
+# no reason).
 HOST="127.0.0.1"
 PORT="8000"
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
-  set -a; source "$ENV_FILE"; set +a
-  HOST="${DASHBOARD_BIND_HOST:-$HOST}"
-  PORT="${DASHBOARD_BIND_PORT:-$PORT}"
+if sudo test -f "$ENV_FILE"; then
+  # `|| true` on each: under `set -eo pipefail`, grep finding no match (exit
+  # 1) would otherwise abort the whole script even though "the var just
+  # isn't set, use the default" is the correct, unremarkable response here.
+  ENV_HOST="$(sudo grep -E '^DASHBOARD_BIND_HOST=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+  ENV_PORT="$(sudo grep -E '^DASHBOARD_BIND_PORT=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+  HOST="${ENV_HOST:-$HOST}"
+  PORT="${ENV_PORT:-$PORT}"
 fi
 
 echo "==> Waiting for it to come back up at $HOST:$PORT"
