@@ -113,9 +113,33 @@ Tailscale MagicDNS HTTPS name, not the raw IP:8000 above. Still tailnet-only
 
 ## Redeploying after a code change
 
+One command (Kris's ask, 08/09/2026):
+
+```bash
+bash tools/deploy/redeploy_dashboard.sh
+```
+
+Does `git pull` → `pip install -r requirements.txt` (safe/fast even when
+nothing changed) → forces a sync *before* restarting the app → restarts
+`sales-dashboard` → polls `/healthz` for up to 10s and reports whether it
+actually came back up, not just "systemctl didn't error."
+
+Sync-before-restart matters every time, not just when a column was added:
+`sales-dashboard.service` (the web app) and `sales-dashboard-sync.service`/
+`.timer` (the Sheet -> SQLite mirror, its own 10-minute cadence) are
+separate processes. If the app restarts onto new code before the next sync
+has run, and that code touches a column the live `dashboard.db` doesn't
+have yet, every page 500s until a sync finally happens on its own. Forcing
+a sync first is instant and always safe either way — cheaper than checking
+case by case (hit for real 25/08/2026, when the framework-explanation
+dashboard work shipped).
+
+Equivalent by hand, if you ever need to do it manually:
+
 ```bash
 cd /path/to/sales_review_project && git pull
 tools/dashboard/.venv/bin/pip install -r tools/dashboard/requirements.txt   # only if deps changed
+sudo systemctl start sales-dashboard-sync.service    # ALWAYS first, per the note above
 sudo systemctl restart sales-dashboard
 ```
 

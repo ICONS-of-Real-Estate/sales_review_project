@@ -55,7 +55,15 @@ done once the GitHub push succeeds.
 Separate from the Apps Script side above. The dashboard (`tools/dashboard/`)
 runs on the OVH VPS as its own systemd units, reading a local SQLite mirror
 of the Sales Call Log — it never talks to Apps Script. After pushing
-changes under `tools/dashboard/` to `main`:
+changes under `tools/dashboard/` to `main`, one command (Kris's ask,
+08/09/2026 — see `tools/deploy/redeploy_dashboard.sh`'s own header for what
+it does under the hood):
+
+```
+bash tools/deploy/redeploy_dashboard.sh
+```
+
+Equivalent by hand, if the script isn't available for some reason:
 
 ```
 git pull
