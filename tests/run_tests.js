@@ -582,23 +582,97 @@ test('runDailyComplianceCheck skips entirely on a weekend (business timezone) ra
   }
 });
 
-test('runDailyComplianceCheck skips entirely when COMPLIANCE_CHECK_CONFIG.ENABLED is false (Kris, 05/09/2026: "We need to stop this email... We don\'t want any trackers. Everything in GHL") — a real nag had linked Bens\'s tracker to Joana', () => {
+test('with COMPLIANCE_CHECK_CONFIG.ENABLED false, the nag EMAILS stop but the calendar-to-sheet match/stamp pass still runs (real regression, 08/09/2026)', () => {
+  // Kris, 05/09/2026: "We need to stop this email... We don't want any
+  // trackers. Everything in GHL." That instruction is about the EMAILS.
+  // Returning early here also stopped checkRep_ -> stampMatch_, the only
+  // thing that writes Match Method 'exact_key' — which scoreNewlyLoggedCalls_
+  // requires before it will score anything, and which the handoff briefs then
+  // need in turn (they look for a prior SCORED call). One flag was gating
+  // three unrelated things, and Joana noticed three days later: "I'm not
+  // receiving them in the last days."
   const originalLockService = gas.LockService;
   const originalLog = gas.Logger.log;
   const originalEnabled = gas.COMPLIANCE_CHECK_CONFIG.ENABLED;
+  const originalCheckRep = gas.checkRep_;
+  const originalReps = gas.CONFIG.REPS;
+  const originalUtilities = gas.Utilities;
+  const originalSession = gas.Session;
   const lines = [];
+  let checkedReps = 0;
   try {
     gas.COMPLIANCE_CHECK_CONFIG.ENABLED = false;
-    gas.LockService = { getScriptLock: () => { throw new Error('must not attempt to acquire the lock while disabled'); } };
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
     gas.Logger.log = (msg) => lines.push(msg);
+    gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+    gas.Session = { getScriptTimeZone: () => gas.CONFIG.BUSINESS_TIMEZONE };
+    gas.CONFIG.REPS = [{ name: 'Joana', email: 'joana@iconsofrealestate.com' }];
+    gas.checkRep_ = () => { checkedReps++; };
 
     gas.runDailyComplianceCheck();
 
-    assert.match(lines.join('\n'), /ENABLED is false/);
+    assert.equal(checkedReps, 1, 'the match/stamp pass MUST still run — scoring and handoffs depend on it');
+    const joined = lines.join('\n');
+    assert.match(joined, /ENABLED is false/, 'and it must still say plainly that the nags are off');
+    assert.match(joined, /match/i, 'and say what it is still doing, so this cannot look like a bug next time');
   } finally {
     gas.LockService = originalLockService;
     gas.Logger.log = originalLog;
     gas.COMPLIANCE_CHECK_CONFIG.ENABLED = originalEnabled;
+    gas.checkRep_ = originalCheckRep;
+    gas.CONFIG.REPS = originalReps;
+    gas.Utilities = originalUtilities;
+    gas.Session = originalSession;
+  }
+});
+
+test('checkRep_ sends no nag email and no escalation while the nags are disabled, however much backlog it finds', () => {
+  const originalEnabled = gas.COMPLIANCE_CHECK_CONFIG.ENABLED;
+  const originalSendCompliance = gas.sendComplianceEmail_;
+  const originalOpsAlert = gas.sendOpsAlert_;
+  const originalGetEvents = gas.getRepCallEvents_;
+  const originalLoadBacklog = gas.loadComplianceBacklog_;
+  const originalSaveBacklog = gas.saveComplianceBacklog_;
+  const originalLog = gas.log_;
+  const originalDropInternal = gas.dropInternalOnlyBacklogEntries_;
+  const originalSpreadsheetApp = gas.SpreadsheetApp;
+  const originalResolveSheet = gas.resolveSheet_;
+  const originalGetAllTrackerRows = gas.getAllTrackerRows_;
+  let sends = 0, alerts = 0, saved = 0;
+  try {
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = false;
+    gas.log_ = () => {};
+    gas.sendComplianceEmail_ = () => { sends++; };
+    gas.sendOpsAlert_ = () => { alerts++; };
+    gas.getRepCallEvents_ = () => [];
+    // A non-empty backlog is exactly the state that would normally email.
+    gas.loadComplianceBacklog_ = () => ([{ eventId: 'e1', prospectGuess: 'Someone', firstFlaggedDay: '01/09/2026',
+      callDateLabel: '01/09/2026', time: '10:00', title: 'QC / Someone' }]);
+    gas.saveComplianceBacklog_ = () => { saved++; };
+    gas.dropInternalOnlyBacklogEntries_ = (rep, backlog) => backlog;
+    gas.SpreadsheetApp = { openById: () => ({ getSheetByName: () => null, getSheets: () => [] }) };
+    // checkRep_ re-reads tracker rows while ageing the backlog; none of that
+    // is what this test is about, so it's stubbed to an empty sheet view.
+    gas.resolveSheet_ = () => ({ getLastRow: () => 1, getRange: () => ({ getValues: () => [] }), getName: () => 'Sales Call Log' });
+    gas.getAllTrackerRows_ = () => [];
+
+    gas.checkRep_({ name: 'Joana', email: 'joana@iconsofrealestate.com' },
+      new Date(), new Date(), '08/09/2026', gas.CONFIG.BUSINESS_TIMEZONE);
+
+    assert.equal(sends, 0, 'no daily nag while disabled — that is the instruction');
+    assert.equal(alerts, 0, 'and no ops escalation email either');
+  } finally {
+    gas.COMPLIANCE_CHECK_CONFIG.ENABLED = originalEnabled;
+    gas.sendComplianceEmail_ = originalSendCompliance;
+    gas.sendOpsAlert_ = originalOpsAlert;
+    gas.getRepCallEvents_ = originalGetEvents;
+    gas.loadComplianceBacklog_ = originalLoadBacklog;
+    gas.saveComplianceBacklog_ = originalSaveBacklog;
+    gas.log_ = originalLog;
+    gas.dropInternalOnlyBacklogEntries_ = originalDropInternal;
+    gas.SpreadsheetApp = originalSpreadsheetApp;
+    gas.resolveSheet_ = originalResolveSheet;
+    gas.getAllTrackerRows_ = originalGetAllTrackerRows;
   }
 });
 
@@ -1851,6 +1925,132 @@ test('scoreTranscriptByVariant_ dispatches to the matching rubric-specific judge
   assert.equal(gas.scoreTranscriptByVariant_('qc', ctx), 'qc-result');
   assert.equal(gas.scoreTranscriptByVariant_('shared', ctx), 'shared-result');
   assert.deepEqual(calls, ['sean', 'bens', 'tomas', 'qc', 'shared']);
+});
+
+test('handoffBriefReps_ adds Tomás so he gets briefs for the second calls HE runs, without enrolling him in CONFIG.REPS', () => {
+  const reps = gas.handoffBriefReps_();
+  const emails = Array.from(reps).map((r) => String(r.email).toLowerCase());
+  assert.ok(emails.indexOf(gas.CONFIG.TOMAS_EMAIL.toLowerCase()) !== -1,
+    'Kris, 08/09/2026: "Tomás gets handoffs for second calls"');
+  // CONFIG.REPS drives the compliance nags and the weekly scorecards, neither
+  // of which should suddenly cover him — that is why this is a local list.
+  const configEmails = Array.from(gas.CONFIG.REPS).map((r) => String(r.email).toLowerCase());
+  assert.equal(configEmails.indexOf(gas.CONFIG.TOMAS_EMAIL.toLowerCase()), -1,
+    'CONFIG.REPS itself must be untouched');
+  assert.equal(reps.length, gas.CONFIG.REPS.length + 1, 'exactly one addition, no duplicates');
+});
+
+test('sendUpcomingHandoffBriefs_ actually ROUTES a lead with no prior call to the first-touch brief instead of silently skipping it', () => {
+  // The wiring, not just the builder. Before 08/09/2026 this was a bare
+  // `if (!prior) { noMatch++; return; }` and the lead got nothing at all —
+  // which is what Joana was actually reporting.
+  const orig = {};
+  ['LockService', 'SpreadsheetApp', 'Utilities', 'getRepCallEvents_', 'handoffBriefReps_',
+   'hasHandoffBriefBeenSent_', 'findMostRecentPriorScoredCall_', 'sendFirstTouchHandoffBrief_',
+   'getValidatedColumnMap_', 'log_'].forEach((k) => { orig[k] = gas[k]; });
+  let firstTouchSends = 0;
+  const ev = { id: 'evt-first-touch', title: 'QC / Cold Lead', start: new Date(), prospectGuess: 'Cold Lead',
+    attendeeEmails: ['cold@example.com'], additionalTeamGuestEmails: [] };
+  try {
+    gas.log_ = () => {};
+    gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+    gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+    gas.SpreadsheetApp = { openById: () => ({
+      getSheetByName: () => ({ getLastRow: () => 1, getRange: () => ({ getValues: () => [] }) }),
+      getSheets: () => []
+    }) };
+    gas.getValidatedColumnMap_ = () => ({});
+    gas.handoffBriefReps_ = () => ([{ name: 'Joana', email: 'joana@iconsofrealestate.com' }]);
+    gas.getRepCallEvents_ = () => [ev];
+    gas.hasHandoffBriefBeenSent_ = () => false;
+    gas.findMostRecentPriorScoredCall_ = () => null; // the first-touch case
+    gas.sendFirstTouchHandoffBrief_ = (repCfg, event) => {
+      firstTouchSends++;
+      assert.equal(event.prospectGuess, 'Cold Lead');
+      return true;
+    };
+
+    gas.sendUpcomingHandoffBriefs_();
+
+    assert.equal(firstTouchSends, 1, 'a lead with no prior call MUST still get a brief');
+  } finally {
+    Object.keys(orig).forEach((k) => { gas[k] = orig[k]; });
+  }
+});
+
+test('buildFirstTouchBriefEmailBody_ says plainly there is no prior call, and asks for the goal and the pain the rubric actually grades', () => {
+  const body = gas.buildFirstTouchBriefEmailBody_({
+    nextRepFirstName: 'Joana',
+    prospectName: 'Xavier Long',
+    prospectEmail: 'x@example.com',
+    nextCallType: 'QC',
+    nextCallDateStr: '09/09/2026',
+    nextCallTimeStr: '10:00',
+    researchLinks: ['https://tiktok.com/@xavier', 'https://instagram.com/xavier']
+  });
+  assert.ok(body.indexOf('FIRST TOUCH') !== -1, 'must be explicit that nobody has spoken to them');
+  assert.ok(body.indexOf('Xavier Long') !== -1);
+  assert.ok(body.indexOf('https://tiktok.com/@xavier') !== -1, 'the research is the whole value here');
+  // Same two dimensions the rep is about to be graded on — the brief and the
+  // scoring must ask for the same thing.
+  assert.ok(body.indexOf('THE GOAL') !== -1);
+  assert.ok(body.indexOf('THE PAIN') !== -1);
+  assert.ok(body.indexOf('condition') !== -1, 'including Tomás\'s condition-vs-pain distinction');
+  // It must never claim a colleague briefed them.
+  assert.equal(body.indexOf('prior call type'), -1);
+});
+
+test('buildFirstTouchBriefEmailBody_ tells the rep to go and look when web search found nothing, rather than sending an empty section', () => {
+  const body = gas.buildFirstTouchBriefEmailBody_({
+    nextRepFirstName: 'Joana', prospectName: 'Nobody Findable', prospectEmail: '',
+    nextCallType: 'QC', nextCallDateStr: '09/09/2026', nextCallTimeStr: '10:00', researchLinks: []
+  });
+  assert.ok(body.indexOf('Nothing found by web search') !== -1);
+  assert.ok(body.indexOf('Instagram') !== -1, 'and name where to look — the due diligence Tomás teaches');
+});
+
+test('sendFirstTouchHandoffBrief_ respects HANDOFF_CONFIG.ENABLED and never marks an event sent unless a real send happened', () => {
+  const originalEnabled = gas.HANDOFF_CONFIG.ENABLED;
+  const originalGuardedSend = gas.guardedSend_;
+  const originalMark = gas.markHandoffBriefSent_;
+  const originalLog = gas.log_;
+  const originalUtilities = gas.Utilities;
+  const originalLinksCfg = gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED;
+  let marked = 0, sends = 0;
+  const ev = { id: 'evt1', title: 'QC / Xavier Long', start: new Date(), prospectGuess: 'Xavier Long',
+    attendeeEmails: ['x@example.com'], additionalTeamGuestEmails: [] };
+  const repCfg = { name: 'Joana', email: 'joana@iconsofrealestate.com' };
+  try {
+    gas.log_ = () => {};
+    gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = false; // no live CSE call in tests
+    gas.markHandoffBriefSent_ = () => { marked++; };
+
+    // Disabled: logs, sends nothing, marks nothing.
+    gas.HANDOFF_CONFIG.ENABLED = false;
+    gas.guardedSend_ = () => { sends++; return true; };
+    assert.equal(gas.sendFirstTouchHandoffBrief_(repCfg, ev, gas.CONFIG.BUSINESS_TIMEZONE), false);
+    assert.equal(sends, 0);
+    assert.equal(marked, 0, 'the 26/08/2026 mark-without-send bug must not come back on this new path');
+
+    // Enabled but the send is refused: still must not mark sent, so it retries.
+    gas.HANDOFF_CONFIG.ENABLED = true;
+    gas.guardedSend_ = () => { sends++; return false; };
+    assert.equal(gas.sendFirstTouchHandoffBrief_(repCfg, ev, gas.CONFIG.BUSINESS_TIMEZONE), false);
+    assert.equal(marked, 0);
+
+    // Enabled and sent: marked exactly once.
+    gas.guardedSend_ = (to, subject) => { sends++; assert.ok(subject.indexOf('[First Touch]') !== -1); return true; };
+    assert.equal(gas.sendFirstTouchHandoffBrief_(repCfg, ev, gas.CONFIG.BUSINESS_TIMEZONE), true);
+    assert.equal(marked, 1);
+  } finally {
+    gas.HANDOFF_CONFIG.ENABLED = originalEnabled;
+    gas.guardedSend_ = originalGuardedSend;
+    gas.markHandoffBriefSent_ = originalMark;
+    gas.log_ = originalLog;
+    gas.Utilities = originalUtilities;
+    gas.PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED = originalLinksCfg;
+  }
 });
 
 test('goalAndPainRubricPrompt_ defines pain the way Tomás corrected it, not the way the obvious answer would', () => {

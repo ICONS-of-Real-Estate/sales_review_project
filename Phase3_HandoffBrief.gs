@@ -442,6 +442,90 @@ function findProspectSocialLinks_(prospectName) {
  * brief unchanged) while false — same "log/preview before it can touch a
  * real send" discipline as HANDOFF_CONFIG itself.
  */
+/**
+ * Pure. The brief for a lead nobody here has spoken to yet — no prior call,
+ * so nothing to summarise. Says so plainly rather than padding it out, then
+ * gives the rep the two things that actually help walking in cold: whatever
+ * public research we could find, and the discovery questions Tomás teaches.
+ *
+ * The prompts are deliberately the rubric's own dimensions
+ * (goalAndPainRubricPrompt_, Phase2_CallScoring.gs) rather than generic
+ * "build rapport" advice — the rep is about to be graded on exactly these,
+ * so the brief and the scoring should be asking for the same thing.
+ */
+function buildFirstTouchBriefEmailBody_(ctx) {
+  var lines = [
+    'Hi ' + ctx.nextRepFirstName + ',',
+    '',
+    'You have a ' + callTypePhrase_(ctx.nextCallType) + ' with ' + ctx.prospectName + ' on ' +
+      ctx.nextCallDateStr + ' at ' + ctx.nextCallTimeStr + '.',
+    '',
+    'THIS IS A FIRST TOUCH — nobody here has spoken to them before, so there is no prior call to brief ' +
+      'you from. Everything below is public research, not something a colleague told us.',
+    ''
+  ];
+  if (ctx.prospectEmail) {
+    lines.push('Their email: ' + ctx.prospectEmail, '');
+  }
+  lines.push('WHAT WE COULD FIND (unconfirmed — verify before using any of it):');
+  lines.push(ctx.researchLinks && ctx.researchLinks.length
+    ? ctx.researchLinks.join('\n')
+    : 'Nothing found by web search. Worth 5 minutes yourself before the call — Instagram, TikTok, ' +
+      'YouTube, their Zillow profile, and their brokerage\'s own announcement posts.');
+  lines.push('',
+    'GOING IN, YOU NEED TWO THINGS:',
+    '  1. THE GOAL — what are they running towards? Specific, in their words. "Wants to grow" is not a ' +
+      'goal; "from 5 a month to 10 by spring" is.',
+    '  2. THE PAIN — what are they running from? Careful here: falling short of the goal is a condition, ' +
+      'not a pain. The real pain is concrete — no professional presence when someone Googles them, ' +
+      'content nobody engages with, too small a network locally, not being taken seriously when they ' +
+      'try to recruit.',
+    '',
+    'Write your questions down before you dial, and take notes visibly during the call.',
+    '',
+    '— Automated first-touch brief. There is no prior call for this lead; if you think there should be, ' +
+      'tell Kris and it is probably a name-matching problem.');
+  return lines.join('\n');
+}
+
+/**
+ * Sends the first-touch brief. Mirrors the main path's safety rules exactly:
+ * respects HANDOFF_CONFIG.ENABLED, only marks the event sent when a real
+ * send happened, and returns whether it did.
+ */
+function sendFirstTouchHandoffBrief_(repCfg, ev, tz) {
+  var ctx = {
+    nextRepFirstName: String(repCfg.name).split(' ')[0],
+    prospectName: ev.prospectGuess,
+    prospectEmail: (ev.attendeeEmails && ev.attendeeEmails.length) ? ev.attendeeEmails.join(', ') : '',
+    nextCallType: guessCallTypeFromTitle_(ev.title),
+    nextCallDateStr: Utilities.formatDate(ev.start, tz, 'dd/MM/yyyy'),
+    nextCallTimeStr: Utilities.formatDate(ev.start, tz, 'HH:mm'),
+    researchLinks: (typeof PROSPECT_LINKS_LOOKUP_CONFIG !== 'undefined' && PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED)
+      ? findProspectSocialLinks_(ev.prospectGuess)
+      : []
+  };
+  var body = buildFirstTouchBriefEmailBody_(ctx);
+  var subject = repCfg.name + ' — [First Touch] ' + ev.prospectGuess + ' — your ' +
+    callTypePhrase_(ctx.nextCallType) + ' in ~24 hrs';
+
+  if (!HANDOFF_CONFIG.ENABLED) {
+    log_('  (HANDOFF_CONFIG.ENABLED is false — logging instead of sending, NOT marking sent)');
+    log_('  Would send FIRST-TOUCH brief to ' + repCfg.email + ': ' + subject);
+    log_(body);
+    return false;
+  }
+  var cc = buildHandoffBriefCcList_(null, ev.additionalTeamGuestEmails || []).join(',');
+  var didSend = guardedSend_(repCfg.email, subject, body, { cc: cc, name: 'Call Handoff Brief Bot' }, 4);
+  if (!didSend) {
+    log_('  First-touch send blocked/skipped for "' + ev.title + '" — NOT marking sent, will retry.');
+    return false;
+  }
+  markHandoffBriefSent_(ev.id);
+  log_('  Sent FIRST-TOUCH brief for "' + ev.title + '" (no prior call exists for this lead).');
+  return true;
+}
+
 function enrichProspectLinksWithWebSearch_(brief, prospectName) {
   if (!PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED) return brief;
   var found = findProspectSocialLinks_(prospectName);
@@ -568,6 +652,42 @@ function buildHandoffBriefCcList_(priorRepEmail, additionalTeamGuestEmails) {
   return ccList.filter(function (e, i) { return ccList.indexOf(e) === i; });
 }
 
+/**
+ * Whose calendars this phase scans for upcoming calls — CONFIG.REPS, plus
+ * Tomás.
+ *
+ * Kris, on the 08/09/2026 training call: "It's so nice having AI that'll
+ * listen to this and make sure that you get those handoffs, and also that
+ * Tomás gets handoffs for second calls." Tomás runs the second/closing
+ * calls, so he walks into a lead someone else qualified and needs the same
+ * brief Joana does — but he is deliberately not in CONFIG.REPS (that list
+ * drives the compliance nags and the weekly scorecards, neither of which
+ * should cover him), so his calendar was never scanned and he got nothing.
+ * On the same call: "I haven't seen them come through."
+ *
+ * A local list rather than a CONFIG.REPS change on purpose: adding him there
+ * would quietly enrol him in every other phase keyed off it.
+ *
+ * Note this is separate from the CC question. Kris's earlier instruction
+ * (03/09/2026) that Tomás should NOT be CC'd on everyone else's briefs still
+ * stands — buildHandoffBriefCcList_ is untouched. This is about him getting
+ * briefs for the calls he is himself about to run.
+ */
+function handoffBriefReps_() {
+  var reps = CONFIG.REPS.slice();
+  var alreadyListed = reps.some(function (r) {
+    return String(r.email || '').toLowerCase() === String(CONFIG.TOMAS_EMAIL).toLowerCase();
+  });
+  if (!alreadyListed) {
+    reps.push({
+      name: 'Tomás',
+      email: CONFIG.TOMAS_EMAIL,
+      calendarId: CONFIG.TOMAS_EMAIL
+    });
+  }
+  return reps;
+}
+
 function sendUpcomingHandoffBriefs_() {
   RUN_TAG = 'sendUpcomingHandoffBriefs_';
   var lock = LockService.getScriptLock();
@@ -597,14 +717,42 @@ function sendUpcomingHandoffBriefs_() {
 
     var sent = 0, skippedAlready = 0, noMatch = 0, failed = 0;
 
-    CONFIG.REPS.forEach(function (repCfg) {
+    handoffBriefReps_().forEach(function (repCfg) {
       var events = getRepCallEvents_(repCfg, windowStart, windowEnd);
       events.forEach(function (ev) {
         if (hasHandoffBriefBeenSent_(ev.id)) { skippedAlready++; return; }
 
         var prospectKey = normalize_(ev.prospectGuess);
         var prior = findMostRecentPriorScoredCall_(col, values, prospectKey, ev.start);
-        if (!prior) { noMatch++; return; }
+
+        // FIRST-TOUCH LEADS — fixed 08/09/2026. This used to be a bare
+        // `if (!prior) { noMatch++; return; }`, which silently sent nothing
+        // for any lead with no earlier scored call. That is precisely the
+        // case Joana said she needs it for, on the training call:
+        //
+        //   Joana: "I'm only receiving those for some leads."
+        //   Joana: "for the qualification calls, blind[s] — those are the
+        //           ones that would be nice to receive those emails."
+        //           (QCs booked through her own link off the spam list —
+        //           people she has never spoken to.)
+        //   Joana: "for the other ones, Bens is already sending me the
+        //           briefing... or I was the one already taking the QC."
+        //
+        // So the briefs were firing for exactly the leads she already had
+        // context on, and staying silent for the ones she walks into cold.
+        //
+        // There is no transcript to summarise for a first-touch lead, so
+        // this skips generateHandoffBrief_ entirely. What it CAN give her is
+        // the public research — which is the single thing Tomás spent that
+        // same call teaching (he found ~600k TikTok followers and a
+        // brokerage expansion-team role for a lead Joana was calling that
+        // day, in a few minutes of searching). findProspectSocialLinks_
+        // already exists for exactly this.
+        if (!prior) {
+          noMatch++;
+          if (sendFirstTouchHandoffBrief_(repCfg, ev, tz)) { sent++; } else { failed++; }
+          return;
+        }
 
         try {
           var fileId = extractDriveFileId_(prior.transcriptUrl);

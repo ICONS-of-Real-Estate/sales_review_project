@@ -273,10 +273,27 @@ var COMPLIANCE_CHECK_CONFIG = {
 function runDailyComplianceCheck() {
   RUN_TAG = 'runDailyComplianceCheck';
 
-  if (!COMPLIANCE_CHECK_CONFIG.ENABLED) {
+  // Real regression found 08/09/2026, tracing why Joana's handoff briefs went
+  // quiet ("I'm not receiving them in the last days"). This used to `return`
+  // here, which looked harmless — the flag is described everywhere as gating
+  // the tracker-NAG EMAILS. It isn't only that. checkRep_ below is also the
+  // ONLY thing that stamps Match Method ('exact_key') onto a Sales Call Log
+  // row via stampMatch_, and scoreNewlyLoggedCalls_ (Phase2_CallScoring.gs)
+  // refuses to score any row whose Match Method isn't 'exact_key'. So
+  // switching the nags off on 05/09 also silently switched off scoring for
+  // every newly-logged call — and with no AI Feedback Summary being written,
+  // findMostRecentPriorScoredCall_ (Phase3_HandoffBrief.gs) then found no
+  // prior call for anyone, so the handoff briefs stopped too. One flag was
+  // quietly gating three unrelated things.
+  //
+  // The matching/stamping now always runs; only the emails are gated. That
+  // keeps Kris's actual instruction ("We don't want any trackers") intact —
+  // nobody gets nagged — without taking the scoring pipeline down with it.
+  var nagsEnabled = COMPLIANCE_CHECK_CONFIG.ENABLED;
+  if (!nagsEnabled) {
     log_('runDailyComplianceCheck: COMPLIANCE_CHECK_CONFIG.ENABLED is false — tracker-nag emails are ' +
-      'switched off (Kris, 05/09/2026: "We don\'t want any trackers. Everything in GHL."). Skipping.');
-    return;
+      'switched off (Kris, 05/09/2026: "We don\'t want any trackers. Everything in GHL."). Still running ' +
+      'the calendar-to-sheet match/stamp pass, which the scoring pipeline and handoff briefs depend on.');
   }
 
   // Kris's ask (30/08/2026): weekday-only — the trigger itself
@@ -470,17 +487,28 @@ function checkRep_(repCfg, dayStart, dayEnd, priorDay, tz) {
         'calendar event with no attendee to match by):\n' +
         escalateUnlogged.map(escalateLine).join('\n') + '\n\n';
     }
-    sendOpsAlert_(repCfg.name + ' — ' + split.escalate.length + ' call(s) unresolved for ' +
-      COMPLIANCE_BACKLOG_MAX_AGE_DAYS_ + '+ days, needs a human',
-      escalateBody +
-      'These have been outstanding since first flagged. They\'ve been removed from ' + repCfg.name + '\'s ' +
-      'daily nag — check by hand.');
+    // Gated, like the daily nag below — see runDailyComplianceCheck's own
+    // comment. The backlog bookkeeping either side of this still runs, so
+    // state is intact for whenever the nags come back on; it's only the
+    // outbound email that respects Kris's "we don't want any trackers".
+    if (COMPLIANCE_CHECK_CONFIG.ENABLED) {
+      sendOpsAlert_(repCfg.name + ' — ' + split.escalate.length + ' call(s) unresolved for ' +
+        COMPLIANCE_BACKLOG_MAX_AGE_DAYS_ + '+ days, needs a human',
+        escalateBody +
+        'These have been outstanding since first flagged. They\'ve been removed from ' + repCfg.name + '\'s ' +
+        'daily nag — check by hand.');
+    }
     backlog = split.keep;
     saveComplianceBacklog_(repCfg.name, backlog);
   }
 
   if (backlog.length === 0) {
     log_(repCfg.name + ': fully compliant for ' + priorDay + ' (backlog cleared).');
+    return;
+  }
+  if (!COMPLIANCE_CHECK_CONFIG.ENABLED) {
+    log_(repCfg.name + ': ' + backlog.length + ' outstanding item(s), but tracker-nag emails are off — ' +
+      'matched and stamped only, nothing sent.');
     return;
   }
   sendComplianceEmail_(repCfg, backlog, tz);
