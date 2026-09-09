@@ -1,3 +1,30 @@
+## ⚠ DIRECTION CHANGE — 09/09/2026: we are building to REPLACE GHL, not to move into it
+
+Kris: *"I want to model everything that GHL does. Record call logs, sms,
+emails. Build the system so we can lose GHL. For now until the system is
+built and working perfectly, we'll continue using GHL."*
+
+**Read `GHL_REPLACEMENT_ANALYSIS.md` before touching anything GHL-related.**
+It supersedes `GHL_MIGRATION_PLAN.md` on direction (that doc now carries a
+banner saying so, and stays valid on everything direction-neutral).
+
+**Immediate next action, and nothing GHL-sized should be estimated before
+it:** deploy, then run **`previewGhlCommunicationsAudit()`**
+(`Phase9_GhlSync.gs`, read-only, added 09/09/2026) and paste the log back.
+Nobody has ever measured what GHL's conversation history actually contains —
+whether calls/SMS/email are live daily usage or a dead log. That single
+answer decides whether replacing GHL means "mirror a database" or "become a
+telecoms operator" (A2P 10DLC registration is a weeks-long external process).
+
+Also logged in that analysis: **three live defects in
+`Phase14_GhlStageTriage.gs`**, found by cross-checking the real spreadsheet —
+most importantly that our own Phase 12 note-sync notes are being counted as
+human activity, which suppresses the tool's only decisive suggestion (38 of
+50 live rows fell through to "needs a human look"). Confirmed to the second
+against the "GHL Note Sync Log" tab, not inferred. Not yet fixed.
+
+---
+
 ## ⚠ PENDING — from the 08-09/09/2026 session (read before touching scoring/transcription)
 
 **1. RESOLVED 09/09/2026 — Tomás approved the framework rubric wording as

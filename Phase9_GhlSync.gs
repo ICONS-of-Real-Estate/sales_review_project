@@ -1628,3 +1628,279 @@ function installGhlHygieneCheckTrigger() {
       ? 'GHL_HYGIENE_CONFIG.ENABLED is true — reps will be emailed their own findings automatically.'
       : 'GHL_HYGIENE_CONFIG.ENABLED is still false — nothing will actually send until you flip that.'));
 }
+
+/* ===================================================================
+ * COMMUNICATIONS AUDIT (read-only)
+ *
+ * Kris, 09/09/2026: "I want to model everything that GHL does. Record
+ * call logs, sms, emails. Build the system so we can lose GHL."
+ *
+ * Nothing in this repo has ever measured what GHL's conversation history
+ * actually CONTAINS. The only record either way is Kris's own assertion
+ * ("If you call a lead 10 times, it is logged in GHL. Same with SMS. Same
+ * with Email!") — never verified, no volumes, no channel mix, no field
+ * shapes. Every estimate of "what would we have to rebuild to replace
+ * GHL's comms" is guesswork until this runs.
+ *
+ * This probe answers, from real data:
+ *   - which channels are actually in use (SMS / email / call / voicemail /
+ *     social), and in what proportion
+ *   - how many messages per contact, inbound vs outbound
+ *   - the real date range — i.e. is this live daily usage or a dead log
+ *   - the exact FIELD SHAPE of a message, which is the schema we'd have to
+ *     model to hold this ourselves
+ *
+ * READ-ONLY. Writes nothing, sends nothing, ignores GHL_CONFIG.ENABLED
+ * (that flag gates writes only). Safe to run any number of times.
+ * =================================================================== */
+
+var GHL_COMMS_AUDIT_CONFIG = {
+  // Sample size. Each contact costs 1 conversation-search call plus one
+  // message call per conversation, so this is the main cost dial.
+  MAX_CONTACTS: 25,
+  MAX_CONVERSATIONS_PER_CONTACT: 10,
+  // Apps Script's hard ceiling is 6 minutes; stop well before it and report
+  // a partial result rather than dying mid-run (same contract as every
+  // other budgeted pass in this codebase).
+  TIME_BUDGET_MS: 4 * 60 * 1000
+};
+
+/**
+ * Pure. GHL is inconsistent about timestamps: notes come back as ISO
+ * strings, conversation/message dates come back as epoch MILLISECONDS.
+ * Returns an ISO string for either, or '' when it can't tell.
+ *
+ * This inconsistency is not hypothetical — the live "GHL Stage Triage" tab
+ * has raw epoch values like 1787216916228 sitting in its Last GHL Activity
+ * column today, because Phase14_GhlStageTriage.gs sorts the two formats
+ * together as strings.
+ */
+function ghlTimestampToIso_(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'number' || /^\d{10,}$/.test(String(value).trim())) {
+    var ms = Number(value);
+    if (!isFinite(ms)) return '';
+    // 10-digit values are epoch SECONDS, 13-digit are milliseconds.
+    if (String(Math.floor(ms)).length <= 10) ms = ms * 1000;
+    var d = new Date(ms);
+    return isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  var parsed = new Date(value);
+  return isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+}
+
+/**
+ * Pure. Rolls a flat list of GHL message objects up into the audit's
+ * summary: per-channel counts split by direction, the real date range, and
+ * the union of every field name seen (that union IS the schema we would
+ * have to model to hold this data ourselves).
+ *
+ * Deliberately does NOT map GHL's channel names onto our own vocabulary —
+ * it reports whatever GHL actually returns. A mapping invented before
+ * seeing real values is exactly the kind of guess this probe exists to
+ * replace.
+ */
+function summarizeGhlMessages_(messages) {
+  var byChannel = {};
+  var fieldNames = {};
+  var earliest = '', latest = '';
+  var withBody = 0, withRecording = 0;
+
+  (messages || []).forEach(function (m) {
+    if (!m || typeof m !== 'object') return;
+
+    var channel = String(m.messageType || m.type || 'UNKNOWN');
+    var direction = String(m.direction || 'unknown').toLowerCase();
+    if (!byChannel[channel]) byChannel[channel] = { total: 0, inbound: 0, outbound: 0 };
+    byChannel[channel].total++;
+    if (direction === 'inbound' || direction === 'outbound') byChannel[channel][direction]++;
+
+    Object.keys(m).forEach(function (k) { fieldNames[k] = true; });
+
+    var iso = ghlTimestampToIso_(m.dateAdded || m.dateUpdated || m.createdAt);
+    if (iso) {
+      if (!earliest || iso < earliest) earliest = iso;
+      if (!latest || iso > latest) latest = iso;
+    }
+
+    if (m.body || m.message) withBody++;
+    // A call message carries a recording; that's the piece we could not
+    // rebuild without owning telephony, so count it separately.
+    if (m.recordingUrl || m.attachments && m.attachments.length) withRecording++;
+  });
+
+  return {
+    totalMessages: (messages || []).length,
+    byChannel: byChannel,
+    channels: Object.keys(byChannel).sort(),
+    fieldNames: Object.keys(fieldNames).sort(),
+    earliest: earliest,
+    latest: latest,
+    withBody: withBody,
+    withRecordingOrAttachment: withRecording
+  };
+}
+
+/** Best-effort: every conversation on a contact. Returns [] on any non-200 (logged by the caller). */
+function ghlListConversationsForContact_(locationId, contactId) {
+  var res = ghlApiGet_('/conversations/search?locationId=' + encodeURIComponent(locationId) +
+    '&contactId=' + encodeURIComponent(contactId));
+  if (res.status !== 200) return { ok: false, status: res.status, body: res.body, conversations: [] };
+  var convos = (res.json && (res.json.conversations || res.json.data)) || [];
+  return { ok: true, conversations: convos };
+}
+
+/**
+ * Best-effort: the messages inside one conversation. Endpoint shape is NOT
+ * confirmed against live docs (marketplace.gohighlevel.com is egress-blocked
+ * from the dev sandbox, same as it was for the Notes endpoint and the
+ * contacts.write scope) — so this follows the same self-diagnosing contract:
+ * a wrong guess reports its full status and body rather than failing silently.
+ */
+function ghlListMessagesInConversation_(conversationId) {
+  var res = ghlApiGet_('/conversations/' + encodeURIComponent(conversationId) + '/messages');
+  if (res.status !== 200) return { ok: false, status: res.status, body: res.body, messages: [] };
+  var payload = res.json || {};
+  // Observed shapes across GHL v2 endpoints: {messages:{messages:[...]}} or
+  // {messages:[...]} or {data:[...]}. Accept all three rather than assume.
+  var msgs = (payload.messages && payload.messages.messages) ||
+    (Array.isArray(payload.messages) ? payload.messages : null) ||
+    payload.data || [];
+  return { ok: true, messages: msgs };
+}
+
+/**
+ * Reads already-resolved contact IDs out of the "GHL Note Sync Log" tab
+ * (Phase12_GhlNoteSync.gs writes Timestamp, Row, Prospect Name, Contact ID,
+ * Note ID there). Zero API calls, and it's the right population: every one
+ * of these is a real lead we actually had a scored call with.
+ *
+ * Bias worth stating in the output: this samples contacts we've SCORED
+ * calls for, not all GHL contacts. Fine for "what do real leads' comms look
+ * like", wrong for "how much total comms volume is in GHL".
+ */
+function readGhlContactIdsFromNoteSyncLog_(limit) {
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('GHL Note Sync Log');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues();
+  var seen = {}, out = [];
+  for (var i = values.length - 1; i >= 0 && out.length < limit; i--) { // newest first
+    var name = String(values[i][2] || '').trim();
+    var contactId = String(values[i][3] || '').trim();
+    if (!contactId || seen[contactId]) continue;
+    seen[contactId] = true;
+    out.push({ contactId: contactId, name: name });
+  }
+  return out;
+}
+
+/** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
+function previewGhlCommunicationsAudit() {
+  return previewGhlCommunicationsAudit_();
+}
+
+function previewGhlCommunicationsAudit_(maxContacts) {
+  RUN_TAG = 'previewGhlCommunicationsAudit_';
+  var started = Date.now();
+  var limit = maxContacts || GHL_COMMS_AUDIT_CONFIG.MAX_CONTACTS;
+
+  log_('READ-ONLY communications audit. Nothing is written, nothing is sent. ' +
+    'Question: what do GHL conversations actually CONTAIN — which channels, ' +
+    'what volume, what date range, what field shape?');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var contacts = readGhlContactIdsFromNoteSyncLog_(limit);
+  if (!contacts.length) {
+    log_('No contact IDs found in the "GHL Note Sync Log" tab — run previewGhlNoteSync()/' +
+      'runGhlNoteSync() first (Phase12_GhlNoteSync.gs), or pass a contact id directly.');
+    return;
+  }
+  log_('Sampling ' + contacts.length + ' contact(s) from the GHL Note Sync Log (newest first). ' +
+    'NOTE: these are contacts we have scored calls for, so this measures what a REAL LEAD\'s ' +
+    'comms history looks like — it is not a total-volume count across all of GHL.');
+
+  var allMessages = [];
+  var contactsWithNoConversations = 0, conversationCount = 0, scanned = 0;
+  var perContact = [];
+  var firstMessageDumped = false;
+
+  for (var i = 0; i < contacts.length; i++) {
+    if (Date.now() - started > GHL_COMMS_AUDIT_CONFIG.TIME_BUDGET_MS) {
+      log_('TIME BUDGET reached after ' + scanned + ' contact(s) — reporting a PARTIAL result. ' +
+        'Re-run for more, or lower MAX_CONTACTS.');
+      break;
+    }
+    var c = contacts[i];
+    scanned++;
+
+    var convRes = ghlListConversationsForContact_(locationId, c.contactId);
+    if (!convRes.ok) {
+      log_('  ' + c.name + ' (' + c.contactId + '): conversations HTTP ' + convRes.status +
+        ' — ' + String(convRes.body).slice(0, 300));
+      continue;
+    }
+    if (!convRes.conversations.length) {
+      contactsWithNoConversations++;
+      perContact.push({ name: c.name, conversations: 0, messages: 0 });
+      continue;
+    }
+
+    var contactMessages = 0;
+    var convos = convRes.conversations.slice(0, GHL_COMMS_AUDIT_CONFIG.MAX_CONVERSATIONS_PER_CONTACT);
+    conversationCount += convos.length;
+
+    for (var j = 0; j < convos.length; j++) {
+      var convId = convos[j].id || convos[j].conversationId;
+      if (!convId) continue;
+      var msgRes = ghlListMessagesInConversation_(convId);
+      if (!msgRes.ok) {
+        log_('  messages endpoint HTTP ' + msgRes.status + ' for conversation ' + convId +
+          ' — ' + String(msgRes.body).slice(0, 400) +
+          '  >>> If this is a 404/401 the endpoint guess or scope is wrong; that is what this line is for.');
+        continue;
+      }
+      if (!firstMessageDumped && msgRes.messages.length) {
+        log_('  RAW SHAPE of one real message object (this is the schema we would have to model): ' +
+          JSON.stringify(msgRes.messages[0]).slice(0, 900));
+        firstMessageDumped = true;
+      }
+      contactMessages += msgRes.messages.length;
+      allMessages = allMessages.concat(msgRes.messages);
+    }
+    perContact.push({ name: c.name, conversations: convos.length, messages: contactMessages });
+  }
+
+  var summary = summarizeGhlMessages_(allMessages);
+
+  log_('--- RESULTS -------------------------------------------------');
+  log_('Contacts scanned: ' + scanned + ' | with NO conversation at all: ' + contactsWithNoConversations +
+    ' | conversations found: ' + conversationCount + ' | messages found: ' + summary.totalMessages);
+  log_('Date range of messages: ' + (summary.earliest || 'n/a') + '  ->  ' + (summary.latest || 'n/a') +
+    '   >>> if the latest is months old, GHL comms are a dead log, not live usage.');
+  log_('Channels in use (GHL\'s own values, unmapped):');
+  summary.channels.forEach(function (ch) {
+    var b = summary.byChannel[ch];
+    log_('   ' + ch + ': ' + b.total + ' total (' + b.inbound + ' inbound, ' + b.outbound + ' outbound)');
+  });
+  if (!summary.channels.length) log_('   (none — no messages were returned at all)');
+  log_('Messages carrying a body: ' + summary.withBody +
+    ' | carrying a recording/attachment: ' + summary.withRecordingOrAttachment +
+    '   >>> recordings are the piece we could not rebuild without owning telephony.');
+  log_('Every field name seen on a message object: ' + (summary.fieldNames.join(', ') || '(none)'));
+  log_('Per contact: ' + perContact.map(function (p) {
+    return p.name + '=' + p.messages + 'msg/' + p.conversations + 'conv';
+  }).join(' | '));
+  log_('--- END -----------------------------------------------------');
+  log_('Paste this whole log back into the session — it is the evidence ' +
+    'GHL_REPLACEMENT_ANALYSIS.md needs to size the comms rebuild.');
+
+  return summary;
+}

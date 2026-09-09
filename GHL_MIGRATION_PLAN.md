@@ -1,9 +1,27 @@
 # GHL_MIGRATION_PLAN.md — moving off the spreadsheet, onto GoHighLevel
 
-> **Target, set by Kris 05/09/2026: EVERYTHING in GHL.** *"I want EVERYTHING
-> in GHL! It is a full CRM and can store everything!"* This document is the
-> build plan for that. It is not an evaluation of whether to do it — that's
-> decided. No phase code has been changed yet.
+> # ⛔ SUPERSEDED ON DIRECTION — 09/09/2026
+>
+> **Kris reversed this target.** *"I want to model everything that GHL does.
+> Record call logs, sms, emails. Build the system so we can lose GHL."* The
+> goal is no longer to move our data INTO GHL — it is to absorb what GHL does
+> and then cancel it. **Read `GHL_REPLACEMENT_ANALYSIS.md` first.**
+>
+> **Do not build F3** (the Call Review custom object in GHL), and do not treat
+> §13's "recommended sequence" as current.
+>
+> **This document is still useful and still correct** on everything that is
+> direction-neutral — read it for: §1 (where every piece of data lives today),
+> §7 (the ten other sheet tabs and where they'd go), §8 (the revert model, and
+> its create-only / fill-blank / overwrite classes), §9 (the four-stage cutover
+> ladder — that applies unchanged to a migration in either direction), §10
+> (per-phase burden and the traps in each), and §15 (Tomás's CRM notes).
+> Its answered questions (Q1–Q4) also remain factual answers.
+
+> **Original target, set by Kris 05/09/2026: EVERYTHING in GHL.** *"I want
+> EVERYTHING in GHL! It is a full CRM and can store everything!"* This document
+> is the build plan for that. It is not an evaluation of whether to do it —
+> that's decided. No phase code has been changed yet.
 >
 > For Kris, Tomás, Joana and Hazel to review before the build starts.
 >

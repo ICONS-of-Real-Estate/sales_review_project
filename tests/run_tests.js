@@ -5394,6 +5394,71 @@ test('buildGhlStageLookup_ builds a stageId -> {pipelineName, stageName, disposi
   assert.deepEqual(Object.assign({}, lookup['stage-3']), { pipelineName: 'ICONS Podcast', stageName: 'No Show', disposition: 'No-show' });
 });
 
+test('ghlTimestampToIso_ normalizes BOTH of GHL\'s timestamp formats (real bug: raw epoch ms sitting in the live "GHL Stage Triage" tab)', () => {
+  // Confirmed from the live sheet 09/09/2026: Last GHL Activity holds raw
+  // values like 1787216916228 next to proper ISO strings, because notes come
+  // back ISO and conversation dates come back epoch ms.
+  assert.equal(gas.ghlTimestampToIso_(1787216916228), '2026-08-20T09:08:36.228Z');
+  assert.equal(gas.ghlTimestampToIso_('1787216916228'), '2026-08-20T09:08:36.228Z');
+  assert.equal(gas.ghlTimestampToIso_('2026-09-05T05:54:10.990Z'), '2026-09-05T05:54:10.990Z');
+  // epoch SECONDS (10 digits) must not be read as milliseconds — that would
+  // land in 1970 and silently look like the oldest activity on the account.
+  assert.equal(gas.ghlTimestampToIso_(1787216916).slice(0, 4), '2026');
+  ['', null, undefined, 'not a date'].forEach((v) => {
+    assert.equal(gas.ghlTimestampToIso_(v), '', JSON.stringify(v) + ' has no usable timestamp');
+  });
+});
+
+test('summarizeGhlMessages_ buckets by GHL\'s own channel values and splits inbound vs outbound', () => {
+  const out = gas.summarizeGhlMessages_([
+    { messageType: 'TYPE_SMS', direction: 'outbound', body: 'hi', dateAdded: 1787216916228 },
+    { messageType: 'TYPE_SMS', direction: 'inbound', body: 'hey', dateAdded: 1787216916229 },
+    { messageType: 'TYPE_CALL', direction: 'outbound', recordingUrl: 'https://x/rec.mp3', dateAdded: 1787216916230 },
+    { messageType: 'TYPE_EMAIL', direction: 'outbound', body: 'hello', dateAdded: 1787216916231 }
+  ]);
+  assert.equal(out.totalMessages, 4);
+  assert.deepEqual(Array.prototype.slice.call(out.channels), ['TYPE_CALL', 'TYPE_EMAIL', 'TYPE_SMS']);
+  assert.equal(out.byChannel['TYPE_SMS'].total, 2);
+  assert.equal(out.byChannel['TYPE_SMS'].inbound, 1);
+  assert.equal(out.byChannel['TYPE_SMS'].outbound, 1);
+  // Recordings are counted separately: they are the one thing we could not
+  // rebuild without owning telephony.
+  assert.equal(out.withRecordingOrAttachment, 1);
+  assert.equal(out.withBody, 3);
+});
+
+test('summarizeGhlMessages_ reports the real date range and the union of field names (that union is the schema to model)', () => {
+  const out = gas.summarizeGhlMessages_([
+    { messageType: 'TYPE_SMS', direction: 'inbound', dateAdded: 1764956344308, body: 'older' },
+    { messageType: 'TYPE_SMS', direction: 'inbound', dateAdded: 1787216916228, conversationId: 'c1' }
+  ]);
+  assert.equal(out.earliest, '2025-12-05T17:39:04.308Z');
+  assert.equal(out.latest, '2026-08-20T09:08:36.228Z');
+  assert.deepEqual(Array.prototype.slice.call(out.fieldNames), ['body', 'conversationId', 'dateAdded', 'direction', 'messageType']);
+});
+
+test('summarizeGhlMessages_ survives an empty/garbage payload rather than throwing mid-audit', () => {
+  [[], null, undefined].forEach((v) => {
+    const out = gas.summarizeGhlMessages_(v);
+    assert.equal(out.totalMessages, 0);
+    assert.deepEqual(Array.prototype.slice.call(out.channels), []);
+    assert.equal(out.earliest, '');
+  });
+  // A non-object entry must be skipped, not counted or crashed on.
+  const mixed = gas.summarizeGhlMessages_([null, 'nope', { messageType: 'TYPE_SMS', direction: 'inbound' }]);
+  assert.equal(mixed.byChannel['TYPE_SMS'].total, 1);
+});
+
+test('summarizeGhlMessages_ falls back to `type` and records an unknown channel rather than dropping the message', () => {
+  const out = gas.summarizeGhlMessages_([
+    { type: 'TYPE_VOICEMAIL', direction: 'inbound' },
+    { direction: 'outbound' }
+  ]);
+  assert.equal(out.byChannel['TYPE_VOICEMAIL'].total, 1);
+  assert.equal(out.byChannel['UNKNOWN'].total, 1, 'an unlabelled message is still counted, under UNKNOWN');
+  assert.equal(out.totalMessages, 2);
+});
+
 test('contactNameLooksLikeQuery_ rejects the real "Desiree Doggett" noise (28/08/2026 live run: GHL returned 5 contacts with zero relation to the queried name)', () => {
   const noise = [
     { name: 'justin stamper' },
