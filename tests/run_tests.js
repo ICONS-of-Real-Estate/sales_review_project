@@ -2924,6 +2924,50 @@ test('writeScoreToRow_ uses the variant-specific feedback summary packer, not ju
   assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
+test('ghlNoteIsOurOwn_ recognises our own AI review notes, so they stop counting as somebody working the lead', () => {
+  // Confirmed live 09/09/2026: eight triaged contacts showed a "last GHL
+  // activity" timestamp matching our own note-sync run to the second.
+  assert.equal(gas.ghlNoteIsOurOwn_({ body: '<strong>AI Call Review</strong> — 05/09/2026 — QC (Bens)' }), true);
+  assert.equal(gas.ghlNoteIsOurOwn_({ note: 'AI Call Review — something' }), true);
+  // A real human note must NOT be filtered out.
+  assert.equal(gas.ghlNoteIsOurOwn_({ body: 'Spoke to her, calling back Tuesday' }), false);
+  assert.equal(gas.ghlNoteIsOurOwn_({}), false);
+  assert.equal(gas.ghlNoteIsOurOwn_(null), false);
+});
+
+test('buildGhlStageTriageSuggestion_ gives the decisive suggestion once our own notes stop masking a dead lead', () => {
+  // This is the behaviour the contamination was suppressing: on a stale
+  // "Booked" stage with no real human touch, the tool should say what to do
+  // rather than punt to "needs a human look". 38 of 50 live rows punted.
+  const dead = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Qualification Call Booked', staleDays: 231,
+    activity: { lastNoteDate: null, lastConversationDate: null, hasFutureAppointment: false }
+  });
+  assert.ok(/Not Taken/.test(dead.action), 'a genuinely untouched booked stage gets the decisive action');
+
+  // A real human touch still correctly routes to the softer suggestion.
+  const touched = gas.buildGhlStageTriageSuggestion_({
+    stageName: 'Qualification Call Booked', staleDays: 231,
+    activity: { lastNoteDate: '2026-09-05T05:52:57.000Z', lastConversationDate: null, hasFutureAppointment: false }
+  });
+  assert.ok(/has activity/.test(touched.action));
+});
+
+test('the two GHL activity dates are now both ISO, so "most recent" is a real comparison and not a string sort across formats', () => {
+  // GHL returns note dates as ISO and conversation dates as epoch ms.
+  // Sorted as plain strings, "1787216916228" always loses to "2026-..." —
+  // so an older note beat a newer conversation every time.
+  const noteIso = gas.ghlTimestampToIso_('2026-01-30T00:00:00.000Z');
+  const conversationIso = gas.ghlTimestampToIso_(1787216916228); // 20/08/2026 — genuinely newer
+  const mostRecent = [noteIso, conversationIso].filter(Boolean).sort().pop();
+  assert.equal(mostRecent, conversationIso,
+    'the newer conversation must win now that both sides are normalised to ISO');
+  // Guard the regression directly: the raw epoch would have lost this compare.
+  const rawEpochLoses = ['2026-01-30T00:00:00.000Z', String(1787216916228)].sort().pop();
+  assert.equal(rawEpochLoses, '2026-01-30T00:00:00.000Z',
+    'documents the old broken behaviour this fix removes');
+});
+
 test('salesCallsNeededPerWeek_ turns Kris\'s targets into a real weekly number, rounding UP', () => {
   // 1 deal a week at a 30% close rate = 4 held sales calls, not 3.33 and not
   // 3 — rounding down would set a target that cannot arithmetically be hit.

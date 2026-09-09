@@ -208,22 +208,67 @@ function ghlListOpenOpportunitiesInPipeline_(locationId, pipelineId, limit) {
   return { ok: true, opportunities: opps, possiblyTruncated: opps.length >= (limit || 100) };
 }
 
-/** Best-effort: most recent note date on a contact, or null. Never throws — a lookup failure just means "no evidence found," not "definitely no activity." */
+/**
+ * Pure. Is this note one WE wrote, rather than a human touching the lead?
+ *
+ * Real defect, confirmed live 09/09/2026 by cross-checking the "GHL Stage
+ * Triage" tab against our own "GHL Note Sync Log": eight triaged contacts
+ * showed a "last GHL activity" timestamp matching our own note-sync run to
+ * the second. Since 05/09/2026 runGhlNoteSync_ (Phase12_GhlNoteSync.gs) has
+ * posted an AI review note on every scored call every 4 hours — so the
+ * freshest note on a contact is very often ours, and reading it as evidence
+ * that somebody worked the lead is exactly backwards.
+ *
+ * The cost was not cosmetic: in buildGhlStageTriageSuggestion_ the branch
+ * that produces the one decisive recommendation ("Move to a Not Taken/
+ * No-Show stage") only fires when there is NO recent touch. Our own notes
+ * suppressed it — 38 of the 50 rows in the live tab fell through to the
+ * vague "needs a human look", and the 12 that got the decisive suggestion
+ * were exactly the 12 with no activity found at all.
+ *
+ * Matched on the note body's own heading rather than on the sync log,
+ * so it still holds for notes written before the log existed, and for a
+ * contact whose log row was cleaned up.
+ */
+function ghlNoteIsOurOwn_(note) {
+  return String((note && (note.body || note.note)) || '').indexOf('AI Call Review') !== -1;
+}
+
+/**
+ * Best-effort: most recent HUMAN note date on a contact as an ISO string, or
+ * null. Never throws — a lookup failure just means "no evidence found," not
+ * "definitely no activity." Our own AI review notes are excluded (see
+ * ghlNoteIsOurOwn_).
+ */
 function ghlMostRecentNoteDate_(contactId) {
   var res = ghlApiGet_('/contacts/' + encodeURIComponent(contactId) + '/notes');
   if (res.status !== 200) return null;
   var notes = (res.json && (res.json.notes || res.json.data)) || [];
-  var dates = notes.map(function (n) { return n.dateAdded || n.createdAt; }).filter(Boolean);
+  var dates = notes.filter(function (n) { return !ghlNoteIsOurOwn_(n); })
+    .map(function (n) { return ghlTimestampToIso_(n.dateAdded || n.createdAt); })
+    .filter(Boolean);
   return dates.length ? dates.sort().pop() : null;
 }
 
-/** Best-effort: most recent conversation activity date on a contact, or null. */
+/**
+ * Best-effort: most recent conversation activity date on a contact as an ISO
+ * string, or null.
+ *
+ * The ISO normalisation is the second half of a real defect: GHL returns note
+ * dates as ISO strings but conversation dates as epoch MILLISECONDS, and
+ * buildGhlStageTriageSuggestion_ sorts the two together as plain strings.
+ * Lexicographically "1787216916228" always sorts before "2026-..." — so an
+ * ISO note beat a genuinely more recent conversation every time, compounding
+ * the contamination above. Raw epochs were also leaking into the sheet Tomás
+ * reads (confirmed live: 1787216916228 sitting where a date belongs).
+ */
 function ghlMostRecentConversationDate_(locationId, contactId) {
   var res = ghlApiGet_('/conversations/search?locationId=' + encodeURIComponent(locationId) +
     '&contactId=' + encodeURIComponent(contactId));
   if (res.status !== 200) return null;
   var convos = (res.json && (res.json.conversations || res.json.data)) || [];
-  var dates = convos.map(function (c) { return c.lastMessageDate || c.dateUpdated; }).filter(Boolean);
+  var dates = convos.map(function (c) { return ghlTimestampToIso_(c.lastMessageDate || c.dateUpdated); })
+    .filter(Boolean);
   return dates.length ? dates.sort().pop() : null;
 }
 
@@ -293,6 +338,13 @@ function previewGhlStageTriage_() {
   var calendarEventsByRep = {};
   var cap = GHL_STAGE_TRIAGE_CONFIG.MAX_OPPORTUNITIES_PER_RUN;
 
+  // Coverage bookkeeping. The sheet shows whatever this run suggested, with
+  // nothing on the page saying how much of the CRM it actually looked at —
+  // so a tab of 50 rows reads as "the whole picture" when it can be a
+  // sliver of ~2,300 opportunities. Reported explicitly at the end of the run.
+  var truncatedPipelines = [];
+  var fetchedOpportunities = 0;
+
   outer:
   for (var p = 0; p < pipelines.length; p++) {
     var pipeline = pipelines[p];
@@ -303,9 +355,11 @@ function previewGhlStageTriage_() {
       continue;
     }
     if (list.possiblyTruncated) {
+      truncatedPipelines.push(pipeline.name);
       log_('Pipeline "' + pipeline.name + '": ' + list.opportunities.length +
         ' open opportunity(s) returned, possibly truncated (single-page fetch) — see file header.');
     }
+    fetchedOpportunities += list.opportunities.length;
 
     for (var i = 0; i < list.opportunities.length; i++) {
       if (Date.now() - started > GHL_STAGE_TRIAGE_CONFIG.TIME_BUDGET_MS) {
@@ -367,6 +421,13 @@ function previewGhlStageTriage_() {
   log_('Scanned ' + scanned + ' stale, non-terminal opportunity(s) (>' +
     GHL_STAGE_TRIAGE_CONFIG.STALE_AFTER_DAYS + ' days untouched) not already decided. ' +
     'Wrote ' + newRows.length + ' new suggestion(s) to "' + GHL_STAGE_TRIAGE_SHEET_NAME + '".');
+  log_('COVERAGE: fetched ' + fetchedOpportunities + ' open opportunity(s) across ' + pipelines.length +
+    ' pipeline(s).' +
+    (truncatedPipelines.length
+      ? ' ' + truncatedPipelines.length + ' pipeline(s) hit the single-page fetch limit and were only ' +
+        'PARTIALLY scanned: ' + truncatedPipelines.join(', ') + '. Anything stale beyond that first page was ' +
+        'never looked at, so this run is a sample, not a sweep — do not read the sheet as the full picture.'
+      : ' No pipeline hit the fetch limit, so this run saw every open opportunity it asked for.'));
   log_('Nothing in GHL was changed. Tomás/Joana tick Approved or Rejected per row on that sheet — ' +
     'ticking a box does not move anything in GHL yet; it is a decision log for now.');
 }
