@@ -678,7 +678,8 @@ function findFlatTrainingTranscripts_(repFolder) {
 }
 
 var TRAINING_ASSIGNMENTS_SHEET_NAME = 'Training Assignments';
-var TRAINING_ASSIGNMENTS_HEADERS = ['Rep', 'Training Objections (JSON)', 'Close Ask Drill (JSON)', 'Training Framework (JSON)', 'Last Updated'];
+var TRAINING_ASSIGNMENTS_HEADERS = ['Rep', 'Training Objections (JSON)', 'Close Ask Drill (JSON)',
+  'Training Framework (JSON)', 'Training Discovery (JSON)', 'Last Updated'];
 
 function getOrCreateTrainingAssignmentsSheet_() {
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
@@ -694,7 +695,8 @@ function getOrCreateTrainingAssignmentsSheet_() {
   // mirrorTrainingAssignment_ writes by fixed column POSITION, not header
   // lookup — unlike the Sales Call Log there's no getValidatedColumnMap_
   // guard here, so a header array that grows (as it just did, 25/08/2026:
-  // "Training Framework (JSON)" inserted before "Last Updated") would
+  // "Training Framework (JSON)", then again 09/09/2026: "Training Discovery
+  // (JSON)", both inserted before "Last Updated") would
   // otherwise silently mislabel the live sheet's header row against the new
   // column layout — new writes go to the right position, but "Last Updated"
   // would keep displaying under whatever header used to sit at position 4.
@@ -725,6 +727,7 @@ function mirrorTrainingAssignment_(rep) {
   var objections = props.getProperty('TRAINING_OBJECTIONS_' + rep) || '';
   var closeDrill = props.getProperty('TRAINING_CLOSE_DRILL_' + rep) || '';
   var framework = props.getProperty('TRAINING_FRAMEWORK_' + rep) || '';
+  var discovery = props.getProperty('TRAINING_DISCOVERY_' + rep) || '';
 
   var sheet = getOrCreateTrainingAssignmentsSheet_();
   var lastRow = sheet.getLastRow();
@@ -738,7 +741,7 @@ function mirrorTrainingAssignment_(rep) {
     }
   }
 
-  var rowValues = [rep, objections, closeDrill, framework, new Date()];
+  var rowValues = [rep, objections, closeDrill, framework, discovery, new Date()];
   if (rowIndex === -1) {
     sheet.appendRow(rowValues);
   } else {

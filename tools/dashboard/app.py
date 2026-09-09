@@ -734,7 +734,8 @@ def training_assignments():
     live values are Script Properties no external API can read."""
     conn = get_conn()
     rows = conn.execute(
-        "SELECT rep, training_objections_json, close_ask_drill_json, training_framework_json, last_updated "
+        "SELECT rep, training_objections_json, close_ask_drill_json, training_framework_json, "
+        "training_discovery_json, last_updated "
         "FROM training_assignments ORDER BY rep"
     ).fetchall()
     conn.close()
@@ -753,6 +754,12 @@ def training_assignments():
             framework_drill = json.loads(r["training_framework_json"]) if r["training_framework_json"] else []
         except (ValueError, TypeError):
             framework_drill = []
+        # Discovery drill (added 09/09/2026) — same {label, note} shape as the
+        # objections, so it needs no topic-label lookup of its own.
+        try:
+            discovery_drill = json.loads(r["training_discovery_json"]) if r["training_discovery_json"] else []
+        except (ValueError, TypeError, IndexError):
+            discovery_drill = []
         # Keep in sync with Phase6_TrainingCallReview.gs's FRAMEWORK_TOPIC_LABELS_.
         for f in framework_drill:
             f["label"] = FRAMEWORK_TOPIC_LABELS.get(f.get("topic"), f.get("topic"))
@@ -762,6 +769,7 @@ def training_assignments():
                 "objections": objections,
                 "close_drill": close_drill,
                 "framework_drill": framework_drill,
+                "discovery_drill": discovery_drill,
                 "last_updated": r["last_updated"],
             }
         )

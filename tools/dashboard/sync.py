@@ -175,6 +175,7 @@ TRAINING_ASSIGNMENTS_COLUMNS = {
     "Training Objections (JSON)": "training_objections_json",
     "Close Ask Drill (JSON)": "close_ask_drill_json",
     "Training Framework (JSON)": "training_framework_json",
+    "Training Discovery (JSON)": "training_discovery_json",
     "Last Updated": "last_updated",
 }
 
@@ -543,6 +544,7 @@ def init_schema(conn):
             training_objections_json TEXT,
             close_ask_drill_json TEXT,
             training_framework_json TEXT,
+            training_discovery_json TEXT,
             last_updated TEXT
         );
         CREATE TABLE IF NOT EXISTS daily_practice_followups (
@@ -597,6 +599,7 @@ def init_schema(conn):
     _add_column_if_missing(conn, "sales_call_log", "flag_framework_explained", "INTEGER")
     _add_column_if_missing(conn, "sales_call_log", "framework_gaps", "TEXT")
     _add_column_if_missing(conn, "training_assignments", "training_framework_json", "TEXT")
+    _add_column_if_missing(conn, "training_assignments", "training_discovery_json", "TEXT")
     # 28/08/2026: "Matched File" pins whichever file a Daily Practice
     # Follow-ups row claimed, so a late-submission match can't be reused by
     # a different assignment day (Phase7_DailySelfPractice.gs).

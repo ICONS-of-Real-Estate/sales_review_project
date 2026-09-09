@@ -737,6 +737,35 @@ def test_training_page_shows_framework_drill(client, db_path, conn):
     assert "lead with the city angle" in resp.text
 
 
+def test_training_page_shows_the_discovery_drill(client, db_path, conn):
+    """Added 09/09/2026: Phase 6 captures a discovery drill and Phase 7 runs
+    it, but Tomás could only see it in an email until this column existed."""
+    conn.execute(
+        "INSERT INTO training_assignments (rep, training_discovery_json, last_updated) VALUES (?, ?, ?)",
+        (
+            "Alice",
+            '[{"label": "ask for a number on the goal", "note": "not \'wants to grow\' — a figure"}]',
+            "2026-09-09",
+        ),
+    )
+    conn.commit()
+    resp = client.get("/training")
+    assert resp.status_code == 200
+    assert "Discovery to drill" in resp.text
+    assert "ask for a number on the goal" in resp.text
+
+
+def test_training_page_survives_a_malformed_discovery_drill_payload(client, db_path, conn):
+    """The column holds raw JSON written by Apps Script — a bad payload must
+    not take the whole page down, same as the objections/framework columns."""
+    conn.execute(
+        "INSERT INTO training_assignments (rep, training_discovery_json, last_updated) VALUES (?, ?, ?)",
+        ("Alice", "{not json at all", "2026-09-09"),
+    )
+    conn.commit()
+    assert client.get("/training").status_code == 200
+
+
 def test_framework_pages_render_on_empty_db(client, db_path):
     for url in ("/", "/calls", "/calls?framework_explained=no", "/reps/Nobody", "/training"):
         assert client.get(url).status_code == 200
