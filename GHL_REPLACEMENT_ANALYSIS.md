@@ -133,14 +133,28 @@ What we *do* know:
   it, whether any SMS has ever been sent, whether GHL sends any lead-facing
   email at all.
 
-So it is entirely possible that GHL's comms log is **thin or dead** — the
-cold email is elsewhere, the calls are on Zoom, the one email stage is unused.
-It is equally possible there is a live SMS channel nobody wrote down. **This
-is the highest-leverage unknown in the whole analysis**, because it is the
-difference between "we mirror a log" and "we have to become a telecoms
-operator." Run the audit probe.
+> **UPDATE 09/09/2026 — Kris answered, and this section's working assumption
+> was wrong.** GHL's comms are **not** a dead log. He confirmed live outbound
+> automation: *"when people book on icons one hundred, book a sales call,
+> there are automated emails that get sent and automated SMSes."*
+>
+> So the job is not "mirror a message log" — it is **replicate a running
+> automation that sends real email and SMS to real leads on a trigger.** That
+> is a substantially bigger piece of work, and it moves the comms rebuild from
+> "maybe out of scope" to "definitely in scope."
+>
+> The mitigating half: he believes the SMS goes through **Twilio**, which if
+> true means we already own the numbers and the carrier registration — see
+> §10, "The Twilio question." That single fact swings the timeline by months
+> in the *other* direction.
 
-**Replaceable by us?** Depends entirely on the answer. See §5.
+Two probes now target this directly, both read-only:
+`previewGhlCommunicationsAudit()` (what was actually sent, at what volume) and
+`previewGhlAccountDiscovery()` (what automations exist, and which phone
+provider the account is wired to).
+
+**Replaceable by us?** Yes, but this is the piece that decides the project's
+size. See §5 and §10.
 
 ### 2.4 Booking and calendars
 
@@ -447,10 +461,17 @@ Key decisions this implies, each worth arguing before it's assumed:
 Each step delivers value standalone. If the project stops after Step 2, we are
 still meaningfully better off — that is the test each step must pass.
 
-**Step 0 — Measure the comms (days).**
-Run `previewGhlCommunicationsAudit()` (`Phase9_GhlSync.gs`). Answers §2.3, and
-determines whether Tier 3 (telephony/SMS) is in scope at all.
-*Exit:* we know the channel mix, volume, date range and message schema.
+**Step 0 — Measure what's actually there (days).**
+Run both read-only probes in `Phase9_GhlSync.gs` and paste the logs back:
+- `previewGhlCommunicationsAudit()` — what has actually been sent: channel
+  mix, inbound/outbound volume, date range, message schema.
+- `previewGhlAccountDiscovery()` — what's configured: **workflows/campaigns**
+  (the automations Kris described), forms and submissions (the QC form
+  mystery, and whether Sean's submissions land), calendars, tags, and
+  **which phone provider the account uses** (§10, the Twilio question).
+
+*Exit:* we can size Tier 3 honestly instead of guessing, and we know whether
+A2P registration is on the critical path or already ours.
 
 **Step 1 — Mirror GHL into our own store, continuously (weeks).**
 Read-only importer: contacts, opportunities, stages, tags, appointments,
@@ -508,19 +529,59 @@ before it is.
 
 ---
 
-## 10. What only Kris or Tomás can answer
+## 10. Kris's answers, 09/09/2026 — and what each one changes
 
-None of these block Step 0 or Step 1. All of them block Step 4.
+Answered in his own words. Several materially change the analysis above;
+where they do, it's called out.
 
-1. **Does anyone dial through GHL?** Does GHL own a phone number? *(Sets §5.1)*
-2. **Has any SMS ever been sent from GHL, by whom, at what volume?** *(Sets §5.2 — the long pole)*
-3. **Does GHL send any lead-facing email?** *(Cold email is on Maildoso — what's left?)*
-4. **What is the QC form, where does it live, and what breaks on submit?** (§2.5 — a live bug hurting data quality today)
-5. **How do Meta lead ads reach GHL?** Which connector?
-6. **Who are Piero Bengoa, Amanda Arambulo, Denise Le, Ashley Lester, Thao Tran, "Podcast Coordinator"?** Ten people is a different product than four.
-7. **Does anyone use the GHL mobile app?** Determines whether Step 2/3 must be mobile-first.
-8. **What is the "Advanced filters (1)" saved view** on every board?
-9. **What does GHL cost per month?** Nowhere in this repo. It sets the whole budget for how much of §4–§5 is worth building rather than paying for.
+| # | Question | Answer | What it changes |
+|---|---|---|---|
+| 1 | Does anyone dial through GHL? | *"We used to use Twilio, but now I think we use Go High Level, but we could go back to Twilio."* **Uncertain.** | §5.1 stays open, but the fallback is known and cheap. See "the Twilio question" below. |
+| 2 | Any SMS from GHL? | *"I think they're done through Twilio."* **Uncertain.** | Potentially removes §5.2 — the single biggest timeline risk. See below. |
+| 3 | Does GHL send lead-facing email? | First *"No"*, then corrected: **yes.** *"When people book on icons one hundred, book a sales call, there are automated emails that get sent and automated SMSes."* | **Overturns §2.3's "possibly dead log".** GHL runs live outbound automation on booking — email AND SMS. This is a real capability to replicate, not a log to mirror. |
+| 4 | What is the QC form? | *"I don't know what it is."* | Unresolved — now a probe target, not a question. |
+| 5 | How do Meta lead ads reach GHL? | *"I don't know."* | Unresolved — now a probe target. |
+| 6 | Who are the ten assignees? | **Piero Bengoa — fired.** **Amanda Arambulo, Denise Le, Ashley Lester — account managers.** **Thao Tran — operations manager, runs podcast production.** **"Podcast Coordinator" — Joana**, a title used because *"no one wants to talk to a salesperson."* | Softens §5.1 but does not remove it. Real seat count is ~8-9, and account managers are still daily users with their own needs. Piero's 31 open opportunities need reassigning regardless. |
+| 7 | GHL mobile app? | *"I don't think so. I don't know."* | Leave Step 2/3 desktop-first, but confirm before committing. |
+| 8 | The saved board filter? | *"I don't know what that even is."* | Nobody set it deliberately → low risk of losing something load-bearing. Downgrade that risk in §9. |
+| 9 | Cost? | **$299/month** (~$3,600/yr). *"I would like to save that money."* | The budget is now known. See below. |
+
+### The Twilio question — now the highest-value unknown after the audit
+
+Kris thinks SMS runs through Twilio. **GHL supports both models**: its own
+bundled LC Phone, or "bring your own Twilio" where the account connects to a
+Twilio subaccount the customer owns.
+
+Which one is in use decides the hardest part of this whole project:
+
+- **If it's our own Twilio:** we already own the phone numbers and the A2P
+  10DLC brand/campaign registration. Replacing GHL's messaging becomes
+  "point our own code at the Twilio account we already have" — a normal
+  integration. **§5.2 and most of §5.1 evaporate.**
+- **If it's GHL's LC Phone:** the numbers and the registration belong to GHL.
+  We would need our own Twilio account, our own A2P registration (weeks,
+  carrier-gated), and to port numbers out. **§5.2 stays the long pole.**
+
+This is the difference between a few weeks and a few months, and it is
+answerable with one API call plus a look at the Twilio console. Probed by
+`previewGhlAccountDiscovery()` ("Location detail").
+
+### What $299/month actually buys
+
+At $3,600/year, the honest framing is: **this is not primarily a cost-saving
+project.** Any serious build here costs multiples of $3,600 in time alone,
+and adds permanent ownership (backups, restores, on-call when a rep can't
+load their pipeline at 9am — §9).
+
+The real arguments for doing it are the ones that aren't about the invoice:
+owning the data, closing the no-show blind spot, and having the CRM and the
+call-scoring system be one thing instead of two that disagree. **The $299
+should be treated as a bonus, not the business case** — otherwise the first
+month the build overruns, it stops making sense on its own terms.
+
+The corollary is worth stating plainly: **stopping after Step 1 or 2 is a
+perfectly good outcome.** Mirror the data, close the reporting gap, keep
+paying the $299, and revisit. That is a real option, not a failure.
 
 ---
 
@@ -528,13 +589,16 @@ None of these block Step 0 or Step 1. All of them block Step 4.
 
 - **Direction settled:** absorb GHL's functionality, then drop GHL.
   `GHL_MIGRATION_PLAN.md` is superseded on direction only.
-- **Built this session:** `previewGhlCommunicationsAudit()` +
-  `ghlTimestampToIso_` + `summarizeGhlMessages_` (`Phase9_GhlSync.gs`),
-  read-only, 5 unit tests in `tests/run_tests.js` (711 passing).
+- **Built this session** (all `Phase9_GhlSync.gs`, all read-only, 8 unit tests
+  in `tests/run_tests.js`, 714 passing):
+  `previewGhlCommunicationsAudit()` + `summarizeGhlMessages_` +
+  `ghlTimestampToIso_`, and `previewGhlAccountDiscovery()` +
+  `describeGhlProbeResult_`.
 - **Not built:** everything in §4. No phase code changed, nothing written to
   GHL, no flags flipped.
-- **Immediate next action:** deploy (`git pull && clasp push`) and run
-  `previewGhlCommunicationsAudit()`. Paste the log back. Steps 1+ cannot be
-  sized honestly before that.
+- **Immediate next action:** deploy (`git pull && clasp push`), run **both**
+  probes, paste the logs back. Steps 1+ cannot be sized honestly before that.
+- **Budget is now known:** $299/month. Read §10's note on why that should not
+  be the business case.
 - **Not estimated on purpose.** Step 0's answer moves the total by months.
   Estimating now would be the same guess this document exists to avoid.

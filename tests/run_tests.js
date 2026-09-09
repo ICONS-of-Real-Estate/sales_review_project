@@ -5394,6 +5394,36 @@ test('buildGhlStageLookup_ builds a stageId -> {pipelineName, stageName, disposi
   assert.deepEqual(Object.assign({}, lookup['stage-3']), { pipelineName: 'ICONS Podcast', stageName: 'No Show', disposition: 'No-show' });
 });
 
+test('describeGhlProbeResult_ distinguishes a missing SCOPE from a wrong ENDPOINT — the whole point of the discovery probe', () => {
+  // A 401 means the Private Integration token lacks a scope; the feature may
+  // well exist. A 404 means the path guess was wrong. Conflating the two is
+  // how you wrongly conclude "GHL doesn't have workflows".
+  const unauthorized = gas.describeGhlProbeResult_({ status: 401, body: 'no access' });
+  assert.ok(/401/.test(unauthorized) && /scope/.test(unauthorized));
+  const missing = gas.describeGhlProbeResult_({ status: 404, body: 'not found' });
+  assert.ok(/404/.test(missing) && /path is wrong/.test(missing));
+  assert.ok(/403/.test(gas.describeGhlProbeResult_({ status: 403, body: 'nope' })));
+});
+
+test('describeGhlProbeResult_ counts the records in whichever key holds the list', () => {
+  const out = gas.describeGhlProbeResult_({
+    status: 200,
+    json: { workflows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], traceId: 'x' },
+    body: '{"workflows":[...]}'
+  });
+  assert.ok(/HTTP 200/.test(out));
+  assert.ok(/3 record\(s\) under "workflows"/.test(out), 'the record count is the headline number: ' + out);
+  assert.ok(/keys=\[workflows, traceId\]/.test(out), 'top-level keys are shown so an unexpected shape is visible');
+});
+
+test('describeGhlProbeResult_ handles a 200 with no list and a junk response without throwing', () => {
+  const noList = gas.describeGhlProbeResult_({ status: 200, json: { location: { id: 'x' } }, body: '{}' });
+  assert.ok(/HTTP 200/.test(noList));
+  assert.ok(!/record\(s\)/.test(noList), 'nothing to count when no key holds an array');
+  assert.equal(gas.describeGhlProbeResult_(null), 'no response');
+  assert.equal(gas.describeGhlProbeResult_(undefined), 'no response');
+});
+
 test('ghlTimestampToIso_ normalizes BOTH of GHL\'s timestamp formats (real bug: raw epoch ms sitting in the live "GHL Stage Triage" tab)', () => {
   // Confirmed from the live sheet 09/09/2026: Last GHL Activity holds raw
   // values like 1787216916228 next to proper ISO strings, because notes come

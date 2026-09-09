@@ -1904,3 +1904,132 @@ function previewGhlCommunicationsAudit_(maxContacts) {
 
   return summary;
 }
+
+/* ===================================================================
+ * ACCOUNT DISCOVERY (read-only)
+ *
+ * Kris, 09/09/2026, answering the open-questions list: "There are
+ * automations. Like, when people book on icons one hundred, book a sales
+ * call, there are automated emails that get sent and automated SMSes. Can
+ * you access the API and see what we have?"
+ *
+ * That single answer overturned the working assumption that GHL's comms
+ * were dead. It also exposed how much of the account nobody can describe:
+ * Kris does not know what the QC form is, how Facebook lead ads arrive,
+ * or what the saved board filter does — and our code has never called a
+ * workflow, form, calendar or phone-number endpoint in its life.
+ *
+ * This walks a list of candidate endpoints and reports what each one
+ * returns. GHL's docs are egress-blocked from the dev sandbox (same as
+ * they were for the Notes endpoint and the contacts.write scope), so every
+ * path here is a best-effort guess — which is exactly why each probe logs
+ * its full status and a body snippet. A wrong guess reports itself; a 401
+ * means a missing token scope, not a missing feature. The known-good
+ * pipelines call is included first as a control, so "auth is fine, that
+ * endpoint is wrong" is distinguishable from "the token is broken".
+ *
+ * READ-ONLY. Writes nothing, sends nothing, ignores GHL_CONFIG.ENABLED.
+ * =================================================================== */
+
+/**
+ * Pure. Turns one raw probe response into a one-line human summary:
+ * status, how many records came back if it looks like a list, and the
+ * top-level keys so an unexpected shape is visible rather than guessed at.
+ */
+function describeGhlProbeResult_(res) {
+  if (!res || typeof res !== 'object') return 'no response';
+  if (res.status !== 200) {
+    var hint = res.status === 401 ? ' (token lacks this scope — add it, then re-run)'
+      : res.status === 404 ? ' (endpoint path is wrong, or the feature is not on this plan)'
+      : res.status === 403 ? ' (forbidden — plan tier or permissions)' : '';
+    return 'HTTP ' + res.status + hint + ' :: ' + String(res.body || '').slice(0, 200);
+  }
+  var json = res.json || {};
+  var keys = Object.keys(json);
+  // Find the first array-valued key — that's the record list on every GHL
+  // v2 endpoint seen so far (pipelines, contacts, opportunities, notes).
+  var listKey = null;
+  for (var i = 0; i < keys.length; i++) {
+    if (Object.prototype.toString.call(json[keys[i]]) === '[object Array]') { listKey = keys[i]; break; }
+  }
+  var count = listKey ? json[listKey].length : null;
+  return 'HTTP 200 :: keys=[' + keys.join(', ') + ']' +
+    (listKey ? ' :: ' + count + ' record(s) under "' + listKey + '"' : '') +
+    ' :: ' + String(res.body || '').slice(0, 300);
+}
+
+/** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
+function previewGhlAccountDiscovery() {
+  return previewGhlAccountDiscovery_();
+}
+
+function previewGhlAccountDiscovery_() {
+  RUN_TAG = 'previewGhlAccountDiscovery_';
+  log_('READ-ONLY account discovery. Nothing is written, nothing is sent. ' +
+    'Question: what is actually configured in this GHL account that we have ' +
+    'never looked at — workflows, forms, calendars, phone numbers, tags?');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+  var loc = encodeURIComponent(locationId);
+
+  var probes = [
+    ['CONTROL: pipelines', '/opportunities/pipelines?locationId=' + loc,
+      'Known-good. If THIS fails, the token/setup is broken and every result below is meaningless.'],
+
+    ['Workflows', '/workflows/?locationId=' + loc,
+      'THE BIG ONE — the automations Kris described (booking -> automated email + SMS). ' +
+      'Names and trigger types tell us what we would have to reproduce.'],
+    ['Campaigns', '/campaigns/?locationId=' + loc,
+      'GHL\'s older automation object. Either this or Workflows holds the real sequences.'],
+
+    ['Forms', '/forms/?locationId=' + loc,
+      'Answers "what exactly is the QC form" — Kris does not know, and Sean reports ' +
+      'submissions silently not reaching the CRM.'],
+    ['Form submissions', '/forms/submissions?locationId=' + loc,
+      'Whether submissions are landing at all, and how recently. Sean\'s bug, measured.'],
+    ['Surveys', '/surveys/?locationId=' + loc,
+      'The other GHL data-capture object — the QC form may be a survey, not a form.'],
+
+    ['Calendars', '/calendars/?locationId=' + loc,
+      'The booking links leads self-book onto, and the ICONS 100 calendar whose bookings auto-tag.'],
+
+    ['Location detail', '/locations/' + loc,
+      'Account-level settings. May reveal the phone/SMS provider — specifically whether this ' +
+      'account uses LC Phone or OUR OWN Twilio, which decides whether we already own the ' +
+      'numbers and the A2P registration.'],
+    ['Tags', '/locations/' + loc + '/tags',
+      'Every tag defined on the account, incl. whatever "icons 100 guest" needs to match.'],
+    ['Custom values', '/locations/' + loc + '/customValues',
+      'Account-wide merge values — often where an integration\'s config hides.'],
+
+    ['Phone numbers (guess)', '/phone-system/number-pools?locationId=' + loc,
+      'Does GHL own a phone number for us? Path is a guess; a 404 here is not proof of absence.'],
+    ['Trigger links', '/links/?locationId=' + loc,
+      'Trackable links used inside automations.'],
+    ['Users', '/users/?locationId=' + loc,
+      'Confirms the ten assignees and their roles (Piero fired, Thao ops, etc.).']
+  ];
+
+  probes.forEach(function (p) {
+    var res = ghlApiGet_(p[1]);
+    log_('=== ' + p[0] + ' — ' + p[2]);
+    log_('    GET ' + p[1]);
+    log_('    ' + describeGhlProbeResult_(res));
+  });
+
+  log_('--- WHAT TO DO WITH THIS ------------------------------------');
+  log_('Paste the whole log back. The three lines that matter most:');
+  log_('  1. Workflows/Campaigns — every automation we would have to rebuild.');
+  log_('  2. Location detail — if it names Twilio, we likely ALREADY own the numbers ' +
+    'and the A2P registration, which removes the single biggest timeline risk from ' +
+    'GHL_REPLACEMENT_ANALYSIS.md.');
+  log_('  3. Forms/Submissions — what the QC form is and whether Sean\'s submissions land.');
+  log_('Any 401 is a missing token scope, not a missing feature — add the scope in ' +
+    'the GHL Private Integration settings and re-run.');
+}
