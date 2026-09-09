@@ -1,3 +1,40 @@
+## ⚠ TARGETS NOW SET — 09/09/2026 (read before touching scoring or training)
+
+Kris set the numbers everyone is working towards: **Joana and Sean each
+close one deal a week, at a 30% close rate** (well above where they are
+now); **Bens generates enough leads to give Joana the sales calls that
+takes** — 4 held sales calls a week at those numbers. Encoded as `REP_GOALS_`
+in `Phase5_WeeklyScorecard.gs`; only the two numbers Kris actually set are
+inputs, the rest is arithmetic off them. Each rep's weekly scorecard now
+shows their progress against it. **Training is meant to work towards these
+targets** — that framing should carry into any future rubric or training
+change.
+
+**The catch, and it is a real one:** progress against the deal target is
+computed from `Outcome Disposition`, which is hand-typed and still mostly
+blank. The scorecard refuses to show a close rate under 50% coverage rather
+than publish a misleading 0%. Until outcomes get populated (GHL sync, or
+people filling it in) these targets are visible but barely measurable.
+
+### Built the same day, from Bens' training call with Tomás
+
+- **Discovery is now a fourth drilled skill**, end to end: Phase 2 scores
+  goal/pain for Bens and QC (it previously scored neither, for either),
+  Phase 6 can see Tomás drill it, Phase 7 has a discovery practice lane.
+  `RUBRIC_VERSION` → `2026-09-09-goal-pain-bens-qc`.
+- **Full-time-agent qualification** added to all six rubric variants —
+  Tomás states it as a hard rule and no rubric encoded it.
+- **These rubric changes have NOT been through Tomás.** The definitions are
+  his own words from the call, but the full-time rule actively screens leads
+  out, so get his nod before running a rescore.
+- **Bens' coaching/feedback call recordings** go in a new folder
+  (`1xY4Egfl2aRKcgU3baG7riK-utB2MmaWD`, two subfolders), deliberately
+  OUTSIDE every folder the scorer watches. They have no rubric of their own
+  yet, and the Bens rubric would grade a two-minute studio check as a failed
+  booking attempt. Give them call types and rubrics before ingesting them.
+
+---
+
 ## ⚠ DIRECTION CHANGE — 09/09/2026: we are building to REPLACE GHL, not to move into it
 
 Kris: *"I want to model everything that GHL does. Record call logs, sms,
