@@ -947,25 +947,25 @@ test('pickOneCallPerRep_ returns empty for an empty pool', () => {
 
 test('pickDuplicateRowsToDelete_ leaves distinct (rep, name, date) rows alone', () => {
   const rows = [
-    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 3, rep: 'Bens', prospectName: 'B', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', transcriptUrl: 'https://drive/A', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Bens', prospectName: 'B', dateKey: '2026-08-17', transcriptUrl: 'https://drive/B', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
   ];
   assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
 });
 
 test('pickDuplicateRowsToDelete_ never touches exact_key rows, even with a repeated (name, date)', () => {
   const rows = [
-    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 3, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' }
+    { rowIndex: 2, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', transcriptUrl: 'https://drive/A', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Bens', prospectName: 'A', dateKey: '2026-08-17', transcriptUrl: 'https://drive/A', matchMethod: 'exact_key', reviewedByKris: false, krisVerdict: '' }
   ];
   assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
 });
 
 test('pickDuplicateRowsToDelete_ keeps the lowest row number among otherwise-equal duplicates, deletes the rest', () => {
   const rows = [
-    { rowIndex: 5, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 9, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+    { rowIndex: 5, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', transcriptUrl: 'https://drive/rebecca', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', transcriptUrl: 'https://drive/rebecca', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 9, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', transcriptUrl: 'https://drive/rebecca', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
   ];
   const toDelete = gas.pickDuplicateRowsToDelete_(rows);
   assert.equal(toDelete.length, 2);
@@ -978,20 +978,46 @@ test('pickDuplicateRowsToDelete_ keeps the lowest row number among otherwise-equ
 
 test('pickDuplicateRowsToDelete_ preserves a row with a real Kris verdict over an unreviewed duplicate, regardless of row order', () => {
   const rows = [
-    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 20, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', matchMethod: 'fallback_heuristic', reviewedByKris: true, krisVerdict: 'Yes' }
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', transcriptUrl: 'https://drive/rebecca', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 20, rep: 'Bens', prospectName: 'Rebecca Stewart', dateKey: '2026-08-17', transcriptUrl: 'https://drive/rebecca', matchMethod: 'fallback_heuristic', reviewedByKris: true, krisVerdict: 'Yes' }
   ];
   const toDelete = gas.pickDuplicateRowsToDelete_(rows);
   assert.equal(toDelete.length, 1);
   assert.equal(toDelete[0].rowIndex, 2, 'should delete the unreviewed row, keeping the one with a real Kris verdict');
 });
 
-test('pickDuplicateRowsToDelete_ groups separately per rep even with the same name/date', () => {
+test('pickDuplicateRowsToDelete_ groups separately per rep even with the same name/date/transcript', () => {
   const rows = [
-    { rowIndex: 2, rep: 'Bens', prospectName: 'Chad Davis', dateKey: '2026-08-11', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
-    { rowIndex: 3, rep: 'Sean', prospectName: 'Chad Davis', dateKey: '2026-08-11', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+    { rowIndex: 2, rep: 'Bens', prospectName: 'Chad Davis', dateKey: '2026-08-11', transcriptUrl: 'https://drive/chad', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Sean', prospectName: 'Chad Davis', dateKey: '2026-08-11', transcriptUrl: 'https://drive/chad', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
   ];
   assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 0);
+});
+
+test('pickDuplicateRowsToDelete_ catches the SAME transcript scored twice under two different dates one day apart (real bug, live 09/09/2026, Kris: "Some are duplicate" on the Bens dashboard)', () => {
+  // Root cause confirmed live against the real sheet: parseLegacyFilename_'s
+  // own 25/08/2026 timezone fix changed how a legacy file's Call Date gets
+  // computed going forward, but rows already scored under the OLD (off-by-
+  // one) date never got touched — so the next run's dedup key (name+date+
+  // rep) no longer matched those old rows, and the identical transcript got
+  // rescored and reappended under its now-correct, one-day-different date.
+  // The (rep, name, date) key used to miss this entirely; Transcript URL
+  // does not.
+  const rows = [
+    { rowIndex: 179, rep: 'Bens', prospectName: 'Crystal Gargiulo', dateKey: '2026-08-17', transcriptUrl: 'https://drive.google.com/file/d/14K1yBGvZP6MuEkUlMGgLZTW3zjPRj_TA/view', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 289, rep: 'Bens', prospectName: 'Crystal Gargiulo', dateKey: '2026-08-18', transcriptUrl: 'https://drive.google.com/file/d/14K1yBGvZP6MuEkUlMGgLZTW3zjPRj_TA/view', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+  ];
+  const toDelete = gas.pickDuplicateRowsToDelete_(rows);
+  assert.equal(toDelete.length, 1, 'same Transcript URL must be caught as a duplicate even though name/date matched exactly before but the dates now differ');
+  assert.equal(toDelete[0].rowIndex, 289, 'keeps the lower row number (the original scoring), deletes the later re-score');
+});
+
+test('pickDuplicateRowsToDelete_ falls back to the old (rep, name, date) key only when a row genuinely has no transcript URL', () => {
+  const rows = [
+    { rowIndex: 2, rep: 'Bens', prospectName: 'No Transcript Guy', dateKey: '2026-08-17', transcriptUrl: '', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' },
+    { rowIndex: 3, rep: 'Bens', prospectName: 'No Transcript Guy', dateKey: '2026-08-17', transcriptUrl: '', matchMethod: 'fallback_heuristic', reviewedByKris: false, krisVerdict: '' }
+  ];
+  assert.equal(gas.pickDuplicateRowsToDelete_(rows).length, 1, 'still catches the old-style duplicate when neither row has a transcript URL to key on');
 });
 
 // Plain object returns here come from the vm sandbox's own realm (see

@@ -2925,7 +2925,25 @@ function pickDuplicateRowsToDelete_(rows) {
   var groups = {};
   rows.forEach(function (r) {
     if (r.matchMethod !== 'fallback_heuristic') return;
-    var key = r.rep + '|' + normalize_(r.prospectName) + '|' + r.dateKey;
+    // Real bug found live (09/09/2026, Kris: rows that looked like duplicates
+    // on the dashboard — "Some are duplicate"): grouping on (rep, name, date)
+    // missed a whole class of real duplicates where the SAME transcript file
+    // got scored twice, landing one calendar day apart. Root cause: the
+    // 25/08/2026 timezone fix documented on parseLegacyFilename_ changed how
+    // that date gets computed going forward, but never touched the dates
+    // already sitting in rows scored under the OLD (off-by-one) logic — so
+    // the next run's dedup check (loadExistingLegacyKeys_, keyed on name+
+    // date+rep) no longer matched those old rows and rescored the same file
+    // again under its now-correct date, confirmed live on Rebecca Stewart El
+    // Couhen/Crystal Gargiulo/Camryn Cisneros/etc. (identical Transcript URL,
+    // dates exactly one day apart, and on two of them the re-score even
+    // landed a different score off the same transcript). The Transcript URL
+    // is the actual ground truth here — the same file can never be two
+    // different real calls, no matter what date got attached to it — so
+    // group on that instead. Falls back to the old (rep, name, date) key
+    // only when a row has no transcript URL at all, which a real
+    // fallback_heuristic row should never actually hit.
+    var key = r.rep + '|' + (r.transcriptUrl || (normalize_(r.prospectName) + '|' + r.dateKey));
     (groups[key] = groups[key] || []).push(r);
   });
 
@@ -2960,7 +2978,8 @@ function previewLegacyBackfillDuplicates() {
   if (!toDelete.length) { log_('No duplicate legacy-backfill rows found.'); return; }
   log_('Found ' + toDelete.length + ' duplicate row(s) that dedupeLegacyBackfillDuplicates() would delete:');
   toDelete.forEach(function (r) {
-    log_('  Row ' + r.rowIndex + ': "' + r.prospectName + '" (' + r.dateKey + ', ' + r.rep + ')');
+    log_('  Row ' + r.rowIndex + ': "' + r.prospectName + '" (' + r.dateKey + ', ' + r.rep + ') — ' +
+      (r.transcriptUrl || '(no transcript URL)'));
   });
 }
 
@@ -2977,6 +2996,7 @@ function findLegacyBackfillDuplicates_(sheet) {
       rep: row[col['Rep'] - 1],
       prospectName: row[col['Prospect Name'] - 1],
       dateKey: dateKey,
+      transcriptUrl: row[col['Transcript URL'] - 1],
       matchMethod: row[col['Match Method'] - 1],
       reviewedByKris: !!row[col['Reviewed By'] - 1],
       krisVerdict: String(row[col['Kris Manual Review Verdict'] - 1] || '').trim()
