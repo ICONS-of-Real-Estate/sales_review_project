@@ -79,7 +79,7 @@
   <tbody>
     {% for c in calls %}
     <tr>
-      <td><a href="/calls/{{ c.id }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a></td>
+      <td>{% if c.full_feedback %}<a href="/calls/{{ c.id }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
       <td><a href="/reps/{{ c.rep }}">{{ c.rep }}</a></td>
       <td>{{ c.call_date }}</td>
       <td>{{ c.call_type_display or "—" }}</td>

@@ -138,7 +138,7 @@
     {% for c in calls %}
     <tr>
       <td>
-        <a href="/calls/{{ c.id }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>
+        {% if c.full_feedback %}<a href="/calls/{{ c.id }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}
         {% if c.looks_like_raw_filename %}<span class="muted" title="No name match was ever found for this call (not even the fuzzy fallback) — this is the raw recording filename, not a real prospect name.">⚠</span>{% endif %}
       </td>
       <td>{{ c.call_date_short }}</td>

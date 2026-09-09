@@ -67,6 +67,7 @@ def test_rep_detail_page_prospect_name_links_to_the_call_detail_page_not_the_tra
     call_id = insert_call(
         conn, rep="Alice", prospect_name="Esme Sanchez",
         transcript_url="https://drive.google.com/file/d/abc123/view",
+        ai_feedback_summary="Some real feedback so the name actually has something to link to.",
     )
     conn.commit()
     resp = client.get("/reps/Alice")
@@ -74,6 +75,26 @@ def test_rep_detail_page_prospect_name_links_to_the_call_detail_page_not_the_tra
     assert 'target="_blank"' in resp.text
     # The raw transcript URL must not appear directly in this row anymore.
     assert "https://drive.google.com/file/d/abc123/view" not in resp.text
+
+
+def test_rep_detail_and_calls_pages_dont_hyperlink_a_row_with_no_feedback_yet(client, db_path, conn):
+    """Kris's ask (09/09/2026): "Don't hyperlink calls that don't have
+    feedback yet" — a row with nothing graded (e.g. Phase11's Icons 100
+    Recording tracker-sync bookkeeping rows) has no full write-up to open,
+    so the name shouldn't look clickable at all."""
+    call_id = insert_call(
+        conn, rep="Bens", prospect_name="Darlene Teeter",
+        call_type="Icons 100 Recording", call_quality_score=None, ai_feedback_summary="",
+    )
+    conn.commit()
+
+    rep_resp = client.get("/reps/Bens")
+    assert f'href="/calls/{call_id}"' not in rep_resp.text
+    assert "Darlene Teeter" in rep_resp.text
+
+    calls_resp = client.get("/calls")
+    assert f'href="/calls/{call_id}"' not in calls_resp.text
+    assert "Darlene Teeter" in calls_resp.text
 
 
 def test_rep_detail_page_shows_a_booked_column_parsed_from_the_feedback_text(client, db_path, conn):
