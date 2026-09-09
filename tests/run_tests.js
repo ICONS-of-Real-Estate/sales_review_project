@@ -2924,6 +2924,103 @@ test('writeScoreToRow_ uses the variant-specific feedback summary packer, not ju
   assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
+test('salesCallsNeededPerWeek_ turns Kris\'s targets into a real weekly number, rounding UP', () => {
+  // 1 deal a week at a 30% close rate = 4 held sales calls, not 3.33 and not
+  // 3 — rounding down would set a target that cannot arithmetically be hit.
+  assert.equal(gas.salesCallsNeededPerWeek_(1, 0.30), 4);
+  assert.equal(gas.salesCallsNeededPerWeek_(2, 0.50), 4);
+  assert.equal(gas.salesCallsNeededPerWeek_(1, 1), 1);
+  assert.equal(gas.salesCallsNeededPerWeek_(1, 0), null, 'a zero close rate has no answer, not Infinity');
+});
+
+test('REP_GOALS_ carries Kris\'s 09/09/2026 targets: one deal a week each for the closers, 30% close rate', () => {
+  assert.equal(gas.REP_GOALS_.DEALS_PER_CLOSER_PER_WEEK, 1);
+  assert.equal(gas.REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET, 0.30);
+  assert.deepEqual(Array.prototype.slice.call(gas.REP_GOALS_.CLOSERS).sort(), ['Joana', 'Sean']);
+  assert.equal(gas.REP_GOALS_.LEAD_GEN.rep, 'Bens');
+  assert.equal(gas.REP_GOALS_.LEAD_GEN.feedsCloser, 'Joana');
+});
+
+test('computeGoalProgress_ counts held sales calls and deals, and reports outcome coverage separately', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (over) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    Object.keys(over).forEach((k) => { r[col[k] - 1] = over[k]; });
+    return r;
+  };
+  const weekStart = new gas.Date('2026-09-07T00:00:00Z');
+  const weekEnd = new gas.Date('2026-09-14T00:00:00Z');
+  const inWeek = new gas.Date('2026-09-09T10:00:00Z');
+
+  const rows = [
+    row({ Rep: 'Joana', 'Call Type': 'Sales Call', 'Call Date': inWeek, 'Outcome Disposition': 'Sold' }),
+    row({ Rep: 'Joana', 'Call Type': 'Sales Call', 'Call Date': inWeek, 'Outcome Disposition': 'Not Sold' }),
+    row({ Rep: 'Joana', 'Call Type': 'Sales Call', 'Call Date': inWeek }), // no outcome logged
+    // A QC is not a sales call and must not count toward the sales-call target.
+    row({ Rep: 'Joana', 'Call Type': 'QC', 'Call Date': inWeek, 'Outcome Disposition': 'Sold' }),
+    // Another rep's call, and one outside the week — both excluded.
+    row({ Rep: 'Sean', 'Call Type': 'Sales Call', 'Call Date': inWeek, 'Outcome Disposition': 'Sold' }),
+    row({ Rep: 'Joana', 'Call Type': 'Sales Call', 'Call Date': new gas.Date('2026-08-01T10:00:00Z'), 'Outcome Disposition': 'Sold' })
+  ];
+
+  const p = gas.computeGoalProgress_(rows, col, 'Joana', weekStart, weekEnd, gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(p.salesCallsHeld, 3, 'only this rep\'s in-week sales calls count');
+  assert.equal(p.dealsClosed, 1);
+  assert.equal(p.outcomesLogged, 2);
+  assert.equal(p.salesCallsTarget, 4);
+  assert.ok(Math.abs(p.closeRate - 0.5) < 1e-9, 'close rate is deals over OUTCOMES LOGGED, not over calls held');
+  assert.ok(Math.abs(p.coverage - (2 / 3)) < 1e-9);
+});
+
+test('computeGoalProgress_ returns a null close rate when nothing is logged — "we do not know" is not "you closed nothing"', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+  r[col['Rep'] - 1] = 'Sean';
+  r[col['Call Type'] - 1] = 'Sales Call';
+  r[col['Call Date'] - 1] = new gas.Date('2026-09-09T10:00:00Z');
+  const p = gas.computeGoalProgress_([r], col, 'Sean',
+    new gas.Date('2026-09-07T00:00:00Z'), new gas.Date('2026-09-14T00:00:00Z'), gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(p.closeRate, null);
+  assert.equal(p.coverage, 0);
+});
+
+test('buildGoalProgressSection_ refuses to show a close rate while outcome coverage is thin', () => {
+  // Outcome Disposition is hand-typed and mostly blank, so a rate computed
+  // off one logged call out of five is noise — and a bare 0% would read as
+  // "you closed nothing this week", which is a different claim.
+  const thin = { salesCallsHeld: 5, salesCallsTarget: 4, dealsClosed: 0, dealsTarget: 1,
+    outcomesLogged: 1, coverage: 0.2, closeRate: 0, closeRateTarget: 0.3 };
+  const section = gas.buildGoalProgressSection_('Joana', thin);
+  assert.ok(section.plain.indexOf('not enough outcomes logged') !== -1,
+    'must say we cannot tell, rather than publishing a misleading rate');
+  assert.ok(section.plain.indexOf('0%') === -1, 'a 0% close rate must not be shown on thin coverage');
+
+  const solid = { salesCallsHeld: 4, salesCallsTarget: 4, dealsClosed: 1, dealsTarget: 1,
+    outcomesLogged: 4, coverage: 1, closeRate: 0.25, closeRateTarget: 0.3 };
+  const good = gas.buildGoalProgressSection_('Joana', solid);
+  assert.ok(/25%/.test(good.plain) && /30%/.test(good.plain),
+    'with real coverage, show the actual rate against the target');
+  assert.ok(good.plain.indexOf('4 of 4') !== -1, 'hitting the call target should be visible');
+});
+
+test('buildGoalProgressSection_ gives Bens a lead-gen target derived from Joana\'s, and no closer metrics', () => {
+  const p = { salesCallsHeld: 6, salesCallsTarget: 4, dealsClosed: 0, dealsTarget: 1,
+    outcomesLogged: 0, coverage: 0, closeRate: null, closeRateTarget: 0.3 };
+  const section = gas.buildGoalProgressSection_('Bens', p);
+  assert.ok(section.plain.indexOf('Joana') !== -1, 'his target is expressed through the closer he feeds');
+  assert.ok(section.plain.indexOf('4 sales calls a week') !== -1,
+    'the derived number must be shown, not just the deal target');
+  assert.ok(section.plain.indexOf('close rate') === -1 || section.plain.indexOf('Close rate:') === -1,
+    'Bens is never scored on a close rate — he does not close');
+  // And the honest caveat about what we cannot yet measure.
+  assert.ok(section.plain.indexOf('activity, not your conversion') !== -1);
+
+  // A rep with no goal defined gets no invented target.
+  assert.equal(gas.buildGoalProgressSection_('Tomás', p), null);
+});
+
 test('Phase 7 grades a discovery drill, and its rubric enforces "don\'t take any answer as an answer"', () => {
   const prompt = gas.buildDailyPracticeSystemPrompt_('Bens');
   assert.ok(/drill_type is "discovery"/.test(prompt), 'discovery must be a recognised drill type');

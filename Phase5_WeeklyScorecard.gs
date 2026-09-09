@@ -174,6 +174,146 @@ function getWeekBounds_(now, tz) {
  * shrink every rep's historic average rather than just keeping today's
  * QC/Discovery rows out.
  */
+/**
+ * The numbers everyone is actually working towards. Set by Kris, 09/09/2026:
+ *
+ *   "Joanna and Sean should both be having enough QCs and sales goals to close
+ *    one deal every week. And, ideally, we might wanna move the conversion
+ *    rate up to thirty percent... that's the target, really, and it's much
+ *    lower than that at the moment. And Bens, I want him to be generating
+ *    enough leads to get enough sales calls for Joanna to close one deal a
+ *    week. So keep that target in mind for all of them, and their training
+ *    needs to work towards that."
+ *
+ * Only the first two numbers below are Kris's; everything else is arithmetic
+ * off them, written out here rather than buried in a function so that when
+ * someone disagrees with a target they can see exactly which input to change.
+ */
+var REP_GOALS_ = {
+  DEALS_PER_CLOSER_PER_WEEK: 1,
+  SALES_CALL_CLOSE_RATE_TARGET: 0.30,
+  CLOSERS: ['Joana', 'Sean'],
+  // Bens does not close; his output is the input to someone else's week.
+  LEAD_GEN: { rep: 'Bens', feedsCloser: 'Joana' }
+};
+
+/**
+ * Pure. How many sales calls a closer must actually HOLD in a week to hit
+ * their deal target at a given close rate. Rounded up — you cannot hold
+ * two-thirds of a call, and rounding down would set a target that is
+ * arithmetically impossible to hit.
+ *
+ * At Kris's numbers (1 deal/week at 30%) this is 4 held sales calls a week,
+ * each, for Joana and Sean.
+ */
+function salesCallsNeededPerWeek_(dealsPerWeek, closeRate) {
+  if (!closeRate || closeRate <= 0) return null;
+  return Math.ceil((dealsPerWeek || 0) / closeRate);
+}
+
+/**
+ * Pure. This rep's week measured against REP_GOALS_.
+ *
+ * `outcomesLogged` is not decoration: Outcome Disposition is the only column
+ * that says whether a call closed, and it is filled in by hand and mostly
+ * blank (GHL_PIPELINE_MAP.md: "100% manual, 0% filled in"). So a rep can
+ * genuinely have closed deals and still show zero here. Every consumer must
+ * read `coverage` before presenting `dealsClosed` as fact — see
+ * buildGoalProgressSection_, which refuses to show a conversion rate at all
+ * when coverage is too thin to mean anything.
+ */
+function computeGoalProgress_(rows, col, repName, weekStart, weekEnd, tz) {
+  var salesCallsHeld = 0, dealsClosed = 0, outcomesLogged = 0;
+
+  rows.forEach(function (row) {
+    if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== String(repName).toLowerCase()) return;
+    var callDate = row[col['Call Date'] - 1];
+    if (!(callDate instanceof Date) || callDate < weekStart || callDate >= weekEnd) return;
+    if (!isSalesCallTypeForScorecard_(row[col['Call Type'] - 1])) return;
+    // A row only exists once a call was transcribed, so its presence IS the
+    // evidence the call happened — no-shows never reach this sheet at all.
+    salesCallsHeld++;
+    var disposition = String(row[col['Outcome Disposition'] - 1] || '').trim();
+    if (!disposition) return;
+    outcomesLogged++;
+    if (disposition.toLowerCase() === 'sold') dealsClosed++;
+  });
+
+  var target = salesCallsNeededPerWeek_(REP_GOALS_.DEALS_PER_CLOSER_PER_WEEK,
+    REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET);
+  return {
+    salesCallsHeld: salesCallsHeld,
+    salesCallsTarget: target,
+    dealsClosed: dealsClosed,
+    dealsTarget: REP_GOALS_.DEALS_PER_CLOSER_PER_WEEK,
+    outcomesLogged: outcomesLogged,
+    // Share of this week's sales calls that have any outcome recorded at all.
+    coverage: salesCallsHeld ? outcomesLogged / salesCallsHeld : 0,
+    // Deliberately null rather than 0 when nothing is logged: "0%" reads as
+    // "you closed nothing", which is a different claim from "we don't know".
+    closeRate: outcomesLogged ? dealsClosed / outcomesLogged : null,
+    closeRateTarget: REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET
+  };
+}
+
+/**
+ * Pure. The goal block for a rep's weekly scorecard, as { plain, html }.
+ * Returns null for a rep with no goal defined, so nobody gets a target
+ * invented for them.
+ */
+function buildGoalProgressSection_(repName, progress) {
+  var isCloser = REP_GOALS_.CLOSERS.indexOf(repName) !== -1;
+  var isLeadGen = REP_GOALS_.LEAD_GEN.rep === repName;
+  if (!isCloser && !isLeadGen) return null;
+
+  var pct = function (n) { return Math.round(n * 100) + '%'; };
+
+  if (isLeadGen) {
+    var feeds = REP_GOALS_.LEAD_GEN.feedsCloser;
+    var needed = salesCallsNeededPerWeek_(REP_GOALS_.DEALS_PER_CLOSER_PER_WEEK,
+      REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET);
+    var leadGenPlain = 'YOUR TARGET\n' +
+      'Generate enough leads for ' + feeds + ' to hold ' + needed + ' sales calls a week — that is what ' +
+      'one closed deal a week takes at a ' + pct(REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET) + ' close rate.\n' +
+      'Calls you ran this week: ' + progress.salesCallsHeld + '.\n' +
+      'Note: nothing yet measures how many of your bookings actually turn into held sales calls for ' +
+      feeds + ' — that needs the CRM outcome data. Until then this is your activity, not your conversion.\n';
+    return {
+      plain: leadGenPlain,
+      html: '<h3 style="color:#0b8043;font-size:14px;margin:16px 0 6px;">Your target</h3>' +
+        '<p>Generate enough leads for <b>' + feeds + '</b> to hold <b>' + needed + ' sales calls a week</b> — ' +
+        'that is what one closed deal a week takes at a ' + pct(REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET) +
+        ' close rate.</p>' +
+        '<p>Calls you ran this week: <b>' + progress.salesCallsHeld + '</b></p>' +
+        '<p style="color:#5f6368;font-size:12px;">Nothing yet measures how many of your bookings become held ' +
+        'sales calls for ' + feeds + ' — that needs the CRM outcome data. Until then this is activity, not conversion.</p>'
+    };
+  }
+
+  var hitCalls = progress.salesCallsHeld >= progress.salesCallsTarget;
+  var callsLine = 'Sales calls held: ' + progress.salesCallsHeld + ' of ' + progress.salesCallsTarget +
+    (hitCalls ? ' ✓' : ' — ' + (progress.salesCallsTarget - progress.salesCallsHeld) + ' short');
+
+  // The honesty guard. Outcome Disposition is hand-typed and mostly blank, so
+  // a close rate computed off one logged call out of five is noise dressed up
+  // as a metric — and worse, a 0 would read as "closed nothing this week".
+  var thinCoverage = progress.salesCallsHeld === 0 || progress.coverage < 0.5;
+  var closeLine = thinCoverage
+    ? 'Close rate: not enough outcomes logged to say (' + progress.outcomesLogged + ' of ' +
+      progress.salesCallsHeld + ' calls have an outcome). Fill in Outcome Disposition and this becomes real.'
+    : 'Close rate: ' + pct(progress.closeRate) + ' against a ' + pct(progress.closeRateTarget) + ' target' +
+      ' (' + progress.dealsClosed + ' of ' + progress.outcomesLogged + ' logged)';
+  var dealsLine = thinCoverage
+    ? 'Deals closed: ' + progress.dealsClosed + ' recorded — but see above, most outcomes are not logged yet.'
+    : 'Deals closed: ' + progress.dealsClosed + ' of ' + progress.dealsTarget;
+
+  return {
+    plain: 'YOUR TARGET — one closed deal a week\n' + callsLine + '\n' + dealsLine + '\n' + closeLine + '\n',
+    html: '<h3 style="color:#0b8043;font-size:14px;margin:16px 0 6px;">Your target — one closed deal a week</h3>' +
+      '<p>' + callsLine + '<br>' + dealsLine + '<br>' + closeLine + '</p>'
+  };
+}
+
 function isSalesCallTypeForScorecard_(callType) {
   var t = String(callType || '').trim().toLowerCase();
   // 'icons 100 recording' added 04/09/2026 (Phase11_BensPodcastSync.gs) —
@@ -437,7 +577,10 @@ function priorityToImprove_(stats) {
  * average, all-time — moves below the fold into a "For the record" section
  * instead of the headline.
  */
-function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
+function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz, goalProgress) {
+  // goalProgress is optional: a caller that doesn't supply it simply gets
+  // no target block, rather than a fabricated one.
+  var goalSection = goalProgress ? buildGoalProgressSection_(repCfg.name, goalProgress) : null;
   var weekLabel = Utilities.formatDate(weekStart, tz, 'dd/MM') + '–' +
     Utilities.formatDate(new Date(weekEnd.getTime() - 1), tz, 'dd/MM/yyyy');
   var subject = repCfg.name + ' — Your Weekly Call Scorecard — week of ' + weekLabel;
@@ -530,6 +673,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     manualReviewSection +
     taskLevelSection +
     prioritySection +
+    (goalSection ? goalSection.plain + '\n' : '') +
     'Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.\n\n' +
     '— For the record —\n' +
     thisWeekSection +
@@ -610,6 +754,7 @@ function buildWeeklyScorecardEmail_(repCfg, stats, weekStart, weekEnd, tz) {
     taskLevelHtml +
     '<p><strong>One thing to work on this week:</strong> ' +
     escapeHtml_(priority || 'Not enough scored calls this week to identify a pattern.') + '</p>' +
+    (goalSection ? goalSection.html : '') +
     '<p>Bring this to Tuesday\'s review call — we\'ll practice objection handling and asking for the money together.</p>' +
     '<p style="margin:16px 0 4px 0;"><strong style="color:#1a56db;">FOR THE RECORD</strong></p>' +
     thisWeekHtml +
@@ -714,7 +859,8 @@ function buildAndMaybeSendScorecards_(forcePreview) {
     if (stats.worstCall) {
       stats.worstCall.recordingUrl = findRecordingUrlForTranscript_(stats.worstCall.transcriptUrl);
     }
-    var email = buildWeeklyScorecardEmail_(repCfg, stats, week.start, week.end, tz);
+    var goalProgress = computeGoalProgress_(rows, col, repCfg.name, week.start, week.end, tz);
+    var email = buildWeeklyScorecardEmail_(repCfg, stats, week.start, week.end, tz, goalProgress);
 
     if (forcePreview || !WEEKLY_SCORECARD_CONFIG.ENABLED) {
       log_('(preview) ' + repCfg.email + ' <- ' + email.subject + '\n' + email.body + '\n');
