@@ -1723,13 +1723,15 @@ def call_detail_page(request: Request, call_id: int):
     c["call_type_display"] = _display_call_type(c.get("call_type"), c.get("rep"))
     c["failure_mode_display"] = failure_mode_display(c.get("primary_failure_mode"))
     c["booked"] = parse_booked_next_step(c.get("ai_feedback_summary"))
-    # feedback_summary's own paragraphs are separated with \n\n (see every
-    # rubric's "feedback_summary" field description in Phase2_CallScoring.gs
-    # — "each distinct idea on its own line"); splitting on that here is
-    # what lets the template render real paragraphs instead of one dense
-    # pre-wrapped block.
+    # Real bug found live (09/09/2026, Kris: "Wall of text!"): every rubric's
+    # own feedback_summary instructions say "each distinct idea on its own
+    # line separated by a literal \n" (Phase2_CallScoring.gs), and every
+    # feedback-summary builder (buildBensFeedbackSummary_ etc.) joins the
+    # structured "Call type:"/"Booked next step:"/etc. lines onto it with a
+    # single '\n' too — there is no '\n\n' anywhere in this text. Splitting
+    # on '\n\n' found zero breaks and rendered the entire thing as one block.
     c["feedback_paragraphs"] = [
-        p.strip() for p in (c.get("ai_feedback_summary") or "").split("\n\n") if p.strip()
+        p.strip() for p in (c.get("ai_feedback_summary") or "").split("\n") if p.strip()
     ]
     return render(
         request, "call_detail.html",
