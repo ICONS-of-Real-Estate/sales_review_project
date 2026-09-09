@@ -1,13 +1,29 @@
 ## ⚠ PENDING — from the 08-09/09/2026 session (read before touching scoring/transcription)
 
-**1. Tomás needs to read and approve the framework rubric wording.** The
-direction ("THE framework, not all the frameworks") is his; the actual
-prompt text (`frameworkRubricPrompt_()`, `Phase2_CallScoring.gs`) is
-Claude's. Sent to him as a Google Doc, 09/09/2026:
-https://docs.google.com/document/d/1ywx8Mx1QHXKDw1e9xzHbNXNg7k-ruB5R2Up3k2dDQG4/edit
-(also covers the CRM-tagging-historical-list ask). No response from him
-logged yet as of this write-up — check before trusting re-scored framework
-numbers in a real session.
+**1. RESOLVED 09/09/2026 — Tomás approved the framework rubric wording as
+written**, commenting directly on the Doc
+(https://docs.google.com/document/d/1ywx8Mx1QHXKDw1e9xzHbNXNg7k-ruB5R2Up3k2dDQG4/edit):
+"approved". Re-scored framework numbers can now be treated as final, not
+provisional. The Doc's other item — the CRM-tagging-historical-list ask —
+is NOT resolved; see the new pending item below.
+
+**1b. NEW, from the same Doc thread — Tomás wants historical GHL contacts
+tagged "icons 100 guest".** His reply: "List is easy, on the first tab. Can
+you tag all of these with the tag 'icons 100 guest'" —
+https://docs.google.com/spreadsheets/d/1bK0VbgP3xdK5LhfYqO0fps9ivJzPDn3fsDcsl1dEBM4/edit?gid=0#gid=0,
+first tab = "Icons Podcast Recordings" (the same shared spreadsheet the
+Sales Call Log lives in — see CLAUDE.md's "Who does what" section for that
+tab's column layout). Going forward this is automatic (booked on Bens'
+calendar → tagged); only the history needs this one-time manual/scripted
+backfill, since there's no reliable automatic signal to backfill it from.
+Not yet built: nothing in `Phase9_GhlSync.gs` currently writes a GHL tag at
+all (`previewGhlSync()`/`syncGhlEmailAndDisposition_` only backfill
+Prospect Email/Outcome Disposition) — this needs a new function that reads
+the "Icons Podcast Recordings" tab, resolves each guest to a GHL contact
+(reuse the existing name-matching from `previewGhlMatching()`), and applies
+the tag via GHL's contacts API. `GHL_CONFIG.ENABLED` being `false` doesn't
+block this — tagging is a separate write path from the disposition
+backfill that flag gates.
 
 **2. Bruce Henson (Sean, row 377) — "booked 2nd call w/ Tomás: false" when
 it's true, per Tomás on the call.** Not yet investigated — needs Sean's
