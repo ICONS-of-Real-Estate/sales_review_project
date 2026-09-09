@@ -1689,6 +1689,25 @@ function shouldStopRescorePass_(elapsedMs, budgetMs, slowestRowMs, hardCeilingMs
   return elapsedMs + estimatedNextRowMs > hardCeilingMs;
 }
 
+/**
+ * Pure. Resolves rescoreAllCalls_'s scope window from its own `lastWeekOnly`
+ * parameter: `true` -> the last completed Mon-Sun week (original, unchanged
+ * behavior — same window getWeekBounds_ gives the scorecard/playbook
+ * review). A positive number -> that many days back from now, ending now.
+ * Kris's ask (09/09/2026), ahead of Bens' Tuesday session: "Can we review
+ * the last month so Tomas has more for today's training?" — one calendar
+ * week was sometimes too little to review right before a specific day's
+ * session. Anything else (false/0/undefined) -> no window at all, the
+ * whole sheet (rescoreAllCalls()'s original unscoped mode).
+ */
+function rescoreScopeWindow_(lastWeekOnly, now, tz) {
+  if (lastWeekOnly === true) return getWeekBounds_(now, tz);
+  if (typeof lastWeekOnly === 'number' && lastWeekOnly > 0) {
+    return { start: new Date(now.getTime() - lastWeekOnly * 24 * 60 * 60 * 1000), end: now };
+  }
+  return null;
+}
+
 function rescoreAllCalls_(dryRun, lastWeekOnly) {
   RUN_TAG = 'rescoreAllCalls_';
   var lock = LockService.getScriptLock();
@@ -1739,7 +1758,7 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
     // drift apart. Everything else (resumability, the version skip, the time
     // budget) is unchanged; the rest of history can still be backfilled
     // later with the unscoped run.
-    var scopeWeek = lastWeekOnly ? getWeekBounds_(new Date(), CONFIG.BUSINESS_TIMEZONE) : null;
+    var scopeWeek = rescoreScopeWindow_(lastWeekOnly, new Date(), CONFIG.BUSINESS_TIMEZONE);
     var skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0, skippedNotYetScored = 0;
     var skippedOutsideWeek = 0;
     for (var i = 0; i < values.length; i++) {
@@ -1778,22 +1797,34 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
     }
     eligible.sort(function (a, b) { return a.variant < b.variant ? -1 : (a.variant > b.variant ? 1 : 0); });
 
-    var scopeLabel = scopeWeek
-      ? ' [last week only: ' + Utilities.formatDate(scopeWeek.start, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') +
+    // Kris's ask (09/09/2026): a day-count window (rescoreScopeWindow_'s
+    // other mode, e.g. "last month") gets its own label instead of
+    // borrowing "last week only" — the exact window matters when deciding
+    // whether a call should have been picked up.
+    var scopeLabel = '';
+    var scopeFnName = 'AllCalls';
+    if (scopeWeek && lastWeekOnly === true) {
+      scopeLabel = ' [last week only: ' + Utilities.formatDate(scopeWeek.start, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') +
         ' - ' + Utilities.formatDate(shiftBusinessDate_(scopeWeek.end, CONFIG.BUSINESS_TIMEZONE, -1),
-          CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + '; ' + skippedOutsideWeek + ' row(s) outside it untouched]'
-      : '';
+          CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') + '; ' + skippedOutsideWeek + ' row(s) outside it untouched]';
+      scopeFnName = 'LastWeekCalls';
+    } else if (scopeWeek) {
+      scopeLabel = ' [last ' + lastWeekOnly + ' day(s): ' + Utilities.formatDate(scopeWeek.start, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') +
+        ' - ' + Utilities.formatDate(scopeWeek.end, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') +
+        '; ' + skippedOutsideWeek + ' row(s) outside it untouched]';
+      scopeFnName = 'Last' + lastWeekOnly + 'DaysCalls';
+    }
     // Real confusion caused live (08/09/2026): "6 row(s) out of 454 need a
     // rescore" read as "454 calls happened last week," when 454 is the
     // WHOLE SHEET'S all-time row count — scopeWeek narrows what gets
     // touched, not what this denominator counted. The scoped population
-    // (rows actually inside the week — here, 10) is what belongs in "out
+    // (rows actually inside the window — here, 10) is what belongs in "out
     // of N," with the sheet-wide total kept as separate, clearly-labeled
     // context rather than silently standing in for it.
     var scopedTotal = scopeWeek ? (values.length - skippedOutsideWeek) : values.length;
-    log_((dryRun ? 'previewRescore' : 'rescore') + (scopeWeek ? 'LastWeekCalls' : 'AllCalls') + scopeLabel + ': ' +
-      eligible.length + ' row(s) out of ' + scopedTotal +
-      (scopeWeek ? ' call(s) that week' : ' row(s) in the sheet') +
+    var scopedPopulationLabel = lastWeekOnly === true ? ' call(s) that week' : (scopeWeek ? ' call(s) in that window' : ' row(s) in the sheet');
+    log_((dryRun ? 'previewRescore' : 'rescore') + scopeFnName + scopeLabel + ': ' +
+      eligible.length + ' row(s) out of ' + scopedTotal + scopedPopulationLabel +
       ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
       (dryRun ? ' — dry run, no model calls.' : ' — this can take a while, one real model call per row.'));
 
@@ -1940,6 +1971,23 @@ function previewRescoreLastWeekCalls() {
  */
 function rescoreLastWeekCalls() {
   return rescoreAllCalls_(false, /*lastWeekOnly=*/true);
+}
+
+/**
+ * Dry run — the same rescore, scoped to the last 30 days instead of one
+ * calendar week. Kris's ask (09/09/2026), ahead of Bens' Tuesday session:
+ * "Can we review the last month so Tomas has more for today's training?" —
+ * one week is sometimes too little to review right before a specific day's
+ * session. Same resumability/skip-if-current behavior as every other
+ * rescore entry point; this only widens which rows are in scope.
+ */
+function previewRescoreLastMonthCalls() {
+  return rescoreAllCalls_(true, /*lastWeekOnly=*/30);
+}
+
+/** Live version of previewRescoreLastMonthCalls() above — run the preview first. */
+function rescoreLastMonthCalls() {
+  return rescoreAllCalls_(false, /*lastWeekOnly=*/30);
 }
 
 /** Trigger target for the scoped rescore — same self-removing pattern as runRescoreAllCallsViaTrigger_ above, so it stops on its own once last week is fully rescored. */

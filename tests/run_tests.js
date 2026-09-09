@@ -1919,6 +1919,79 @@ test('rescoreAllCalls_ in last-week-only mode rescores just the week the trainin
   }
 });
 
+test('rescoreScopeWindow_ resolves each of its three modes correctly (Kris 09/09/2026: "Can we review the last month...")', () => {
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const now = new gas.Date('2026-09-09T12:00:00.000Z');
+
+  // true -> unchanged, the last completed Mon-Sun week.
+  const week = gas.rescoreScopeWindow_(true, now, tz);
+  assert.deepEqual(week, gas.getWeekBounds_(now, tz));
+
+  // a positive number -> that many days back from now, ending now.
+  const days = gas.rescoreScopeWindow_(30, now, tz);
+  assert.equal(days.end.getTime(), now.getTime());
+  assert.equal(days.start.getTime(), now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  // anything else -> no window at all.
+  assert.equal(gas.rescoreScopeWindow_(false, now, tz), null);
+  assert.equal(gas.rescoreScopeWindow_(undefined, now, tz), null);
+  assert.equal(gas.rescoreScopeWindow_(0, now, tz), null);
+});
+
+test('rescoreAllCalls_ in a day-count window rescores the last month, with its own log label distinct from the week mode', () => {
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const headers = gas.SALES_CALL_LOG_HEADERS;
+  const col = {};
+  headers.forEach((h, i) => { col[h] = i + 1; });
+
+  const now = new gas.Date();
+  const inWindow = new gas.Date(now.getTime() - 10 * 24 * 3600 * 1000); // 10 days ago
+  const outsideWindow = new gas.Date(now.getTime() - 60 * 24 * 3600 * 1000); // 60 days ago
+
+  const row = (name, date) => {
+    const r = new Array(headers.length).fill('');
+    r[col['Prospect Name'] - 1] = name;
+    r[col['Call Date'] - 1] = date;
+    r[col['Rep'] - 1] = 'Bens';
+    r[col['Call Type'] - 1] = 'Icons 100 Recording';
+    r[col['Call Quality Score'] - 1] = 3;
+    r[col['Transcript URL'] - 1] = 'https://drive.google.com/file/d/x/view';
+    r[col['Rubric Version'] - 1] = '2026-08-29-pitch-delivery'; // stale, so eligible
+    return r;
+  };
+  const values = [row('Inside The Month', inWindow), row('Two Months Ago', outsideWindow)];
+
+  const fakeSheet = {
+    getLastRow: () => values.length + 1,
+    getSheetId: () => 1,
+    getName: () => 'Sales Call Log',
+    getRange(startRow, startCol, numRows) {
+      if (startRow === 1) return { getValues: () => [headers.slice()] };
+      return { getValues: () => values.slice(startRow - 2, startRow - 2 + numRows) };
+    }
+  };
+
+  const originals = { log: gas.log_, ss: gas.SpreadsheetApp, lock: gas.LockService, ut: gas.Utilities };
+  const logged = [];
+  gas.log_ = (m) => logged.push(String(m));
+  gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) };
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: (n) => (n === 'Sales Call Log' ? fakeSheet : null), getSheets: () => [fakeSheet] }) };
+  gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+  try {
+    gas.rescoreAllCalls_(true, /*lastWeekOnly=*/30);
+    const all = logged.join('\n');
+    assert.ok(/Inside The Month/.test(all), 'a call inside the 30-day window must be picked up');
+    assert.ok(!/Two Months Ago/.test(all), 'a call outside the 30-day window must not be rescored');
+    assert.ok(/previewRescoreLast30DaysCalls/.test(all), 'the day-window mode gets its own log label, distinct from LastWeekCalls');
+    assert.ok(/1 row\(s\) out of 1 call\(s\) in that window need a rescore this pass/.test(all));
+  } finally {
+    gas.log_ = originals.log;
+    gas.SpreadsheetApp = originals.ss;
+    gas.LockService = originals.lock;
+    gas.Utilities = originals.ut;
+  }
+});
+
 test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version column', () => {
   // Minimal fake sheet: getRange(row, col).setValue(v) records into a plain
   // map keyed "row:col" — writeScoreToRow_ only ever calls getRange/setValue,
