@@ -94,22 +94,23 @@ def test_rep_detail_page_shows_success_not_the_raw_none_enum_for_a_clean_call(cl
     assert "Success" in resp.text
 
 
-def test_call_detail_page_splits_feedback_into_real_lines_not_one_wall_of_text(client, db_path, conn):
-    """Real bug found live (09/09/2026, Kris: "Wall of text!"): the
-    feedback-summary builders join every line — the coaching prose AND the
-    structured "Call type:"/"Booked next step:" fields — with a single
-    '\n', never '\n\n'. Splitting on '\n\n' found no breaks at all and
-    rendered the whole thing as one dense block."""
+def test_call_detail_page_splits_feedback_into_real_paragraphs_and_a_details_list(client, db_path, conn):
+    """Real bug found live (09/09/2026, Kris: "Wall of text!", then "Better
+    but still a wall of text! Use italic, bold, whitespace"): the structured
+    "Call type:"/"Booked next step:" lines now render in their own Details
+    list (label/value, not one long colon-joined string), separate from the
+    coaching prose paragraphs. See render_feedback's own unit tests for the
+    formatting details."""
     call_id = insert_call(
         conn, rep="Bens", prospect_name="Esme Sanchez",
-        ai_feedback_summary="Quoted moment here.\nCall type: icons_100_interview\nBooked next step: True (QC)",
+        ai_feedback_summary='"Quoted moment here." That worked well.\nCall type: icons_100_interview\nBooked next step: True (QC)',
     )
     conn.commit()
     resp = client.get(f"/calls/{call_id}")
     assert resp.status_code == 200
-    assert resp.text.count("<p") >= 3, "each line must render as its own paragraph, not one combined block"
-    assert "Quoted moment here." in resp.text
-    assert "Booked next step: True (QC)" in resp.text
+    assert "<strong>&quot;Quoted moment here.&quot;</strong>" in resp.text
+    assert "Call type" in resp.text and "icons_100_interview" in resp.text
+    assert "Booked next step" in resp.text and "True (QC)" in resp.text
 
 
 def test_call_detail_page_renders_the_full_feedback_and_a_transcript_link(client, db_path, conn):

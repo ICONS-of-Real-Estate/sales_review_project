@@ -413,6 +413,62 @@ class TestParseBookedNextStep:
         assert app_module.parse_booked_next_step(None) is None
 
 
+class TestRenderFeedback:
+    """Kris's ask (09/09/2026): first "Wall of text!", then "Better but
+    still a wall of text! Use italic, bold, whitespace. Don't be lazy" —
+    render_feedback splits the coaching prose into one paragraph per
+    sentence (bolding the opening quoted moment, italicizing the closing
+    "one behavior to change" line every rubric's own prompt asks for) and
+    pulls every structured "Label: value" line out into its own list."""
+
+    def test_pulls_known_structured_lines_into_details_separate_from_prose(self):
+        text = (
+            "This is the coaching prose.\n"
+            "Call type: icons_100_interview\n"
+            "Booked next step: True (QC)\n"
+            "Root cause if no booking: N/A"
+        )
+        paragraphs, details = app_module.render_feedback(text)
+        assert len(paragraphs) == 1
+        assert "coaching prose" in str(paragraphs[0])
+        assert details == [
+            ("Call type", "icons_100_interview"),
+            ("Booked next step", "True (QC)"),
+            ("Root cause if no booking", "N/A"),
+        ]
+
+    def test_bolds_the_leading_quoted_moment(self):
+        paragraphs, _ = app_module.render_feedback('"This is the key quote." Some more prose after it.')
+        assert str(paragraphs[0]).startswith("<strong>&quot;This is the key quote.&quot;</strong>")
+
+    def test_splits_multiple_sentences_into_separate_paragraphs(self):
+        text = "First idea here. Second idea here. Third and final idea here."
+        paragraphs, _ = app_module.render_feedback(text)
+        assert len(paragraphs) == 3
+
+    def test_italicizes_only_the_closing_sentence_when_there_is_more_than_one(self):
+        text = "First idea here. One behavior to change: do the thing."
+        paragraphs, _ = app_module.render_feedback(text)
+        assert "<em>" not in str(paragraphs[0])
+        assert str(paragraphs[1]).startswith("<em>") and str(paragraphs[1]).endswith("</em>")
+
+    def test_a_single_sentence_is_never_italicized_as_a_closing_line(self):
+        paragraphs, _ = app_module.render_feedback("Just one sentence, nothing to close out.")
+        assert "<em>" not in str(paragraphs[0])
+
+    def test_escapes_a_literal_angle_bracket_in_the_ai_written_text(self):
+        # The AI's own text is untrusted the same way the FTS snippet already
+        # treats it (M-05 elsewhere in this file) — a literal "<" must never
+        # reach the page as real markup.
+        paragraphs, _ = app_module.render_feedback("He said <script>alert(1)</script> on the call.")
+        assert "<script>" not in str(paragraphs[0])
+        assert "&lt;script&gt;" in str(paragraphs[0])
+
+    def test_blank_or_missing_feedback_returns_no_paragraphs_or_details(self):
+        assert app_module.render_feedback("") == ([], [])
+        assert app_module.render_feedback(None) == ([], [])
+
+
 class TestRepDetail:
     def test_returns_only_that_reps_calls_most_recent_first(self, seeded_db):
         calls = app_module.rep_detail("Alice")

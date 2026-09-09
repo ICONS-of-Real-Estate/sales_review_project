@@ -49,12 +49,24 @@
   <h2 style="margin-top:0;">AI feedback</h2>
   {% if call.feedback_paragraphs %}
     {% for p in call.feedback_paragraphs %}
-    <p style="line-height:1.6;">{{ p }}</p>
+    <p style="line-height:1.7; margin:0 0 1rem;">{{ p }}</p>
     {% endfor %}
   {% else %}
     <p class="muted">No feedback on file for this call.</p>
   {% endif %}
 </div>
+
+{% if call.feedback_details %}
+<div class="chart-card">
+  <h2 style="margin-top:0;">Details</h2>
+  <div style="display:grid; grid-template-columns: max-content 1fr; gap:0.5rem 1rem;">
+    {% for label, value in call.feedback_details %}
+    <div class="muted"><strong>{{ label }}</strong></div>
+    <div>{{ value }}</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 {% if call.transcript_url %}
 <p class="muted" style="font-size:0.85rem;">

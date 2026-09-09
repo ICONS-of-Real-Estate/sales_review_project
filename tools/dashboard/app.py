@@ -26,6 +26,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -907,6 +908,71 @@ def parse_booked_next_step(feedback_text):
     return None
 
 
+# The exact structured "Label: value" lines every feedback-summary builder
+# in Phase2_CallScoring.gs appends after the coaching prose (grep for
+# "': ' +" against that file if this ever needs updating) — kept apart from
+# the prose so the call-detail page doesn't repeat "At a glance" table
+# fields back at you as flat text, real bug found live (09/09/2026, Kris:
+# "Wall of text!").
+FEEDBACK_DETAIL_LABEL_PREFIXES = (
+    "Call type:", "Booked next step:", "Booked Sales Call:",
+    "Booked 2nd call w/ Tomás:", "Discovery adequate:", "Framework explained:",
+    "Delivery effective:", "Interview content quality:", "Root cause if no booking:",
+    "Root cause if thin call:", "Root cause if no sale:", "Call role:",
+    "Elevated by the original rep:",
+)
+
+# A sentence boundary: punctuation, then whitespace, then a capital letter or
+# an opening quote — good enough for this coaching prose (no abbreviations to
+# trip over in practice) without pulling in a real NLP sentence splitter for
+# one dashboard page.
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z"“])')
+_LEADING_QUOTE_RE = re.compile(r'^("[^"]+")')
+
+
+def render_feedback(feedback_text):
+    """Kris's ask (09/09/2026): "Better but still a wall of text! Use
+    italic, bold, whitespace." Splits the free-text AI Feedback Summary
+    into (a) the structured "Label: value" lines — shown separately, in
+    their own small list, not mixed into the prose — and (b) the actual
+    coaching prose, broken into one real paragraph per sentence (real
+    whitespace instead of one dense block), with the opening quoted moment
+    bolded and the closing "one behavior to change" line italicized, since
+    every rubric's own prompt ends feedback_summary with exactly that.
+    Returns (list of markupsafe.Markup paragraphs, list of (label, value)
+    tuples) — escaped exactly once, safe to render with no further `|safe`
+    filtering needed in the template, same \\x01-style marker trick already
+    used for the FTS snippet highlighting elsewhere in this file."""
+    lines = [ln.strip() for ln in (feedback_text or "").split("\n") if ln.strip()]
+    prose_lines, details = [], []
+    for line in lines:
+        prefix = next((p for p in FEEDBACK_DETAIL_LABEL_PREFIXES if line.startswith(p)), None)
+        if prefix:
+            label, _, value = line.partition(":")
+            details.append((label.strip(), value.strip()))
+        else:
+            prose_lines.append(line)
+
+    sentences = []
+    for line in prose_lines:
+        sentences.extend(s.strip() for s in _SENTENCE_SPLIT_RE.split(line) if s.strip())
+
+    paragraphs = []
+    for i, sentence in enumerate(sentences):
+        marked = sentence
+        if i == 0:
+            marked = _LEADING_QUOTE_RE.sub("\x01\\1\x02", marked, count=1)
+        if len(sentences) > 1 and i == len(sentences) - 1:
+            marked = "\x03" + marked + "\x04"
+        escaped = html.escape(marked)
+        escaped = (
+            escaped.replace("\x01", "<strong>").replace("\x02", "</strong>")
+            .replace("\x03", "<em>").replace("\x04", "</em>")
+        )
+        paragraphs.append(Markup(escaped))
+    return paragraphs, details
+
+
 def rep_detail(rep, call_type=""):
     """`call_type` optionally restricts to one raw Call Type value (Kris's
     ask, 08/09/2026: "Split calls All / QC / Sales Call" tabs on the rep
@@ -1723,16 +1789,7 @@ def call_detail_page(request: Request, call_id: int):
     c["call_type_display"] = _display_call_type(c.get("call_type"), c.get("rep"))
     c["failure_mode_display"] = failure_mode_display(c.get("primary_failure_mode"))
     c["booked"] = parse_booked_next_step(c.get("ai_feedback_summary"))
-    # Real bug found live (09/09/2026, Kris: "Wall of text!"): every rubric's
-    # own feedback_summary instructions say "each distinct idea on its own
-    # line separated by a literal \n" (Phase2_CallScoring.gs), and every
-    # feedback-summary builder (buildBensFeedbackSummary_ etc.) joins the
-    # structured "Call type:"/"Booked next step:"/etc. lines onto it with a
-    # single '\n' too — there is no '\n\n' anywhere in this text. Splitting
-    # on '\n\n' found zero breaks and rendered the entire thing as one block.
-    c["feedback_paragraphs"] = [
-        p.strip() for p in (c.get("ai_feedback_summary") or "").split("\n") if p.strip()
-    ]
+    c["feedback_paragraphs"], c["feedback_details"] = render_feedback(c.get("ai_feedback_summary"))
     return render(
         request, "call_detail.html",
         {"active_page": "", "freshness": freshness_status(), "call": c, "call_id": call_id},
