@@ -33,6 +33,7 @@ from starlette.middleware.sessions import SessionMiddleware
 import auth
 import sheets_write
 import sync
+import transcripts
 from playbooks import PLAYBOOKS, reindex_playbooks, render_playbook, search_playbooks
 
 # Which PLAYBOOKS slug belongs on which rep's own /reps/{rep} page.
@@ -1790,6 +1791,13 @@ def call_detail_page(request: Request, call_id: int):
     c["failure_mode_display"] = failure_mode_display(c.get("primary_failure_mode"))
     c["booked"] = parse_booked_next_step(c.get("ai_feedback_summary"))
     c["feedback_paragraphs"], c["feedback_details"] = render_feedback(c.get("ai_feedback_summary"))
+    # Kris's ask (09/09/2026), looking at Mark Ryan's feedback: "The feedback
+    # is good but need to see more of what Bens said so we can train him" —
+    # pull the real dialogue around whatever the feedback quoted, so Tomás
+    # doesn't have to open the full transcript just to see the context.
+    excerpts = transcripts.build_transcript_excerpts(c.get("transcript_url"), c.get("ai_feedback_summary"))
+    c["transcript_excerpts"] = excerpts["excerpts"]
+    c["transcript_excerpts_error"] = excerpts["error"]
     return render(
         request, "call_detail.html",
         {"active_page": "", "freshness": freshness_status(), "call": c, "call_id": call_id},

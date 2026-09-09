@@ -18,7 +18,15 @@ proven before any auth code is written (Phase B).
   Sheet: Tomás's Approve/Reject (or "Real Lead"/"Not a real lead") clicks on
   `/review` (see below). Everything else stays read-only.
 - `app.py` — the FastAPI app. Reads only from `dashboard.db` (never talks
-  to Google directly) except `/review/decide`, which calls `sheets_write.py`.
+  to Google directly) except `/review/decide`, which calls `sheets_write.py`,
+  and the `/calls/{id}` detail page, which calls `transcripts.py`.
+- `transcripts.py` — fetches the real transcript text a call's Transcript
+  URL points at (Drive API, read-only) and pulls the dialogue around
+  whatever the AI feedback quoted, shown on `/calls/{id}` under "What was
+  actually said" — added 09/09/2026 (Kris: "The feedback is good but need
+  to see more of what Bens said so we can train him"). If this fails (SA
+  not shared on the file yet, Drive API not enabled) the page still renders
+  fine, just with a small note instead of the excerpt — see step 5 below.
 - `/review` — one finding/lead at a time from `CRM Organization Review` /
   `Lead Reconciliation - All` (Phase15_CrmOrganizationReview.gs /
   Phase13_LeadReconciliation.gs), with big Approve/Reject buttons that write
@@ -57,6 +65,29 @@ it doesn't block this read-only step):
 This is deliberately a service account, not the transcription pipeline's
 `token.json` user-OAuth pattern — see the research report §3.1/§0.4 for
 why a user refresh token doesn't belong in this new piece.
+
+### 5. Enable the transcript-excerpt feature (Drive API access)
+
+`/calls/{id}`'s "What was actually said" section (`transcripts.py`) reads
+the transcript file each Sales Call Log row's Transcript URL points at, via
+Drive, using the same service account as above with a separate
+`drive.readonly` scope (never a wider one — it only ever fetches the one
+file a call already links to, it doesn't browse Drive). Two things need to
+be true for it to actually work, and if either isn't, the page just shows
+a small "Couldn't load the transcript excerpt" note instead of crashing:
+
+1. **Enable the Google Drive API** for the same GCP project as step 1
+   above (GCP Console → APIs & Services → Library → Drive API → Enable).
+2. **Share the transcript files/folder with the service account.** The
+   transcription pipeline writes each call's transcript `.txt` into a
+   Drive folder that isn't currently shared with this service account (it
+   was only ever shared for the Sheets writes above) — share that parent
+   folder (or the individual transcript files) with the same
+   `...@....iam.gserviceaccount.com` email as **Viewer** (read-only is
+   enough; this feature never writes to Drive).
+
+Nothing else changes — no new env var, no new dependency (Drive uses the
+same `google-api-python-client`/`google-auth` already pinned for Sheets).
 
 ### 2. Add the "Training Assignments" mirror to the live sheet
 

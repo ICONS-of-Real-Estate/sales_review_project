@@ -4,6 +4,7 @@ DASHBOARD_REQUIRE_LOGIN=false (set in conftest.py before app is imported)
 means RequireLoginMiddleware no-ops, so these don't need a real OAuth flow.
 """
 import app as app_module
+import transcripts
 from conftest import insert_call
 
 
@@ -152,6 +153,67 @@ def test_call_detail_page_for_an_unknown_id_still_200s_with_an_explanation(clien
     resp = client.get("/calls/999999")
     assert resp.status_code == 200
     assert "not" in resp.text.lower()
+
+
+def test_call_detail_page_shows_transcript_excerpts_when_the_feedback_quotes_something(client, db_path, conn, monkeypatch):
+    """Kris's ask (09/09/2026): "The feedback is good but need to see more
+    of what Bens said so we can train him." transcripts.build_transcript_excerpts
+    itself is unit-tested in test_transcripts.py; this only checks app.py
+    actually calls it and renders what comes back."""
+    monkeypatch.setattr(
+        transcripts, "build_transcript_excerpts",
+        lambda transcript_url, feedback_text, **kw: {
+            "excerpts": [{"turns": [
+                {"speaker": "Bens Olano", "timestamp": "00:05.55", "text": "Setup line.", "highlight": False},
+                {"speaker": "Mark Ryan", "timestamp": "00:24.19", "text": "Sure, happy to talk.", "highlight": True},
+            ]}],
+            "error": None,
+        },
+    )
+    call_id = insert_call(
+        conn, rep="Bens", prospect_name="Mark Ryan",
+        transcript_url="https://drive.google.com/file/d/abc123/view",
+        ai_feedback_summary='"Sure, happy to talk" was the moment it worked.',
+    )
+    conn.commit()
+    resp = client.get(f"/calls/{call_id}")
+    assert resp.status_code == 200
+    assert "What was actually said" in resp.text
+    assert "Sure, happy to talk." in resp.text
+    assert "Mark Ryan" in resp.text
+
+
+def test_call_detail_page_shows_the_transcript_excerpt_error_instead_of_crashing(client, db_path, conn, monkeypatch):
+    monkeypatch.setattr(
+        transcripts, "build_transcript_excerpts",
+        lambda transcript_url, feedback_text, **kw: {
+            "excerpts": [],
+            "error": "Couldn't load the transcript excerpt — use the full transcript link below instead.",
+        },
+    )
+    call_id = insert_call(
+        conn, rep="Bens", prospect_name="Mark Ryan",
+        transcript_url="https://drive.google.com/file/d/abc123/view",
+        ai_feedback_summary='"Sure, happy to talk" was the moment it worked.',
+    )
+    conn.commit()
+    resp = client.get(f"/calls/{call_id}")
+    assert resp.status_code == 200
+    assert "load the transcript excerpt" in resp.text
+
+
+def test_call_detail_page_with_no_quotable_feedback_shows_no_excerpts_section(client, db_path, conn):
+    """No mock here on purpose: transcript_url is blank, so
+    build_transcript_excerpts short-circuits before ever touching the
+    network/credentials — real behavior, not a stubbed one."""
+    call_id = insert_call(
+        conn, rep="Bens", prospect_name="Mark Ryan",
+        ai_feedback_summary="No quotes in this feedback at all.",
+    )
+    conn.commit()
+    resp = client.get(f"/calls/{call_id}")
+    assert resp.status_code == 200
+    assert "What was actually said" not in resp.text
 
 
 def test_rep_detail_page_call_type_tabs_filter_the_calls_table(client, db_path, conn):

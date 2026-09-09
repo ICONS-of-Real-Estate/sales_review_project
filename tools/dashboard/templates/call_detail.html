@@ -56,6 +56,28 @@
   {% endif %}
 </div>
 
+{% if call.transcript_excerpts %}
+<div class="chart-card">
+  <h2 style="margin-top:0;">What was actually said</h2>
+  <p class="muted" style="margin-top:-0.5rem;">The dialogue around each moment the feedback above quotes.</p>
+  {% for excerpt in call.transcript_excerpts %}
+  <div style="margin:0 0 1.25rem; padding-left:0.75rem; border-left:3px solid #262c3d;">
+    {% for turn in excerpt.turns %}
+    <p style="margin:0 0 0.6rem; line-height:1.5; {{ 'background:#1c2436; border-radius:4px; padding:0.4rem 0.6rem;' if turn.highlight else '' }}">
+      <strong>{{ turn.speaker }}</strong> <span class="muted" style="font-size:0.8em;">{{ turn.timestamp }}</span><br>
+      {{ turn.text }}
+    </p>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% elif call.transcript_excerpts_error %}
+<div class="chart-card">
+  <h2 style="margin-top:0;">What was actually said</h2>
+  <p class="muted">{{ call.transcript_excerpts_error }}</p>
+</div>
+{% endif %}
+
 {% if call.feedback_details %}
 <div class="chart-card">
   <h2 style="margin-top:0;">Details</h2>
