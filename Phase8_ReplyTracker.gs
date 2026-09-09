@@ -56,7 +56,14 @@
  */
 
 var REPLY_TRACKER_CONFIG = {
-  ENABLED: true, // Flipped true 20/08/2026 after real classifications (Sabrina/Marilyn/CARY/Stop/Michelle/Ray) checked out.
+  // Flipped true 20/08/2026 after real classifications (Sabrina/Marilyn/CARY/
+  // Stop/Michelle/Ray) checked out; flipped back false 09/09/2026 per Kris:
+  // "Turn off this email. It's not useful." Per this flag's own doc comment
+  // above (and the check at its one call site below), this only gates the
+  // daily "Sales Review - Daily Tracker" report EMAIL — the underlying
+  // classify-and-log pass keeps running either way (read/log only, never
+  // sends anything on its own), so the reply data itself isn't lost.
+  ENABLED: false,
 
   FORWARD_ADDRESS: 'network@ardorseo.com', // confirmed 20/08/2026 — see file header.
   IMPERSONATE_EMAIL: 'joana@iconsofrealestate.com', // whose inbox actually holds these forwards.
