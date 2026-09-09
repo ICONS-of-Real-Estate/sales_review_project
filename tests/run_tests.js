@@ -2620,6 +2620,61 @@ test('JOANA_DEFAULT_CALL_TYPE_ is Sales Call and matches the rubric her scoring 
     'Bens\' legacy backfill default must be untouched — his QC rows really are QCs');
 });
 
+test('callTypeForLegacyRow_ labels a Bens guest interview "Icons 100 Recording" instead of the flat QC default (Kris, 09/09/2026: "How do we setup a grading for ICONS 100?")', () => {
+  assert.equal(gas.callTypeForLegacyRow_({ call_role: 'icons_100_interview' }), 'Icons 100 Recording');
+  // A real QC (call_role 'qc') and Joana's plain scoreTranscript_ result
+  // (no call_role field at all) must both still fall back to the old flat
+  // default — this only ever special-cases the interview role.
+  assert.equal(gas.callTypeForLegacyRow_({ call_role: 'qc' }), gas.PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE);
+  assert.equal(gas.callTypeForLegacyRow_({ call_role: 'unclear' }), gas.PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE);
+  assert.equal(gas.callTypeForLegacyRow_({ feedback_summary: 'no call_role field at all' }),
+    gas.PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE);
+});
+
+test('callTypeForLegacyRow_-labelled rows resolve to the Bens rubric on a future rescore instead of silently downgrading to plain QC', () => {
+  // The real second bug this fixes: resolveRubricVariantForRow_ checks
+  // callType === 'QC' BEFORE it ever checks rep === 'Bens', so as long as
+  // these rows stayed labelled 'QC', any later rescore would drop the
+  // interview-content-quality dimension entirely without anyone noticing.
+  const callType = gas.callTypeForLegacyRow_({ call_role: 'icons_100_interview' });
+  assert.equal(gas.resolveRubricVariantForRow_('Bens', 'fallback_heuristic', callType), 'bens');
+});
+
+test('bensMislabelledInterviewRows_ finds only Bens\' rows the AI already graded as an interview but the sheet still calls "QC"', () => {
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (over) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    Object.keys(over).forEach((k) => { r[col[k] - 1] = over[k]; });
+    return r;
+  };
+  const rows = [
+    row({
+      Rep: 'Bens', 'Call Type': 'QC', 'Prospect Name': 'Mislabelled Interview',
+      'AI Feedback Summary': 'Some feedback.\n\nCall type: icons_100_interview\nBooked next step: true (Sales Call)'
+    }),
+    // A real QC he ran — must be left alone, no interview marker in the feedback.
+    row({
+      Rep: 'Bens', 'Call Type': 'QC', 'Prospect Name': 'Real QC',
+      'AI Feedback Summary': 'Some feedback.\n\nCall type: qc\nBooked next step: true (Sales Call)'
+    }),
+    // Already correct.
+    row({
+      Rep: 'Bens', 'Call Type': 'Icons 100 Recording', 'Prospect Name': 'Already Right',
+      'AI Feedback Summary': 'Call type: icons_100_interview'
+    }),
+    // Another rep's QC with the marker text coincidentally present — not his to touch.
+    row({
+      Rep: 'Sean', 'Call Type': 'QC', 'Prospect Name': 'Sean QC',
+      'AI Feedback Summary': 'Call type: icons_100_interview'
+    })
+  ];
+  const hits = gas.bensMislabelledInterviewRows_(rows, col);
+  assert.equal(hits.length, 1, 'exactly one row qualifies');
+  assert.equal(hits[0].prospectName, 'Mislabelled Interview');
+  assert.equal(hits[0].rowIndex, 2, 'sheet row index, header-offset');
+});
+
 test('a row whose score is fake is listed for Tomás but can never be ranked as a failed element (Frank Pirrone, 08/09/2026)', () => {
   // The sentinel writes every flag false, so before this it ranked as a real
   // failure on every element at once and won the week's focus outright.

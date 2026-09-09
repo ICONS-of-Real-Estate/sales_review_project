@@ -1595,6 +1595,79 @@ function backfillJoanaCallTypesLastWeek() {
   return backfillJoanaCallTypes_(false, /*lastWeekOnly=*/true);
 }
 
+/**
+ * Pure. Which of Bens' existing Sales Call Log rows were labelled 'QC' by
+ * scoreLegacyTranscriptFolder's old flat default even though the AI already
+ * correctly identified and graded them as a guest interview — see
+ * callTypeForLegacyRow_'s own header for the full story. Narrow on purpose,
+ * same reasoning as joanaMislabelledCallTypeRows_: only Bens' rows, only
+ * ones currently labelled 'QC', and only ones carrying the exact
+ * 'Call type: icons_100_interview' marker buildBensFeedbackSummary_ writes —
+ * a real QC he ran some other way is left alone, since this can't tell one
+ * from a mislabelled interview and must not guess.
+ */
+function bensMislabelledInterviewRows_(rows, col) {
+  var out = [];
+  (rows || []).forEach(function (row, i) {
+    if (String(row[col['Rep'] - 1] || '').trim() !== 'Bens') return;
+    if (String(row[col['Call Type'] - 1] || '').trim() !== 'QC') return;
+    if (String(row[col['AI Feedback Summary'] - 1] || '').indexOf('Call type: icons_100_interview') === -1) return;
+    out.push({
+      rowIndex: i + 2,
+      prospectName: row[col['Prospect Name'] - 1],
+      callDate: row[col['Call Date'] - 1],
+      existingScore: row[col['Call Quality Score'] - 1]
+    });
+  });
+  return out;
+}
+
+/**
+ * Relabels those rows to 'Icons 100 Recording'. Unlike backfillJoanaCallTypes_,
+ * this does NOT clear Rubric Version or force a rescore — the AI already
+ * graded these correctly against the Bens/interview rubric the first time
+ * (call_role was decided from the transcript itself, not from the wrong
+ * label), so only the sheet's Call Type column was ever wrong. Preview-first
+ * like every other write in this project.
+ */
+function backfillBensInterviewCallTypes_(dryRun) {
+  RUN_TAG = 'backfillBensInterviewCallTypes_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = resolveSheet_(ss, 'Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  var rows = lastRow < 2 ? [] : sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
+  var hits = bensMislabelledInterviewRows_(rows, col);
+
+  log_((dryRun ? 'previewBensInterviewCallTypeBackfill' : 'backfillBensInterviewCallTypes') + ': ' + hits.length +
+    ' row(s) currently labelled "QC" that the AI already graded as an icons_100_interview and should be ' +
+    '"Icons 100 Recording".' + (dryRun ? ' Dry run — nothing written.' : ''));
+
+  hits.forEach(function (h) {
+    log_('  row ' + h.rowIndex + ' "' + h.prospectName + '" ' +
+      (h.callDate instanceof Date ? Utilities.formatDate(h.callDate, CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy') : '(no date)') +
+      ' score=' + h.existingScore +
+      (dryRun ? ' — WOULD relabel to "Icons 100 Recording" (score/rubric untouched).'
+              : ' — relabelled to "Icons 100 Recording".'));
+    if (dryRun) return;
+    sheet.getRange(h.rowIndex, col['Call Type']).setValue('Icons 100 Recording');
+  });
+
+  return hits.length;
+}
+
+/** Dry run — lists which of Bens' interview rows are mislabelled, writes nothing. Run this first. */
+function previewBensInterviewCallTypeBackfill() {
+  return backfillBensInterviewCallTypes_(true);
+}
+
+/** Live relabel across all of Bens' history. */
+function backfillBensInterviewCallTypes() {
+  return backfillBensInterviewCallTypes_(false);
+}
+
 var RESCORE_ALL_TIME_BUDGET_MS_ = 20 * 60 * 1000;
 var RESCORE_HARD_EXECUTION_CEILING_MS_ = 25 * 60 * 1000; // 5-minute margin under the real ~30-minute Workspace ceiling
 // A single row can retry once on a transport failure (MAX_PARSE_RETRIES),
@@ -3214,6 +3287,28 @@ function loadExistingLegacyKeys_(sheet) {
  * one (e.g. scoreBensTranscript_/buildBensFeedbackSummary_ — Bens isn't a
  * closer, see the section above) without forking this whole function.
  */
+/**
+ * Pure. The sheet's Call Type value for a row scoreLegacyTranscriptFolder is
+ * about to append. Real bug found live (09/09/2026, Kris: "How do we setup a
+ * grading for ICONS 100?"): this used to always write the flat
+ * PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE ('QC'), even for Bens' guest
+ * interviews that buildBensJudgeSystemPrompt_ already correctly identifies
+ * and grades as call_role 'icons_100_interview' (content quality + booking a
+ * Sales Call/QC — exactly the two things Kris asked to grade). The AI's own
+ * verdict was right there in result.call_role the whole time; it just never
+ * made it into the structured Call Type column, only into the free-text AI
+ * Feedback Summary — so on the dashboard these fully-graded interview rows
+ * looked identical to a real QC call, and (see resolveRubricVariantForRow_,
+ * which checks callType === 'QC' BEFORE it ever checks rep === 'Bens') any
+ * future rescore of one of these rows would silently downgrade it onto the
+ * plain QC rubric, losing the interview-content-quality dimension entirely.
+ * Labelling it 'Icons 100 Recording' instead fixes both at once.
+ */
+function callTypeForLegacyRow_(result) {
+  if (result && result.call_role === 'icons_100_interview') return 'Icons 100 Recording';
+  return PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE;
+}
+
 function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummaryFn) {
   RUN_TAG = 'scoreLegacyTranscriptFolder';
   judgeFn = judgeFn || scoreTranscript_;
@@ -3327,7 +3422,7 @@ function scoreLegacyTranscriptFolder(repName, folderId, judgeFn, feedbackSummary
           '',                            // Source — fill from rep's tracker
           parsed.date,                   // Call Date
           repName,                       // Rep
-          PHASE2_CONFIG.LEGACY_DEFAULT_CALL_TYPE, // Call Type (best-effort guess — confirm)
+          callTypeForLegacyRow_(result), // Call Type (best-effort guess — confirm)
           true,                           // Outcome Logged (the call happened; disposition unknown)
           '',                             // Outcome Disposition — fill from rep's tracker
           '',                             // Calendar Event ID — none (legacy, predates convention)
