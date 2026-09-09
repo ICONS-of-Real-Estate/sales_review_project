@@ -295,6 +295,14 @@ function isValidTrainingReviewSchema_(obj) {
     obj.framework_gaps_to_drill.every(function (f) {
       return f && typeof f.topic === 'string' && typeof f.note === 'string';
     }) &&
+    // Same element-shape check as the objections above. Without it a judge
+    // returning bare strings, or {habit, note} instead of {label, note}, gets
+    // persisted verbatim to TRAINING_DISCOVERY_<rep> and Phase 7 then emails
+    // the rep "1. undefined — undefined" as their week's practice drill.
+    Array.isArray(obj.discovery_habits_to_drill) &&
+    obj.discovery_habits_to_drill.every(function (d) {
+      return d && typeof d.label === 'string' && typeof d.note === 'string';
+    }) &&
     obj.tomas_coaching &&
     typeof obj.tomas_coaching.grounded_in_real_data === 'boolean' &&
     typeof obj.tomas_coaching.gave_concrete_next_focus === 'boolean' &&

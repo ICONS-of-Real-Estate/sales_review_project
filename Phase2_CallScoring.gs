@@ -2852,10 +2852,13 @@ function buildDiscoveryJudgeSystemPrompt_() {
     '    unresponsive client).',
     '1 = the call barely covered any of the required ground at all.',
     '',
-    // Added 09/09/2026 (Tomás, on Bens' training call): a hard qualification
-    // rule the business already applies but no rubric encoded.
-    leadQualityCriteriaPrompt_(),
-    '',
+    // NO leadQualityCriteriaPrompt_() here, deliberately. A Discovery call is
+    // the account manager's post-sale onboarding/payment call — the customer
+    // has already bought. This variant's schema says "always good_to_book;
+    // this call does not re-decide whether the lead was worth pursuing", so
+    // handing it a screen-out rule would contradict its own instructions and
+    // could drop a paying customer out of buildReviewQueue. The full-time
+    // qualification rule belongs on the five PRE-sale variants only.
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
     'through all the numbered items above with quoted evidence), then the structured fields, in this exact shape:',
     '',

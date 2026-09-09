@@ -223,12 +223,18 @@ function salesCallsNeededPerWeek_(dealsPerWeek, closeRate) {
  * when coverage is too thin to mean anything.
  */
 function computeGoalProgress_(rows, col, repName, weekStart, weekEnd, tz) {
-  var salesCallsHeld = 0, dealsClosed = 0, outcomesLogged = 0;
+  var salesCallsHeld = 0, dealsClosed = 0, outcomesLogged = 0, callsRun = 0;
 
   rows.forEach(function (row) {
     if (String(row[col['Rep'] - 1] || '').trim().toLowerCase() !== String(repName).toLowerCase()) return;
     var callDate = row[col['Call Date'] - 1];
     if (!(callDate instanceof Date) || callDate < weekStart || callDate >= weekEnd) return;
+    // Every call this rep ran, whatever its type. Load-bearing for the
+    // lead-gen rep: Bens only ever runs QCs and ICONS 100 recordings, and
+    // isSalesCallTypeForScorecard_ excludes BOTH — so counting only sales
+    // calls would have told him "calls you ran this week: 0" every single
+    // week, no matter how much work he did.
+    callsRun++;
     if (!isSalesCallTypeForScorecard_(row[col['Call Type'] - 1])) return;
     // A row only exists once a call was transcribed, so its presence IS the
     // evidence the call happened — no-shows never reach this sheet at all.
@@ -242,6 +248,7 @@ function computeGoalProgress_(rows, col, repName, weekStart, weekEnd, tz) {
   var target = salesCallsNeededPerWeek_(REP_GOALS_.DEALS_PER_CLOSER_PER_WEEK,
     REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET);
   return {
+    callsRun: callsRun,
     salesCallsHeld: salesCallsHeld,
     salesCallsTarget: target,
     dealsClosed: dealsClosed,
@@ -251,7 +258,17 @@ function computeGoalProgress_(rows, col, repName, weekStart, weekEnd, tz) {
     coverage: salesCallsHeld ? outcomesLogged / salesCallsHeld : 0,
     // Deliberately null rather than 0 when nothing is logged: "0%" reads as
     // "you closed nothing", which is a different claim from "we don't know".
-    closeRate: outcomesLogged ? dealsClosed / outcomesLogged : null,
+    //
+    // The denominator is calls HELD, not outcomes logged, so this matches the
+    // definition the 30% target is built on (salesCallsNeededPerWeek_ divides
+    // deals by deals-per-held-call). Dividing by outcomes logged instead
+    // measured a different thing and read HIGH: 4 calls held, 2 logged, 1 sold
+    // would have announced "50% against a 30% target" when the real rate is at
+    // most 25%. Since reps log a win more readily than a loss, that error ran
+    // systematically in the flattering direction. As a share of calls held
+    // this is a FLOOR — unlogged calls can only add sales — which is the safe
+    // way to be wrong.
+    closeRate: outcomesLogged ? dealsClosed / salesCallsHeld : null,
     closeRateTarget: REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET
   };
 }
@@ -275,7 +292,7 @@ function buildGoalProgressSection_(repName, progress) {
     var leadGenPlain = 'YOUR TARGET\n' +
       'Generate enough leads for ' + feeds + ' to hold ' + needed + ' sales calls a week — that is what ' +
       'one closed deal a week takes at a ' + pct(REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET) + ' close rate.\n' +
-      'Calls you ran this week: ' + progress.salesCallsHeld + '.\n' +
+      'Calls you ran this week: ' + progress.callsRun + '.\n' +
       'Note: nothing yet measures how many of your bookings actually turn into held sales calls for ' +
       feeds + ' — that needs the CRM outcome data. Until then this is your activity, not your conversion.\n';
     return {
@@ -284,7 +301,7 @@ function buildGoalProgressSection_(repName, progress) {
         '<p>Generate enough leads for <b>' + feeds + '</b> to hold <b>' + needed + ' sales calls a week</b> — ' +
         'that is what one closed deal a week takes at a ' + pct(REP_GOALS_.SALES_CALL_CLOSE_RATE_TARGET) +
         ' close rate.</p>' +
-        '<p>Calls you ran this week: <b>' + progress.salesCallsHeld + '</b></p>' +
+        '<p>Calls you ran this week: <b>' + progress.callsRun + '</b></p>' +
         '<p style="color:#5f6368;font-size:12px;">Nothing yet measures how many of your bookings become held ' +
         'sales calls for ' + feeds + ' — that needs the CRM outcome data. Until then this is activity, not conversion.</p>'
     };
@@ -301,8 +318,9 @@ function buildGoalProgressSection_(repName, progress) {
   var closeLine = thinCoverage
     ? 'Close rate: not enough outcomes logged to say (' + progress.outcomesLogged + ' of ' +
       progress.salesCallsHeld + ' calls have an outcome). Fill in Outcome Disposition and this becomes real.'
-    : 'Close rate: ' + pct(progress.closeRate) + ' against a ' + pct(progress.closeRateTarget) + ' target' +
-      ' (' + progress.dealsClosed + ' of ' + progress.outcomesLogged + ' logged)';
+    : 'Close rate: at least ' + pct(progress.closeRate) + ' against a ' + pct(progress.closeRateTarget) +
+      ' target (' + progress.dealsClosed + ' sold out of ' + progress.salesCallsHeld + ' calls held; ' +
+      progress.outcomesLogged + ' have an outcome logged, so this can only go up as the rest are filled in)';
   var dealsLine = thinCoverage
     ? 'Deals closed: ' + progress.dealsClosed + ' recorded — but see above, most outcomes are not logged yet.'
     : 'Deals closed: ' + progress.dealsClosed + ' of ' + progress.dealsTarget;

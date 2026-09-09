@@ -760,6 +760,12 @@ def training_assignments():
             discovery_drill = json.loads(r["training_discovery_json"]) if r["training_discovery_json"] else []
         except (ValueError, TypeError, IndexError):
             discovery_drill = []
+        # The sheet cell can hold anything Apps Script wrote there — including,
+        # transiently, a date shifted into this column by the header self-heal
+        # before that rep's next Phase 6 run rewrites the row. A bare scalar
+        # parses as valid JSON and would then blow up the template's for-loop.
+        if not isinstance(discovery_drill, list):
+            discovery_drill = []
         # Keep in sync with Phase6_TrainingCallReview.gs's FRAMEWORK_TOPIC_LABELS_.
         for f in framework_drill:
             f["label"] = FRAMEWORK_TOPIC_LABELS.get(f.get("topic"), f.get("topic"))

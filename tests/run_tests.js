@@ -2968,6 +2968,102 @@ test('the two GHL activity dates are now both ISO, so "most recent" is a real co
     'documents the old broken behaviour this fix removes');
 });
 
+test('computeGoalProgress_ counts EVERY call Bens ran — his call types are all excluded from the sales-call filter', () => {
+  // Found in review 09/09/2026: isSalesCallTypeForScorecard_ excludes qc,
+  // discovery AND "icons 100 recording" — which is every call type Bens ever
+  // runs. Counting only sales calls told him "calls you ran this week: 0"
+  // every week regardless of how much work he did.
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (callType) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    r[col['Rep'] - 1] = 'Bens';
+    r[col['Call Type'] - 1] = callType;
+    r[col['Call Date'] - 1] = new gas.Date('2026-09-09T10:00:00Z');
+    return r;
+  };
+  const p = gas.computeGoalProgress_(
+    [row('Icons 100 Recording'), row('Icons 100 Recording'), row('QC')], col, 'Bens',
+    new gas.Date('2026-09-07T00:00:00Z'), new gas.Date('2026-09-14T00:00:00Z'), gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(p.callsRun, 3, 'all three of his calls count as work he did');
+  assert.equal(p.salesCallsHeld, 0, 'none of them are sales calls, which is correct and separate');
+
+  const section = gas.buildGoalProgressSection_('Bens', p);
+  assert.ok(section.plain.indexOf('Calls you ran this week: 3') !== -1,
+    'his email must show the real number, not the sales-call count of 0');
+});
+
+test('the reported close rate uses the same denominator as the target it is compared against', () => {
+  // Found in review 09/09/2026: closeRate was deals/outcomesLogged while the
+  // 30% target means deals per call HELD. With 4 held, 2 logged, 1 sold the
+  // email announced "50% against a 30% target" when the true rate is at most
+  // 25% — and since reps log a win more readily than a loss, the error ran
+  // systematically in the flattering direction.
+  const col = {};
+  gas.SALES_CALL_LOG_HEADERS.forEach((h, i) => { col[h] = i + 1; });
+  const row = (disposition) => {
+    const r = new Array(gas.SALES_CALL_LOG_HEADERS.length).fill('');
+    r[col['Rep'] - 1] = 'Joana';
+    r[col['Call Type'] - 1] = 'Sales Call';
+    r[col['Call Date'] - 1] = new gas.Date('2026-09-09T10:00:00Z');
+    if (disposition) r[col['Outcome Disposition'] - 1] = disposition;
+    return r;
+  };
+  const p = gas.computeGoalProgress_(
+    [row('Sold'), row('Not Sold'), row(''), row('')], col, 'Joana',
+    new gas.Date('2026-09-07T00:00:00Z'), new gas.Date('2026-09-14T00:00:00Z'), gas.CONFIG.BUSINESS_TIMEZONE);
+  assert.equal(p.salesCallsHeld, 4);
+  assert.equal(p.outcomesLogged, 2);
+  assert.equal(p.dealsClosed, 1);
+  assert.ok(Math.abs(p.closeRate - 0.25) < 1e-9,
+    '1 sold out of 4 calls held is 25%, never the 50% the old denominator produced');
+
+  // Coverage is exactly 0.5 here, so the guard passes and the rate is shown —
+  // it must be framed as a floor, never as a bare number that reads final.
+  const section = gas.buildGoalProgressSection_('Joana', p);
+  assert.ok(/at least 25%/.test(section.plain), 'shown as a floor: ' + section.plain);
+  assert.ok(section.plain.indexOf('50%') === -1, 'the inflated rate must not appear anywhere');
+});
+
+test('the post-sale Discovery rubric never gets the part-time screen-out rule — the customer has already bought', () => {
+  // Found in review 09/09/2026: a blanket insertion put leadQualityCriteriaPrompt_
+  // into all six variants, including the account manager's post-sale
+  // onboarding call, whose own schema says "always good_to_book; this call
+  // does not re-decide whether the lead was worth pursuing". A paying
+  // customer could have been screened out and dropped from the review queue.
+  const discovery = gas.buildDiscoveryJudgeSystemPrompt_();
+  assert.ok(discovery.indexOf('FULL-TIME real estate agents') === -1,
+    'the screen-out rule must not reach the post-sale variant');
+  assert.ok(discovery.indexOf('always good_to_book') !== -1,
+    'and its own always-good_to_book instruction must still stand unopposed');
+
+  // The five PRE-sale variants must still carry it.
+  [gas.buildJudgeSystemPrompt_(), gas.buildBensJudgeSystemPrompt_(), gas.buildQcJudgeSystemPrompt_(),
+   gas.buildSeanJudgeSystemPrompt_(), gas.buildTomasJudgeSystemPrompt_()].forEach((prompt, i) => {
+    assert.ok(prompt.indexOf('FULL-TIME real estate agents') !== -1,
+      'pre-sale variant ' + i + ' must keep the qualification rule');
+  });
+});
+
+test('isValidTrainingReviewSchema_ rejects a malformed discovery drill instead of emailing "undefined — undefined"', () => {
+  const base = {
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    practiced_discovery: true, coaching_notes: 'x', next_focus: 'y', team_notes: 'none',
+    objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
+    discovery_habits_to_drill: [{ label: 'ask for a number', note: 'not "wants to grow"' }],
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z' }
+  };
+  assert.equal(gas.isValidTrainingReviewSchema_(base), true);
+  // Bare strings, or the wrong key names, must fail rather than be persisted
+  // and rendered as an undefined drill in the rep's practice email.
+  assert.equal(gas.isValidTrainingReviewSchema_(
+    Object.assign({}, base, { discovery_habits_to_drill: ['ask for a number'] })), false);
+  assert.equal(gas.isValidTrainingReviewSchema_(
+    Object.assign({}, base, { discovery_habits_to_drill: [{ habit: 'x', note: 'y' }] })), false);
+  assert.equal(gas.isValidTrainingReviewSchema_(
+    Object.assign({}, base, { discovery_habits_to_drill: 'not an array' })), false);
+});
+
 test('salesCallsNeededPerWeek_ turns Kris\'s targets into a real weekly number, rounding UP', () => {
   // 1 deal a week at a 30% close rate = 4 held sales calls, not 3.33 and not
   // 3 — rounding down would set a target that cannot arithmetically be hit.
@@ -3013,7 +3109,11 @@ test('computeGoalProgress_ counts held sales calls and deals, and reports outcom
   assert.equal(p.dealsClosed, 1);
   assert.equal(p.outcomesLogged, 2);
   assert.equal(p.salesCallsTarget, 4);
-  assert.ok(Math.abs(p.closeRate - 0.5) < 1e-9, 'close rate is deals over OUTCOMES LOGGED, not over calls held');
+  // Close rate is deals over calls HELD — the same denominator the 30% target
+  // is defined on. 1 sold out of 3 held. (An earlier version of this test
+  // asserted deals/outcomesLogged, which read high; see the dedicated
+  // denominator test above.)
+  assert.ok(Math.abs(p.closeRate - (1 / 3)) < 1e-9, 'close rate is deals over calls HELD');
   assert.ok(Math.abs(p.coverage - (2 / 3)) < 1e-9);
 });
 
@@ -3120,11 +3220,12 @@ test('the Bens rubric scopes discovery DEPTH to a podcast recording, so he is ne
 });
 
 test('every rubric variant screens out part-time agents (Tomás, 09/09/2026: "we don\'t work with people that are not full-time real estate agents")', () => {
+  // The post-sale Discovery variant is deliberately excluded — see the
+  // dedicated test above. Every PRE-sale variant must carry the rule.
   const variants = {
     shared: gas.buildJudgeSystemPrompt_(),
     bens: gas.buildBensJudgeSystemPrompt_(),
     qc: gas.buildQcJudgeSystemPrompt_(),
-    discovery: gas.buildDiscoveryJudgeSystemPrompt_(),
     sean: gas.buildSeanJudgeSystemPrompt_(),
     tomas: gas.buildTomasJudgeSystemPrompt_()
   };
@@ -4230,6 +4331,7 @@ test('isValidTrainingReviewSchema_ accepts a clean call with zero objections dri
     objections_to_drill: [],
     close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
     framework_gaps_to_drill: [],
+    discovery_habits_to_drill: [],
     tomas_coaching: {
       grounded_in_real_data: true,
       gave_concrete_next_focus: true,
@@ -4353,7 +4455,7 @@ test('buildTrainingReviewEmail_ subject carries the week number, not the raw cal
   const result = {
     attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false, practiced_discovery: true,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
-    close_ask_drill: null, framework_gaps_to_drill: [], team_notes: 'none'
+    close_ask_drill: null, framework_gaps_to_drill: [], discovery_habits_to_drill: [], team_notes: 'none'
   };
   const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
   assert.equal(email.subject, 'Training Call Plan — Sean — Week 2');
@@ -4370,7 +4472,7 @@ test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coac
     attended: true, practiced_objections: false, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     coaching_notes: 'Solid call.', next_focus: 'Keep it up.', team_notes: '',
     objections_to_drill: [], close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
-    framework_gaps_to_drill: [],
+    framework_gaps_to_drill: [], discovery_habits_to_drill: [],
     tomas_coaching: {
       grounded_in_real_data: true,
       gave_concrete_next_focus: true,
@@ -4461,6 +4563,7 @@ test('buildTrainingReviewEmail_ formats coaching_notes and team_notes with line 
     attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     coaching_notes: 'First point about the budget role-play.\nSecond point: Sean said "I\'ll fight the machine" here.',
     next_focus: 'focus', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
+    discovery_habits_to_drill: [],
     team_notes: 'Applies to everyone: "seek the cause" before restating value.\nAlso: don\'t pitch launchpad-only first.'
   };
   const email = gas.buildTrainingReviewEmail_('Sean', '260825', result);
