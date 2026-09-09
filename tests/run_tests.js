@@ -2924,6 +2924,30 @@ test('writeScoreToRow_ uses the variant-specific feedback summary packer, not ju
   assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
+test('Phase 7 grades a discovery drill, and its rubric enforces "don\'t take any answer as an answer"', () => {
+  const prompt = gas.buildDailyPracticeSystemPrompt_('Bens');
+  assert.ok(/drill_type is "discovery"/.test(prompt), 'discovery must be a recognised drill type');
+  assert.ok(prompt.indexOf('don\'t take any answer as an answer') !== -1 ||
+    prompt.indexOf('take any answer as an answer') !== -1,
+    'the follow-up rule is the point of the drill and must be in the anchors');
+  // A rep who asks one good question and moves on tops out at 4, not 5.
+  assert.ok(prompt.indexOf('accepted the first answer') !== -1,
+    'accepting the first answer must be explicitly capped below a 5');
+  assert.ok(/"drill_type": "objection \| close_ask \| framework \| discovery"/.test(prompt),
+    'the JSON shape must offer discovery');
+});
+
+test('isValidPracticeSchema_ accepts a discovery drill alongside the three existing types', () => {
+  const base = {
+    reasoning: 'r', drill_type: 'discovery', objection_type: 'n/a', framework_topic: 'n/a',
+    technique_used: true, technique_description: 'asked for a number, then followed up',
+    delivery_quality: 'confident', overall_score: 4, sharpen_next: 'x', feedback_summary: 'y'
+  };
+  assert.equal(gas.isValidDailyPracticeSchema_(base), true, 'discovery must be a valid drill_type');
+  assert.equal(gas.isValidDailyPracticeSchema_(Object.assign({}, base, { drill_type: 'nonsense' })), false,
+    'an unknown drill_type must still be rejected');
+});
+
 test('Bens and QC rubrics now score goal and pain — the gap found on Bens\' 09/09 training call', () => {
   // Tomás: "it's the most important thing is, like, knowing the goal, knowing
   // the pain." Neither variant scored either one until 09/09/2026, so the

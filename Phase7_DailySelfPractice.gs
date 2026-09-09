@@ -178,6 +178,24 @@ function buildDailyPracticeSystemPrompt_(rep) {
     '2 = only a fragment of the explanation — named the topic but didn\'t actually explain the mechanism.',
     '1 = did not attempt the explanation at all, or the drill doesn\'t show real practice.',
     '',
+    'If drill_type is "discovery", answer, in order:',
+    '1. Which discovery habit were they practicing (e.g. asking for a number on the goal, drilling past a',
+    '   vague first answer, using the lead\'s own words/posts to surface the pain)?',
+    '2. Did the questions they practiced actually get at a GOAL (what the lead is running towards, as a',
+    '   business metric — not "wants to grow") or a PAIN (what they are running FROM — not the numeric',
+    '   shortfall against the goal, which is a condition they have lived with for years)?',
+    '3. Crucially: when they role-played a vague answer coming back, did they FOLLOW UP rather than accept',
+    '   it? Tomás\'s rule is "don\'t take any answer as an answer." A rep who asks one good question and',
+    '   moves on has not practiced the habit that matters.',
+    '4. Delivery: did the questions sound natural and curious, or like an interrogation off a checklist?',
+    '5. What is the single most specific thing to sharpen before their next live call?',
+    'Score anchors for overall_score (1-5) on a discovery drill:',
+    '5 = practiced a specific question, took a vague answer, and drilled past it to something concrete.',
+    '4 = good questions asked, but they accepted the first answer instead of following up.',
+    '3 = asked about goal or pain but the questions stayed generic ("what are your goals?").',
+    '2 = only recited what discovery is, rather than practicing the questions out loud.',
+    '1 = did not attempt it, or the drill doesn\'t show real practice.',
+    '',
     'Be skeptical by default — a rep going through the motions without a real attempt should score low',
     'even if their delivery is smooth.',
     '',
@@ -185,7 +203,7 @@ function buildDailyPracticeSystemPrompt_(rep) {
     '',
     '{',
     '  "reasoning": "string",',
-    '  "drill_type": "objection | close_ask | framework",',
+    '  "drill_type": "objection | close_ask | framework | discovery",',
     '  "objection_type": "string — the objection practiced, or \\"n/a\\" if drill_type is not objection",',
     '  "framework_topic": "recruit_agents | number_one_podcast | sell_more_houses | multiple | n/a — n/a unless drill_type is framework",',
     '  "technique_used": true,',
@@ -216,7 +234,8 @@ function buildDailyPracticeUserPrompt_(rep, transcriptText, fileName) {
 
 function isValidDailyPracticeSchema_(obj) {
   return !!(obj &&
-    (obj.drill_type === 'objection' || obj.drill_type === 'close_ask' || obj.drill_type === 'framework') &&
+    (obj.drill_type === 'objection' || obj.drill_type === 'close_ask' ||
+      obj.drill_type === 'framework' || obj.drill_type === 'discovery') &&
     typeof obj.objection_type === 'string' &&
     typeof obj.framework_topic === 'string' &&
     typeof obj.technique_used === 'boolean' &&
@@ -299,7 +318,9 @@ function buildDailyPracticeFeedbackEmail_(rep, fileName, result, links, stats) {
     ? 'Drill: ' + closeAskLabel.charAt(0).toUpperCase() + closeAskLabel.slice(1)
     : result.drill_type === 'framework'
       ? 'Drill: Framework explanation (' + result.framework_topic + ')'
-      : 'Objection practiced: ' + result.objection_type;
+      : result.drill_type === 'discovery'
+        ? 'Drill: Discovery — finding the goal and the pain'
+        : 'Objection practiced: ' + result.objection_type;
   var techniqueLine = result.technique_used ? 'Yes — ' + result.technique_description : 'No';
   var linkLines = [];
   if (links.recordingUrl) linkLines.push('Recording: ' + links.recordingUrl);
@@ -673,6 +694,10 @@ function sendDailyPracticeReminders_() {
     var closeAsk = storedCloseAsk ? JSON.parse(storedCloseAsk) : null;
     var storedFramework = PropertiesService.getScriptProperties().getProperty('TRAINING_FRAMEWORK_' + rep);
     var frameworkGaps = storedFramework ? JSON.parse(storedFramework) : null;
+    // Fourth lane, added 09/09/2026 from Bens' training call — discovery is
+    // the one skill of the four that applies to every rep regardless of role.
+    var storedDiscovery = PropertiesService.getScriptProperties().getProperty('TRAINING_DISCOVERY_' + rep);
+    var discoveryHabits = storedDiscovery ? JSON.parse(storedDiscovery) : null;
 
     // Rotate today's assignment across whichever of the three skills actually
     // have content on file, so reps get dedicated reps on each rather than
@@ -684,6 +709,7 @@ function sendDailyPracticeReminders_() {
     var availableLanes = [];
     if (closeAsk) availableLanes.push('close_ask');
     if (frameworkGaps && frameworkGaps.length) availableLanes.push('framework');
+    if (discoveryHabits && discoveryHabits.length) availableLanes.push('discovery');
     if (objections && objections.length) availableLanes.push('objection');
     // label.day is 1-based (Wed=1..Tue=5, see TRAINING_CYCLE_DAY_BY_WEEKDAY_)
     // against this 0-based lanes array — `label.day - 1` before the modulo so
@@ -693,10 +719,38 @@ function sendDailyPracticeReminders_() {
     var todaysLane = availableLanes.length ? availableLanes[(label.day - 1) % availableLanes.length] : 'objection';
     var assignCloseAskToday = todaysLane === 'close_ask';
     var assignFrameworkToday = todaysLane === 'framework';
+    var assignDiscoveryToday = todaysLane === 'discovery';
 
     var subjectPrefix = rep + ' — ' + label.label + ' — Training Plan';
     var subject, body, htmlBody;
-    if (assignFrameworkToday) {
+    if (assignDiscoveryToday) {
+      subject = subjectPrefix;
+      var discoveryPlainList = discoveryHabits.map(function (d, i) {
+        return (i + 1) + '. ' + d.label + ' — ' + d.note;
+      }).join('\n');
+      var discoveryHtmlList = '<ol>' + discoveryHabits.map(function (d) {
+        return '<li><b>' + d.label + '</b> — ' + d.note + '</li>';
+      }).join('') + '</ol>';
+
+      body =
+        'Record a VIDEO practicing DISCOVERY — ask the questions out loud, like you\'re on a real call:\n\n' +
+        discoveryPlainList + '\n\n' +
+        'Do it properly: ask the question, then play back the vague answer a real lead would give you, ' +
+        'and follow up on it. Don\'t take any answer as an answer.\n\n' +
+        namingLine + '\n\n' +
+        'Transcript happens automatically once the video lands — nothing else to upload.\n\n' +
+        'Delivery folder: ' + folderLink + '\n\n' +
+        '— Automated daily assignment. Reply to Kris or Tomás with any issues.';
+      htmlBody =
+        '<p>Record a <b>video</b> practicing <b>DISCOVERY</b> — ask the questions out loud, like you\'re on a real call:</p>' +
+        discoveryHtmlList +
+        '<p>Do it properly: ask the question, then play back the vague answer a real lead would give you, ' +
+        'and follow up on it. <b>Don\'t take any answer as an answer.</b></p>' +
+        '<p>' + namingLineHtml + '</p>' +
+        '<p><i>Transcript happens automatically once the video lands — nothing else to upload.</i></p>' +
+        '<p><b>Delivery folder:</b> <a href="' + folderLink + '">' + folderLink + '</a></p>' +
+        '<p><i>— Automated daily assignment. Reply to Kris or Tomás with any issues.</i></p>';
+    } else if (assignFrameworkToday) {
       subject = subjectPrefix;
       var frameworkLabelFor = function (f) { return (FRAMEWORK_TOPIC_LABELS_[f.topic] || f.topic); };
       var frameworkPlainList = frameworkGaps.map(function (f, i) {

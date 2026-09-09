@@ -826,12 +826,8 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
       'TRAINING_FRAMEWORK_' + rep, JSON.stringify(result.framework_gaps_to_drill));
   }
   // Same non-destructive rule again, for discovery (added 09/09/2026).
-  // NOTE: nothing READS this property yet — Phase 7's daily-practice lane
-  // rotation still covers objections/close-ask/framework only. Adding a
-  // fourth lane needs its own drill_type, rubric and score anchors in
-  // Phase7_DailySelfPractice.gs, which is a separate change. Capturing the
-  // drill now means that when that lands there is already real coaching data
-  // to run it against, instead of waiting another training cycle.
+  // Read by Phase7_DailySelfPractice.gs, which rotates a fourth 'discovery'
+  // lane off this property with its own drill_type, rubric and score anchors.
   if (result.discovery_habits_to_drill && result.discovery_habits_to_drill.length) {
     PropertiesService.getScriptProperties().setProperty(
       'TRAINING_DISCOVERY_' + rep, JSON.stringify(result.discovery_habits_to_drill));
