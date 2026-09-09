@@ -201,7 +201,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-09-repetition-loop-v2';
+var RUBRIC_VERSION = '2026-09-09-goal-pain-bens-qc';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -797,6 +797,60 @@ function goalAndPainRubricPrompt_() {
 }
 
 /**
+ * The goal/pain rubric, scoped for a call where discovery is deliberately
+ * SHALLOW — Bens' ICONS 100 podcast recordings.
+ *
+ * Tomás, 09/09/2026, on Bens' own training call: "the discovery for Icons100
+ * is a little different. Because it's a podcast recording... you are only
+ * supposed to open up a little bit of the door, right? You're not supposed to
+ * go too much deep inside... it shouldn't be a 30-minute discovery, as it
+ * should be on the qualification call or the sales call."
+ *
+ * So the DEFINITIONS of goal and pain are shared verbatim with every other
+ * variant (goalAndPainRubricPrompt_ — they must never drift), and only the
+ * expected DEPTH and the acceptable sources change: on an interview the rep is
+ * allowed to have got there through pre-call research and a light touch inside
+ * the conversation, rather than through a dedicated discovery sequence.
+ */
+function interviewGoalAndPainRubricPrompt_() {
+  return [
+    goalAndPainRubricPrompt_(),
+    '      DEPTH, for this call type specifically: this is a podcast recording, not a discovery call. Do NOT',
+    '      mark the rep down for failing to run a long discovery sequence — that is not his job here and',
+    '      coaching him towards it would be wrong. What matters is only whether he CAME AWAY with the goal',
+    '      and the pain, by any legitimate route: asked naturally inside the interview, drawn out of what the',
+    '      guest volunteered, or established from the rep\'s own pre-call research on the guest. A rep who',
+    '      never surfaced either one still scores false — a light touch is not the same as no touch.'
+  ].join('\n');
+}
+
+/**
+ * Who we will and will not work with — a hard qualification rule, stated by
+ * Tomás on Bens' training call (09/09/2026): "We don't work with people that
+ * are not full-time real estate agents... They can still work in bodybuilding
+ * and personal development and dogs. But if they're only doing the real estate
+ * part-time, they're never gonna invest in it. It's as simple as that.
+ * Because they're never going to buy into a service that is not going to
+ * fulfil their passion."
+ *
+ * Until now nothing in any rubric encoded this, so a part-time agent could
+ * never be screened out on the one criterion the business actually applies.
+ * Shared by every variant so the rule can't drift between reps.
+ */
+function leadQualityCriteriaPrompt_() {
+  return [
+    'Lead quality criteria — apply these to the lead_quality verdict:',
+    '  - This company only works with FULL-TIME real estate agents. Someone who sells real estate part-time,',
+    '    around another job or business, is a should_screen_out no matter how warm or pleasant the call was:',
+    '    they will not invest in the offer. Other occupations alongside a full-time real estate career (a',
+    '    sport, a side interest, content creation) are fine and are NOT grounds to screen out.',
+    '  - Judge on transcript evidence. If full-time status genuinely never came up, do not invent it: score',
+    '    good_to_book on the rest of the evidence, and say in the justification that it was never established',
+    '    — an unasked question is a coaching point for the rep, not a verdict against the lead.'
+  ].join('\n');
+}
+
+/**
  * Derives the "Flag: Discovery Adequate"/"Discovery Gaps" sheet columns from
  * any rubric variant's discovery booleans (which live under `flags`, not
  * their own nested object — that's where the three existing variants already
@@ -968,6 +1022,10 @@ function buildJudgeSystemPrompt_() {
     'SPIN/Challenger/MEDDIC concepts are reasoning scaffolding for the "reasoning" field',
     'only, not separate scored fields.',
     fewShot,
+    '',
+    // Added 09/09/2026 (Tomás, on Bens' training call): a hard qualification
+    // rule the business already applies but no rubric encoded.
+    leadQualityCriteriaPrompt_(),
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text.',
     'Put "reasoning" first in the object (evidence quoted from the transcript, per',
@@ -2364,6 +2422,13 @@ function buildBensJudgeSystemPrompt_() {
     '   an interview book a QC, but booking the Sales Call directly is even better. Note which one it was.',
     '4. Did Bens do real discovery — do they demonstrably understand this person\'s business and situation, not a',
     '   generic read of the room?',
+    '4b. Did Bens come to this call having researched the guest, and USE it? Tomás, 09/09/2026: go into the call',
+    '   "with all the information that you could ever found online." The test is whether the transcript shows him',
+    '   referencing something specific about this person he could only have known in advance — their own posts,',
+    '   their numbers, their history — and turning it into a question. A live example he missed: the guest had',
+    '   posted publicly about doing 769 cold calls a week, which was the guest\'s own stated pain, and it never',
+    '   came up. Judge only on what the transcript shows; do not assume research that left no trace. Cover this',
+    '   in your reasoning and, if it was missed, in the feedback_summary — there is no separate flag for it.',
     '5. If this is an icons_100_interview: was the interview itself genuinely good content — did Bens draw out a',
     '   specific, interesting story or piece of expertise, not just surface-level small talk? (For a qc call,',
     '   treat this question as not applicable and answer true.)',
@@ -2372,6 +2437,16 @@ function buildBensJudgeSystemPrompt_() {
     frameworkRubricPrompt_(),
     '',
     deliveryRubricPrompt_(),
+    '',
+    // Added 09/09/2026: Bens' variant scored discovery only as "adequate /
+    // understood the business" and never scored goal or pain — the two things
+    // Tomás calls "the most important thing" and spent most of that week's
+    // training call on. Definitions shared with every other variant; only the
+    // expected depth differs. See interviewGoalAndPainRubricPrompt_.
+    'A separately-tracked dimension — it must NOT change your call_quality_score anchors. Judge DISCOVERY:',
+    interviewGoalAndPainRubricPrompt_(),
+    '',
+    leadQualityCriteriaPrompt_(),
     '',
     'Score anchors for call_quality_score (1-5):',
     '5 = next step booked with a specific date/time, objections handled well, and (for an interview) genuinely',
@@ -2402,6 +2477,8 @@ function buildBensJudgeSystemPrompt_() {
     '    "booked_next_step": true,',
     '    "discovery_adequate": true,',
     '    "understood_leads_business": true,',
+    '    "uncovered_goal": true,',
+    '    "uncovered_pain": true,',
     '    "interview_content_quality_good": true',
     '  },',
     '  "framework": { "recruit_agents_explained": true, "number_one_podcast_explained": true, "sell_more_houses_explained": true,',
@@ -2435,6 +2512,8 @@ function isValidBensJudgeSchema_(obj) {
     typeof obj.flags.booked_next_step === 'boolean' &&
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.uncovered_goal === 'boolean' &&
+    typeof obj.flags.uncovered_pain === 'boolean' &&
     typeof obj.flags.interview_content_quality_good === 'boolean' &&
     obj.framework && typeof obj.framework.recruit_agents_explained === 'boolean' &&
     typeof obj.framework.number_one_podcast_explained === 'boolean' &&
@@ -2479,6 +2558,7 @@ function scoreBensTranscript_(ctx) {
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
       booked_next_step: false, discovery_adequate: false, understood_leads_business: false,
+      uncovered_goal: false, uncovered_pain: false,
       interview_content_quality_good: false
     },
     framework: { recruit_agents_explained: false, number_one_podcast_explained: false, sell_more_houses_explained: false,
@@ -2567,6 +2647,16 @@ function buildQcJudgeSystemPrompt_() {
     '',
     deliveryRubricPrompt_(),
     '',
+    // Added 09/09/2026: the QC rubric scored discovery only as "adequate /
+    // understood the business" and never scored goal or pain — so the two
+    // things Tomás calls the most important output of a qualification call
+    // were invisible on every QC anyone ran. Definition shared verbatim with
+    // every other variant so it cannot drift.
+    'A separately-tracked dimension — it must NOT change your call_quality_score anchors. Judge DISCOVERY:',
+    goalAndPainRubricPrompt_(),
+    '',
+    leadQualityCriteriaPrompt_(),
+    '',
     'Score anchors for call_quality_score (1-5):',
     '5 = Sales Call booked with a specific date/time, objections handled well, and real discovery shown.',
     '4 = Sales Call booked, but one of discovery/objection-handling was weak.',
@@ -2589,7 +2679,9 @@ function buildQcJudgeSystemPrompt_() {
     '    "objections_overcome": true,',
     '    "booked_next_step": true,',
     '    "discovery_adequate": true,',
-    '    "understood_leads_business": true',
+    '    "understood_leads_business": true,',
+    '    "uncovered_goal": true,',
+    '    "uncovered_pain": true',
     '  },',
     '  "delivery": { "paced_appropriately": true, "adapted_to_lead_engagement": true },',
     '  "primary_failure_mode": "none | no_close_ask | objections_missed | weak_discovery | no_second_call_booked | delivery_ineffective | multiple",',
@@ -2616,6 +2708,8 @@ function isValidQcJudgeSchema_(obj) {
     typeof obj.flags.booked_next_step === 'boolean' &&
     typeof obj.flags.discovery_adequate === 'boolean' &&
     typeof obj.flags.understood_leads_business === 'boolean' &&
+    typeof obj.flags.uncovered_goal === 'boolean' &&
+    typeof obj.flags.uncovered_pain === 'boolean' &&
     obj.delivery && typeof obj.delivery.paced_appropriately === 'boolean' &&
     typeof obj.delivery.adapted_to_lead_engagement === 'boolean' &&
     typeof obj.manual_review_recommended === 'boolean' &&
@@ -2652,7 +2746,8 @@ function scoreQcTranscript_(ctx) {
     call_quality_score: 1,
     flags: {
       asked_for_close: false, objections_uncovered: false, objections_overcome: false,
-      booked_next_step: false, discovery_adequate: false, understood_leads_business: false
+      booked_next_step: false, discovery_adequate: false, understood_leads_business: false,
+      uncovered_goal: false, uncovered_pain: false
     },
     delivery: { paced_appropriately: false, adapted_to_lead_engagement: false },
     primary_failure_mode: 'none',
@@ -2756,6 +2851,10 @@ function buildDiscoveryJudgeSystemPrompt_() {
     '2 = most of the required ground was NOT covered, attributable to the AM\'s execution (not a difficult/',
     '    unresponsive client).',
     '1 = the call barely covered any of the required ground at all.',
+    '',
+    // Added 09/09/2026 (Tomás, on Bens' training call): a hard qualification
+    // rule the business already applies but no rubric encoded.
+    leadQualityCriteriaPrompt_(),
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text. Put "reasoning" first (walk',
     'through all the numbered items above with quoted evidence), then the structured fields, in this exact shape:',
@@ -3642,6 +3741,10 @@ function buildSeanJudgeSystemPrompt_() {
     '2 = no sale and no second call booked, lead was a reasonable fit, and the miss is attributable to rep',
     '    execution (not lead quality).',
     '1 = no sale, no second call booked, AND no real attempt at discovery, goal-alignment, or a close ask.',
+    '',
+    // Added 09/09/2026 (Tomás, on Bens' training call): a hard qualification
+    // rule the business already applies but no rubric encoded.
+    leadQualityCriteriaPrompt_(),
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text.',
     'Put "reasoning" first (walk through all 6 questions above with quoted evidence), then the structured',
@@ -4609,6 +4712,10 @@ function buildTomasJudgeSystemPrompt_() {
     'If call_role is second_call_closer, also apply this (skip entirely — score both flags true — if call_role',
     'is own_new_lead, since there is no earlier rep to have elevated you on THIS call):',
     elevationRubricPrompt_('Tomás'),
+    '',
+    // Added 09/09/2026 (Tomás, on Bens' training call): a hard qualification
+    // rule the business already applies but no rubric encoded.
+    leadQualityCriteriaPrompt_(),
     '',
     'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
     '',

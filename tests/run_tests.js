@@ -2684,7 +2684,7 @@ test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a r
   // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
   // current one — without a bump, no existing row would ever be graded on
   // goal/pain and the change would silently apply to new calls only.
-  assert.equal(gas.RUBRIC_VERSION, '2026-09-09-repetition-loop-v2');
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-09-goal-pain-bens-qc');
 });
 
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
@@ -2924,6 +2924,54 @@ test('writeScoreToRow_ uses the variant-specific feedback summary packer, not ju
   assert.match(written, /Booked Sales Call: true/, 'the packed QC-specific extras must be in the written summary, not just the bare model line');
 });
 
+test('Bens and QC rubrics now score goal and pain — the gap found on Bens\' 09/09 training call', () => {
+  // Tomás: "it's the most important thing is, like, knowing the goal, knowing
+  // the pain." Neither variant scored either one until 09/09/2026, so the
+  // single dimension the trainer cares most about was invisible on every
+  // ICONS 100 interview and every QC anyone ran.
+  [['bens', gas.buildBensJudgeSystemPrompt_()], ['qc', gas.buildQcJudgeSystemPrompt_()]].forEach(([name, prompt]) => {
+    assert.ok(/uncovered_goal/.test(prompt), name + ': must ask for uncovered_goal');
+    assert.ok(/uncovered_pain/.test(prompt), name + ': must ask for uncovered_pain');
+    // The definition must be the shared one, not a re-worded copy that can drift.
+    assert.ok(prompt.indexOf('running TOWARDS') !== -1 && prompt.indexOf('running FROM') !== -1,
+      name + ': must carry the shared goal/pain definition verbatim');
+    assert.ok(prompt.indexOf('is a condition, not') !== -1,
+      name + ': must keep Tomás\'s correction that a numeric shortfall is not a pain');
+  });
+});
+
+test('the Bens rubric scopes discovery DEPTH to a podcast recording, so he is never coached towards a 30-minute discovery', () => {
+  const prompt = gas.buildBensJudgeSystemPrompt_();
+  assert.ok(prompt.indexOf('not a discovery call') !== -1,
+    'the interview depth caveat must be present');
+  assert.ok(prompt.indexOf('pre-call research') !== -1,
+    'research must be an accepted route to the goal/pain on an interview');
+  assert.ok(prompt.indexOf('a light touch is not the same as no touch') !== -1,
+    'a rep who surfaced neither still fails — the caveat must not become a free pass');
+  // The QC rubric must NOT carry the interview caveat: a QC is where real
+  // discovery is supposed to happen.
+  assert.ok(gas.buildQcJudgeSystemPrompt_().indexOf('not a discovery call') === -1,
+    'the light-touch caveat must not leak into the QC rubric');
+});
+
+test('every rubric variant screens out part-time agents (Tomás, 09/09/2026: "we don\'t work with people that are not full-time real estate agents")', () => {
+  const variants = {
+    shared: gas.buildJudgeSystemPrompt_(),
+    bens: gas.buildBensJudgeSystemPrompt_(),
+    qc: gas.buildQcJudgeSystemPrompt_(),
+    discovery: gas.buildDiscoveryJudgeSystemPrompt_(),
+    sean: gas.buildSeanJudgeSystemPrompt_(),
+    tomas: gas.buildTomasJudgeSystemPrompt_()
+  };
+  Object.keys(variants).forEach((name) => {
+    assert.ok(variants[name].indexOf('FULL-TIME real estate agents') !== -1,
+      name + ': the full-time qualification rule must reach every variant, so it cannot drift between reps');
+    // ...but an unasked question must never become a verdict against the lead.
+    assert.ok(variants[name].indexOf('do not invent it') !== -1,
+      name + ': an unestablished full-time status must be a coaching point, not a screen-out');
+  });
+});
+
 test('QC/Discovery calls are not scored on framework explanation — that is the Sales Call\'s job, not a pre-sales qualification call\'s (Kris, 31/08/2026)', () => {
   // buildQcJudgeSystemPrompt_ must not ask the model for a framework object
   // or offer framework_not_explained as a primary_failure_mode — both would
@@ -3021,6 +3069,7 @@ function perfectBensResult_() {
     flags: {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
       booked_next_step: true, discovery_adequate: true, understood_leads_business: true,
+      uncovered_goal: true, uncovered_pain: true,
       interview_content_quality_good: true
     },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
@@ -3043,7 +3092,8 @@ function perfectQcResult_() {
     call_quality_score: 5,
     flags: {
       asked_for_close: true, objections_uncovered: true, objections_overcome: true,
-      booked_next_step: true, discovery_adequate: true, understood_leads_business: true
+      booked_next_step: true, discovery_adequate: true, understood_leads_business: true,
+      uncovered_goal: true, uncovered_pain: true
     },
     framework: { recruit_agents_explained: true, number_one_podcast_explained: true, sell_more_houses_explained: true, framework_matched_to_lead: true },
     delivery: { paced_appropriately: true, adapted_to_lead_engagement: true }
