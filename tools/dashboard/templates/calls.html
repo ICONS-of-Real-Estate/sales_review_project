@@ -74,33 +74,28 @@
 
 <table>
   <thead>
-    <tr><th>Prospect</th><th>Rep</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Outcome</th><th>Failure mode</th><th>Framework</th><th>Feedback</th></tr>
+    <tr><th title="Click through for the full AI write-up on this call.">Prospect</th><th>Rep</th><th>Date</th><th>Type</th><th>Verdict</th><th>Score</th><th>Outcome</th><th title="Did the rep actually get the next concrete step booked on this call? Only known for QC/interview-style calls; a plain Sales Call shows — since Outcome already covers it.">Booked?</th><th>Failure mode</th><th>Framework</th></tr>
   </thead>
   <tbody>
     {% for c in calls %}
     <tr>
-      <td>{% if c.transcript_url %}<a href="{{ c.transcript_url }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a>{% else %}{{ c.prospect_name or "(unnamed)" }}{% endif %}</td>
+      <td><a href="/calls/{{ c.id }}" target="_blank" rel="noopener">{{ c.prospect_name or "(unnamed)" }}</a></td>
       <td><a href="/reps/{{ c.rep }}">{{ c.rep }}</a></td>
       <td>{{ c.call_date }}</td>
       <td>{{ c.call_type_display or "—" }}</td>
       <td>{{ c.lead_quality_verdict or "—" }}</td>
       <td>{% if c.call_quality_score is not none %}{{ c.call_quality_score }}/5{% else %}—{% endif %}</td>
       <td>{% if c.outcome_disposition %}{{ c.outcome_disposition }}{% else %}<span class="muted" title="Reps hand-log this on the Sales Call Log sheet after the fact — most calls don't have one logged yet.">not logged</span>{% endif %}</td>
-      <td>{{ c.primary_failure_mode or "—" }}</td>
+      <td>
+        {% if c.booked %}{{ "Yes" if c.booked.booked else "No" }}{% if c.booked.label %} <span class="muted">({{ c.booked.label }})</span>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>{{ c.failure_mode_display }}</td>
       <td>
         {% if c.call_type in ("QC", "Discovery") %}
         <span class="muted" title="QC/Discovery calls are qualification calls, not the sales pitch — the AI judge does not score framework explanation on this call type.">N/A</span>
         {% elif c.flag_framework_explained %}<span title="All three covered">✓</span>
         {% elif c.framework_gaps %}<span class="clamp-text" style="max-width:200px;" title="Missing: {{ c.framework_gaps }}">{{ c.framework_gaps }}</span>
-        {% else %}—{% endif %}
-      </td>
-      <td style="max-width: 360px;">
-        {% if c.full_feedback %}
-        <button type="button" class="feedback-open" data-feedback="{{ c.full_feedback }}"
-          data-title="{{ c.prospect_name or '(unnamed)' }} — {{ c.rep }} — {{ c.call_date }}"
-          style="all: unset; cursor: pointer; display: block;">
-          <span class="clamp-text" title="Click to view full feedback">{{ c.snippet | safe if filters.q else c.snippet }}</span>
-        </button>
         {% else %}—{% endif %}
       </td>
     </tr>
@@ -109,32 +104,4 @@
     {% endfor %}
   </tbody>
 </table>
-
-<dialog id="feedback-dialog" style="max-width: 560px; width: 90%; border-radius: 10px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4; padding: 1.25rem 1.5rem;">
-  <div style="display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.75rem;">
-    <strong id="feedback-dialog-title" style="font-size: 0.95rem;"></strong>
-    <button type="button" id="feedback-dialog-close" style="all: unset; cursor: pointer; color: #9aa4bb; font-size: 1.1rem; line-height: 1;">✕</button>
-  </div>
-  <div id="feedback-dialog-body" style="white-space: pre-wrap; line-height: 1.5;"></div>
-</dialog>
-<script>
-  (function () {
-    var dialog = document.getElementById('feedback-dialog');
-    var title = document.getElementById('feedback-dialog-title');
-    var body = document.getElementById('feedback-dialog-body');
-    document.querySelectorAll('.feedback-open').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        title.textContent = btn.dataset.title || '';
-        body.textContent = btn.dataset.feedback || '';
-        dialog.showModal();
-      });
-    });
-    document.getElementById('feedback-dialog-close').addEventListener('click', function () {
-      dialog.close();
-    });
-    dialog.addEventListener('click', function (e) {
-      if (e.target === dialog) dialog.close();
-    });
-  })();
-</script>
 {% endblock %}

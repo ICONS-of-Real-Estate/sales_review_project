@@ -59,6 +59,61 @@ def test_rep_detail_page_for_unknown_rep_still_200s(client, seeded_db):
     assert resp.status_code == 200
 
 
+def test_rep_detail_page_prospect_name_links_to_the_call_detail_page_not_the_transcript(client, db_path, conn):
+    """Kris's ask (09/09/2026): "It should be opened to new window" / "Link
+    it from their name" / "It's very rare we will look at the transcript" —
+    the name is now the primary way in to the full write-up; the raw
+    transcript link moved to the detail page itself, not this row."""
+    call_id = insert_call(
+        conn, rep="Alice", prospect_name="Esme Sanchez",
+        transcript_url="https://drive.google.com/file/d/abc123/view",
+    )
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert f'href="/calls/{call_id}"' in resp.text
+    assert 'target="_blank"' in resp.text
+    # The raw transcript URL must not appear directly in this row anymore.
+    assert "https://drive.google.com/file/d/abc123/view" not in resp.text
+
+
+def test_rep_detail_page_shows_a_booked_column_parsed_from_the_feedback_text(client, db_path, conn):
+    insert_call(
+        conn, rep="Bens", prospect_name="Esme Sanchez",
+        ai_feedback_summary="Good interview.\n\nBooked next step: True (QC)",
+    )
+    conn.commit()
+    resp = client.get("/reps/Bens")
+    assert "Yes" in resp.text
+    assert "(QC)" in resp.text
+
+
+def test_rep_detail_page_shows_success_not_the_raw_none_enum_for_a_clean_call(client, db_path, conn):
+    insert_call(conn, rep="Alice", prospect_name="Clean Call", primary_failure_mode="none")
+    conn.commit()
+    resp = client.get("/reps/Alice")
+    assert "Success" in resp.text
+
+
+def test_call_detail_page_renders_the_full_feedback_and_a_transcript_link(client, db_path, conn):
+    call_id = insert_call(
+        conn, rep="Bens", prospect_name="Esme Sanchez", call_quality_score=4,
+        transcript_url="https://drive.google.com/file/d/abc123/view",
+        ai_feedback_summary="Quoted moment here.\n\nBooked next step: True (QC)",
+    )
+    conn.commit()
+    resp = client.get(f"/calls/{call_id}")
+    assert resp.status_code == 200
+    assert "Esme Sanchez" in resp.text
+    assert "Quoted moment here." in resp.text
+    assert 'href="https://drive.google.com/file/d/abc123/view"' in resp.text
+
+
+def test_call_detail_page_for_an_unknown_id_still_200s_with_an_explanation(client, seeded_db):
+    resp = client.get("/calls/999999")
+    assert resp.status_code == 200
+    assert "not" in resp.text.lower()
+
+
 def test_rep_detail_page_call_type_tabs_filter_the_calls_table(client, db_path, conn):
     """Kris's ask (08/09/2026): "Split calls All / QC / Sales Call.\""""
     insert_call(conn, rep="Alice", call_type="QC", prospect_name="A QC Call")

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ call.prospect_name if call else "Call not found" }} — Sales Review Dashboard{% endblock %}
+{% block content %}
+{% if not call %}
+<p><a href="/calls" class="muted">&larr; Back to all calls</a></p>
+<h1>Call not found</h1>
+<p class="muted">Row id {{ call_id }} isn't in the current sync — the dashboard's local copy resyncs from the
+  sheet every 10 minutes and reassigns row ids each time, so a link opened across a sync can go stale. Go back
+  and click the call again.</p>
+{% else %}
+<p><a href="/reps/{{ call.rep }}" class="muted">&larr; Back to {{ call.rep }}</a></p>
+<h1>{{ call.prospect_name or "(unnamed)" }}</h1>
+<p class="muted" style="margin-top:-0.5rem;">{{ call.rep }} — {{ call.call_date_short }} — {{ call.call_type_display or "—" }}</p>
+
+<div class="chart-card">
+  <h2 style="margin-top:0;">At a glance</h2>
+  <table>
+    <tbody>
+      <tr><td class="muted" style="width:200px;">Verdict</td><td>{{ call.lead_quality_verdict or "—" }}</td></tr>
+      <tr><td class="muted">Score</td><td>{% if call.call_quality_score is not none %}{{ call.call_quality_score }}/5{% else %}—{% endif %}</td></tr>
+      <tr>
+        <td class="muted" title="Whether this lead is worth continuing to pursue at all — a separate judgment from whether the next step actually got booked on this call.">Outcome</td>
+        <td>{% if call.outcome_disposition %}{{ call.outcome_disposition }}{% else %}<span class="muted">not logged</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <td class="muted" title="Did the rep actually get the next concrete step booked on this call — not whether they asked, and not the same thing as the Verdict above.">Booked?</td>
+        <td>
+          {% if call.booked %}{{ "Yes" if call.booked.booked else "No" }}{% if call.booked.label %} ({{ call.booked.label }}){% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+      </tr>
+      <tr><td class="muted">Ask booking?</td><td>{{ "Yes" if call.flag_asked_for_close else "No" }}</td></tr>
+      <tr><td class="muted">Objections?</td><td>{{ "Yes" if call.flag_objections_handled else "No" }}</td></tr>
+      <tr>
+        <td class="muted">Framework</td>
+        <td>
+          {% if call.call_type in ("QC", "Discovery") %}<span class="muted">N/A — not this call's job</span>
+          {% elif call.flag_framework_explained %}✓
+          {% elif call.framework_gaps %}{{ call.framework_gaps }}
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      <tr><td class="muted">Failure mode</td><td>{{ call.failure_mode_display }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="chart-card">
+  <h2 style="margin-top:0;">AI feedback</h2>
+  {% if call.feedback_paragraphs %}
+    {% for p in call.feedback_paragraphs %}
+    <p style="line-height:1.6;">{{ p }}</p>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No feedback on file for this call.</p>
+  {% endif %}
+</div>
+
+{% if call.transcript_url %}
+<p class="muted" style="font-size:0.85rem;">
+  <a href="{{ call.transcript_url }}" target="_blank" rel="noopener">View transcript ↗</a>
+</p>
+{% endif %}
+{% endif %}
+{% endblock %}

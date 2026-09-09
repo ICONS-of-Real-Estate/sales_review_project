@@ -860,6 +860,53 @@ def call_date_short(raw):
     return f"{d.day} {d.strftime('%b')}" if d else (raw or "—")
 
 
+def failure_mode_display(mode):
+    """Kris's ask (09/09/2026): "If no failure mode, it should say success
+    no?" — the raw enum value 'none' (a real, valid judge output meaning
+    nothing went wrong) read like a missing value on the page, not a good
+    outcome. Anything else is shown as the judge wrote it."""
+    if not mode:
+        return "—"
+    return "Success" if mode.strip().lower() == "none" else mode
+
+
+# The three known "Booked ...:" lines across the different rubric variants'
+# feedback-summary builders (Phase2_CallScoring.gs) — buildBensFeedbackSummary_
+# ("Booked next step: True (QC)"), buildQcFeedbackSummary_ ("Booked Sales
+# Call: True"), and Sean's cadence-2 variant ("Booked 2nd call w/ Tomás:
+# True"). The plain shared/sales rubric has no equivalent line at all — a
+# regular Sales Call's success is already the Outcome Disposition column, so
+# there's nothing to parse there, and BOOKED_NEXT_STEP_PATTERNS correctly
+# finds nothing on those rows.
+BOOKED_NEXT_STEP_PATTERNS = [
+    (re.compile(r"Booked next step:\s*(True|False)\s*\(([^)]*)\)", re.IGNORECASE), None),
+    (re.compile(r"Booked Sales Call:\s*(True|False)", re.IGNORECASE), "Sales Call"),
+    (re.compile(r"Booked 2nd call w/ Tomás:\s*(True|False)", re.IGNORECASE), "2nd call w/ Tomás"),
+]
+
+
+def parse_booked_next_step(feedback_text):
+    """Kris's ask (09/09/2026): "If it's good_to_book was it booked?" —
+    lead_quality_verdict is the AI's read on whether this lead is worth
+    pursuing at all, a totally separate judgment from whether the rep
+    actually got the next step booked ON this call. That real answer only
+    ever existed as free text inside the AI Feedback Summary; this pulls it
+    out into a real value so it can be its own column instead of something
+    you have to open the full write-up to find. Returns None when no known
+    "Booked ...:" line is present (a plain Sales Call row, or no feedback at
+    all) — the template shows "—" for that, not a false "No"."""
+    if not feedback_text:
+        return None
+    for pattern, fixed_label in BOOKED_NEXT_STEP_PATTERNS:
+        m = pattern.search(feedback_text)
+        if not m:
+            continue
+        booked = m.group(1).strip().lower() == "true"
+        label = fixed_label if fixed_label is not None else (m.group(2).strip() if m.lastindex and m.lastindex >= 2 else "")
+        return {"booked": booked, "label": label}
+    return None
+
+
 def rep_detail(rep, call_type=""):
     """`call_type` optionally restricts to one raw Call Type value (Kris's
     ask, 08/09/2026: "Split calls All / QC / Sales Call" tabs on the rep
@@ -868,7 +915,7 @@ def rep_detail(rep, call_type=""):
     the same three plain choices for every rep."""
     conn = get_conn()
     sql = (
-        "SELECT prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
+        "SELECT id, prospect_name, call_date, call_type, lead_quality_verdict, call_quality_score, "
         "flag_asked_for_close, flag_objections_handled, primary_failure_mode, manual_review_recommended, "
         "ai_feedback_summary, transcript_url, outcome_disposition, flag_framework_explained, framework_gaps, "
         "match_method "
@@ -885,6 +932,8 @@ def rep_detail(rep, call_type=""):
     for c in calls:
         c["call_date_short"] = call_date_short(c["call_date"])
         c["full_feedback"] = c["ai_feedback_summary"]
+        c["failure_mode_display"] = failure_mode_display(c["primary_failure_mode"])
+        c["booked"] = parse_booked_next_step(c["ai_feedback_summary"])
         # A row scored for real can still legitimately have Primary Failure
         # Mode == 'none' (nothing was wrong) — only the parse-failure
         # placeholder's specific summary text means "this 'none' is fake."
@@ -1571,6 +1620,8 @@ def filtered_calls(
         calls.sort(key=lambda c: parse_call_date(c["call_date"]) or datetime.min.date(), reverse=True)
     for c in calls:
         c["call_type_display"] = _display_call_type(c.get("call_type"), c.get("rep"))
+        c["failure_mode_display"] = failure_mode_display(c.get("primary_failure_mode"))
+        c["booked"] = parse_booked_next_step(c.get("full_feedback"))
     return calls
 
 
@@ -1633,6 +1684,56 @@ def calls_page(
             "all_outcomes": [d["disposition"] for d in outcome_breakdown()["distribution"]],
             "all_call_types": ["QC", "Discovery", "Sales Call (1st)", "2nd Sales Call (Closing)"],
         },
+    )
+
+
+def call_by_id(call_id):
+    """One full call row by its SQLite id, for the /calls/{id} detail page.
+    Kris's ask (09/09/2026): the feedback popup was "hard to read" crammed
+    into a small dialog on the list page — this is a real, full-page view
+    instead, meant to be opened in its own tab. `id` is only stable within
+    one sync cycle (sync.py's own DELETE FROM + re-INSERT on every run wipes
+    and reassigns every AUTOINCREMENT id, same as every other id-based
+    lookup in this file) — fine for "open this call now," not a permalink to
+    bookmark across a sync."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM sales_call_log WHERE id = ?", (call_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@app.get("/calls/{call_id}", response_class=HTMLResponse)
+def call_detail_page(request: Request, call_id: int):
+    """Kris's ask (09/09/2026): "This is hard to read. It should be opened
+    to new window" + "Link it from their name" + "It's very rare we will
+    look at the transcript. Put that as a small link at the end" — the
+    prospect name on every calls table now links here (target="_blank")
+    instead of straight to the transcript; the transcript itself is one
+    small link at the bottom of this page, since Kris said reading it
+    directly is rare."""
+    c = call_by_id(call_id)
+    if not c:
+        return render(
+            request, "call_detail.html",
+            {"active_page": "", "freshness": freshness_status(), "call": None, "call_id": call_id},
+        )
+    c["call_date_short"] = call_date_short(c["call_date"])
+    c["call_type_display"] = _display_call_type(c.get("call_type"), c.get("rep"))
+    c["failure_mode_display"] = failure_mode_display(c.get("primary_failure_mode"))
+    c["booked"] = parse_booked_next_step(c.get("ai_feedback_summary"))
+    # feedback_summary's own paragraphs are separated with \n\n (see every
+    # rubric's "feedback_summary" field description in Phase2_CallScoring.gs
+    # — "each distinct idea on its own line"); splitting on that here is
+    # what lets the template render real paragraphs instead of one dense
+    # pre-wrapped block.
+    c["feedback_paragraphs"] = [
+        p.strip() for p in (c.get("ai_feedback_summary") or "").split("\n\n") if p.strip()
+    ]
+    return render(
+        request, "call_detail.html",
+        {"active_page": "", "freshness": freshness_status(), "call": c, "call_id": call_id},
     )
 
 

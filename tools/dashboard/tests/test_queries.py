@@ -362,6 +362,57 @@ class TestCallDateShort:
         assert app_module.call_date_short(None) == "—"
 
 
+class TestFailureModeDisplay:
+    """Kris's ask (09/09/2026): "If no failure mode, it should say success
+    no?" — the raw enum value 'none' (a real, valid judge output meaning
+    nothing went wrong) read like a missing value on the page."""
+
+    def test_none_reads_as_success(self):
+        assert app_module.failure_mode_display("none") == "Success"
+        assert app_module.failure_mode_display("None") == "Success"
+
+    def test_a_real_failure_mode_passes_through_unchanged(self):
+        assert app_module.failure_mode_display("framework_not_explained") == "framework_not_explained"
+
+    def test_blank_or_missing_is_a_dash(self):
+        assert app_module.failure_mode_display("") == "—"
+        assert app_module.failure_mode_display(None) == "—"
+
+
+class TestParseBookedNextStep:
+    """Kris's ask (09/09/2026): "If it's good_to_book was it booked?" — the
+    lead_quality_verdict column is a totally separate judgment (is this lead
+    worth pursuing) from whether the rep actually got the next step booked
+    on THIS call. That real answer only ever existed as free text inside
+    the AI Feedback Summary, in one of three different wordings depending
+    on which rubric variant scored the call."""
+
+    def test_bens_wording_with_a_next_step_type(self):
+        text = "Some feedback.\n\nBooked next step: True (QC)\nOther: stuff"
+        assert app_module.parse_booked_next_step(text) == {"booked": True, "label": "QC"}
+
+    def test_bens_wording_false_with_sales_call_type_still_present(self):
+        text = "Booked next step: False (Sales Call)"
+        assert app_module.parse_booked_next_step(text) == {"booked": False, "label": "Sales Call"}
+
+    def test_qc_rubric_wording_has_a_fixed_label(self):
+        text = "Some feedback.\n\nBooked Sales Call: True\nOther: stuff"
+        assert app_module.parse_booked_next_step(text) == {"booked": True, "label": "Sales Call"}
+
+    def test_sean_cadence2_wording_has_a_fixed_label(self):
+        text = "Booked 2nd call w/ Tomás: False"
+        assert app_module.parse_booked_next_step(text) == {"booked": False, "label": "2nd call w/ Tomás"}
+
+    def test_plain_sales_call_feedback_with_no_booked_line_returns_none(self):
+        # The shared/sales rubric has no equivalent line at all — a regular
+        # Sales Call's success is already the Outcome Disposition column.
+        assert app_module.parse_booked_next_step("Great call, closed on the spot.") is None
+
+    def test_blank_or_missing_feedback_returns_none(self):
+        assert app_module.parse_booked_next_step("") is None
+        assert app_module.parse_booked_next_step(None) is None
+
+
 class TestRepDetail:
     def test_returns_only_that_reps_calls_most_recent_first(self, seeded_db):
         calls = app_module.rep_detail("Alice")
