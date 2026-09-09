@@ -4008,7 +4008,7 @@ test('isValidTrainingReviewSchema_ accepts a clean call with zero objections dri
     attended: true,
     practiced_objections: false,
     practiced_close_ask: true,
-    practiced_framework: true,
+    practiced_framework: true, practiced_discovery: true,
     coaching_notes: 'Solid call, no objections came up.',
     next_focus: 'Keep it up.',
     team_notes: '',
@@ -4094,7 +4094,7 @@ test('buildTrainingReviewSystemPrompt_ leaves Sean/Joana on the shared money-ask
 test('buildTrainingReviewEmail_ never shows a framework badge/section for Bens, and relabels the close-ask skill', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false,
+    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false, practiced_discovery: true,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
     close_ask_drill: null, framework_gaps_to_drill: [{ topic: 'recruit_agents', note: 'say this' }], team_notes: 'none'
   };
@@ -4109,7 +4109,7 @@ test('buildTrainingReviewEmail_ never shows a framework badge/section for Bens, 
 test('buildTrainingReviewEmail_ still shows the framework badge/section for Sean/Joana as before', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: false,
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: false, practiced_discovery: true,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Budget', note: 'agree/isolate/repeat' }],
     close_ask_drill: { label: 'Ready to get started?', note: 'ask again on objection' },
     framework_gaps_to_drill: [{ topic: 'sell_more_houses', note: 'say this' }], team_notes: 'none'
@@ -4136,7 +4136,7 @@ test('trainingCallPlanWeekLabel_ returns null for a dateLabel that doesn\'t pars
 test('buildTrainingReviewEmail_ subject carries the week number, not the raw call date', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false,
+    attended: true, practiced_objections: true, practiced_close_ask: false, practiced_framework: false, practiced_discovery: true,
     coaching_notes: 'Notes here', next_focus: 'focus', objections_to_drill: [{ label: 'Too busy', note: 'agree/isolate/repeat' }],
     close_ask_drill: null, framework_gaps_to_drill: [], team_notes: 'none'
   };
@@ -4152,7 +4152,7 @@ test('buildTrainingReviewEmail_ subject carries the week number, not the raw cal
 
 test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coaching', () => {
   const base = {
-    attended: true, practiced_objections: false, practiced_close_ask: true, practiced_framework: true,
+    attended: true, practiced_objections: false, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     coaching_notes: 'Solid call.', next_focus: 'Keep it up.', team_notes: '',
     objections_to_drill: [], close_ask_drill: { label: 'Ask for the appointment', note: 'Nailed it.' },
     framework_gaps_to_drill: [],
@@ -4243,7 +4243,7 @@ test('trainingReviewFormatText_ escapes, then turns \\n into <br>, then italiciz
 test('buildTrainingReviewEmail_ formats coaching_notes and team_notes with line breaks and italicized quotes in the HTML body, not as one raw dense block (real bug 03/09/2026: these two callouts never got the 31/08 Daily Practice / 02/09 Playbook Review formatting fix applied)', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     coaching_notes: 'First point about the budget role-play.\nSecond point: Sean said "I\'ll fight the machine" here.',
     next_focus: 'focus', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
     team_notes: 'Applies to everyone: "seek the cause" before restating value.\nAlso: don\'t pitch launchpad-only first.'
@@ -4259,7 +4259,7 @@ test('buildTrainingReviewEmail_ formats coaching_notes and team_notes with line 
 test('buildTomasCoachingFeedbackEmail_ formats coaching_feedback_summary with line breaks and italicized quotes in the HTML body', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     tomas_coaching: {
       grounded_in_real_data: true, gave_concrete_next_focus: true,
       coaching_feedback_summary: 'Grounded the session in Sean\'s real calls.\nClosed with "practice this exact line" — concrete.'
@@ -4272,22 +4272,72 @@ test('buildTomasCoachingFeedbackEmail_ formats coaching_feedback_summary with li
     'a quoted line must be italicized');
 });
 
+test('buildTrainingReviewSystemPrompt_ drills DISCOVERY for every rep, with Tomás\'s goal-vs-pain definition and the ICONS 100 depth caveat', () => {
+  // Real gap found 09/09/2026: Bens' training call was almost entirely about
+  // discovery, and Phase 6 graded only objections/close-ask/framework — so a
+  // call full of coaching would have come back reporting nothing practiced.
+  ['Bens', 'Sean'].forEach((rep) => {
+    const prompt = gas.buildTrainingReviewSystemPrompt_(rep);
+    assert.ok(prompt.indexOf('DISCOVERY =') !== -1, rep + ': discovery must be a named, defined skill');
+    assert.ok(/practiced_discovery/.test(prompt), rep + ': the judge must return practiced_discovery');
+    assert.ok(/discovery_habits_to_drill/.test(prompt), rep + ': the drill must be extractable for daily practice');
+    // Tomás's correction: a goal is a business metric, not "connect with agents".
+    assert.ok(prompt.indexOf('not a goal') !== -1, rep + ': the vague-goal exclusion must survive into the prompt');
+    // ...and pain is not the numeric shortfall.
+    assert.ok(/running FROM/.test(prompt), rep + ': pain must be defined as what they run FROM');
+    assert.ok(prompt.indexOf("what's your bottleneck?") !== -1,
+      rep + ': the prompt must say asking for the bottleneck directly does not count');
+  });
+});
+
+test('buildTrainingReviewSystemPrompt_ keeps discovery depth scoped to the call type — Tomás: "only supposed to open up a little bit of the door"', () => {
+  const prompt = gas.buildTrainingReviewSystemPrompt_('Bens');
+  assert.ok(prompt.indexOf('30-minute discovery') !== -1,
+    'the prompt must carry the explicit warning against coaching a full discovery inside a podcast recording');
+  assert.ok(prompt.indexOf('ICONS 100') !== -1, 'the light-touch caveat must name the call type it applies to');
+});
+
+test('isValidTrainingReviewSchema_ now requires practiced_discovery, so a judge that silently drops it falls back to manual review', () => {
+  const base = {
+    attended: true, practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    practiced_discovery: true,
+    coaching_notes: 'x', next_focus: 'y', team_notes: 'none',
+    objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [], discovery_habits_to_drill: [],
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z' }
+  };
+  assert.equal(gas.isValidTrainingReviewSchema_(base), true);
+  const missing = Object.assign({}, base);
+  delete missing.practiced_discovery;
+  assert.equal(gas.isValidTrainingReviewSchema_(missing), false,
+    'a missing practiced_discovery must fail the schema rather than be read as false');
+});
+
 test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judge\'s own practiced_* fields rather than asking a second question, and skips framework for Bens', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const coaching = { grounded_in_real_data: true, gave_concrete_next_focus: false, coaching_feedback_summary: 'Leaned on generic advice instead of Bens\' real calls.' };
 
-  // Bens: no objection/close practice this call, but framework doesn't count for him anyway.
+  // Bens: no objection/close/discovery practice this call, but framework doesn't count for him anyway.
   const bensResult = {
-    practiced_objections: false, practiced_close_ask: false, practiced_framework: true,
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: true, practiced_discovery: false,
     tomas_coaching: coaching
   };
   const bensEmail = gas.buildTomasCoachingFeedbackEmail_('Bens', '260825', bensResult);
   assert.ok(bensEmail.body.indexOf('got to practice out loud: No') !== -1,
     'Bens practiced neither objections nor the close-ask, and framework never counts for him');
 
+  // Discovery DOES count for Bens (added 09/09/2026) — it is the one skill of
+  // the four that applies to every rep regardless of role.
+  const bensDiscoveryOnly = {
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: false, practiced_discovery: true,
+    tomas_coaching: coaching
+  };
+  assert.ok(gas.buildTomasCoachingFeedbackEmail_('Bens', '260825', bensDiscoveryOnly)
+    .body.indexOf('got to practice out loud: Yes') !== -1,
+    'a discovery-only training call must count as Bens having practiced something');
+
   // Sean: didn't practice objections/close, but DID drill framework — should count as having practiced.
   const seanResult = {
-    practiced_objections: false, practiced_close_ask: false, practiced_framework: true,
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: true, practiced_discovery: false,
     tomas_coaching: coaching
   };
   const seanEmail = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', seanResult);
@@ -4298,7 +4348,7 @@ test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judg
 test('buildTomasCoachingFeedbackEmail_ subject carries the week number and stays distinct from the rep\'s own Training Call Plan subject', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
-    practiced_objections: true, practiced_close_ask: true, practiced_framework: true,
+    practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'Good session.' }
   };
   const email = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', result);

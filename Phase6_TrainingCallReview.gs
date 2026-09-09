@@ -107,8 +107,8 @@ function buildTrainingReviewSystemPrompt_(rep) {
   var role = trainingReviewRoleFor_(rep);
 
   var skillListLine = role.drillsFramework
-    ? 'to drill three separate skills: objection handling, ' + role.closeAskSkillLabel + ', and explaining the framework.'
-    : 'to drill two separate skills: objection handling and ' + role.closeAskSkillLabel + '. ' + role.roleNote;
+    ? 'to drill four separate skills: objection handling, ' + role.closeAskSkillLabel + ', explaining the framework, and discovery.'
+    : 'to drill three separate skills: objection handling, ' + role.closeAskSkillLabel + ', and discovery. ' + role.roleNote;
 
   var closeAskDefinitionLines = [
     '  ' + role.closeAskSkillLabel.toUpperCase() + ' = ' + role.closeAskSkillDescription
@@ -127,6 +127,24 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    not just listen to Tomás describe it) in this call? Quote the moment. Be strict: Tomás merely telling ' + rep,
     '    to do this is not the same as ' + rep + ' practicing saying it.'
   ];
+
+  // Added 09/09/2026 from Bens' training call, which was almost entirely
+  // about discovery — and which this review would otherwise have graded
+  // against objections/close-ask/framework alone and reported as "nothing
+  // practiced." Discovery is already a scored dimension in Phase 2
+  // (discovery_adequate / uncovered_goal / uncovered_pain) and can already be
+  // picked as a weekly priority by Phase 5, so the loop was broken in exactly
+  // one place: Tomás could coach it but the system could not see him do it.
+  var discoveryExtractionLines = [
+    '  - Did ' + rep + ' actively practice DISCOVERY (actually formulate the questions out loud, or rework a',
+    '    real lead\'s goal/pain with Tomás) in this call? Quote the moment. Same strictness as above —',
+    '    Tomás explaining what good discovery looks like is not the same as ' + rep + ' practicing it.'
+  ];
+
+  var discoveryDrillExtractionLine = '  - If Tomás drilled discovery specifically: the 1-3 concrete discovery habits he ' +
+    'worked on (e.g. "ask for a number on the goal", "use their own post as the pain", "don\'t accept the first ' +
+    'answer"), each with a short one-clause note on what to do differently. Empty array if discovery was not ' +
+    'drilled this call — these feed ' + rep + '\'s daily practice assignment same as the objections above.';
 
   var frameworkExtractionLines = role.drillsFramework ? [
     '  - Did ' + rep + ' actively practice FRAMEWORK EXPLANATION (role-play walking through recruit-agents /',
@@ -160,21 +178,40 @@ function buildTrainingReviewSystemPrompt_(rep) {
     'These are our named frameworks — grade against these, not a generic sales methodology:',
     '  OBJECTION HANDLING = Agree, Isolate, Repeat. Agree with the objection\'s premise (don\'t argue it',
     '    away), isolate it as the one thing standing in the way ("so if it weren\'t for X, you\'d be ready',
-    '    to move forward?"), then repeat/confirm that back before answering it.'
+    '    to move forward?"), then repeat/confirm that back before answering it.',
+    '  DISCOVERY = coming away with the lead\'s GOAL and their PAIN, and being able to hand both to whoever',
+    '    runs the next call. Tomás\'s definition, 09/09/2026:',
+    '      GOAL = what they are running TOWARDS, stated specifically. "Wants to connect with other agents"',
+    '        is not a goal — that is joining a club. A goal is a business metric: volume they want to hit,',
+    '        agents they want to recruit, a market position. If the answer comes back vague, the drill is to',
+    '        ask a follow-up rather than accept it — "don\'t take any answer as an answer."',
+    '      PAIN = what they are running FROM. Not the numeric shortfall against the goal (that is a',
+    '        condition they have lived with for years), but something concrete a podcast could fix: no',
+    '        professional presence when someone Googles them, content nobody engages with, a network too',
+    '        small locally, losing listings to agents with a bigger profile.',
+    '      Asking "what\'s your bottleneck?" directly does NOT count — Tomás is explicit that it reads as a',
+    '        sales question and people deflect it. Pain is uncovered through pre-call research and through',
+    '        the conversation, including using the lead\'s own posts and words back to them.',
+    '      DEPTH DEPENDS ON THE CALL: on a qualification or sales call this is a full discovery. On an',
+    '        ICONS 100 podcast recording it is deliberately light — "you are only supposed to open up a',
+    '        little bit of the door", not run a 30-minute discovery inside an interview. Judge the drill',
+    '        against the call type being discussed, and never coach ' + rep + ' towards a deeper discovery',
+    '        than the call he actually runs calls for.'
   ].concat(closeAskDefinitionLines, frameworkDefinitionLines, [
     '',
     'Extract:',
     '  - Did Tomás reference a specific real call/objection pattern of ' + rep + '\'s, and what did he say about it?',
     '  - Did ' + rep + ' actively practice OBJECTION HANDLING (role-play the Agree/Isolate/Repeat sequence,',
     '    not just listen to Tomás describe it) in this call? Quote the moment.'
-  ], closeAskExtractionLines, frameworkExtractionLines, [
+  ], closeAskExtractionLines, frameworkExtractionLines, discoveryExtractionLines, [
     '  - What did Tomás explicitly tell ' + rep + ' to do differently before next week?',
     '  - The 2-3 SPECIFIC objections Tomás drilled ' + rep + ' on in this call (not a general theme —',
     '    the actual named objection, e.g. "I\'m too busy right now", "What does this cost?"), each with a',
     '    short, concrete one-clause note on how to handle it via Agree/Isolate/Repeat. These get sent to',
     '    ' + rep + ' as this week\'s daily practice assignment, so keep both the label and the note short',
     '    and usable as a checklist item.',
-    closeAskDrillExtractionLine
+    closeAskDrillExtractionLine,
+    discoveryDrillExtractionLine
   ], frameworkDrillExtractionLine ? [frameworkDrillExtractionLine] : [], [
     '',
     'Be skeptical: if ' + rep + ' was only listening, not practicing, mark the relevant practiced_* field',
@@ -189,6 +226,7 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  "practiced_objections": true,',
     '  "practiced_close_ask": true,',
     '  "practiced_framework": true,',
+    '  "practiced_discovery": true,',
     '  "coaching_notes": "string — what Tomás said about their pattern/performance, with a quote. If this ' +
       'covers more than one distinct idea (a quoted moment, a separate observation, a role-play correction, ' +
       'etc.), put each on its own line separated by a literal \\n — never chain them into one dense ' +
@@ -203,6 +241,10 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '  "framework_gaps_to_drill": [',
     '    { "topic": "recruit_agents | number_one_podcast | sell_more_houses",',
     '      "note": "string — one short clause on what to say differently" }',
+    '  ],',
+    '  "discovery_habits_to_drill": [',
+    '    { "label": "string — the habit, short, e.g. \\"ask for a number on the goal\\"",',
+    '      "note": "string — one short clause on what to do differently" }',
     '  ],',
     '  "team_notes": "string — anything Tomás said that applies beyond ' + rep + ', else \\"none\\"",',
     '  "tomas_coaching": {',
@@ -235,6 +277,7 @@ function isValidTrainingReviewSchema_(obj) {
     typeof obj.practiced_objections === 'boolean' &&
     typeof obj.practiced_close_ask === 'boolean' &&
     typeof obj.practiced_framework === 'boolean' &&
+    typeof obj.practiced_discovery === 'boolean' &&
     typeof obj.coaching_notes === 'string' &&
     typeof obj.next_focus === 'string' &&
     typeof obj.team_notes === 'string' &&
@@ -298,11 +341,13 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     practiced_objections: false,
     practiced_close_ask: false,
     practiced_framework: false,
+    practiced_discovery: false,
     coaching_notes: 'Automated review failed to parse twice — read the transcript manually.',
     next_focus: 'n/a — read transcript manually: ' + rep + '/' + dateLabel,
     objections_to_drill: [],
     close_ask_drill: null,
     framework_gaps_to_drill: [],
+    discovery_habits_to_drill: [],
     team_notes: 'none',
     tomas_coaching: {
       grounded_in_real_data: false,
@@ -448,6 +493,7 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     'Attended: ' + (result.attended ? 'Yes' : 'No') +
     ' | Practiced objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
     ' | Practiced ' + role.closeAskSkillLabel + ': ' + (result.practiced_close_ask ? 'Yes' : 'No') +
+    ' | Practiced discovery: ' + (result.practiced_discovery ? 'Yes' : 'No') +
     frameworkStatLinePlain + '\n\n' +
     'Notes: ' + result.coaching_notes + '\n\n' +
     'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
@@ -463,6 +509,7 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     trainingReviewStatBadge_('Attended', result.attended) +
     trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
     trainingReviewStatBadge_(closeAskLabelCap + ' practiced', result.practiced_close_ask) +
+    trainingReviewStatBadge_('Discovery practiced', result.practiced_discovery) +
     frameworkStatBadgeHtml +
     '</div>' +
     trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Notes', trainingReviewFormatText_(result.coaching_notes)) +
@@ -523,7 +570,7 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
     coaching_feedback_summary: 'No coaching feedback available for this call.'
   };
   var repGotToPractice = !!(result.practiced_objections || result.practiced_close_ask ||
-    (role.drillsFramework && result.practiced_framework));
+    result.practiced_discovery || (role.drillsFramework && result.practiced_framework));
 
   var body = 'Feedback on your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
     'Grounded in ' + rep + '\'s real calls (not generic advice): ' + (coaching.grounded_in_real_data ? 'Yes' : 'No') +
@@ -777,6 +824,17 @@ function processTrainingTranscript_(rep, repCfg, dateLabel, transcriptFile, outp
   if (result.framework_gaps_to_drill && result.framework_gaps_to_drill.length) {
     PropertiesService.getScriptProperties().setProperty(
       'TRAINING_FRAMEWORK_' + rep, JSON.stringify(result.framework_gaps_to_drill));
+  }
+  // Same non-destructive rule again, for discovery (added 09/09/2026).
+  // NOTE: nothing READS this property yet — Phase 7's daily-practice lane
+  // rotation still covers objections/close-ask/framework only. Adding a
+  // fourth lane needs its own drill_type, rubric and score anchors in
+  // Phase7_DailySelfPractice.gs, which is a separate change. Capturing the
+  // drill now means that when that lands there is already real coaching data
+  // to run it against, instead of waiting another training cycle.
+  if (result.discovery_habits_to_drill && result.discovery_habits_to_drill.length) {
+    PropertiesService.getScriptProperties().setProperty(
+      'TRAINING_DISCOVERY_' + rep, JSON.stringify(result.discovery_habits_to_drill));
   }
   // Script Properties (above) are invisible to anything outside Apps Script —
   // no Sheets/Drive API can read them. Mirror the current values into a sheet
