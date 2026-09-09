@@ -1708,7 +1708,7 @@ function rescoreScopeWindow_(lastWeekOnly, now, tz) {
   return null;
 }
 
-function rescoreAllCalls_(dryRun, lastWeekOnly) {
+function rescoreAllCalls_(dryRun, lastWeekOnly, repFilter) {
   RUN_TAG = 'rescoreAllCalls_';
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
@@ -1761,6 +1761,7 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
     var scopeWeek = rescoreScopeWindow_(lastWeekOnly, new Date(), CONFIG.BUSINESS_TIMEZONE);
     var skippedCurrent = 0, skippedManuallyReviewed = 0, skippedNoTranscript = 0, skippedNotYetScored = 0;
     var skippedOutsideWeek = 0;
+    var skippedRepFiltered = 0;
     for (var i = 0; i < values.length; i++) {
       var scanRow = values[i];
       if (scopeWeek) {
@@ -1770,6 +1771,11 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
           continue;
         }
       }
+      var scanRep = scanRow[col['Rep'] - 1];
+      if (repFilter && String(scanRep || '').toLowerCase() !== String(repFilter).toLowerCase()) {
+        skippedRepFiltered++;
+        continue;
+      }
       var scanExistingScore = scanRow[col['Call Quality Score'] - 1];
       if (typeof scanExistingScore !== 'number') { skippedNotYetScored++; continue; }
       var scanRubricVersion = scanRow[col['Rubric Version'] - 1];
@@ -1778,7 +1784,6 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
       var scanTranscriptUrl = scanRow[col['Transcript URL'] - 1];
       if (!scanTranscriptUrl) { skippedNoTranscript++; continue; }
 
-      var scanRep = scanRow[col['Rep'] - 1];
       var scanCallType = scanRow[col['Call Type'] - 1] || 'QC';
       eligible.push({
         rowIndex: i + 2,
@@ -1814,6 +1819,10 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
         '; ' + skippedOutsideWeek + ' row(s) outside it untouched]';
       scopeFnName = 'Last' + lastWeekOnly + 'DaysCalls';
     }
+    if (repFilter) {
+      scopeLabel += ' [rep: ' + repFilter + '; ' + skippedRepFiltered + ' row(s) for other reps untouched]';
+      scopeFnName += 'For' + repFilter;
+    }
     // Real confusion caused live (08/09/2026): "6 row(s) out of 454 need a
     // rescore" read as "454 calls happened last week," when 454 is the
     // WHOLE SHEET'S all-time row count — scopeWeek narrows what gets
@@ -1821,8 +1830,9 @@ function rescoreAllCalls_(dryRun, lastWeekOnly) {
     // (rows actually inside the window — here, 10) is what belongs in "out
     // of N," with the sheet-wide total kept as separate, clearly-labeled
     // context rather than silently standing in for it.
-    var scopedTotal = scopeWeek ? (values.length - skippedOutsideWeek) : values.length;
+    var scopedTotal = (scopeWeek ? (values.length - skippedOutsideWeek) : values.length) - skippedRepFiltered;
     var scopedPopulationLabel = lastWeekOnly === true ? ' call(s) that week' : (scopeWeek ? ' call(s) in that window' : ' row(s) in the sheet');
+    if (repFilter) { scopedPopulationLabel += ' for ' + repFilter; }
     log_((dryRun ? 'previewRescore' : 'rescore') + scopeFnName + scopeLabel + ': ' +
       eligible.length + ' row(s) out of ' + scopedTotal + scopedPopulationLabel +
       ' need a rescore this pass, grouped by rubric variant for prompt-cache locality' +
@@ -1988,6 +1998,21 @@ function previewRescoreLastMonthCalls() {
 /** Live version of previewRescoreLastMonthCalls() above — run the preview first. */
 function rescoreLastMonthCalls() {
   return rescoreAllCalls_(false, /*lastWeekOnly=*/30);
+}
+
+/**
+ * Kris's ask (09/09/2026): scoped down from previewRescoreLastMonthCalls()
+ * above — that one pulled in all 4 reps (134 rows) when the actual goal was
+ * fresh material for THAT DAY's Bens training only. Rep-filtered to Bens,
+ * and narrowed from 30 days to 2 weeks per his immediate follow-up.
+ */
+function previewRescoreLastTwoWeeksCallsForBens() {
+  return rescoreAllCalls_(true, /*lastWeekOnly=*/14, /*repFilter=*/'Bens');
+}
+
+/** Live version of previewRescoreLastTwoWeeksCallsForBens() above — run the preview first. */
+function rescoreLastTwoWeeksCallsForBens() {
+  return rescoreAllCalls_(false, /*lastWeekOnly=*/14, /*repFilter=*/'Bens');
 }
 
 /** Trigger target for the scoped rescore — same self-removing pattern as runRescoreAllCallsViaTrigger_ above, so it stops on its own once last week is fully rescored. */

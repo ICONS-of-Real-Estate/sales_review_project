@@ -1992,6 +1992,65 @@ test('rescoreAllCalls_ in a day-count window rescores the last month, with its o
   }
 });
 
+test('rescoreAllCalls_ repFilter scopes a rescore to one rep, mirroring buildAndMaybeSendPlaybookReview_\'s repNameFilter (Kris 09/09/2026: "YES just Bens" + "And make it just 2 weeks")', () => {
+  const tz = gas.CONFIG.BUSINESS_TIMEZONE;
+  const headers = gas.SALES_CALL_LOG_HEADERS;
+  const col = {};
+  headers.forEach((h, i) => { col[h] = i + 1; });
+
+  const now = new gas.Date();
+  const inWindow = new gas.Date(now.getTime() - 5 * 24 * 3600 * 1000); // 5 days ago, inside a 14-day window
+
+  const row = (name, rep, callType) => {
+    const r = new Array(headers.length).fill('');
+    r[col['Prospect Name'] - 1] = name;
+    r[col['Call Date'] - 1] = inWindow;
+    r[col['Rep'] - 1] = rep;
+    r[col['Call Type'] - 1] = callType;
+    r[col['Call Quality Score'] - 1] = 3;
+    r[col['Transcript URL'] - 1] = 'https://drive.google.com/file/d/x/view';
+    r[col['Rubric Version'] - 1] = '2026-08-29-pitch-delivery'; // stale, so eligible
+    return r;
+  };
+  const values = [
+    row('Bens Interviewee', 'BENS', 'Icons 100 Recording'), // different case than the filter, on purpose
+    row('Seans Prospect', 'Sean', 'Sales Call'),
+  ];
+
+  const fakeSheet = {
+    getLastRow: () => values.length + 1,
+    getSheetId: () => 1,
+    getName: () => 'Sales Call Log',
+    getRange(startRow, startCol, numRows) {
+      if (startRow === 1) return { getValues: () => [headers.slice()] };
+      return { getValues: () => values.slice(startRow - 2, startRow - 2 + numRows) };
+    }
+  };
+
+  const originals = { log: gas.log_, ss: gas.SpreadsheetApp, lock: gas.LockService, ut: gas.Utilities };
+  const logged = [];
+  gas.log_ = (m) => logged.push(String(m));
+  gas.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) };
+  gas.SpreadsheetApp = { openById: () => ({ getSheetByName: (n) => (n === 'Sales Call Log' ? fakeSheet : null), getSheets: () => [fakeSheet] }) };
+  gas.Utilities = { formatDate: realFormatDate, sleep() {} };
+  try {
+    // 'Bens' matches the sheet's own 'Bens' case-insensitively, same as
+    // repNameFilter's own comparison in buildAndMaybeSendPlaybookReview_ —
+    // exercised here by passing the filter in a different case than the row.
+    gas.rescoreAllCalls_(true, /*lastWeekOnly=*/14, /*repFilter=*/'Bens');
+    const all = logged.join('\n');
+    assert.ok(/Bens Interviewee/.test(all), 'Bens\'s own row inside the window must still be picked up');
+    assert.ok(!/Seans Prospect/.test(all), 'a row for a different rep must be filtered out even though it is inside the window');
+    assert.ok(/previewRescoreLast14DaysCallsForBens/.test(all), 'the rep-filtered mode gets its own distinct log label');
+    assert.ok(/1 row\(s\) out of 1 call\(s\) in that window for Bens need a rescore this pass/.test(all));
+  } finally {
+    gas.log_ = originals.log;
+    gas.SpreadsheetApp = originals.ss;
+    gas.LockService = originals.lock;
+    gas.Utilities = originals.ut;
+  }
+});
+
 test('writeScoreToRow_ writes the current RUBRIC_VERSION into the Rubric Version column', () => {
   // Minimal fake sheet: getRange(row, col).setValue(v) records into a plain
   // map keyed "row:col" — writeScoreToRow_ only ever calls getRange/setValue,
