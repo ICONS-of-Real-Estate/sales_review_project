@@ -2950,6 +2950,74 @@ test('ghlNoteIsOurOwn_ recognises our own AI review notes, so they stop counting
   assert.equal(gas.ghlNoteIsOurOwn_(null), false);
 });
 
+test('ghlMessageIsAutomated_ recognises a workflow-sourced or campaign-type message, so it stops counting as a human touch (Fable review finding, 10/09/2026 — same class of bug as ghlNoteIsOurOwn_, just for messages instead of notes)', () => {
+  assert.equal(gas.ghlMessageIsAutomated_({ source: 'workflow', messageType: 'TYPE_SMS' }), true,
+    'source: "workflow" alone must be enough, regardless of messageType');
+  assert.equal(gas.ghlMessageIsAutomated_({ messageType: 'TYPE_CAMPAIGN_SMS' }), true);
+  assert.equal(gas.ghlMessageIsAutomated_({ messageType: 'TYPE_CAMPAIGN_EMAIL' }), true);
+  assert.equal(gas.ghlMessageIsAutomated_({ type: 'TYPE_CAMPAIGN_CALL' }), true, 'must also check the "type" field, not only "messageType"');
+  // A real human-sent message must NOT be filtered out.
+  assert.equal(gas.ghlMessageIsAutomated_({ source: 'app', messageType: 'TYPE_SMS' }), false);
+  assert.equal(gas.ghlMessageIsAutomated_({ messageType: 'TYPE_CALL' }), false);
+  assert.equal(gas.ghlMessageIsAutomated_({}), false);
+  assert.equal(gas.ghlMessageIsAutomated_(null), false);
+});
+
+test('ghlMostRecentConversationDate_ excludes automated messages from the "most recent" calculation, only counting genuine human activity', () => {
+  const originalConv = gas.ghlListConversationsForContact_;
+  const originalMsgs = gas.ghlListMessagesInConversation_;
+  try {
+    gas.ghlListConversationsForContact_ = () => ({ ok: true, conversations: [{ id: 'convo-1' }] });
+    gas.ghlListMessagesInConversation_ = () => ({
+      ok: true,
+      messages: [
+        { dateAdded: '2026-09-09T10:00:00.000Z', source: 'workflow' }, // most recent, but automated — must be excluded
+        { dateAdded: '2026-09-05T10:00:00.000Z', messageType: 'TYPE_SMS' } // genuine human touch, older
+      ]
+    });
+    const result = gas.ghlMostRecentConversationDate_('loc-1', 'contact-1');
+    assert.equal(result, '2026-09-05T10:00:00.000Z',
+      'must return the most recent HUMAN message date, not the most recent message overall');
+  } finally {
+    gas.ghlListConversationsForContact_ = originalConv;
+    gas.ghlListMessagesInConversation_ = originalMsgs;
+  }
+});
+
+test('ghlMostRecentConversationDate_ returns null when every message on the contact is automated, rather than falsely reporting recent human activity', () => {
+  const originalConv = gas.ghlListConversationsForContact_;
+  const originalMsgs = gas.ghlListMessagesInConversation_;
+  try {
+    gas.ghlListConversationsForContact_ = () => ({ ok: true, conversations: [{ id: 'convo-1' }] });
+    gas.ghlListMessagesInConversation_ = () => ({
+      ok: true,
+      messages: [{ dateAdded: '2026-09-09T10:00:00.000Z', source: 'workflow' }]
+    });
+    assert.equal(gas.ghlMostRecentConversationDate_('loc-1', 'contact-1'), null);
+  } finally {
+    gas.ghlListConversationsForContact_ = originalConv;
+    gas.ghlListMessagesInConversation_ = originalMsgs;
+  }
+});
+
+test('ghlMostRecentConversationDate_ skips a conversation whose message fetch fails, rather than failing the whole lookup (best-effort, same posture as every other lookup in this file)', () => {
+  const originalConv = gas.ghlListConversationsForContact_;
+  const originalMsgs = gas.ghlListMessagesInConversation_;
+  try {
+    gas.ghlListConversationsForContact_ = () => ({
+      ok: true,
+      conversations: [{ id: 'broken-convo' }, { id: 'good-convo' }]
+    });
+    gas.ghlListMessagesInConversation_ = (id) => id === 'broken-convo'
+      ? { ok: false, status: 500, body: 'boom', messages: [] }
+      : { ok: true, messages: [{ dateAdded: '2026-09-05T10:00:00.000Z', messageType: 'TYPE_SMS' }] };
+    assert.equal(gas.ghlMostRecentConversationDate_('loc-1', 'contact-1'), '2026-09-05T10:00:00.000Z');
+  } finally {
+    gas.ghlListConversationsForContact_ = originalConv;
+    gas.ghlListMessagesInConversation_ = originalMsgs;
+  }
+});
+
 test('buildGhlStageTriageSuggestion_ gives the decisive suggestion once our own notes stop masking a dead lead', () => {
   // This is the behaviour the contamination was suppressing: on a stale
   // "Booked" stage with no real human touch, the tool should say what to do

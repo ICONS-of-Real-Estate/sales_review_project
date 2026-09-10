@@ -54,7 +54,15 @@ var GHL_STAGE_TRIAGE_CONFIG = {
 
   // Cap for a first real run. null/0 = no limit — same "prove it on a small
   // batch first, then raise" pattern as GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN.
-  MAX_OPPORTUNITIES_PER_RUN: 25
+  MAX_OPPORTUNITIES_PER_RUN: 25,
+
+  // ghlMostRecentConversationDate_ now fetches each conversation's own
+  // messages (to filter out automated ones — see ghlMessageIsAutomated_),
+  // not just the conversation's own lastMessageDate — same
+  // MAX_CONVERSATIONS_PER_CONTACT cost dial as GHL_COMMS_AUDIT_CONFIG
+  // (Phase9_GhlSync.gs), scoped to this file since the two configs are read
+  // independently.
+  MAX_CONVERSATIONS_PER_CONTACT: 10
 };
 
 var GHL_STAGE_TRIAGE_SHEET_NAME = 'GHL Stage Triage';
@@ -251,8 +259,40 @@ function ghlMostRecentNoteDate_(contactId) {
 }
 
 /**
- * Best-effort: most recent conversation activity date on a contact as an ISO
- * string, or null.
+ * True when a GHL message was sent automatically — a workflow or campaign
+ * send — rather than by a human actually working the lead. Same class of
+ * bug as ghlNoteIsOurOwn_ above, found by the same kind of scrutiny (a
+ * Fable code review, 10/09/2026, flagging that workflow-automation messages
+ * still counted as human touches here): a drip-campaign SMS firing on
+ * schedule reads exactly like a rep following up if this isn't checked.
+ *
+ * Two independently-documented signals (GHL's own public API docs,
+ * marketplace.gohighlevel.com/docs/2021-07-28/ghl/conversations/get-message
+ * — NOT yet cross-checked against a real live response from this account,
+ * same "confirm on the first real run" caution as every other unverified
+ * GHL field in this codebase):
+ *   1. source === "workflow" — set on a message a Workflow action sent.
+ *   2. messageType/type in GHL's own documented TYPE_CAMPAIGN_* family
+ *      (TYPE_CAMPAIGN_SMS / TYPE_CAMPAIGN_CALL / TYPE_CAMPAIGN_EMAIL) —
+ *      bulk/automated campaign sends, distinct from a human-sent
+ *      TYPE_SMS/TYPE_CALL/TYPE_EMAIL.
+ * Same false-negative-is-safer posture as ghlNoteIsOurOwn_: if neither
+ * signal is present, treat the message as human. Missing a genuinely
+ * automated message just makes a lead look slightly more recently touched
+ * than it really was — the direction this whole fix is trying to correct,
+ * but erring toward "not automated" on an ambiguous message is still safer
+ * than erring toward "automated" and hiding a real human touch instead.
+ */
+function ghlMessageIsAutomated_(message) {
+  if (!message) return false;
+  if (String(message.source || '').toLowerCase() === 'workflow') return true;
+  var type = String(message.messageType || message.type || '');
+  return type.indexOf('TYPE_CAMPAIGN_') === 0;
+}
+
+/**
+ * Best-effort: most recent HUMAN conversation activity date on a contact as
+ * an ISO string, or null.
  *
  * The ISO normalisation is the second half of a real defect: GHL returns note
  * dates as ISO strings but conversation dates as epoch MILLISECONDS, and
@@ -261,14 +301,34 @@ function ghlMostRecentNoteDate_(contactId) {
  * ISO note beat a genuinely more recent conversation every time, compounding
  * the contamination above. Raw epochs were also leaking into the sheet Tomás
  * reads (confirmed live: 1787216916228 sitting where a date belongs).
+ *
+ * Used to read each conversation's own lastMessageDate/dateUpdated directly —
+ * which is exactly the bug ghlMessageIsAutomated_'s header comment
+ * describes: that date reflects the LAST message of ANY kind, workflow
+ * sends included. Now walks into each conversation's actual messages (same
+ * per-contact conversation cap as GHL_COMMS_AUDIT_CONFIG, scoped locally as
+ * GHL_STAGE_TRIAGE_CONFIG.MAX_CONVERSATIONS_PER_CONTACT) and takes the
+ * latest date among messages that pass ghlMessageIsAutomated_ as false. A
+ * conversation whose message fetch fails is skipped, not fatal to the
+ * whole lookup — best-effort, same as every other function in this file.
  */
 function ghlMostRecentConversationDate_(locationId, contactId) {
-  var res = ghlApiGet_('/conversations/search?locationId=' + encodeURIComponent(locationId) +
-    '&contactId=' + encodeURIComponent(contactId));
-  if (res.status !== 200) return null;
-  var convos = (res.json && (res.json.conversations || res.json.data)) || [];
-  var dates = convos.map(function (c) { return ghlTimestampToIso_(c.lastMessageDate || c.dateUpdated); })
-    .filter(Boolean);
+  var convRes = ghlListConversationsForContact_(locationId, contactId);
+  if (!convRes.ok) return null;
+  var convos = convRes.conversations.slice(0, GHL_STAGE_TRIAGE_CONFIG.MAX_CONVERSATIONS_PER_CONTACT);
+
+  var dates = [];
+  convos.forEach(function (c) {
+    var conversationId = c.id || c.conversationId;
+    if (!conversationId) return;
+    var msgRes = ghlListMessagesInConversation_(conversationId);
+    if (!msgRes.ok) return; // best-effort — one broken conversation doesn't fail the whole lookup
+    msgRes.messages.forEach(function (m) {
+      if (ghlMessageIsAutomated_(m)) return;
+      var iso = ghlTimestampToIso_(m.dateAdded || m.dateUpdated || m.createdAt);
+      if (iso) dates.push(iso);
+    });
+  });
   return dates.length ? dates.sort().pop() : null;
 }
 
