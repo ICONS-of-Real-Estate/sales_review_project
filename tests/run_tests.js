@@ -3051,7 +3051,7 @@ test('isValidTrainingReviewSchema_ rejects a malformed discovery drill instead o
     practiced_discovery: true, coaching_notes: 'x', next_focus: 'y', team_notes: 'none',
     objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
     discovery_habits_to_drill: [{ label: 'ask for a number', note: 'not "wants to grow"' }],
-    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z' }
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z', facilitation_action_for_next_time: 'z' }
   };
   assert.equal(gas.isValidTrainingReviewSchema_(base), true);
   // Bare strings, or the wrong key names, must fail rather than be persisted
@@ -4335,7 +4335,8 @@ test('isValidTrainingReviewSchema_ accepts a clean call with zero objections dri
     tomas_coaching: {
       grounded_in_real_data: true,
       gave_concrete_next_focus: true,
-      coaching_feedback_summary: 'Grounded in a real objection from this call.'
+      coaching_feedback_summary: 'Grounded in a real objection from this call.',
+      facilitation_action_for_next_time: 'Keep doing this.'
     }
   };
   assert.equal(gas.isValidTrainingReviewSchema_(base), true);
@@ -4476,7 +4477,8 @@ test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coac
     tomas_coaching: {
       grounded_in_real_data: true,
       gave_concrete_next_focus: true,
-      coaching_feedback_summary: 'Grounded the session in a real objection from this week.'
+      coaching_feedback_summary: 'Grounded the session in a real objection from this week.',
+      facilitation_action_for_next_time: 'Keep grounding sessions in the rep\'s real pipeline.'
     }
   };
   assert.equal(gas.isValidTrainingReviewSchema_(base), true);
@@ -4486,9 +4488,19 @@ test('isValidTrainingReviewSchema_ rejects a result missing/malformed tomas_coac
   assert.equal(gas.isValidTrainingReviewSchema_(missing), false, 'missing tomas_coaching must fail validation');
 
   const malformed = Object.assign({}, base, {
-    tomas_coaching: { grounded_in_real_data: 'yes', gave_concrete_next_focus: true, coaching_feedback_summary: 'ok' }
+    tomas_coaching: { grounded_in_real_data: 'yes', gave_concrete_next_focus: true, coaching_feedback_summary: 'ok', facilitation_action_for_next_time: 'ok' }
   });
   assert.equal(gas.isValidTrainingReviewSchema_(malformed), false, 'non-boolean grounded_in_real_data must fail validation');
+
+  // Real gap this schema addition closes 10/09/2026 (Kris: "How are they
+  // meant to action it?") — a judge that returns everything else but drops
+  // the one field that actually tells Tomás what to do differently must not
+  // be treated as a valid, complete review.
+  const missingAction = Object.assign({}, base, {
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'ok' }
+  });
+  assert.equal(gas.isValidTrainingReviewSchema_(missingAction), false,
+    'missing facilitation_action_for_next_time must fail validation, same as the other tomas_coaching fields');
 });
 
 test('reviewTrainingCallTranscript_\'s parse-failure fallback carries a tomas_coaching stub, so buildTomasCoachingFeedbackEmail_ never sees an undefined field', () => {
@@ -4503,6 +4515,7 @@ test('reviewTrainingCallTranscript_\'s parse-failure fallback carries a tomas_co
     assert.equal(result.tomas_coaching.grounded_in_real_data, false);
     assert.equal(result.tomas_coaching.gave_concrete_next_focus, false);
     assert.equal(typeof result.tomas_coaching.coaching_feedback_summary, 'string');
+    assert.equal(typeof result.tomas_coaching.facilitation_action_for_next_time, 'string');
   } finally {
     gas.PHASE2_CONFIG = originalConfig;
     gas.callKimiJudge_ = originalCallKimiJudge;
@@ -4621,7 +4634,7 @@ test('isValidTrainingReviewSchema_ now requires practiced_discovery, so a judge 
     practiced_discovery: true,
     coaching_notes: 'x', next_focus: 'y', team_notes: 'none',
     objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [], discovery_habits_to_drill: [],
-    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z' }
+    tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'z', facilitation_action_for_next_time: 'z' }
   };
   assert.equal(gas.isValidTrainingReviewSchema_(base), true);
   const missing = Object.assign({}, base);
@@ -4663,14 +4676,35 @@ test('buildTomasCoachingFeedbackEmail_ derives rep_got_to_practice from the judg
     'Sean\'s framework drill should count toward practice since his role covers it');
 });
 
-test('buildTomasCoachingFeedbackEmail_ subject carries the week number and stays distinct from the rep\'s own Training Call Plan subject', () => {
+test('buildTomasCoachingFeedbackEmail_ subject carries the week number, stays distinct from the rep\'s own Training Call Plan subject, and can\'t be misread as being about the rep (real confusion 10/09/2026, Kris: "It\'s not clear! The feedback is for Tomas or for Joana?")', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {
     practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
     tomas_coaching: { grounded_in_real_data: true, gave_concrete_next_focus: true, coaching_feedback_summary: 'Good session.' }
   };
   const email = gas.buildTomasCoachingFeedbackEmail_('Sean', '260825', result);
-  assert.equal(email.subject, 'Your Training Call Coaching Feedback — Sean — Week 2');
+  assert.equal(email.subject, 'Your Facilitation Feedback — training call with Sean — Week 2');
+});
+
+test('buildTomasCoachingFeedbackEmail_ states up front that this is feedback on the recipient\'s own facilitation, not the rep\'s performance, and surfaces a concrete next-time action separately from the feedback summary', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    practiced_objections: true, practiced_close_ask: true, practiced_framework: true, practiced_discovery: true,
+    tomas_coaching: {
+      grounded_in_real_data: true, gave_concrete_next_focus: true,
+      coaching_feedback_summary: 'Grounded in Joana\'s real pipeline.',
+      facilitation_action_for_next_time: 'Run a short role-play of the objection out loud before moving on.'
+    }
+  };
+  const email = gas.buildTomasCoachingFeedbackEmail_('Joana', '260908', result);
+  assert.ok(email.body.indexOf('not a review of Joana\'s own performance') !== -1,
+    'the plain-text body must explicitly say this is about the recipient\'s facilitation, not the rep');
+  assert.ok(email.htmlBody.indexOf('not a review of Joana') !== -1,
+    'the HTML body must carry the same framing line');
+  assert.ok(email.body.indexOf('Run a short role-play of the objection out loud before moving on.') !== -1,
+    'the concrete next-time action must appear in the plain-text body');
+  assert.ok(email.htmlBody.indexOf('What to do differently next time') !== -1,
+    'the HTML body must have its own clearly labeled action callout, distinct from the feedback summary callout');
 });
 
 // ---------------------------------------------------------------------------

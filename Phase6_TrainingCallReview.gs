@@ -255,7 +255,14 @@ function buildTrainingReviewSystemPrompt_(rep) {
       'calls/objections rather than generic advice, and did he close with a genuinely concrete, specific ' +
       'next-focus rather than something vague? Quote a real moment (strong or weak). Constructive, not ' +
       'just a compliment or just a criticism. If this covers more than one distinct idea, put each on its ' +
-      'own line separated by a literal \\n — never chain them into one dense run-on paragraph."',
+      'own line separated by a literal \\n — never chain them into one dense run-on paragraph.",',
+    '    "facilitation_action_for_next_time": "string — ONE concrete instruction for what TOMÁS should ' +
+      'actually do differently the NEXT time he runs a training call — not ' + rep + '\'s self-practice ' +
+      'focus (that is next_focus above), Tomás\'s OWN facilitation habit to change. Must be something he ' +
+      'can act on in the next session, e.g. \\"Run a short role-play of the objection out loud before ' +
+      'moving on, instead of only explaining how to handle it\\" — not a restatement of the gap without an ' +
+      'instruction attached. If the facilitation was already strong on every dimension, say what to keep ' +
+      'doing, still phrased as a concrete instruction, not just praise."',
     '  }',
     '}'
   ]).join('\n');
@@ -306,7 +313,8 @@ function isValidTrainingReviewSchema_(obj) {
     obj.tomas_coaching &&
     typeof obj.tomas_coaching.grounded_in_real_data === 'boolean' &&
     typeof obj.tomas_coaching.gave_concrete_next_focus === 'boolean' &&
-    typeof obj.tomas_coaching.coaching_feedback_summary === 'string');
+    typeof obj.tomas_coaching.coaching_feedback_summary === 'string' &&
+    typeof obj.tomas_coaching.facilitation_action_for_next_time === 'string');
 }
 
 /** Strips WebVTT cue numbers + timestamp lines, leaving just "Speaker: text" lines for the judge. */
@@ -360,7 +368,8 @@ function reviewTrainingCallTranscript_(rep, transcriptText, dateLabel) {
     tomas_coaching: {
       grounded_in_real_data: false,
       gave_concrete_next_focus: false,
-      coaching_feedback_summary: 'Unscored — parse failure after retries.'
+      coaching_feedback_summary: 'Unscored — parse failure after retries.',
+      facilitation_action_for_next_time: 'Unscored — parse failure after retries.'
     }
   };
 }
@@ -546,7 +555,14 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
 function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
   var role = trainingReviewRoleFor_(rep);
   var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
-  var subject = 'Your Training Call Coaching Feedback — ' + rep + ' — ' + (weekLabel || dateLabel);
+  // Subject renamed 10/09/2026 (Kris: "It's not clear! The feedback is for
+  // Tomas or for Joana?") — the old "Your Training Call Coaching Feedback —
+  // Joana" read as if it could be Joana's own email about her, especially
+  // once "Joana" sat right next to "Your" in the subject line. "Your
+  // Facilitation Feedback" is possessive of the recipient (Tomás) and can't
+  // be misread as being about the rep.
+  var subject = 'Your Facilitation Feedback — training call with ' + rep + ' — ' + (weekLabel || dateLabel);
+  var framingLine = 'This is feedback on how YOU ran this training call — not a review of ' + rep + '\'s own performance.';
 
   // Real bug found live (02/09/2026, Tomás): the parse-failure sentinel
   // below (reviewTrainingCallTranscript_) fills grounded_in_real_data/
@@ -557,13 +573,13 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
   // at all. Show a clearly-labeled "review failed" notice instead whenever
   // this was the unscored fallback, not real scoring.
   if (result.manual_review_recommended) {
-    var failBody = 'Feedback on your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+    var failBody = 'Feedback on how you ran your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
       'The automated review couldn\'t parse this call\'s transcript after retrying — this is NOT feedback ' +
       'on your facilitation, the review itself failed. No action needed from you.\n\n' +
       '— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.';
     var failHtmlBody =
       '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
-      '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Feedback on your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+      '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Feedback on how you ran your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
       trainingReviewCallout_('#f9ab00', '#fef7e0', 'Review unavailable',
         'The automated review couldn\'t parse this call\'s transcript after retrying — this is <b>not</b> ' +
         'feedback on your facilitation, the review itself failed. No action needed from you.') +
@@ -575,27 +591,34 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
   var coaching = result.tomas_coaching || {
     grounded_in_real_data: false,
     gave_concrete_next_focus: false,
-    coaching_feedback_summary: 'No coaching feedback available for this call.'
+    coaching_feedback_summary: 'No coaching feedback available for this call.',
+    facilitation_action_for_next_time: 'No coaching feedback available for this call.'
   };
   var repGotToPractice = !!(result.practiced_objections || result.practiced_close_ask ||
     result.practiced_discovery || (role.drillsFramework && result.practiced_framework));
+  var actionForNextTime = coaching.facilitation_action_for_next_time ||
+    'No specific action captured for this call — see the feedback summary above.';
 
-  var body = 'Feedback on your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+  var body = 'Feedback on how you ran your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+    framingLine + '\n\n' +
     'Grounded in ' + rep + '\'s real calls (not generic advice): ' + (coaching.grounded_in_real_data ? 'Yes' : 'No') +
     ' | ' + rep + ' got to practice out loud: ' + (repGotToPractice ? 'Yes' : 'No') +
     ' | Closed with a concrete next focus: ' + (coaching.gave_concrete_next_focus ? 'Yes' : 'No') + '\n\n' +
     coaching.coaching_feedback_summary + '\n\n' +
+    'What to do differently next time: ' + actionForNextTime + '\n\n' +
     '— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.';
 
   var htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
-    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Feedback on your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 6px;">Feedback on how you ran your training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<p style="color:#5f6368;font-size:13px;margin:0 0 14px;">' + framingLine + '</p>' +
     '<div style="margin-bottom:14px;">' +
     trainingReviewStatBadge_('Grounded in ' + rep + '\'s real calls', coaching.grounded_in_real_data) +
     trainingReviewStatBadge_(rep + ' got to practice out loud', repGotToPractice) +
     trainingReviewStatBadge_('Concrete next focus set', coaching.gave_concrete_next_focus) +
     '</div>' +
     trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Facilitation feedback', trainingReviewFormatText_(coaching.coaching_feedback_summary)) +
+    trainingReviewCallout_('#0b8043', '#e6f4ea', 'What to do differently next time', trainingReviewFormatText_(actionForNextTime)) +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.</p>' +
     '</div>';
 
