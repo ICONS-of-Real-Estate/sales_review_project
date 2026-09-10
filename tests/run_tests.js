@@ -4587,6 +4587,31 @@ test('buildTrainingReviewEmail_ formats coaching_notes and team_notes with line 
     'team_notes must get the same line-break treatment as coaching_notes');
 });
 
+test('buildTrainingReviewEmail_ states up front that this plan belongs to the rep, and renders discovery_habits_to_drill as its own section instead of silently dropping it (real gap 10/09/2026, Kris, reading a discovery-focused call: "Focus this week is meant to be discovery. How to practice discovery?")', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const result = {
+    attended: true, practiced_objections: false, practiced_close_ask: false, practiced_framework: false, practiced_discovery: false,
+    coaching_notes: 'Main correction: pre-call discovery is too thin.',
+    next_focus: 'focus', objections_to_drill: [], close_ask_drill: null, framework_gaps_to_drill: [],
+    discovery_habits_to_drill: [
+      { label: 'ask for a number on the goal', note: 'not "wants to grow", get a specific target and date' },
+      { label: 'confirm prior info before asking new questions', note: 'note down what you already know and open with it' }
+    ],
+    team_notes: 'none'
+  };
+  const email = gas.buildTrainingReviewEmail_('Joana', '260908', result);
+  assert.ok(email.body.indexOf('This is YOUR plan') !== -1,
+    'the plain-text body must state up front that this plan belongs to the rep');
+  assert.ok(email.htmlBody.indexOf('This is YOUR plan') !== -1,
+    'the HTML body must carry the same framing line');
+  assert.ok(email.body.indexOf('Discovery habits to drill:') !== -1 &&
+    email.body.indexOf('ask for a number on the goal') !== -1,
+    'discovery habits must actually appear in the plain-text body, not just get persisted for Phase 7');
+  assert.ok(email.htmlBody.indexOf('Discovery to drill') !== -1 &&
+    email.htmlBody.indexOf('confirm prior info before asking new questions') !== -1,
+    'discovery habits must get their own labeled HTML section, same treatment as objections/close-ask/framework');
+});
+
 test('buildTomasCoachingFeedbackEmail_ formats coaching_feedback_summary with line breaks and italicized quotes in the HTML body', () => {
   gas.Utilities = { formatDate: realFormatDate };
   const result = {

@@ -440,6 +440,13 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
   var closeAskLabelCap = role.closeAskSkillLabel.charAt(0).toUpperCase() + role.closeAskSkillLabel.slice(1);
   var weekLabel = trainingCallPlanWeekLabel_(dateLabel, CONFIG.BUSINESS_TIMEZONE);
   var subject = 'Training Call Plan — ' + rep + ' — ' + (weekLabel || dateLabel);
+  // Framing line added 10/09/2026 alongside the same fix on
+  // buildTomasCoachingFeedbackEmail_ — Kris flagged that email needed to say
+  // whose it was; this one, sitting right next to it in the same inbox with
+  // an almost-identical subject shape, has the same ambiguity even though it
+  // IS addressed to the rep, not Tomás. State it outright rather than
+  // relying on "Hi <rep>," alone to carry that.
+  var framingLine = 'This is YOUR plan for the coming week, built from your training call with Tomás on ' + dateLabel + '.';
 
   // Same parse-failure-sentinel bug as buildTomasCoachingFeedbackEmail_ above
   // — the fallback fills attended/practiced_* with placeholder booleans just
@@ -494,6 +501,28 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
         }).join('') + '</ul>')
     : '';
 
+  // Real gap found live (10/09/2026, Kris, reading a call whose whole
+  // correction was about discovery: "Focus this week is meant to be
+  // discovery. How to practice discovery?") — discovery_habits_to_drill was
+  // captured by the judge and persisted to TRAINING_DISCOVERY_<rep> for
+  // Phase 7's daily practice, but this weekly plan email itself never
+  // rendered it, unlike objections/close-ask/framework which each get their
+  // own drill box. A week whose entire coaching was discovery-focused could
+  // land with the "Discovery practiced: No" badge and nothing telling the
+  // rep what to actually do about it until the next day's separate email.
+  var discoveryHabits = result.discovery_habits_to_drill || [];
+  var discoveryPlain = discoveryHabits.length
+    ? '\nDiscovery habits to drill:\n' + discoveryHabits.map(function (d) {
+        return '- ' + d.label + ' — ' + d.note;
+      }).join('\n') + '\n'
+    : '';
+  var discoveryHtml = discoveryHabits.length
+    ? trainingReviewCallout_('#00796b', '#e0f2f1', 'Discovery to drill',
+        '<ul style="margin:6px 0 0;padding-left:20px;">' + discoveryHabits.map(function (d) {
+          return '<li style="margin-bottom:4px;"><b>' + d.label + '</b> — ' + d.note + '</li>';
+        }).join('') + '</ul>')
+    : '';
+
   var hasTeamNote = result.team_notes && result.team_notes.toLowerCase() !== 'none';
 
   // Framework explanation isn't shown at all for a rep whose role doesn't
@@ -507,6 +536,7 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     : '';
 
   var body = 'Training call with ' + rep + ' (' + dateLabel + '):\n\n' +
+    framingLine + '\n\n' +
     'Attended: ' + (result.attended ? 'Yes' : 'No') +
     ' | Practiced objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
     ' | Practiced ' + role.closeAskSkillLabel + ': ' + (result.practiced_close_ask ? 'Yes' : 'No') +
@@ -515,13 +545,15 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     'Notes: ' + result.coaching_notes + '\n\n' +
     'This week\'s objections to drill (Agree, Isolate, Repeat):\n' + objectionsPlain + '\n' +
     closeAskPlain +
-    frameworkPlain + '\n' +
+    frameworkPlain +
+    discoveryPlain + '\n' +
     (hasTeamNote ? 'Team-wide note: ' + result.team_notes + '\n\n' : '') +
     '— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.';
 
   var htmlBody =
     '<div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">' +
-    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 10px;">Training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<h2 style="color:#1a73e8;font-size:18px;margin:0 0 6px;">Training call with ' + rep + ' (' + dateLabel + ')</h2>' +
+    '<p style="color:#5f6368;font-size:13px;margin:0 0 14px;">' + framingLine + '</p>' +
     '<div style="margin-bottom:14px;">' +
     trainingReviewStatBadge_('Attended', result.attended) +
     trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
@@ -534,6 +566,7 @@ function buildTrainingReviewEmail_(rep, dateLabel, result) {
     objectionsHtml +
     closeAskHtml +
     frameworkHtml +
+    discoveryHtml +
     (hasTeamNote ? trainingReviewCallout_('#9334e6', '#f5f0fc', 'Team-wide note', trainingReviewFormatText_(result.team_notes)) : '') +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated review of the training call itself, not a sales call. Reply to Kris or Tomás with corrections.</p>' +
     '</div>';
