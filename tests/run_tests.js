@@ -6915,6 +6915,165 @@ test('computeProspectNameFixes_ only touches fallback_heuristic rows for Sean/Jo
   assert.equal(fixes[0].rowIndex, 2);
 });
 
+// ---------------------------------------------------------------------------
+// ICONS 100 tag backfill (Phase9_GhlSync.gs) — Tomás's ask, 08/09/2026.
+// ---------------------------------------------------------------------------
+
+test('ghlAddContactTag_ POSTs to the contact tags endpoint with the tag name wrapped in a tags array', () => {
+  let capturedPath, capturedPayload;
+  const originalPost = gas.ghlApiPost_;
+  gas.ghlApiPost_ = (path, payload) => { capturedPath = path; capturedPayload = payload; return { status: 200 }; };
+  try {
+    gas.ghlAddContactTag_('contact-123', 'icons 100 guest');
+    assert.equal(capturedPath, '/contacts/contact-123/tags');
+    // Cross-realm gotcha (house convention): capturedPayload.tags was built
+    // inside the vm sandbox, so assert.deepEqual's reference-equality check
+    // on its Array prototype fails even though the structure matches —
+    // compare via slice() per the documented workaround.
+    assert.deepEqual(Array.prototype.slice.call(capturedPayload.tags), ['icons 100 guest']);
+  } finally {
+    gas.ghlApiPost_ = originalPost;
+  }
+});
+
+function withMockedGhlContactSearch_(searchFn, fn) {
+  const original = gas.ghlSearchContactByName_;
+  gas.ghlSearchContactByName_ = searchFn;
+  try {
+    return fn();
+  } finally {
+    gas.ghlSearchContactByName_ = original;
+  }
+}
+
+test('resolveIcons100TrackerContact_ resolves a single name-matching candidate', () => {
+  const result = withMockedGhlContactSearch_(
+    () => ({ ok: true, contacts: [{ id: 'c1', name: 'Anthony Camperi', email: 'a@x.com' }] }),
+    () => gas.resolveIcons100TrackerContact_('loc-1', 'Anthony Camperi', '')
+  );
+  assert.equal(result.outcome, 'matched');
+  assert.equal(result.contactId, 'c1');
+  assert.equal(result.matchMethod, 'name_token');
+});
+
+test('resolveIcons100TrackerContact_ disambiguates multiple name-token candidates by an exact email match, rather than guessing (a WRITE, so this matters more than previewGhlMatching_\'s read-only "ambiguous" report)', () => {
+  const result = withMockedGhlContactSearch_(
+    () => ({
+      ok: true,
+      contacts: [
+        { id: 'c1', name: 'Nicole Freed', email: 'wrong@x.com' },
+        { id: 'c2', name: 'Nicole Freed', email: 'nicole.freed@yahoo.com' }
+      ]
+    }),
+    () => gas.resolveIcons100TrackerContact_('loc-1', 'Nicole Freed', 'nicole.freed@yahoo.com')
+  );
+  assert.equal(result.outcome, 'matched');
+  assert.equal(result.contactId, 'c2');
+  assert.equal(result.matchMethod, 'email_exact');
+});
+
+test('resolveIcons100TrackerContact_ reports ambiguous, not a guess, when multiple candidates share name tokens and no email disambiguates them', () => {
+  const result = withMockedGhlContactSearch_(
+    () => ({ ok: true, contacts: [{ id: 'c1', name: 'Nicole Freed' }, { id: 'c2', name: 'Nicole Freed' }] }),
+    () => gas.resolveIcons100TrackerContact_('loc-1', 'Nicole Freed', '')
+  );
+  assert.equal(result.outcome, 'ambiguous');
+  assert.equal(result.candidateCount, 2);
+});
+
+test('resolveIcons100TrackerContact_ reports not_found when GHL returns only unrelated noise, same filtering as contactNameLooksLikeQuery_\'s "Desiree Doggett" case', () => {
+  const result = withMockedGhlContactSearch_(
+    () => ({ ok: true, contacts: [{ name: 'justin stamper' }, { name: 'avery carl' }] }),
+    () => gas.resolveIcons100TrackerContact_('loc-1', 'Desiree Doggett', '')
+  );
+  assert.equal(result.outcome, 'not_found');
+});
+
+test('resolveIcons100TrackerContact_ reports search_failed rather than throwing when the GHL search itself errors', () => {
+  const result = withMockedGhlContactSearch_(
+    () => ({ ok: false, status: 500, body: 'server error' }),
+    () => gas.resolveIcons100TrackerContact_('loc-1', 'Anyone', '')
+  );
+  assert.equal(result.outcome, 'search_failed');
+  assert.equal(result.status, 500);
+});
+
+function fakeIcons100TrackerSheet(headerRow, rows) {
+  const cells = {};
+  return {
+    getRange(row, col, numRows, numCols) {
+      if (row === 1 && numRows === undefined) {
+        // ensureIcons100TagStatusColumn_'s single-cell header read/write
+        return {
+          getValue: () => (headerRow[col - 1] === undefined ? '' : headerRow[col - 1]),
+          setValue(v) { headerRow[col - 1] = v; return this; },
+          setFontWeight() { return this; },
+          setBackground() { return this; }
+        };
+      }
+      if (row === 1) {
+        return { getValues: () => [headerRow.slice(0, numCols)] };
+      }
+      if (numRows === undefined) {
+        return {
+          getValue: () => cells[row + ':' + col],
+          setValue(v) { cells[row + ':' + col] = v; return this; }
+        };
+      }
+      return { getValues: () => rows.slice(row - 2, row - 2 + numRows).map((r) => r.slice(0, numCols)) };
+    },
+    getLastRow: () => rows.length + 1
+  };
+}
+
+test('ensureIcons100TagStatusColumn_ creates the status column when missing and returns its 1-indexed position', () => {
+  const sheet = fakeIcons100TrackerSheet(gas.BENS_PODCAST_TRACKER_HEADERS.slice(), []);
+  const col = gas.ensureIcons100TagStatusColumn_(sheet);
+  assert.equal(col, gas.BENS_PODCAST_TRACKER_HEADERS.length + 1);
+});
+
+test('ensureIcons100TagStatusColumn_ is idempotent — returns the same column without complaint when it already exists', () => {
+  const header = gas.BENS_PODCAST_TRACKER_HEADERS.slice();
+  header[gas.BENS_PODCAST_TRACKER_HEADERS.length] = 'ICONS 100 Tag Status';
+  const sheet = fakeIcons100TrackerSheet(header, []);
+  const col = gas.ensureIcons100TagStatusColumn_(sheet);
+  assert.equal(col, gas.BENS_PODCAST_TRACKER_HEADERS.length + 1);
+  assert.equal(header[gas.BENS_PODCAST_TRACKER_HEADERS.length], 'ICONS 100 Tag Status', 'must not overwrite an already-correct header');
+});
+
+test('ensureIcons100TagStatusColumn_ throws rather than silently overwriting an unrelated value already in that column', () => {
+  const header = gas.BENS_PODCAST_TRACKER_HEADERS.slice();
+  header[gas.BENS_PODCAST_TRACKER_HEADERS.length] = 'Some Other Column';
+  const sheet = fakeIcons100TrackerSheet(header, []);
+  assert.throws(() => gas.ensureIcons100TagStatusColumn_(sheet), /Some Other Column/);
+});
+
+test('readIcons100TrackerRowsToProcess_ skips blank-name rows and rows already stamped "Tagged...", but keeps everything else', () => {
+  const trackerCol = {}; gas.BENS_PODCAST_TRACKER_HEADERS.forEach((h, i) => { trackerCol[h] = i + 1; });
+  const statusCol = gas.BENS_PODCAST_TRACKER_HEADERS.length + 1;
+  const blankRow = new Array(statusCol).fill('');
+  const row1 = blankRow.slice(); row1[trackerCol['Name'] - 1] = 'Anthony Camperi'; row1[statusCol - 1] = 'Tagged 10/09/2026 (c1, matched by name_token)';
+  const row2 = blankRow.slice(); row2[trackerCol['Name'] - 1] = ''; // blank name
+  const row3 = blankRow.slice(); row3[trackerCol['Name'] - 1] = 'Nicole Freed'; row3[trackerCol['Email'] - 1] = 'nicole.freed@yahoo.com';
+  const row4 = blankRow.slice(); row4[trackerCol['Name'] - 1] = 'Ambiguous Guy'; row4[statusCol - 1] = 'Ambiguous 09/09/2026 — 2 candidates, needs manual review';
+  const sheet = fakeIcons100TrackerSheet(gas.BENS_PODCAST_TRACKER_HEADERS.concat(['ICONS 100 Tag Status']), [row1, row2, row3, row4]);
+  const toProcess = gas.readIcons100TrackerRowsToProcess_(sheet, trackerCol, statusCol);
+  assert.equal(toProcess.length, 2, 'must skip the already-Tagged row and the blank-name row, but keep the not-yet-tagged and ambiguous rows');
+  assert.equal(toProcess[0].name, 'Nicole Freed');
+  assert.equal(toProcess[0].email, 'nicole.freed@yahoo.com');
+  assert.equal(toProcess[1].name, 'Ambiguous Guy');
+});
+
+test('readIcons100TrackerRowsToProcess_ treats a missing status column (statusCol falsy) as every named row being unprocessed', () => {
+  const trackerCol = {}; gas.BENS_PODCAST_TRACKER_HEADERS.forEach((h, i) => { trackerCol[h] = i + 1; });
+  const row1 = new Array(gas.BENS_PODCAST_TRACKER_HEADERS.length).fill('');
+  row1[trackerCol['Name'] - 1] = 'Someone New';
+  const sheet = fakeIcons100TrackerSheet(gas.BENS_PODCAST_TRACKER_HEADERS.slice(), [row1]);
+  const toProcess = gas.readIcons100TrackerRowsToProcess_(sheet, trackerCol, null);
+  assert.equal(toProcess.length, 1);
+  assert.equal(toProcess[0].name, 'Someone New');
+});
+
 test('extractLeadEmailFromReplyBody_ pulls the real lead address out of the first Gmail quote header, not the relay envelope (real bug: Lead Email always read as network@ardorseo.com)', () => {
   const body = 'On Wednesday, Aug 26, 2026 at 3:03 pm jborwick@chaseinternational.com wrote:\n' +
     'Not interested.\nThanks for the inquiry, please take me off your list.\nJennifer\n\n' +

@@ -2033,3 +2033,300 @@ function previewGhlAccountDiscovery_() {
   log_('Any 401 is a missing token scope, not a missing feature — add the scope in ' +
     'the GHL Private Integration settings and re-run.');
 }
+
+// ---------------------------------------------------------------------------
+// ICONS 100 tag backfill — Tomás's ask (08/09/2026, "Framework Rubric & CRM
+// Tagging — For Tomás to Decide" Doc, §4): "I already adjusted ICONS 100 to
+// be set as a tag every time it's booked on Bens' calendar. But the ones
+// that exist now — I don't know if there's a way of automatically tagging
+// them, or if we need to manually do it." Kris: "you should be able to go
+// back and do some." Tomás: "if we give a list... this is the list we want
+// tagged" — then supplied it: the first tab of the shared spreadsheet,
+// "Icons Podcast Recordings" (same tab BENS_PODCAST_SYNC_CONFIG already
+// reads, Phase11_BensPodcastSync.gs — reused here rather than duplicated).
+// Going forward tagging is automatic on Bens' end; this is ONLY the
+// one-time historical backfill, since there's no reliable automatic signal
+// to backfill it from after the fact.
+// ---------------------------------------------------------------------------
+
+var ICONS100_TAG_BACKFILL_CONFIG = {
+  // Gates the real write (runIcons100TagBackfill_). previewIcons100TagBackfill_
+  // is always read-only regardless of this flag, same convention as every
+  // other phase — flip only after reviewing a clean preview.
+  ENABLED: false,
+  TAG_NAME: 'icons 100 guest',
+  // Appended to the "Icons Podcast Recordings" tab if missing (see
+  // ensureIcons100TagStatusColumn_ below) so a re-run skips rows already
+  // tagged instead of re-searching GHL for every row every time, and so
+  // Bens/Tomás/Kris have a visible audit trail of what happened per row —
+  // this tab is Bens' real system of record (CLAUDE.md), not just an
+  // intermediate the script reads and forgets.
+  STATUS_COLUMN_HEADER: 'ICONS 100 Tag Status'
+};
+
+/**
+ * Adds a tag to a GHL contact. Same self-diagnosing contract as every other
+ * ghlApi*_ wrapper in this file (see the header comment) — GHL's own docs
+ * are unreachable from this sandbox, so the endpoint/payload shape below
+ * (POST /contacts/{contactId}/tags, {tags: [name]}) is a best-effort guess
+ * from the v2 LeadConnector API's documented shape elsewhere, not verified
+ * against a live call yet. previewIcons100TagBackfill_ does NOT call this
+ * (it is read-only) — the very first real call this function makes IS the
+ * verification step, same pattern ghlApiGet_'s header comment already
+ * established for previewGhlConnection(). A non-200 logs the full body so a
+ * wrong path/param name is a one-line fix, not a mystery.
+ */
+function ghlAddContactTag_(contactId, tagName) {
+  return ghlApiPost_('/contacts/' + encodeURIComponent(contactId) + '/tags', { tags: [tagName] });
+}
+
+/**
+ * Resolves one tracker row's Name (+ Email, when present) to a single real
+ * GHL contact — or explicitly not, rather than guessing. Reuses
+ * ghlSearchContactByName_/contactNameLooksLikeQuery_ exactly as
+ * previewGhlMatching_ already does; adds one extra step on top, because a
+ * WRITE (adding a tag to the wrong person's contact) is a worse mistake
+ * than previewGhlMatching_'s read-only "ambiguous" report ever risked:
+ * when the tracker row has an email and exactly one name-matching candidate
+ * also has that email, prefer it — a real, verifiable resolution rather
+ * than an assumption. Returns one of:
+ *   { outcome: 'matched', contactId, contactName, matchMethod }
+ *   { outcome: 'ambiguous', candidateCount }
+ *   { outcome: 'not_found' }
+ *   { outcome: 'search_failed', status, body }
+ */
+function resolveIcons100TrackerContact_(locationId, name, email) {
+  var search = ghlSearchContactByName_(locationId, name);
+  if (!search.ok) {
+    return { outcome: 'search_failed', status: search.status, body: search.body };
+  }
+  var candidates = search.contacts.filter(function (c) {
+    return contactNameLooksLikeQuery_(c, name);
+  });
+  if (!candidates.length) return { outcome: 'not_found' };
+
+  if (candidates.length > 1 && email) {
+    var normalizedEmail = String(email).trim().toLowerCase();
+    var emailMatches = candidates.filter(function (c) {
+      return String(c.email || '').trim().toLowerCase() === normalizedEmail;
+    });
+    if (emailMatches.length === 1) {
+      return {
+        outcome: 'matched', contactId: emailMatches[0].id,
+        contactName: emailMatches[0].name || name, matchMethod: 'email_exact'
+      };
+    }
+  }
+
+  if (candidates.length === 1) {
+    return {
+      outcome: 'matched', contactId: candidates[0].id,
+      contactName: candidates[0].name || name, matchMethod: 'name_token'
+    };
+  }
+  return { outcome: 'ambiguous', candidateCount: candidates.length };
+}
+
+/**
+ * Appends STATUS_COLUMN_HEADER to the tracker tab if it's not already
+ * there — same "append if missing, throw if something unexpected already
+ * occupies that column" pattern as migrateAddPrimaryFailureModeColumn_
+ * (Phase2_CallScoring.gs), scoped to one column since this tab only ever
+ * needs this one addition. Returns the column's 1-indexed position either
+ * way, so callers don't need to care whether it already existed.
+ */
+function ensureIcons100TagStatusColumn_(sheet) {
+  var col = BENS_PODCAST_TRACKER_HEADERS.length + 1; // one past the validated tracker headers
+  var header = sheet.getRange(1, col).getValue();
+  var expected = ICONS100_TAG_BACKFILL_CONFIG.STATUS_COLUMN_HEADER;
+  if (String(header).trim() === expected) return col;
+  if (header !== '' && header !== undefined && header !== null) {
+    throw new Error('"' + BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME + '" column ' + col +
+      ' expected "' + expected + '" or blank, found "' + header + '" — resolve manually before running this.');
+  }
+  sheet.getRange(1, col).setValue(expected).setFontWeight('bold').setBackground('#e8eef7');
+  return col;
+}
+
+/**
+ * Reads every tracker row with a non-blank Name and a not-yet-"Tagged..."
+ * status cell (blank statusCol means the column doesn't exist yet, which
+ * previewIcons100TagBackfill_ tolerates — it never writes the column
+ * itself, only reports what a real run would do).
+ */
+function readIcons100TrackerRowsToProcess_(trackerSheet, trackerCol, statusCol) {
+  var lastRow = trackerSheet.getLastRow();
+  if (lastRow < 2) return [];
+  var width = statusCol ? statusCol : BENS_PODCAST_TRACKER_HEADERS.length;
+  var rows = trackerSheet.getRange(2, 1, lastRow - 1, width).getValues();
+  var out = [];
+  rows.forEach(function (row, i) {
+    var name = String(row[trackerCol['Name'] - 1] || '').trim();
+    if (!name) return;
+    var status = statusCol ? String(row[statusCol - 1] || '').trim() : '';
+    if (status.indexOf('Tagged') === 0) return; // already done, idempotent re-run
+    out.push({
+      sheetRow: i + 2,
+      name: name,
+      email: String(row[trackerCol['Email'] - 1] || '').trim()
+    });
+  });
+  return out;
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewIcons100TagBackfill() {
+  return previewIcons100TagBackfill_();
+}
+
+/**
+ * Read-only. For every not-yet-tagged row on the "Icons Podcast Recordings"
+ * tab, resolves a GHL contact and reports what a real run would do —
+ * tagged / ambiguous / not found / search failed. Writes nothing to the
+ * sheet, sends nothing to GHL. Run this, review the tally, THEN flip
+ * ICONS100_TAG_BACKFILL_CONFIG.ENABLED and run runIcons100TagBackfill().
+ */
+function previewIcons100TagBackfill_() {
+  RUN_TAG = 'previewIcons100TagBackfill_';
+  log_('PREVIEW MODE — read-only ICONS 100 tag backfill probe. Nothing will be written or sent.');
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var trackerSheet = ss.getSheetByName(BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME);
+  if (!trackerSheet) { log_('No "' + BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME + '" tab found.'); return; }
+  var trackerCol = getValidatedBensTrackerColumnMap_(trackerSheet);
+
+  // Read-only preview: check for the status column but never create it —
+  // a blank/missing column just means every row is unprocessed so far.
+  var existingStatusCol = null;
+  var maybeHeader = trackerSheet.getRange(1, BENS_PODCAST_TRACKER_HEADERS.length + 1).getValue();
+  if (String(maybeHeader).trim() === ICONS100_TAG_BACKFILL_CONFIG.STATUS_COLUMN_HEADER) {
+    existingStatusCol = BENS_PODCAST_TRACKER_HEADERS.length + 1;
+  }
+
+  var toProcess = readIcons100TrackerRowsToProcess_(trackerSheet, trackerCol, existingStatusCol);
+  if (!toProcess.length) {
+    log_('No unprocessed rows found — every row is either blank-name or already tagged.');
+    return;
+  }
+
+  var tally = { matched: 0, ambiguous: 0, notFound: 0, searchFailed: 0 };
+  toProcess.forEach(function (row) {
+    var res = resolveIcons100TrackerContact_(locationId, row.name, row.email);
+    if (res.outcome === 'matched') {
+      tally.matched++;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> would tag GHL contact "' + res.contactName +
+        '" (' + res.contactId + ', matched by ' + res.matchMethod + ') with "' +
+        ICONS100_TAG_BACKFILL_CONFIG.TAG_NAME + '".');
+    } else if (res.outcome === 'ambiguous') {
+      tally.ambiguous++;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> AMBIGUOUS, ' + res.candidateCount +
+        ' candidates — will be skipped, needs a human look.');
+    } else if (res.outcome === 'not_found') {
+      tally.notFound++;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> no GHL contact found.');
+    } else {
+      tally.searchFailed++;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> GHL search failed, status ' + res.status +
+        ': ' + String(res.body).slice(0, 300));
+    }
+  });
+
+  log_('');
+  log_(toProcess.length + ' row(s) scanned: ' + tally.matched + ' would be tagged, ' + tally.ambiguous +
+    ' ambiguous, ' + tally.notFound + ' no match, ' + tally.searchFailed + ' search failed.');
+  log_('Paste this whole log back to Claude before running the real backfill.');
+}
+
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function runIcons100TagBackfill() {
+  return runIcons100TagBackfill_();
+}
+
+/**
+ * LIVE WRITE. Gated by ICONS100_TAG_BACKFILL_CONFIG.ENABLED — run
+ * previewIcons100TagBackfill() first and confirm the output looks right.
+ * For every not-yet-tagged row on the tracker tab with a single confident
+ * GHL contact match, applies the ICONS100_TAG_BACKFILL_CONFIG.TAG_NAME tag
+ * and stamps the outcome into the STATUS_COLUMN_HEADER column (creating
+ * that column first if it doesn't exist yet). Ambiguous/not-found/failed
+ * rows are stamped too, so a re-run doesn't keep re-searching them — but
+ * they need a human, not this script, to actually resolve.
+ */
+function runIcons100TagBackfill_() {
+  RUN_TAG = 'runIcons100TagBackfill_';
+  if (!ICONS100_TAG_BACKFILL_CONFIG.ENABLED) {
+    log_('ICONS100_TAG_BACKFILL_CONFIG.ENABLED is false — run previewIcons100TagBackfill() first, confirm the ' +
+      'output looks right, then flip ICONS100_TAG_BACKFILL_CONFIG.ENABLED to true in Phase9_GhlSync.gs.');
+    return;
+  }
+
+  var locationId;
+  try {
+    locationId = ghlCheckSetup_();
+  } catch (e) {
+    log_('SETUP INCOMPLETE: ' + e);
+    return;
+  }
+
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var trackerSheet = ss.getSheetByName(BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME);
+  if (!trackerSheet) { log_('No "' + BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME + '" tab found.'); return; }
+  var trackerCol = getValidatedBensTrackerColumnMap_(trackerSheet);
+  var statusCol = ensureIcons100TagStatusColumn_(trackerSheet);
+
+  var toProcess = readIcons100TrackerRowsToProcess_(trackerSheet, trackerCol, statusCol);
+  if (!toProcess.length) {
+    log_('No unprocessed rows found — every row is either blank-name or already tagged.');
+    return;
+  }
+
+  var todayLabel = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
+  var tally = { tagged: 0, ambiguous: 0, notFound: 0, searchFailed: 0, tagApiFailed: 0 };
+
+  toProcess.forEach(function (row) {
+    var res = resolveIcons100TrackerContact_(locationId, row.name, row.email);
+    var statusValue;
+    if (res.outcome === 'matched') {
+      var tagRes = ghlAddContactTag_(res.contactId, ICONS100_TAG_BACKFILL_CONFIG.TAG_NAME);
+      if (tagRes.status >= 200 && tagRes.status < 300) {
+        tally.tagged++;
+        statusValue = 'Tagged ' + todayLabel + ' (' + res.contactId + ', matched by ' + res.matchMethod + ')';
+        log_('Row ' + row.sheetRow + ' "' + row.name + '" -> tagged GHL contact "' + res.contactName +
+          '" (' + res.contactId + ').');
+      } else {
+        tally.tagApiFailed++;
+        statusValue = 'Tag API error ' + todayLabel + ': status ' + tagRes.status;
+        log_('Row ' + row.sheetRow + ' "' + row.name + '" -> matched contact ' + res.contactId +
+          ' but the tag call failed, status ' + tagRes.status + ': ' + String(tagRes.body).slice(0, 300));
+      }
+    } else if (res.outcome === 'ambiguous') {
+      tally.ambiguous++;
+      statusValue = 'Ambiguous ' + todayLabel + ' — ' + res.candidateCount + ' candidates, needs manual review';
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> AMBIGUOUS, ' + res.candidateCount + ' candidates, skipped.');
+    } else if (res.outcome === 'not_found') {
+      tally.notFound++;
+      statusValue = 'No GHL match ' + todayLabel;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> no GHL contact found, skipped.');
+    } else {
+      tally.searchFailed++;
+      statusValue = 'Search failed ' + todayLabel + ': status ' + res.status;
+      log_('Row ' + row.sheetRow + ' "' + row.name + '" -> GHL search failed, status ' + res.status +
+        ': ' + String(res.body).slice(0, 300));
+    }
+    trackerSheet.getRange(row.sheetRow, statusCol).setValue(statusValue);
+  });
+
+  log_('');
+  log_(toProcess.length + ' row(s) processed: ' + tally.tagged + ' tagged, ' + tally.ambiguous +
+    ' ambiguous, ' + tally.notFound + ' no match, ' + tally.searchFailed + ' search failed, ' +
+    tally.tagApiFailed + ' tag API errors. Ambiguous/no-match/error rows are stamped in "' +
+    ICONS100_TAG_BACKFILL_CONFIG.STATUS_COLUMN_HEADER + '" but NOT tagged — resolve those by hand in GHL directly.');
+}
