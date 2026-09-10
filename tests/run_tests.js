@@ -7348,9 +7348,9 @@ test('findUpcomingDiscoveryCallsForRep_/sendUpcomingLeadConfirmationReminders_ a
 // the call, so "Not mentioned on this call" was the common case — find real
 // social/website links via a web search instead, clearly labeled unconfirmed.
 
-test('parseCseResults_ extracts {title, link, snippet} from a real CSE response shape, and returns [] for anything malformed', () => {
+test('parseSerperResults_ extracts {title, link, snippet} from a real Serper response shape, and returns [] for anything malformed', () => {
   const real = {
-    items: [
+    organic: [
       { title: 'Jane Doe Realty', link: 'https://janedoerealty.com', snippet: 'Top agent in...' },
       { title: 'Jane Doe | LinkedIn', link: 'https://linkedin.com/in/janedoe' } // no snippet key at all
     ]
@@ -7360,40 +7360,43 @@ test('parseCseResults_ extracts {title, link, snippet} from a real CSE response 
   // so it fails deepEqual's cross-realm prototype-identity check against a
   // literal built in this file (same pattern noted throughout this suite,
   // e.g. the repOwnEmails_ tests above).
-  const parsed = gas.parseCseResults_(real);
+  const parsed = gas.parseSerperResults_(real);
   assert.equal(parsed.length, 2);
   assert.equal(parsed[0].title, 'Jane Doe Realty');
   assert.equal(parsed[0].link, 'https://janedoerealty.com');
   assert.equal(parsed[0].snippet, 'Top agent in...');
   assert.equal(parsed[1].snippet, '', 'a missing snippet key must default to empty string, not throw');
 
-  assert.equal(gas.parseCseResults_(null).length, 0);
-  assert.equal(gas.parseCseResults_({}).length, 0, 'no items array at all (e.g. a quota-error response) must not throw');
-  assert.equal(gas.parseCseResults_({ items: 'not-an-array' }).length, 0);
-  assert.equal(gas.parseCseResults_({ items: [{ title: 'no link here' }] }).length, 0,
+  assert.equal(gas.parseSerperResults_(null).length, 0);
+  assert.equal(gas.parseSerperResults_({}).length, 0, 'no organic array at all (e.g. an out-of-credits response) must not throw');
+  assert.equal(gas.parseSerperResults_({ organic: 'not-an-array' }).length, 0);
+  // Guards the migration itself: Google's old key must no longer be read.
+  assert.equal(gas.parseSerperResults_({ items: [{ title: 'x', link: 'https://x.com' }] }).length, 0,
+    'the old Custom Search "items" key must not be picked up any more');
+  assert.equal(gas.parseSerperResults_({ organic: [{ title: 'no link here' }] }).length, 0,
     'a result with no link is useless and must be filtered out');
 });
 
-test('cseResultLooksLikeProspect_ only accepts a result that actually shares a real name token with the prospect', () => {
+test('searchResultLooksLikeProspect_ only accepts a result that actually shares a real name token with the prospect', () => {
   const match = { title: 'Jane Doe Realty | Homes for Sale', snippet: 'Jane Doe has sold...' };
-  assert.equal(gas.cseResultLooksLikeProspect_(match, 'Jane Doe'), true);
+  assert.equal(gas.searchResultLooksLikeProspect_(match, 'Jane Doe'), true);
 
   const unrelated = { title: 'Best Pizza in Austin', snippet: 'Top 10 pizza joints' };
-  assert.equal(gas.cseResultLooksLikeProspect_(unrelated, 'Jane Doe'), false,
+  assert.equal(gas.searchResultLooksLikeProspect_(unrelated, 'Jane Doe'), false,
     'a search engine returning something with zero relation to the queried name must read as no-match, same as contactNameLooksLikeQuery_ for GHL');
 
   const partial = { title: 'Doe Family Reunion 2026', snippet: 'Join the Doe family...' };
-  assert.equal(gas.cseResultLooksLikeProspect_(partial, 'Jane Doe'), true,
+  assert.equal(gas.searchResultLooksLikeProspect_(partial, 'Jane Doe'), true,
     'sharing just one real (>=3 letter) name token is enough, same threshold as the GHL contact matcher');
 });
 
 test('findProspectSocialLinks_ filters out non-matching results and returns only plausible links', () => {
-  const originalSearch = gas.googleCseSearch_;
+  const originalSearch = gas.serperSearch_;
   try {
-    gas.googleCseSearch_ = (query) => ({
+    gas.serperSearch_ = (query) => ({
       status: 200,
       json: {
-        items: [
+        organic: [
           { title: 'Jane Doe Realty', link: 'https://janedoerealty.com', snippet: 'Jane Doe, agent' },
           { title: 'Completely Unrelated Business', link: 'https://someotherbiz.com', snippet: 'nothing to do with her' }
         ]
@@ -7402,24 +7405,24 @@ test('findProspectSocialLinks_ filters out non-matching results and returns only
     const links = gas.findProspectSocialLinks_('Jane Doe');
     assert.deepEqual(links, ['https://janedoerealty.com']);
   } finally {
-    gas.googleCseSearch_ = originalSearch;
+    gas.serperSearch_ = originalSearch;
   }
 });
 
 test('findProspectSocialLinks_ degrades to an empty list, never throws, on a non-200 status or a thrown error', () => {
-  const originalSearch = gas.googleCseSearch_;
+  const originalSearch = gas.serperSearch_;
   try {
-    gas.googleCseSearch_ = () => ({ status: 403, json: null, body: 'quota exceeded' });
+    gas.serperSearch_ = () => ({ status: 403, json: null, body: 'quota exceeded' });
     // .length, not assert.deepEqual against [] — the empty array is a literal
     // returned from inside the vm sandbox's own findProspectSocialLinks_ body,
     // so it fails deepEqual's cross-realm prototype-identity check.
     assert.equal(gas.findProspectSocialLinks_('Jane Doe').length, 0);
 
-    gas.googleCseSearch_ = () => { throw new Error('network error'); };
+    gas.serperSearch_ = () => { throw new Error('network error'); };
     assert.equal(gas.findProspectSocialLinks_('Jane Doe').length, 0,
       'a lookup failure (missing credentials, quota, network) must never block brief generation over a nice-to-have link');
   } finally {
-    gas.googleCseSearch_ = originalSearch;
+    gas.serperSearch_ = originalSearch;
   }
 });
 

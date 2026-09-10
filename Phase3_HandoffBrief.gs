@@ -336,16 +336,43 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
 // buildHandoffBriefSystemPrompt_'s "never guess, infer, or construct a URL"),
 // which is why "Not mentioned on this call" was the common case. This adds a
 // real web search on top of that, clearly labeled as unconfirmed rather than
-// blended into what the model grounded in the transcript, using the Google
-// Programmable Search Engine Kris already set up.
+// blended into what the model grounded in the transcript, using a real web search.
+//
+// SEARCH PROVIDER: Serper.dev, NOT Google's own Custom Search JSON API.
+//
+// Migrated 10/09/2026. The original build used Google's Custom Search JSON
+// API and 403'd with "This project does not have the access to Custom Search
+// JSON API" no matter what. An earlier session diagnosed that as a
+// project/key mismatch and recommended issuing a fresh key — that diagnosis
+// was WRONG and would have wasted more time. Google has closed that API to
+// projects that were not already using it before the cutoff. It is a silent
+// backend entitlement restriction: the Cloud Console still shows the API as
+// "Enabled", still lists it in the key-restriction picker, and reflects the
+// real block nowhere. Confirmed across two independent projects in the same
+// org (one enabled 12 days earlier, ruling out propagation), with billing
+// linked, with a brand-new unrestricted key, and called straight from a
+// browser with no application code in the path. Do not try to revive it.
+//
+// Serper.dev is a licensed Google-SERP reseller — real Google results, not a
+// semantic/embedding search. That distinction matters here: this lookup
+// searches for a literal email address, and neural search engines (Exa,
+// Tavily) explicitly warn against exact-string lookups because they return
+// topically-similar results instead of literal matches.
 //
 // SETUP (one-time, in the Apps Script editor — NOT in this repo):
 //   Project Settings -> Script Properties -> Add:
-//     GOOGLE_CSE_API_KEY = the API key from Google Cloud Console -> Credentials
-//     GOOGLE_CSE_ID      = the Search Engine ID (cx) from the Programmable
-//                          Search Engine control panel
+//     SERPER_API_KEY = the API key from serper.dev -> Dashboard
+//   No CX/engine ID any more — Serper has no "search engine" to configure
+//   and searches the whole web by default. GOOGLE_CSE_API_KEY/GOOGLE_CSE_ID
+//   can be deleted once this is live.
 //   Same "Script Properties are runtime storage, clasp push doesn't touch
 //   them" note as GHL_API_KEY/GHL_LOCATION_ID in Phase9_GhlSync.gs.
+//
+// BILLING SHAPE CHANGED, and it is not a like-for-like swap: Google gave 100
+// free per DAY that reset. Serper gives 2,500 free TOTAL, then prepaid
+// credits, with no daily reset. Any per-day cap this code keeps is therefore
+// a self-imposed safety valve against runaway usage, never a reflection of a
+// provider-side quota that would refuse the call anyway.
 //
 // Same "preview before enabling" discipline as every other phase in this
 // codebase (CLAUDE.md) — run previewProspectLinksLookup() against a few real
@@ -355,21 +382,27 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
 
 var PROSPECT_LINKS_LOOKUP_CONFIG = {
   ENABLED: false,
-  API_KEY_PROPERTY: 'GOOGLE_CSE_API_KEY',
-  CX_PROPERTY: 'GOOGLE_CSE_ID',
+  API_KEY_PROPERTY: 'SERPER_API_KEY',
+  SEARCH_URL: 'https://google.serper.dev/search',
   MAX_RESULTS: 5
 };
 
-/** Raw GET against the Google Custom Search JSON API. Same best-effort/
- * self-diagnosing shape as ghlApiGet_ (Phase9_GhlSync.gs) — never throws,
- * callers check status/json themselves. */
-function googleCseSearch_(query) {
+/** Raw POST against Serper.dev. Same best-effort/self-diagnosing shape as
+ * ghlApiGet_ (Phase9_GhlSync.gs) — never throws, callers check status/json
+ * themselves.
+ *
+ * The key travels in a header, not the query string as Google's did, so
+ * there is no longer any way for it to end up in a logged URL — which is why
+ * the caller below no longer redacts anything before logging the failure. */
+function serperSearch_(query) {
   var apiKey = getScriptSecret_(PROSPECT_LINKS_LOOKUP_CONFIG.API_KEY_PROPERTY);
-  var cx = getScriptSecret_(PROSPECT_LINKS_LOOKUP_CONFIG.CX_PROPERTY);
-  var url = 'https://www.googleapis.com/customsearch/v1?key=' + encodeURIComponent(apiKey) +
-    '&cx=' + encodeURIComponent(cx) + '&num=' + PROSPECT_LINKS_LOOKUP_CONFIG.MAX_RESULTS +
-    '&q=' + encodeURIComponent(query);
-  var resp = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  var resp = UrlFetchApp.fetch(PROSPECT_LINKS_LOOKUP_CONFIG.SEARCH_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'X-API-KEY': apiKey },
+    payload: JSON.stringify({ q: query, num: PROSPECT_LINKS_LOOKUP_CONFIG.MAX_RESULTS }),
+    muteHttpExceptions: true
+  });
   var status = resp.getResponseCode();
   var body = resp.getContentText();
   var json = null;
@@ -381,11 +414,13 @@ function googleCseSearch_(query) {
   return { status: status, json: json, body: body };
 }
 
-/** Pulls {title, link, snippet} out of a raw CSE response — [] on anything not shaped as expected
- * (a quota error, a malformed response) rather than throwing. */
-function parseCseResults_(json) {
-  if (!json || !Array.isArray(json.items)) return [];
-  return json.items
+/** Pulls {title, link, snippet} out of a raw Serper response — [] on anything
+ * not shaped as expected (out of credits, a malformed response) rather than
+ * throwing. Serper puts results under `organic`; Google's CSE used `items`.
+ * The per-result field names (title/link/snippet) are identical. */
+function parseSerperResults_(json) {
+  if (!json || !Array.isArray(json.organic)) return [];
+  return json.organic
     .map(function (item) {
       return { title: item.title || '', link: item.link || '', snippet: item.snippet || '' };
     })
@@ -400,7 +435,7 @@ function parseCseResults_(json) {
  * relation to the name queried must read as "no match," never a false
  * confident one. Reuses normalizeNameTokens_ (also Phase9_GhlSync.gs).
  */
-function cseResultLooksLikeProspect_(result, prospectName) {
+function searchResultLooksLikeProspect_(result, prospectName) {
   var nameTokens = normalizeNameTokens_(prospectName);
   var resultTokens = normalizeNameTokens_((result.title || '') + ' ' + (result.snippet || ''));
   if (!nameTokens.length || !resultTokens.length) return false;
@@ -432,14 +467,14 @@ function prospectSearchQuery_(prospectName, prospectEmail) {
 
 function findProspectSocialLinks_(prospectName, prospectEmail) {
   try {
-    var res = googleCseSearch_(prospectSearchQuery_(prospectName, prospectEmail));
+    var res = serperSearch_(prospectSearchQuery_(prospectName, prospectEmail));
     if (res.status !== 200) {
-      log_('  findProspectSocialLinks_: CSE lookup failed for "' + prospectName + '" — status ' +
+      log_('  findProspectSocialLinks_: Serper lookup failed for "' + prospectName + '" — status ' +
         res.status + '. ' + String(res.body).slice(0, 300));
       return [];
     }
-    return parseCseResults_(res.json)
-      .filter(function (r) { return cseResultLooksLikeProspect_(r, prospectName); })
+    return parseSerperResults_(res.json)
+      .filter(function (r) { return searchResultLooksLikeProspect_(r, prospectName); })
       .map(function (r) { return r.link; });
   } catch (e) {
     log_('  findProspectSocialLinks_ threw for "' + prospectName + '": ' + e);
@@ -633,8 +668,8 @@ function enrichProspectLinksWithWebSearch_(brief, prospectName) {
 /**
  * Read-only: tests findProspectSocialLinks_ against a handful of real
  * prospect names from the Sales Call Log so Kris/Tomás can judge match
- * quality before flipping PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED. Calls the
- * CSE API but writes nothing and sends nothing.
+ * quality before flipping PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED. Calls
+ * Serper but writes nothing and sends nothing.
  */
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function previewProspectLinksLookup() {

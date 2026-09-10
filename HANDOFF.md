@@ -332,13 +332,26 @@ one, worth keeping separate in your head:
   first-touch briefs specifically (cold, unqualified leads) — narrower than
   the 03/09 decision that excludes him from routine briefs; flagged in the
   commit in case Kris wants it broadened.
-  **Separately found: Custom Search API 403s even after Kris enabled it** —
-  root cause is a project/key mismatch (the error is generated based on
-  whichever project the API KEY belongs to, not whichever project you're
-  looking at in the console) — shelved per Kris's call, `ENABLED` stays
-  `false`. If picked back up: the fastest fix is a fresh key created under
-  a project you explicitly enable Custom Search API on, not more detective
-  work on the old one.
+  **Separately found: Custom Search API 403s even after Kris enabled it.**
+  *Corrected 10/09/2026 — the diagnosis recorded here was wrong.* It was
+  never a project/key mismatch, so the "fastest fix is a fresh key" advice
+  above would have burned another session for nothing: the Google Custom
+  Search JSON API is **closed to new projects** at the entitlement level.
+  Enabling it in the console succeeds and the key still 403s, because the
+  grant is decided server-side by whether the project was already
+  provisioned. No key, project, or CX combination reopens it.
+  **Migrated to Serper.dev instead** (`serperSearch_` in
+  `Phase3_HandoffBrief.gs`, 10/09/2026): POST + `X-API-KEY` header instead
+  of GET + key-in-query, results under `json.organic` instead of
+  `json.items`, and no CX/search-engine concept at all — it searches the
+  whole web rather than a restricted PSE. `ENABLED` is still `false`
+  pending two manual steps: add `SERPER_API_KEY` to Script Properties, then
+  run `previewProspectLinksLookup()` and confirm the quoted-name matching
+  in `prospectSearchQuery_` still finds the right person. The old
+  `GOOGLE_CSE_API_KEY` / `GOOGLE_CSE_ID` properties can be deleted.
+  Note the billing shape changed too: Serper's free tier is 2,500 requests
+  **in total**, not per day, so the daily cap in this phase is now a
+  self-imposed safety valve rather than a mirror of the vendor's limit.
 - **`scoreLegacyTranscriptFolder` (Bens' path) had zero progress logging** —
   same complaint, same fix shape as `rescoreAllCalls_` got on 29/08: upfront
   scope count, then a line immediately before AND after each model call.
