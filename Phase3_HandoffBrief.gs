@@ -428,19 +428,27 @@ function parseSerperResults_(json) {
 }
 
 /**
- * True only if the result's title/snippet actually shares a real name token
+ * True only if the result's title/snippet shares EVERY real name token
  * (>= 3 letters, so short filler can't count) with the prospect's name —
- * same defensive filter, for the same reason, as contactNameLooksLikeQuery_
- * (Phase9_GhlSync.gs): a search engine returning something with zero
- * relation to the name queried must read as "no match," never a false
- * confident one. Reuses normalizeNameTokens_ (also Phase9_GhlSync.gs).
+ * deliberately stricter than contactNameLooksLikeQuery_'s "any one token"
+ * rule (Phase9_GhlSync.gs), which is fine there because a loose match just
+ * flags something for a human to eyeball. Here a loose match goes straight
+ * into a rep's handoff brief with no review, and after the Serper migration
+ * (10/09/2026) results come from the whole web instead of a restricted
+ * PSE. Caught live: "Lisa Berg" matched on "Lisa" alone and surfaced
+ * Blackpink singer Lisa's Wikipedia/Instagram/YouTube pages — zero
+ * relation to the prospect, nothing containing "Berg" at all. Requiring
+ * every significant token (first AND last name, not just one) rejects
+ * that while still passing genuine matches, since both tokens legitimately
+ * co-occur in a real prospect's own profile pages. Reuses
+ * normalizeNameTokens_ (also Phase9_GhlSync.gs).
  */
 function searchResultLooksLikeProspect_(result, prospectName) {
-  var nameTokens = normalizeNameTokens_(prospectName);
+  var nameTokens = normalizeNameTokens_(prospectName).filter(function (t) { return t.length >= 3; });
   var resultTokens = normalizeNameTokens_((result.title || '') + ' ' + (result.snippet || ''));
   if (!nameTokens.length || !resultTokens.length) return false;
-  return nameTokens.some(function (t) {
-    return t.length >= 3 && resultTokens.indexOf(t) !== -1;
+  return nameTokens.every(function (t) {
+    return resultTokens.indexOf(t) !== -1;
   });
 }
 

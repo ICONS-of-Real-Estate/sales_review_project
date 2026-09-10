@@ -7377,7 +7377,7 @@ test('parseSerperResults_ extracts {title, link, snippet} from a real Serper res
     'a result with no link is useless and must be filtered out');
 });
 
-test('searchResultLooksLikeProspect_ only accepts a result that actually shares a real name token with the prospect', () => {
+test('searchResultLooksLikeProspect_ requires every real name token, not just one, to accept a result', () => {
   const match = { title: 'Jane Doe Realty | Homes for Sale', snippet: 'Jane Doe has sold...' };
   assert.equal(gas.searchResultLooksLikeProspect_(match, 'Jane Doe'), true);
 
@@ -7386,8 +7386,21 @@ test('searchResultLooksLikeProspect_ only accepts a result that actually shares 
     'a search engine returning something with zero relation to the queried name must read as no-match, same as contactNameLooksLikeQuery_ for GHL');
 
   const partial = { title: 'Doe Family Reunion 2026', snippet: 'Join the Doe family...' };
-  assert.equal(gas.searchResultLooksLikeProspect_(partial, 'Jane Doe'), true,
-    'sharing just one real (>=3 letter) name token is enough, same threshold as the GHL contact matcher');
+  assert.equal(gas.searchResultLooksLikeProspect_(partial, 'Jane Doe'), false,
+    'sharing only the last name is NOT enough post-Serper-migration — whole-web results make a single-token match too easy to false-positive on');
+
+  // Real miss caught live 10/09/2026, previewProspectLinksLookup(): "Lisa
+  // Berg" matched on "Lisa" alone and surfaced Blackpink singer Lisa's
+  // Wikipedia/Instagram/YouTube pages, zero relation to the prospect and
+  // no "Berg" anywhere in them. Requiring every token rejects this while
+  // still accepting a real match (the `match` case above, which does share
+  // both "jane" and "doe").
+  const wrongPersonSameFirstName = {
+    title: 'Lisa (Japanese musician, born 1987) - Wikipedia',
+    snippet: 'Lisa is a member of the South Korean girl group Blackpink...'
+  };
+  assert.equal(gas.searchResultLooksLikeProspect_(wrongPersonSameFirstName, 'Lisa Berg'), false,
+    'sharing only the first name with an unrelated, far more famous person must not pass');
 });
 
 test('findProspectSocialLinks_ filters out non-matching results and returns only plausible links', () => {
