@@ -381,7 +381,11 @@ function buildHandoffBriefEmailHtml_(brief, ctx) {
 // ---------------------------------------------------------------------------
 
 var PROSPECT_LINKS_LOOKUP_CONFIG = {
-  ENABLED: false,
+  ENABLED: true, // flipped 10/09/2026 after a clean previewProspectLinksLookup() run
+  // post-Serper-migration and post-searchResultLooksLikeProspect_ tightening
+  // (both same day) — all 10 sampled prospects, including the "Lisa Berg"
+  // miss that surfaced Blackpink's Lisa before the fix, returned correct,
+  // plausible profile links.
   API_KEY_PROPERTY: 'SERPER_API_KEY',
   SEARCH_URL: 'https://google.serper.dev/search',
   MAX_RESULTS: 5
