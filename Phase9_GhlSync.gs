@@ -2050,10 +2050,12 @@ function previewGhlAccountDiscovery_() {
 // ---------------------------------------------------------------------------
 
 var ICONS100_TAG_BACKFILL_CONFIG = {
-  // Gates the real write (runIcons100TagBackfill_). previewIcons100TagBackfill_
-  // is always read-only regardless of this flag, same convention as every
-  // other phase — flip only after reviewing a clean preview.
-  ENABLED: false,
+  // Flipped true 10/09/2026 after a clean previewIcons100TagBackfill() run —
+  // 126 rows scanned, 125 would be tagged (0 ambiguous), 1 no match
+  // ("Robert Commodari"). Gates the real write (runIcons100TagBackfill_).
+  // previewIcons100TagBackfill_ is always read-only regardless of this
+  // flag, same convention as every other phase.
+  ENABLED: true,
   TAG_NAME: 'icons 100 guest',
   // Appended to the "Icons Podcast Recordings" tab if missing (see
   // ensureIcons100TagStatusColumn_ below) so a re-run skips rows already
