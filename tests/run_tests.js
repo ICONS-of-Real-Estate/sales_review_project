@@ -4646,6 +4646,14 @@ test('buildTrainingReviewSystemPrompt_ drills DISCOVERY for every rep, with Tom�
   });
 });
 
+test('buildTrainingReviewSystemPrompt_\'s tomas_coaching instruction explicitly requires naming discovery when the call covered it, not folding it into a generic "grounded in real data" line (real gap 10/09/2026, Kris: "he is also training discovery" — invisible in the facilitation summary)', () => {
+  const prompt = gas.buildTrainingReviewSystemPrompt_('Sean');
+  assert.ok(prompt.indexOf('Name EVERY skill this call actually touched') !== -1,
+    'the coaching_feedback_summary instruction must require naming every skill covered, not just grounding/next-focus');
+  assert.ok(/discovery.*must say so explicitly/is.test(prompt) || prompt.indexOf('must say so explicitly') !== -1,
+    'the prompt must explicitly forbid silently folding a discovery-heavy call into the generic grounding line');
+});
+
 test('buildTrainingReviewSystemPrompt_ keeps discovery depth scoped to the call type — Tomás: "only supposed to open up a little bit of the door"', () => {
   const prompt = gas.buildTrainingReviewSystemPrompt_('Bens');
   assert.ok(prompt.indexOf('30-minute discovery') !== -1,
@@ -4730,6 +4738,30 @@ test('buildTomasCoachingFeedbackEmail_ states up front that this is feedback on 
     'the concrete next-time action must appear in the plain-text body');
   assert.ok(email.htmlBody.indexOf('What to do differently next time') !== -1,
     'the HTML body must have its own clearly labeled action callout, distinct from the feedback summary callout');
+});
+
+test('buildTomasCoachingFeedbackEmail_ breaks the combined "got to practice out loud" badge into a per-skill breakdown, so discovery is never silently folded into a single yes/no (real gap 10/09/2026, Kris, reading Sean\'s call: "he is also training discovery" — nowhere visible in the email despite being part of the session)', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  // Discovery practiced, objections were not — the old combined badge would
+  // still have read "got to practice out loud: Yes" with no way to tell
+  // which skill that Yes actually covered.
+  const result = {
+    practiced_objections: false, practiced_close_ask: false, practiced_framework: false, practiced_discovery: true,
+    tomas_coaching: {
+      grounded_in_real_data: true, gave_concrete_next_focus: true,
+      coaching_feedback_summary: 'Grounded in Sean\'s real calls, discovery gap addressed.',
+      facilitation_action_for_next_time: 'Keep drilling discovery next session.'
+    }
+  };
+  const email = gas.buildTomasCoachingFeedbackEmail_('Sean', '260908', result);
+  assert.ok(email.body.indexOf('Discovery: Yes') !== -1,
+    'plain-text body must show discovery practiced separately from the other skills');
+  assert.ok(email.body.indexOf('Objection handling: No') !== -1,
+    'plain-text body must show objection handling as a separate No, distinct from the overall combined badge');
+  assert.ok(email.htmlBody.indexOf('Skills that got real practice reps this session') !== -1,
+    'HTML body must have a labeled per-skill breakdown section');
+  assert.ok(email.htmlBody.indexOf('Discovery practiced') !== -1,
+    'HTML body must show a Discovery-specific badge, same label the rep\'s own plan email uses');
 });
 
 // ---------------------------------------------------------------------------

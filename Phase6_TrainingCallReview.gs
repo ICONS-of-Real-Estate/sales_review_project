@@ -253,9 +253,14 @@ function buildTrainingReviewSystemPrompt_(rep) {
     '    "coaching_feedback_summary": "string — 2-3 sentences of feedback on TOMÁS\'s OWN facilitation this ' +
       'call (not ' + rep + '\'s performance): did he ground the session in ' + rep + '\'s specific real ' +
       'calls/objections rather than generic advice, and did he close with a genuinely concrete, specific ' +
-      'next-focus rather than something vague? Quote a real moment (strong or weak). Constructive, not ' +
-      'just a compliment or just a criticism. If this covers more than one distinct idea, put each on its ' +
-      'own line separated by a literal \\n — never chain them into one dense run-on paragraph.",',
+      'next-focus rather than something vague? Name EVERY skill this call actually touched — objection ' +
+      'handling, the close-ask, framework explanation, AND discovery are each their own tracked skill, and ' +
+      'a session that covered discovery (e.g. reviewing what ' + rep + ' missed on a lead\'s goal/pain, or ' +
+      'coaching how to ask for a number) must say so explicitly rather than folding it silently into a ' +
+      'generic \\"grounded in real data\\" line — do not let a discovery-heavy call read as if only ' +
+      'objections/close-ask were covered. Quote a real moment (strong or weak). Constructive, not just a ' +
+      'compliment or just a criticism. If this covers more than one distinct idea, put each on its own ' +
+      'line separated by a literal \\n — never chain them into one dense run-on paragraph.",',
     '    "facilitation_action_for_next_time": "string — ONE concrete instruction for what TOMÁS should ' +
       'actually do differently the NEXT time he runs a training call — not ' + rep + '\'s self-practice ' +
       'focus (that is next_focus above), Tomás\'s OWN facilitation habit to change. Must be something he ' +
@@ -632,11 +637,34 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
   var actionForNextTime = coaching.facilitation_action_for_next_time ||
     'No specific action captured for this call — see the feedback summary above.';
 
+  // Real gap found live (10/09/2026, Kris, reading Sean's call: "he is also
+  // training discovery" — discovery was part of the session but nowhere
+  // visible in this email): the single combined "X got to practice out
+  // loud" badge folded all four skills into one boolean, so a call that
+  // drilled discovery but not objections looked identical to one that
+  // drilled nothing discovery-related at all. Broken out per skill, same
+  // labels/booleans the rep's own plan email already uses, so Tomás (and
+  // Kris, reading over his shoulder) can see at a glance which specific
+  // skills actually got real reps this session — discovery included,
+  // never silently folded into a generic yes/no.
+  var closeAskLabelCap = role.closeAskSkillLabel.charAt(0).toUpperCase() + role.closeAskSkillLabel.slice(1);
+  var perSkillPracticeBadgesHtml =
+    trainingReviewStatBadge_('Objection handling practiced', result.practiced_objections) +
+    trainingReviewStatBadge_(closeAskLabelCap + ' practiced', result.practiced_close_ask) +
+    trainingReviewStatBadge_('Discovery practiced', result.practiced_discovery) +
+    (role.drillsFramework ? trainingReviewStatBadge_('Framework explanation practiced', result.practiced_framework) : '');
+  var perSkillPracticeLinePlain =
+    'Objection handling: ' + (result.practiced_objections ? 'Yes' : 'No') +
+    ' | ' + closeAskLabelCap + ': ' + (result.practiced_close_ask ? 'Yes' : 'No') +
+    ' | Discovery: ' + (result.practiced_discovery ? 'Yes' : 'No') +
+    (role.drillsFramework ? ' | Framework explanation: ' + (result.practiced_framework ? 'Yes' : 'No') : '');
+
   var body = 'Feedback on how you ran your training call with ' + rep + ' (' + dateLabel + '):\n\n' +
     framingLine + '\n\n' +
     'Grounded in ' + rep + '\'s real calls (not generic advice): ' + (coaching.grounded_in_real_data ? 'Yes' : 'No') +
     ' | ' + rep + ' got to practice out loud: ' + (repGotToPractice ? 'Yes' : 'No') +
     ' | Closed with a concrete next focus: ' + (coaching.gave_concrete_next_focus ? 'Yes' : 'No') + '\n\n' +
+    'Skills that got real practice reps this session — ' + perSkillPracticeLinePlain + '\n\n' +
     coaching.coaching_feedback_summary + '\n\n' +
     'What to do differently next time: ' + actionForNextTime + '\n\n' +
     '— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.';
@@ -650,6 +678,8 @@ function buildTomasCoachingFeedbackEmail_(rep, dateLabel, result) {
     trainingReviewStatBadge_(rep + ' got to practice out loud', repGotToPractice) +
     trainingReviewStatBadge_('Concrete next focus set', coaching.gave_concrete_next_focus) +
     '</div>' +
+    '<h3 style="color:#5f6368;font-size:13px;margin:0 0 6px;">Skills that got real practice reps this session</h3>' +
+    '<div style="margin-bottom:14px;">' + perSkillPracticeBadgesHtml + '</div>' +
     trainingReviewCallout_('#1a73e8', '#f1f6fe', 'Facilitation feedback', trainingReviewFormatText_(coaching.coaching_feedback_summary)) +
     trainingReviewCallout_('#0b8043', '#e6f4ea', 'What to do differently next time', trainingReviewFormatText_(actionForNextTime)) +
     '<p style="color:#888;font-size:12px;font-style:italic;margin-top:16px;">— Automated feedback on your facilitation of this training call. Reply to Kris with corrections.</p>' +
