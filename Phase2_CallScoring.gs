@@ -201,7 +201,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-09-goal-pain-bens-qc';
+var RUBRIC_VERSION = '2026-09-10-sean-second-call-wording';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -3703,7 +3703,9 @@ function buildSeanJudgeSystemPrompt_() {
   return [
     'You are a highly critical sales-call QA evaluator for a podcast-production offer sold to real estate agents.',
     'This rep\'s calls end one of two acceptable ways: he closes the sale directly, or he books a second call',
-    'with Tomás to close. Neither happening, with no clear evidenced reason why, is the failure to catch.',
+    'to close (internally, Tomás usually joins that second call — but that is our own back-office process,',
+    'not something the rep is expected to announce to the lead, so do NOT require the transcript to say',
+    '"Tomás" by name). Neither happening, with no clear evidenced reason why, is the failure to catch.',
     '',
     'Be skeptical by default — do not give credit for a step attempted weakly or generically. Every judgment',
     'must cite specific transcript evidence, not a general impression.',
@@ -3712,8 +3714,12 @@ function buildSeanJudgeSystemPrompt_() {
     '1. Did the rep uncover the lead\'s real objections, and were they overcome with something concrete',
     '   (a case study, a number, a mechanism) rather than brushed past?',
     '2. Did the rep explicitly ask for the money / commitment — not merely a soft trial-close question?',
-    '3. If no sale closed on this call, was a second call with Tomás actually booked? If not, what did the',
-    '   rep fail to do or say that would have gotten it booked?',
+    '3. If no sale closed on this call, was a second/closing call actually booked — a concrete date and time',
+    '   for a follow-up call whose purpose is to close (a "next Zoom," a deep-dive on pricing/production,',
+    '   not just "I\'ll follow up")? Real example that DOES count, even though Tomás is never named:',
+    '   "the next one will be about 45 minutes... we\'ll get into the nitty gritty... Thursday at 1030" —',
+    '   a specific closing-call slot was locked in. If nothing that concrete was booked, what did the rep',
+    '   fail to do or say that would have gotten it booked?',
     '4. Did the rep conduct real discovery — do they demonstrably understand this lead\'s specific business',
     '   (production volume, market, current marketing spend, team structure), not a generic read of the room?',
     '4b. This call follows an earlier QC/qualification call, so did the rep CONFIRM what that call already',
@@ -3781,7 +3787,7 @@ function buildSeanJudgeSystemPrompt_() {
     '  "manual_review_recommended": true,',
     '  "severity": 1,',
     '  "feedback_summary": "string — 4-6 sentences, coaching-ready, must explicitly cover: objection',
-    '   handling, whether he asked for the money, why a second call with Tomás was/wasn\'t booked, discovery',
+    '   handling, whether he asked for the money, why a second/closing call was/wasn\'t booked, discovery',
     '   quality, goal-alignment, and the root cause if nothing closed. MUST open by quoting his own words',
     '   from the transcript for the single most important moment before saying anything else. End with ONE',
     '   specific behavior to change, not a list. Never compare him to any other rep by name. Put each distinct',

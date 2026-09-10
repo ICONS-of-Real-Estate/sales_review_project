@@ -2661,6 +2661,21 @@ test('every rubric variant that scores discovery also scores goal and pain, with
   }
 });
 
+test('buildSeanJudgeSystemPrompt_ explicitly tells the judge not to require Tomás\'s name for booked_second_call_with_tomas (real bug found live: Bruce Henson row 377 scored false when Tomás confirmed it was actually true — the transcript has a concrete second call booked for "Thursday at 1030" but never names Tomás, since his joining that call is our own back-office process, not something the rep announces to the lead)', () => {
+  const prompt = gas.buildSeanJudgeSystemPrompt_();
+  assert.ok(prompt.indexOf('do NOT require the transcript to say') !== -1,
+    'the prompt must explicitly forbid requiring Tomás\'s name to appear in the transcript');
+  assert.ok(prompt.indexOf('our own back-office process') !== -1,
+    'the prompt must explain WHY: Tomás joining is internal, not something the lead is told about on this call');
+  // The old literal question this bug traces to — must not survive as the
+  // question the judge is actually asked (a real-example callout referencing
+  // the old wording as an explanation is fine; the bare literal question is not).
+  assert.equal(/was a second call with Tomás actually booked\?/.test(prompt), false,
+    'the old over-literal question wording must be gone, not just supplemented');
+  assert.ok(prompt.indexOf('second/closing call was/wasn\'t booked') !== -1,
+    'feedback_summary\'s field description must use the same non-literal wording, not just the reasoning question');
+});
+
 test('DISCOVERY_GAP_LABELS_ names the new dimensions, so a failure on them shows up in the Missing line', () => {
   assert.equal(gas.DISCOVERY_GAP_LABELS_.uncovered_goal, 'what the lead is running TOWARDS (their goal)');
   assert.equal(gas.DISCOVERY_GAP_LABELS_.uncovered_pain, 'what the lead is running FROM (their real pain)');
@@ -2684,7 +2699,7 @@ test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a r
   // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
   // current one — without a bump, no existing row would ever be graded on
   // goal/pain and the change would silently apply to new calls only.
-  assert.equal(gas.RUBRIC_VERSION, '2026-09-09-goal-pain-bens-qc');
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-10-sean-second-call-wording');
 });
 
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
