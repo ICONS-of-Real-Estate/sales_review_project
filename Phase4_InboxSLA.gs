@@ -83,7 +83,15 @@ var INBOX_SLA_CONFIG = {
   // HANDOFF_CONFIG.ENABLED (Phase3_HandoffBrief.gs) and RIVERSIDE_CONFIG's
   // preview-first flow (Phase0_RiversideSync.gs). False = log what would be
   // sent instead of sending it.
-  ENABLED: true, // Flipped true 20/08/2026 after previewInboxSlaCheck_() ran clean on Sean/Bens post noise-filtering.
+  // Disabled 10/09/2026 (Kris: "The check is rubish. Disable it") after
+  // Sean pushed back on a 29-email nag, arguing the flagged threads weren't
+  // unread — which doesn't actually contradict this check (it measures
+  // whether the REP sent the last message in a thread, never Gmail's
+  // read/unread flag; see findUnansweredThreadsForRep_'s own comment), but
+  // Kris's call is to shut it off regardless rather than litigate individual
+  // threads. Preview-only from here: previewInboxSlaCheck_() still runs and
+  // logs, nothing gets sent. Re-enable by flipping this back to true.
+  ENABLED: false,
 
   // Joana deliberately excluded (20/08/2026, Kris's call) — she has hundreds
   // of leads to work through and this SLA nudge would just be noise on top
