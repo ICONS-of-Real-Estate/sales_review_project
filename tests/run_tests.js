@@ -2699,7 +2699,7 @@ test('RUBRIC_VERSION moved, so the new dimensions actually get backfilled by a r
   // rescoreAllCalls_ only touches rows whose Rubric Version is behind the
   // current one — without a bump, no existing row would ever be graded on
   // goal/pain and the change would silently apply to new calls only.
-  assert.equal(gas.RUBRIC_VERSION, '2026-09-10-sean-second-call-wording');
+  assert.equal(gas.RUBRIC_VERSION, '2026-09-10-industry-partner-carveout');
 });
 
 test('joanaMislabelledCallTypeRows_ finds only the rows this backfill created, never a QC that arrived some other way', () => {
@@ -3126,6 +3126,16 @@ test('the post-sale Discovery rubric never gets the part-time screen-out rule �
     assert.ok(prompt.indexOf('FULL-TIME real estate agents') !== -1,
       'pre-sale variant ' + i + ' must keep the qualification rule');
   });
+});
+
+test('leadQualityCriteriaPrompt_ carries Tomás\'s industry-partner carve-out, so a podcast guest who is not a real estate agent at all does not get screened out under the full-time-agent rule (Tomás, 10/09/2026, qualifying his own earlier rule: "it\'s not black and white as some industry partners might show up to [start] a podcast")', () => {
+  const prompt = gas.leadQualityCriteriaPrompt_();
+  assert.ok(prompt.indexOf('NOT BLACK AND WHITE') !== -1,
+    'the carve-out must be present and clearly flagged as qualifying the rule above it');
+  assert.ok(prompt.indexOf('PODCAST GUEST') !== -1,
+    'must explicitly name the case Tomás described — an industry partner appearing as a guest, not a lead being sold the offer');
+  assert.ok(prompt.indexOf('narrow') !== -1 && prompt.indexOf('applies in full') !== -1,
+    'must explicitly bound the carve-out so it cannot be read as loosening the part-time-agent screen-out for an actual sales lead');
 });
 
 test('isValidTrainingReviewSchema_ rejects a malformed discovery drill instead of emailing "undefined — undefined"', () => {

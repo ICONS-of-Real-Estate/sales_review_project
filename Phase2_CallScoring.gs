@@ -201,7 +201,7 @@ var PHASE2_CONFIG = {
  * scored — this constant is never used to retroactively rewrite history, see
  * Phase2_CallGradingSOP.md §3E.
  */
-var RUBRIC_VERSION = '2026-09-10-sean-second-call-wording';
+var RUBRIC_VERSION = '2026-09-10-industry-partner-carveout';
 
 // ---------------------------------------------------------------------------
 // Kimi judgment call — the model wrapper (brief §1: "model-agnostic ... only
@@ -844,6 +844,14 @@ function leadQualityCriteriaPrompt_() {
     '    around another job or business, is a should_screen_out no matter how warm or pleasant the call was:',
     '    they will not invest in the offer. Other occupations alongside a full-time real estate career (a',
     '    sport, a side interest, content creation) are fine and are NOT grounds to screen out.',
+    '  - NOT BLACK AND WHITE (Tomás, 10/09/2026, explicitly qualifying this rule): an industry partner who is',
+    '    not a real estate agent at all — a lender, a title company, a vendor, or similar — showing up as a',
+    '    PODCAST GUEST (an ICONS 100 interview, not the coaching/lead-gen sales offer) is a different category',
+    '    entirely, never a should_screen_out under this rule. Judge that call on whether the person fits what',
+    '    THAT call is actually for (a good podcast guest/appearance), not on real-estate-agent employment',
+    '    status. This carve-out is narrow: it covers a genuine industry partner being interviewed as a guest,',
+    '    not a part-time agent being sold the coaching offer — the part-time-agent screen-out above still',
+    '    applies in full to anyone actually being sold that offer.',
     '  - Judge on transcript evidence. If full-time status genuinely never came up, do not invent it: score',
     '    good_to_book on the rest of the evidence, and say in the justification that it was never established',
     '    — an unasked question is a coaching point for the rep, not a verdict against the lead.'
