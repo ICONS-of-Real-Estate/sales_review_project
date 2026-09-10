@@ -55,8 +55,13 @@
  */
 
 var GHL_CONFIG = {
-  // Gates anything that writes. Read-only previews ignore it.
-  ENABLED: false,
+  // Flipped true 10/09/2026 after a clean previewGhlSync() run (406/1043
+  // rows scanned, 264 confident matches, 245 real fixes, conservative on
+  // the rest — ambiguous/no-match/failed all skipped rather than guessed)
+  // and Tomás's sign-off on trusting GHL pipeline stage as the Outcome
+  // Disposition source. Gates anything that writes. Read-only previews
+  // ignore it.
+  ENABLED: true,
 
   API_KEY_PROPERTY: 'GHL_API_KEY',
   LOCATION_ID_PROPERTY: 'GHL_LOCATION_ID',
