@@ -115,3 +115,115 @@ class TestTranscribeWithWhisper:
         monkeypatch.setattr(tsw, "get_whisper_model", lambda: model)
         result = tsw.transcribe_with_whisper("fake.mp4")
         assert result == "Sean: hello\n\nFrank: hi"
+
+
+class TestLabelSegmentsBySpeakerTurn:
+    """label_segments_by_speaker_turn — pure function, no model/API needed.
+    Kris's ask, 09/09/2026: "even if it's not perfect, it'd be nice to try
+    an estimate... fill in the freaking names of who's speaking." tinydiarize
+    only marks WHEN the speaker changed, never WHO -- this is the alternating
+    "Speaker 1:"/"Speaker 2:" estimate built on top of that, not verified
+    identity."""
+
+    def test_no_turns_at_all_labels_everything_as_the_first_speaker(self):
+        segments = _fake_segments(["Hello there.", "How are you?"])
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[False, False])
+        assert result == ["Speaker 1: Hello there.", "Speaker 1: How are you?"]
+
+    def test_a_turn_flag_flips_the_label_for_the_next_segment_not_the_current_one(self):
+        segments = _fake_segments(["Hi Bruce, thanks for joining.", "Good morning, how's it going?", "Pretty good."])
+        # turns[0]=True means the speaker changed AFTER segment 0 finished --
+        # so segment 0 keeps Speaker 1, segment 1 flips to Speaker 2.
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[True, False, False])
+        assert result == [
+            "Speaker 1: Hi Bruce, thanks for joining.",
+            "Speaker 2: Good morning, how's it going?",
+            "Speaker 2: Pretty good.",
+        ]
+
+    def test_alternates_correctly_across_multiple_real_turns(self):
+        segments = _fake_segments(["A1", "A2", "B1", "B2", "A3"])
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[False, True, False, True, False])
+        assert result == [
+            "Speaker 1: A1", "Speaker 1: A2", "Speaker 2: B1", "Speaker 2: B2", "Speaker 1: A3",
+        ]
+
+    def test_empty_segments_are_dropped_but_still_consume_their_turn_flag(self):
+        segments = _fake_segments(["Sean: hi", "", "Frank: hey"])
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[True, False, False])
+        assert result == ["Speaker 1: Sean: hi", "Speaker 2: Frank: hey"]
+
+    def test_custom_speaker_labels_are_honored(self):
+        segments = _fake_segments(["Hi Bruce.", "Hey Sean."])
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[True], speaker_labels=("Sean", "Prospect"))
+        assert result == ["Sean: Hi Bruce.", "Prospect: Hey Sean."]
+
+    def test_a_turns_list_shorter_than_segments_does_not_crash(self):
+        # _segment_speaker_turns can only ever return one flag per segment,
+        # but this stays defensive rather than assuming the two always match.
+        segments = _fake_segments(["one", "two", "three"])
+        result = tsw.label_segments_by_speaker_turn(segments, turns=[])
+        assert result == ["Speaker 1: one", "Speaker 1: two", "Speaker 1: three"]
+
+
+class TestSegmentSpeakerTurns:
+    """_segment_speaker_turns — the low-level tinydiarize extraction. Real
+    whisper.cpp context objects can't be constructed in a unit test, so this
+    only verifies the two documented failure paths: the extension module
+    missing entirely, and the low-level call raising."""
+
+    def test_returns_none_when_the_low_level_extension_is_unavailable(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "_pywhispercpp":
+                raise ImportError("no such module in this test environment")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        result = tsw._segment_speaker_turns(MagicMock(), _fake_segments(["a", "b"]))
+        assert result is None
+
+    def test_returns_none_rather_than_raising_when_the_model_has_no_ctx_attribute(self):
+        model_without_ctx = object()  # no ._ctx at all
+        result = tsw._segment_speaker_turns(model_without_ctx, _fake_segments(["a"]))
+        assert result is None
+
+
+class TestSpeakerTurnLabelingOptIn:
+    """The opt-in flag must not change ANY existing behavior when off (the
+    default), and must wire tdrz_enable + labeling through when on."""
+
+    def test_disabled_by_default_never_requests_tdrz_or_calls_segment_speaker_turns(self, monkeypatch):
+        assert tsw.SPEAKER_TURN_LABELING_ENABLED is False, \
+            "must ship disabled -- this has not been validated against real audio"
+        model = _fake_model([CLEAN_SEGMENTS])
+        monkeypatch.setattr(tsw, "get_whisper_model", lambda: model)
+        called = []
+        monkeypatch.setattr(tsw, "_segment_speaker_turns", lambda *a: called.append(1))
+        tsw.transcribe_with_whisper("fake.mp4")
+        assert called == [], "_segment_speaker_turns must never be called while the feature is off"
+        assert "tdrz_enable" not in model.transcribe.call_args.kwargs
+
+    def test_enabled_requests_tdrz_and_applies_speaker_labels(self, monkeypatch):
+        segments = _fake_segments(["Hi Bruce, thanks for joining.", "Good morning."])
+        model = _fake_model([segments])
+        monkeypatch.setattr(tsw, "get_whisper_model", lambda: model)
+        monkeypatch.setattr(tsw, "SPEAKER_TURN_LABELING_ENABLED", True)
+        monkeypatch.setattr(tsw, "_segment_speaker_turns", lambda m, segs: [True, False])
+        result = tsw.transcribe_with_whisper("fake.mp4")
+        assert model.transcribe.call_args.kwargs["tdrz_enable"] is True
+        assert result == "Speaker 1: Hi Bruce, thanks for joining.\n\nSpeaker 2: Good morning."
+
+    def test_enabled_but_turn_extraction_unavailable_falls_back_to_unlabeled_paragraphs(self, monkeypatch):
+        """_segment_speaker_turns returning None (extension unavailable, or
+        any other failure) must fall back to exactly today's shipped
+        behavior, not crash and not silently mislabel everything."""
+        segments = _fake_segments(["Hi Bruce, thanks for joining.", "Good morning."])
+        model = _fake_model([segments])
+        monkeypatch.setattr(tsw, "get_whisper_model", lambda: model)
+        monkeypatch.setattr(tsw, "SPEAKER_TURN_LABELING_ENABLED", True)
+        monkeypatch.setattr(tsw, "_segment_speaker_turns", lambda m, segs: None)
+        result = tsw.transcribe_with_whisper("fake.mp4")
+        assert result == "Hi Bruce, thanks for joining.\n\nGood morning."

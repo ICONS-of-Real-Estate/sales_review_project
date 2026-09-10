@@ -23,6 +23,38 @@ transcribe_sean_calls_qwen.py: fine if speaker roles are inferable from
 context, worth confirming on one real transcript first. See
 test_single_transcription_whisper.py for that smoke test.
 
+SPEAKER LABELING (opt-in, off by default -- Kris's ask, 09/09/2026: "even
+if it's not perfect, it'd be nice to try an estimate... fill in the
+freaking names of who's speaking"). whisper.cpp's tinydiarize feature can
+estimate WHEN the speaker changes, but it never tells you WHO is talking
+-- so this labels alternating turns as "Speaker 1:"/"Speaker 2:", not real
+names, and assumes exactly two speakers (a 3rd person looped onto the call
+-- e.g. a spouse or a team member -- gets folded into one of those two
+labels, not given their own). Confirmed by directly inspecting the
+installed pywhispercpp (1.5.1): its own public Segment class does NOT
+expose the turn-boundary flag at all, but the underlying compiled
+extension does export whisper_full_get_segment_speaker_turn_next -- the
+exact whisper.cpp C function tinydiarize uses -- so this reaches into that
+directly (see _segment_speaker_turns below). That relies on a private,
+undocumented Model attribute and is wrapped so a future pywhispercpp that
+changes it falls back to today's unlabeled behavior rather than crashing.
+
+To turn this on:
+  1. Download the tinydiarize-finetuned model file by hand -- pywhispercpp's
+     own automatic downloader does NOT know this variant (confirmed: it is
+     not in pywhispercpp.constants.AVAILABLE_MODELS), so this is a one-time
+     manual step, same as whisper.cpp's own CLI setup:
+         curl -L -o ggml-small.en-tdrz.bin \
+           https://huggingface.co/akashmjn/tinydiarize-whisper.cpp/resolve/main/ggml-small.en-tdrz.bin
+  2. Set the WHISPER_TDRZ_MODEL_PATH environment variable to that file's
+     full path.
+  3. Set SPEAKER_TURN_LABELING_ENABLED = True below.
+  4. Run test_single_transcription_whisper.py (or one manual
+     transcribe_with_whisper call) against ONE real call first and actually
+     read the result -- this has NOT been validated against real audio from
+     this sandbox (no audio file, no whisper.cpp runtime available here),
+     so confirm speaker-turn quality before trusting the unattended batch.
+
 transcribe_sean_calls.py (Gemini) and transcribe_sean_calls_qwen.py (Qwen)
 are both untouched and still work -- keep either as a fallback if local
 Whisper's quality, missing diarization, or CPU speed on your machine turns
@@ -62,6 +94,13 @@ from transcribe_sean_calls import (
     transcript_repetition_loop_share_,
 )
 
+# See this file's "SPEAKER LABELING" docstring section above for the full
+# setup and caveats. Off by default -- flipping this to True with no
+# WHISPER_TDRZ_MODEL_PATH set just falls back to small.en with a warning,
+# never a hard failure.
+SPEAKER_TURN_LABELING_ENABLED = False
+SPEAKER_TURN_MODEL_PATH = os.environ.get("WHISPER_TDRZ_MODEL_PATH", "")
+
 _whisper_model = None
 
 
@@ -73,19 +112,84 @@ def get_whisper_model():
     matters when transcribe_all.py runs several parallel workers (each with
     its own model) on the same box, so the total (workers x threads) can be
     tuned to the machine's core count instead of oversubscribing it. Left
-    unset, whisper.cpp's own default applies -- fine for a single-worker run."""
+    unset, whisper.cpp's own default applies -- fine for a single-worker run.
+
+    When SPEAKER_TURN_LABELING_ENABLED, loads the tinydiarize-finetuned model
+    file from SPEAKER_TURN_MODEL_PATH instead of the normal small.en --
+    tinydiarize needs its own fine-tuned weights, confirmed NOT downloadable
+    through pywhispercpp's normal model-name path (see the setup steps
+    above). Missing the env var just warns and falls back to small.en with
+    no labeling, rather than failing the whole batch."""
     global _whisper_model
     if _whisper_model is None:
         from pywhispercpp.model import Model
         n_threads = os.environ.get("WHISPER_THREADS")
         kwargs = {"n_threads": int(n_threads)} if n_threads else {}
+        model_name = "small.en"
+        if SPEAKER_TURN_LABELING_ENABLED:
+            if SPEAKER_TURN_MODEL_PATH:
+                model_name = SPEAKER_TURN_MODEL_PATH
+            else:
+                print("    WARNING: SPEAKER_TURN_LABELING_ENABLED is True but WHISPER_TDRZ_MODEL_PATH is not "
+                      "set -- falling back to small.en with no speaker labeling. See this file's docstring.")
         try:
-            _whisper_model = Model("small.en", print_realtime=False, print_progress=False, **kwargs)
+            _whisper_model = Model(model_name, print_realtime=False, print_progress=False, **kwargs)
         except TypeError:
             # Older pywhispercpp versions may not accept n_threads as a kwarg --
             # fall back to its default thread count rather than hard-failing.
-            _whisper_model = Model("small.en", print_realtime=False, print_progress=False)
+            _whisper_model = Model(model_name, print_realtime=False, print_progress=False)
     return _whisper_model
+
+
+def _segment_speaker_turns(model, segments):
+    """Best-effort: whisper.cpp's tinydiarize turn-boundary flag per segment,
+    via the low-level C API. pywhispercpp 1.5.1's own public Segment class
+    does not surface this (confirmed by inspecting its source: Segment only
+    carries t0/t1/text/probability), but the compiled extension module DOES
+    export whisper_full_get_segment_speaker_turn_next, the exact function
+    whisper.cpp's own tinydiarize feature uses -- confirmed by introspecting
+    the installed _pywhispercpp extension directly. Relies on model._ctx (a
+    private, undocumented attribute) and on segment index order matching
+    whisper_full_n_segments()'s own indexing -- both true as of pywhispercpp
+    1.5.1, neither a guaranteed public contract. Returns None (not a list)
+    on ANY failure, including a future pywhispercpp that renames or removes
+    either, so the caller falls back to the existing, already-shipped
+    no-labels behavior instead of mislabeling or crashing the batch.
+    """
+    try:
+        import _pywhispercpp as _pw
+        ctx = model._ctx
+        return [bool(_pw.whisper_full_get_segment_speaker_turn_next(ctx, i)) for i in range(len(segments))]
+    except Exception as e:
+        print(f"    Speaker-turn extraction unavailable ({e}) -- falling back to unlabeled paragraphs.")
+        return None
+
+
+def label_segments_by_speaker_turn(segments, turns, speaker_labels=("Speaker 1", "Speaker 2")):
+    """Turns tinydiarize's turn-boundary flags into alternating speaker
+    labels -- an ESTIMATE, not verified identity. tinydiarize only marks
+    WHEN the speaker changed, never WHO is speaking, so this assumes
+    exactly two speakers and that whoever talks first is speaker_labels[0]
+    (in practice, usually the rep -- they dial in and greet first). A 3rd
+    participant on the call (a spouse, a team member looped in mid-call --
+    e.g. the real Bruce Henson 9/3 call, where Misty and Lee also spoke)
+    gets folded into one of the other two labels, not given their own.
+    Kris's own ask, 09/09/2026: "even if it's not perfect, it'd be nice to
+    try an estimate... fill in the freaking names of who's speaking" --
+    this is exactly that estimate, not a guarantee. Pure function, testable
+    without a real model. `turns[i]` True means the speaker changed AFTER
+    segment i finished, so the flip is applied for the NEXT segment, never
+    the current one.
+    """
+    labeled = []
+    current = 0
+    for i, seg in enumerate(segments):
+        text = seg.text.strip()
+        if text:
+            labeled.append(f"{speaker_labels[current % len(speaker_labels)]}: {text}")
+        if i < len(turns) and turns[i]:
+            current += 1
+    return labeled
 
 
 def transcribe_with_whisper(local_path):
@@ -124,13 +228,12 @@ def transcribe_with_whisper(local_path):
     Also: segments are now joined with a real paragraph break rather than a
     single space (Kris: "it'd be nicer if it formatted the document
     better") — whisper.cpp's plain transcribe() has no speaker diarization
-    at all (see this file's own docstring above), so real "Sean:"/"Frank:"
-    labels aren't available from this path without a separate diarization
-    step (whisper.cpp does have optional tinydiarize turn-boundary
-    detection via tdrz_enable, but it needs a different, `-tdrz` compiled
-    model and hasn't been validated against a real call here yet — worth
-    doing as a follow-up, not guessed at blind). This at least gives every
-    distinct utterance its own paragraph instead of one unbroken wall of
+    at all, so real "Sean:"/"Frank:" labels still aren't available from this
+    path. SPEAKER_TURN_LABELING_ENABLED (off by default — see this file's
+    "SPEAKER LABELING" docstring section) opts into tinydiarize's
+    turn-boundary ESTIMATE instead — alternating "Speaker 1:"/"Speaker 2:"
+    labels, not real names or verified identity. Disabled, every distinct
+    utterance still gets its own paragraph instead of one unbroken wall of
     text, which is also exactly the shape that made the original corruption
     invisible to a line-based detector in the first place.
     """
@@ -149,8 +252,16 @@ def transcribe_with_whisper(local_path):
         # behind instead of running at the documented deterministic
         # default. Passing it explicitly every time, including 0.0 on
         # attempt 0, is what actually resets it.
-        segments = model.transcribe(local_path, temperature=attempt * 0.4)
-        text = "\n\n".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+        transcribe_kwargs = {"temperature": attempt * 0.4}
+        if SPEAKER_TURN_LABELING_ENABLED:
+            transcribe_kwargs["tdrz_enable"] = True
+        segments = model.transcribe(local_path, **transcribe_kwargs)
+        turns = _segment_speaker_turns(model, segments) if SPEAKER_TURN_LABELING_ENABLED else None
+        if turns is not None:
+            paragraphs = label_segments_by_speaker_turn(segments, turns)
+        else:
+            paragraphs = [seg.text.strip() for seg in segments if seg.text.strip()]
+        text = "\n\n".join(paragraphs).strip()
         if not transcript_is_degenerate_repetition_(text):
             return text
         share = transcript_repetition_loop_share_(text)
