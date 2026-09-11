@@ -216,3 +216,38 @@ class TestFetchProgressLogging:
         err = capsys.readouterr().err
         assert "page 1" in err and "page 2" in err
         assert "done, " in err
+
+
+class TestNormalizeOpportunity:
+    def test_maps_real_ghl_response_shape(self):
+        # Real --inspect output against the live account, 11/09/2026.
+        raw = {
+            "id": "D5TCi6Ys6SSq0ZGx71BX",
+            "name": "Destiney “Alaska” Baker",
+            "monetaryValue": 0,
+            "pipelineId": "M7O9ZsPmczMyS7oP9m85",
+            "pipelineStageId": "56c8783b-c960-43a4-90fe-db5581725326",
+            "status": "open",
+            "source": "Podcast Chat with Joana - Qualification Call",
+            "lastStatusChangeAt": "2026-09-11T12:23:23.948Z",
+            "createdAt": "2026-09-11T12:23:23.947Z",
+            "updatedAt": "2026-09-11T12:23:23.947Z",
+            "contactId": "lzhOk1GY985D1IY2id2S",
+            "contact": {
+                "id": "lzhOk1GY985D1IY2id2S", "name": "Destiney “Alaska” Baker",
+                "email": "dbaker@paraclerealty.com", "phone": "+18036051427",
+                "tags": ["calendar booked call"],
+            },
+        }
+        result = ghl_mirror.normalize_opportunity(raw, "t1")
+        assert result["ghl_id"] == "D5TCi6Ys6SSq0ZGx71BX"
+        assert result["contact_ghl_id"] == "lzhOk1GY985D1IY2id2S"
+        assert result["pipeline_id"] == "M7O9ZsPmczMyS7oP9m85"
+        assert result["pipeline_stage_id"] == "56c8783b-c960-43a4-90fe-db5581725326"
+        assert result["status"] == "open"
+        assert result["monetary_value"] == 0
+        # Real bug, confirmed live: opportunities have no `dateAdded` field at
+        # all (that's a contact field) -- they use `createdAt`.
+        assert result["date_added"] == "2026-09-11T12:23:23.947Z"
+        assert result["date_updated"] == "2026-09-11T12:23:23.947Z"
+        assert result["last_status_change_at"] == "2026-09-11T12:23:23.948Z"

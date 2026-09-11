@@ -131,22 +131,27 @@ def normalize_contact(raw, synced_at):
 
 
 def normalize_opportunity(raw, synced_at):
-    """Pure — same contract as normalize_contact. pipelineId/pipelineStageId/
-    monetaryValue/updatedAt/lastStatusChangeAt/dateAdded are confirmed-live
-    (Phase14_GhlStageTriage.gs/Phase15_CrmOrganizationReview.gs); contactId/
-    status/pipeline_stage_name resolution is UNVERIFIED -- pipeline_stage_name
-    in particular needs a pipelines lookup (see resolve_stage_name below),
-    same as those two files already do against a fetched pipelines list.
+    """Pure — same contract as normalize_contact. Confirmed live (11/09/2026,
+    real --inspect output against this account): id/name/monetaryValue/
+    pipelineId/pipelineStageId/status/source/contactId/createdAt/updatedAt/
+    lastStatusChangeAt, plus a nested `contact` object (id/name/companyName/
+    email/phone/tags/score) attached to every opportunity. contactId's
+    UNVERIFIED flag is now resolved -- it's real. `date_added` used to read
+    `dateAdded`, which doesn't exist on an opportunity at all (that's a
+    CONTACT field) -- opportunities use `createdAt`. pipeline_stage_name
+    resolution still needs a pipelines lookup (see resolve_stage_name below),
+    same as Phase14_GhlStageTriage.gs/Phase15_CrmOrganizationReview.gs
+    already do against a fetched pipelines list.
     """
     return {
         "ghl_id": raw.get("id"),
-        "contact_ghl_id": raw.get("contactId"),  # UNVERIFIED
+        "contact_ghl_id": raw.get("contactId"),
         "pipeline_id": raw.get("pipelineId"),
         "pipeline_stage_id": raw.get("pipelineStageId"),
         "pipeline_stage_name": None,  # filled by resolve_stage_name, needs the pipelines list
-        "status": raw.get("status"),  # UNVERIFIED
+        "status": raw.get("status"),
         "monetary_value": raw.get("monetaryValue"),
-        "date_added": raw.get("dateAdded"),
+        "date_added": raw.get("createdAt"),
         "date_updated": raw.get("updatedAt"),
         "last_status_change_at": raw.get("lastStatusChangeAt"),
         "synced_at": synced_at,
