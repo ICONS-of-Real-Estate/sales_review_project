@@ -107,26 +107,39 @@ def init_ghl_schema(conn):
 
 
 def normalize_contact(raw, synced_at):
-    """Pure — real GHL contact JSON in, our row shape out. `name`/
-    `firstName`/`lastName`/`id` are confirmed-live field names (see module
-    header); `email`/`phone`/`source`/`dateAdded`/`dateUpdated`/`tags` are
-    UNVERIFIED against this account specifically, but match GHL's own v2
-    API docs and are the obvious candidates -- flagged here, not silently
-    trusted, exactly so a real run's first mismatch is easy to find.
+    """Pure — real GHL contact JSON in, our row shape out. Confirmed live
+    (11/09/2026, real --inspect output against this account): id/
+    firstName/lastName/firstNameRaw/lastNameRaw/contactName/email/phone/
+    source/assignedTo/dateAdded/dateUpdated/tags/companyName. Two real
+    findings from that payload:
+      - There is NO `name` field on a /contacts/ record at all (that only
+        exists on an opportunity, copied from its contact) -- so the old
+        `raw.get("name")` first-choice was always a no-op here, never a bug
+        by itself since the firstName+lastName fallback still ran.
+      - `firstName`/`lastName` are lowercase-normalized ("saiyid"/"cuts");
+        `firstNameRaw`/`lastNameRaw` preserve real casing ("Saiyid"/"Cuts").
+        Real bug, confirmed live: every synced contact rendered lowercase
+        on /ghl-mirror because this preferred the normalized fields. Now
+        prefers *Raw, falling back to the normalized fields, then to
+        contactName, for a contact GHL itself couldn't split into
+        first/last at all.
     """
+    first = raw.get("firstNameRaw") or raw.get("firstName") or ""
+    last = raw.get("lastNameRaw") or raw.get("lastName") or ""
+    name = (first + " " + last).strip() or raw.get("contactName") or raw.get("name") or ""
     return {
         "ghl_id": raw.get("id"),
-        "name": raw.get("name") or ((raw.get("firstName") or "") + " " + (raw.get("lastName") or "")).strip(),
+        "name": name,
         "first_name": raw.get("firstName"),
         "last_name": raw.get("lastName"),
-        "email": raw.get("email"),  # UNVERIFIED
-        "phone": raw.get("phone"),  # UNVERIFIED
-        "source": raw.get("source"),  # UNVERIFIED
-        "owner_id": raw.get("assignedTo"),  # UNVERIFIED
-        "date_added": raw.get("dateAdded"),  # UNVERIFIED
-        "date_updated": raw.get("dateUpdated"),  # UNVERIFIED
+        "email": raw.get("email"),
+        "phone": raw.get("phone"),
+        "source": raw.get("source"),
+        "owner_id": raw.get("assignedTo"),
+        "date_added": raw.get("dateAdded"),
+        "date_updated": raw.get("dateUpdated"),
         "synced_at": synced_at,
-        "tags": [t for t in (raw.get("tags") or []) if t],  # UNVERIFIED shape (assumed list of strings)
+        "tags": [t for t in (raw.get("tags") or []) if t],
     }
 
 

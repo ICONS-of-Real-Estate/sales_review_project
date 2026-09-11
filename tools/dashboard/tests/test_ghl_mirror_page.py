@@ -120,3 +120,16 @@ class TestGhlMirrorRegressions:
         for i in range(5):
             _seed_contact(conn, f"c{i}", f"Person {i}", f"p{i}@example.com")
         assert len(app_module.ghl_mirror_contacts(limit=3)) == 3
+
+    def test_blank_name_contacts_sort_to_the_end_not_the_start(self, conn):
+        # Real bug, confirmed live (11/09/2026): thousands of genuinely
+        # nameless contacts (incomplete lead-ad submissions) sorted FIRST
+        # under a plain ORDER BY name, since an empty string sorts before
+        # any real name -- the default view was 100% junk on page 1.
+        _seed_contact(conn, "c1", "", "noname@example.com")
+        _seed_contact(conn, "c2", "Zach Zebra", "zach@example.com")
+        _seed_contact(conn, "c3", "Amy Apple", "amy@example.com")
+        results = app_module.ghl_mirror_contacts()
+        names = [c["name"] for c in results]
+        assert names == ["Amy Apple", "Zach Zebra", ""], \
+            "real-named contacts must sort before the blank-name one, not after"

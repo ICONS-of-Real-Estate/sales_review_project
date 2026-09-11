@@ -23,8 +23,21 @@ def conn():
 
 
 class TestNormalizeContact:
-    def test_prefers_name_field_but_falls_back_to_first_plus_last(self):
+    def test_prefers_raw_cased_first_last_over_the_lowercase_normalized_fields(self):
+        # Real bug, confirmed live (11/09/2026): GHL's firstName/lastName are
+        # lowercase-normalized ("saiyid"); firstNameRaw/lastNameRaw preserve
+        # real casing ("Saiyid"). Every synced contact rendered lowercase on
+        # /ghl-mirror until this preferred the Raw fields.
+        raw = {"id": "c1", "firstName": "jane", "lastName": "doe", "firstNameRaw": "Jane", "lastNameRaw": "Doe"}
+        assert ghl_mirror.normalize_contact(raw, "t")["name"] == "Jane Doe"
+
+    def test_falls_back_to_lowercase_first_last_then_contactName_then_name(self):
+        # No /contacts/ record actually has a top-level `name` field (that
+        # only exists on an opportunity) -- contactName is the real
+        # last-resort fallback, `name` kept only in case some other caller
+        # ever hands this function a record shaped differently.
         assert ghl_mirror.normalize_contact({"id": "c1", "firstName": "Jane", "lastName": "Doe"}, "t")["name"] == "Jane Doe"
+        assert ghl_mirror.normalize_contact({"id": "c1", "contactName": "jane doe jr"}, "t")["name"] == "jane doe jr"
         assert ghl_mirror.normalize_contact({"id": "c1", "name": "Jane Doe Jr"}, "t")["name"] == "Jane Doe Jr"
 
     def test_tags_defaults_to_empty_list_and_drops_falsy_entries(self):

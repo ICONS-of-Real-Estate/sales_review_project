@@ -196,7 +196,15 @@ def ghl_mirror_contacts(search="", limit=200):
     this file), each with its tags and its most recently updated
     opportunity, if any -- one row per contact, not per opportunity, since a
     contact page is what this route is for. `search` matches name/email,
-    case-insensitively, wildcards escaped (see _escape_like)."""
+    case-insensitively, wildcards escaped (see _escape_like).
+
+    Real bug, confirmed live (11/09/2026): this account has thousands of
+    genuinely nameless contacts (no firstName/lastName/contactName at all
+    in GHL itself -- incomplete lead-ad submissions, not a mapping bug) and
+    a plain `ORDER BY name` put every one of them on page 1, since SQLite
+    sorts an empty string before any real name. Blank-name contacts are
+    sorted to the END instead, so the default (unsearched) view actually
+    shows real contacts."""
     conn = get_conn()
     try:
         where = ""
@@ -210,7 +218,7 @@ def ghl_mirror_contacts(search="", limit=200):
             SELECT ghl_id, name, email, phone, source, date_added
             FROM ghl_contacts c
             {where}
-            ORDER BY name COLLATE NOCASE
+            ORDER BY (name IS NULL OR name = '') ASC, name COLLATE NOCASE
             LIMIT ?
             """,
             params + [limit],
