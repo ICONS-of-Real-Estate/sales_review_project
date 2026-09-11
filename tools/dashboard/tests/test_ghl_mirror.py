@@ -163,3 +163,56 @@ class TestFetchAllContactsPagination:
         assert "startAfter" not in calls[0]
         assert isinstance(calls[1]["startAfter"], int), \
             "startAfter on the second request must be an epoch-millis int, not the raw ISO dateAdded string"
+
+
+class TestFetchProgressLogging:
+    """Kris's feedback, 11/09/2026: a real run against 65,000+ contacts
+    (650+ pages) produced zero output until the very end and looked hung.
+    These confirm progress prints actually fire during a long fetch."""
+
+    def _paged_client(self, total_pages, page_size=100):
+        class FakeResponse:
+            def __init__(self, body):
+                self._body = body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._body
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, path, params):
+                self.calls += 1
+                page_num = self.calls
+                if page_num > total_pages:
+                    return FakeResponse({"contacts": [], "opportunities": []})
+                size = page_size if page_num < total_pages else 1  # last page short, ends the loop
+                items = [{"id": f"x{page_num}-{i}", "dateAdded": "2026-01-01T00:00:00.000Z"} for i in range(size)]
+                return FakeResponse({"contacts": items, "opportunities": items})
+
+        return FakeClient()
+
+    def test_fetch_all_contacts_logs_progress_every_log_every_pages(self, capsys):
+        client = self._paged_client(total_pages=3)
+        ghl_mirror.fetch_all_contacts(client, "loc1", log_every=1)
+        err = capsys.readouterr().err
+        assert "page 1" in err and "page 2" in err
+        assert "done, " in err
+
+    def test_fetch_all_contacts_prints_nothing_mid_fetch_when_log_every_exceeds_page_count(self, capsys):
+        client = self._paged_client(total_pages=2)
+        ghl_mirror.fetch_all_contacts(client, "loc1", log_every=100)
+        err = capsys.readouterr().err
+        assert "so far" not in err, "must not print a progress line before log_every pages have gone by"
+        assert "done, " in err, "the final summary must still print regardless of log_every"
+
+    def test_fetch_all_opportunities_logs_progress_every_log_every_pages(self, capsys):
+        client = self._paged_client(total_pages=3)
+        ghl_mirror.fetch_all_opportunities(client, "loc1", log_every=1)
+        err = capsys.readouterr().err
+        assert "page 1" in err and "page 2" in err
+        assert "done, " in err

@@ -288,18 +288,27 @@ def _dateadded_to_epoch_millis(dateadded):
     return int(datetime.fromisoformat(iso).timestamp() * 1000)
 
 
-def fetch_all_contacts(client, location_id):
+def fetch_all_contacts(client, location_id, log_every=10):
     """Paginated GET /contacts/, confirmed-live endpoint shape
     (ghlSearchContactByName_, Phase9_GhlSync.gs) -- `query` param omitted
     here since we want everyone, not a name match. Pagination params
     (startAfterId/startAfter) are GHL's own documented cursor style for
     this endpoint; startAfter must be a millisecond epoch integer (see
     _dateadded_to_epoch_millis's own header for why -- confirmed live,
-    the ISO string 422'd)."""
+    the ISO string 422'd).
+
+    Prints progress every `log_every` pages -- real feedback, 11/09/2026:
+    this account has 65,000+ contacts (650+ pages at PAGE_LIMIT=100), and
+    with zero output between the start and the final count, a genuine
+    multi-minute fetch looked identical to a hang. `log_every` is a
+    parameter, not a hardcoded stderr call, so tests can pass a value that
+    never fires without needing to mock print()."""
     contacts = []
     start_after_id = None
     start_after = None
+    page_num = 0
     while True:
+        page_num += 1
         params = {"locationId": location_id, "limit": PAGE_LIMIT}
         if start_after_id:
             params["startAfterId"] = start_after_id
@@ -311,11 +320,14 @@ def fetch_all_contacts(client, location_id):
         if not page:
             break
         contacts.extend(page)
+        if page_num % log_every == 0:
+            print(f"  fetch_all_contacts: {len(contacts)} contact(s) so far (page {page_num})...", file=sys.stderr)
         if len(page) < PAGE_LIMIT:
             break
         start_after_id = page[-1].get("id")
         last_date_added = page[-1].get("dateAdded")
         start_after = _dateadded_to_epoch_millis(last_date_added) if last_date_added else None
+    print(f"fetch_all_contacts: done, {len(contacts)} contact(s) total.", file=sys.stderr)
     return contacts
 
 
@@ -328,10 +340,12 @@ def fetch_all_pipelines(client, location_id):
     return resp.json().get("pipelines") or []
 
 
-def fetch_all_opportunities(client, location_id):
+def fetch_all_opportunities(client, location_id, log_every=10):
     """Paginated GET /opportunities/search -- confirmed-live endpoint
     (Phase14_GhlStageTriage.gs line ~209). `page`-based pagination per
-    that file's own usage."""
+    that file's own usage. Same periodic progress print as
+    fetch_all_contacts, for the same reason -- see that function's own
+    header."""
     opportunities = []
     page = 1
     while True:
@@ -345,9 +359,12 @@ def fetch_all_opportunities(client, location_id):
         if not batch:
             break
         opportunities.extend(batch)
+        if page % log_every == 0:
+            print(f"  fetch_all_opportunities: {len(opportunities)} opportunity(ies) so far (page {page})...", file=sys.stderr)
         if len(batch) < PAGE_LIMIT:
             break
         page += 1
+    print(f"fetch_all_opportunities: done, {len(opportunities)} opportunity(ies) total.", file=sys.stderr)
     return opportunities
 
 
