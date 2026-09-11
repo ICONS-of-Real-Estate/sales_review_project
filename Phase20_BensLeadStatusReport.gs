@@ -41,7 +41,7 @@
  */
 
 var BENS_LEAD_STATUS_REPORT_CONFIG = {
-  ENABLED: false, // flip true after previewBensLeadStatusReport() looks right
+  ENABLED: true, // flipped 11/09/2026 — previewBensLeadStatusReport() reviewed, output looked right (15/126 matched, sensible dispositions)
   TRIGGER_HOUR: 17 // Friday afternoon, CONFIG.BUSINESS_TIMEZONE — after Phase 19's own Friday send (hour 16), same day
 };
 
