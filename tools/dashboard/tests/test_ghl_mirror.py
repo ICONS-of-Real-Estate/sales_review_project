@@ -117,3 +117,49 @@ class TestMainGuard:
         with pytest.raises(SystemExit) as exc_info:
             ghl_mirror.main()
         assert exc_info.value.code == 1
+
+
+class TestDateAddedToEpochMillis:
+    def test_converts_iso_z_suffix_to_millisecond_epoch(self):
+        # Real bug, confirmed live (11/09/2026): sending the raw ISO string
+        # as the /contacts/ endpoint's `startAfter` param 422'd -- it wants
+        # a millisecond epoch integer for the same instant.
+        result = ghl_mirror._dateadded_to_epoch_millis("2026-09-08T20:12:50.819Z")
+        assert isinstance(result, int)
+        # Round-trip: converting back must land on the same UTC instant.
+        from datetime import datetime, timezone
+        back = datetime.fromtimestamp(result / 1000, tz=timezone.utc)
+        assert back.year == 2026 and back.month == 9 and back.day == 8
+        assert back.hour == 20 and back.minute == 12 and back.second == 50
+
+
+class TestFetchAllContactsPagination:
+    def test_second_page_request_sends_startafter_as_an_epoch_int_not_the_raw_iso_string(self):
+        """The real regression this fixes: the second paginated request
+        used to pass the raw ISO dateAdded string as `startAfter`, which
+        GHL's API rejects with a 422."""
+        page1 = {"contacts": [{"id": f"c{i}", "dateAdded": "2026-09-08T20:12:50.819Z"} for i in range(100)]}
+        page2 = {"contacts": [{"id": "c100", "dateAdded": "2026-09-09T00:00:00.000Z"}]}
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self._body = body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._body
+
+        class FakeClient:
+            def get(self, path, params):
+                calls.append(params)
+                return FakeResponse(page1 if len(calls) == 1 else page2)
+
+        result = ghl_mirror.fetch_all_contacts(FakeClient(), "loc1")
+        assert len(result) == 101
+        assert len(calls) == 2
+        assert "startAfter" not in calls[0]
+        assert isinstance(calls[1]["startAfter"], int), \
+            "startAfter on the second request must be an epoch-millis int, not the raw ISO dateAdded string"

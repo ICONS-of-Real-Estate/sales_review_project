@@ -40,6 +40,7 @@ import argparse
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -276,14 +277,25 @@ def _ghl_client():
     )
 
 
+def _dateadded_to_epoch_millis(dateadded):
+    """GHL's `dateAdded` on a contact is an ISO-8601 string
+    ("2026-09-08T20:12:50.819Z"), but the /contacts/ endpoint's own
+    `startAfter` cursor param wants that SAME instant as a millisecond
+    epoch integer, not the ISO string itself. Real bug, confirmed live
+    (11/09/2026): sending the raw ISO string as `startAfter` 422'd on the
+    very first paginated request -- this is the fix, not a guess."""
+    iso = dateadded.replace("Z", "+00:00") if dateadded.endswith("Z") else dateadded
+    return int(datetime.fromisoformat(iso).timestamp() * 1000)
+
+
 def fetch_all_contacts(client, location_id):
     """Paginated GET /contacts/, confirmed-live endpoint shape
     (ghlSearchContactByName_, Phase9_GhlSync.gs) -- `query` param omitted
     here since we want everyone, not a name match. Pagination params
     (startAfterId/startAfter) are GHL's own documented cursor style for
-    this endpoint -- UNVERIFIED against this account's actual response
-    shape, so a real run is what confirms whether this loop terminates
-    correctly or needs adjusting."""
+    this endpoint; startAfter must be a millisecond epoch integer (see
+    _dateadded_to_epoch_millis's own header for why -- confirmed live,
+    the ISO string 422'd)."""
     contacts = []
     start_after_id = None
     start_after = None
@@ -302,7 +314,8 @@ def fetch_all_contacts(client, location_id):
         if len(page) < PAGE_LIMIT:
             break
         start_after_id = page[-1].get("id")
-        start_after = page[-1].get("dateAdded")
+        last_date_added = page[-1].get("dateAdded")
+        start_after = _dateadded_to_epoch_millis(last_date_added) if last_date_added else None
     return contacts
 
 
@@ -368,8 +381,6 @@ def run_sync(conn, client, location_id, synced_at):
 
 
 def main():
-    from datetime import datetime, timezone
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dry-run", action="store_true",
