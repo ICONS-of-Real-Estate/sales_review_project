@@ -292,7 +292,7 @@ Grouped by how hard, not by order.
 1. **Contact object** — identity, dedupe/merge, emails, phones, tags, source, owner, custom fields. The keystone; nothing else works without it.
 2. **Opportunity object** — pipeline, stage, owner, value, status, **stage-change history** (GHL loses this too; we'd be better).
 3. **Tags** — contact-level, cross-pipeline.
-4. **Activity timeline** — one unified per-contact event stream (call, SMS, email, note, stage change, appointment, form submission).
+4. **Activity timeline** — one unified per-contact event stream (call, SMS, email, note, stage change, appointment, form submission). Confirmed real need, not hypothetical: Bens asked Tomás in Slack (11/09/2026) for visibility into whether his ICONS 100 leads' Sales Calls got booked/showed up — exactly a per-contact "what happened, by whom" view, currently answerable only by emailing/asking the closer or checking their personal tracker sheet. Phase20_BensLeadStatusReport.gs papers over this today with a weekly cross-reference email (podcast tracker email ↔ "Sales Call Log" Call Type='Sales Call' rows, any rep) — a stopgap, not a substitute for this item once Step 1+ lands.
 5. **Mirror-from-GHL importer** — the migration path *and* the analysis instrument.
 
 **Tier 2 — real product work**
@@ -602,3 +602,14 @@ paying the $299, and revisit. That is a real option, not a failure.
   be the business case.
 - **Not estimated on purpose.** Step 0's answer moves the total by months.
   Estimating now would be the same guess this document exists to avoid.
+- **11/09/2026 — real input for §4 item 4 (Activity timeline), and a stopgap
+  built ahead of it:** Bens asked Tomás in Slack for visibility into his
+  ICONS 100 leads' Sales Call status; Tomás's answer was "check these two
+  manual tracker spreadsheets" — exactly the fragmented-view problem §4
+  item 4 exists to fix. Rather than wait for Step 1+, built
+  `Phase20_BensLeadStatusReport.gs`: a weekly email to Bens (cc Tomás,
+  Kris) cross-referencing his podcast tracker's leads against "Sales Call
+  Log" by email, any rep, Call Type 'Sales Call'. Uses only data we already
+  have; writes nothing back to either sheet. Not a reason to deprioritize
+  item 4 — it's a manual-feeling proxy for the real thing, worth keeping in
+  mind as a concrete example when that item's schema gets designed.

@@ -850,12 +850,22 @@ function duePhase17To19Passes_(now, tz) {
       name: 'runPitchGuideReview', fn: runPitchGuideReview,
       due: Number(Utilities.formatDate(now, tz, 'dd')) === PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_DAY_OF_MONTH &&
         isWithinHourWindow_(now, tz, PITCH_GUIDE_REVIEW_CONFIG.TRIGGER_HOUR, 2)
+    },
+    // Added 11/09/2026 (Phase20_BensLeadStatusReport.gs) as a fifth pass on
+    // this same shared trigger rather than a standalone one — same
+    // trigger-cap reason as the other three. Not safe to leave ungated:
+    // buildAndMaybeSendBensLeadStatusReport_ has no dedup of its own,
+    // same as runSeanEscalationReport below.
+    {
+      name: 'runBensLeadStatusReport', fn: runBensLeadStatusReport,
+      due: Utilities.formatDate(now, tz, 'EEEE') === 'Friday' &&
+        isWithinHourWindow_(now, tz, BENS_LEAD_STATUS_REPORT_CONFIG.TRIGGER_HOUR, 2)
     }
   ];
   return passes.filter(function (p) { return p.due; });
 }
 
-/** Trigger target for all four consolidated standing checks. Each pass still has its own ENABLED/DETECTION_ENABLED/CADENCE2_ENABLED gate inside its own run*() function — duePhase17To19Passes_ only adds the day/hour-window gates the three non-Cadence-1 passes need now that they share a trigger. Failures in one pass never block the others (same isolate-and-continue pattern as runAllOngoingScoringPasses_). */
+/** Trigger target for all five consolidated standing checks (a fifth, Phase 20's Bens lead status report, joined 11/09/2026 — see duePhase17To19Passes_ above). Each pass still has its own ENABLED/DETECTION_ENABLED/CADENCE2_ENABLED gate inside its own run*() function — duePhase17To19Passes_ only adds the day/hour-window gates the non-Cadence-1 passes need now that they share a trigger. Failures in one pass never block the others (same isolate-and-continue pattern as runAllOngoingScoringPasses_). */
 function runPhase17To19StandingChecks_() {
   RUN_TAG = 'runPhase17To19StandingChecks_';
   duePhase17To19Passes_(new Date(), CONFIG.BUSINESS_TIMEZONE).forEach(function (pass) {
@@ -878,5 +888,5 @@ function installPhase17To19StandingChecksTrigger() {
     .everyHours(2)
     .create();
   log_('Phase 17-19 standing checks trigger installed: every 2 hours (Cadence 1 detection every firing; ' +
-    'Cadence 2 digest/Phase 19 report/Phase 18 review each internally gated to their own day/hour window).');
+    'Cadence 2 digest/Phase 19 report/Phase 18 review/Phase 20 Bens lead status report each internally gated to their own day/hour window).');
 }

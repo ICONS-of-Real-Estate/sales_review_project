@@ -4913,9 +4913,13 @@ function installAllReadyTriggers_() {
   // DETECTION_ENABLED/CADENCE2_ENABLED flag internally before doing real
   // work, so installing the shared trigger early never bypasses any of
   // their own live-send gates.
+  // Phase 20 (Phase20_BensLeadStatusReport.gs) joined this same shared
+  // trigger 11/09/2026 as a fifth pass — see duePhase17To19Passes_'s own
+  // header, Phase17_SeanFollowUpAutomation.gs.
   var phase17To19Ready = (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) ||
     (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) ||
-    (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && (SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED || SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED));
+    (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && (SEAN_FOLLOWUP_CONFIG.DETECTION_ENABLED || SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED)) ||
+    (typeof BENS_LEAD_STATUS_REPORT_CONFIG !== 'undefined' && BENS_LEAD_STATUS_REPORT_CONFIG.ENABLED);
   if (phase17To19Ready) {
     installPhase17To19StandingChecksTrigger();
     var readyParts = [];
@@ -4923,10 +4927,12 @@ function installAllReadyTriggers_() {
     if (typeof SEAN_FOLLOWUP_CONFIG !== 'undefined' && SEAN_FOLLOWUP_CONFIG.CADENCE2_ENABLED) readyParts.push('Phase 17 Cadence 2 (re-engagement digest)');
     if (typeof SEAN_ESCALATION_REPORT_CONFIG !== 'undefined' && SEAN_ESCALATION_REPORT_CONFIG.ENABLED) readyParts.push('Phase 19 (Sean escalation report)');
     if (typeof PITCH_GUIDE_REVIEW_CONFIG !== 'undefined' && PITCH_GUIDE_REVIEW_CONFIG.ENABLED) readyParts.push('Phase 18 (Pitch Guide review)');
-    installed.push('Phase 17-19 standing checks (every 2h, internally gated): ' + readyParts.join(', '));
+    if (typeof BENS_LEAD_STATUS_REPORT_CONFIG !== 'undefined' && BENS_LEAD_STATUS_REPORT_CONFIG.ENABLED) readyParts.push('Phase 20 (Bens lead status report)');
+    installed.push('Phase 17-20 standing checks (every 2h, internally gated): ' + readyParts.join(', '));
   } else {
-    skipped.push('Phase 17-19 standing checks — none of Phase 17 DETECTION_ENABLED/CADENCE2_ENABLED, ' +
-      'Phase 18 PITCH_GUIDE_REVIEW_CONFIG.ENABLED, or Phase 19 SEAN_ESCALATION_REPORT_CONFIG.ENABLED is true yet. ' +
+    skipped.push('Phase 17-20 standing checks — none of Phase 17 DETECTION_ENABLED/CADENCE2_ENABLED, ' +
+      'Phase 18 PITCH_GUIDE_REVIEW_CONFIG.ENABLED, Phase 19 SEAN_ESCALATION_REPORT_CONFIG.ENABLED, or Phase 20 ' +
+      'BENS_LEAD_STATUS_REPORT_CONFIG.ENABLED is true yet. ' +
       'Run that phase\'s own preview*() function first, confirm it looks right, then flip its flag and re-run this.');
   }
 

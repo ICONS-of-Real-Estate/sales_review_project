@@ -12591,3 +12591,106 @@ test('installPhase17To19StandingChecksTrigger removes any existing runPhase17To1
     gas.ScriptApp = originalScriptApp;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 20 — Bens lead status report
+// ---------------------------------------------------------------------------
+
+test('findBensLeadSalesCallStatuses_ matches a tracker lead to their most recent Sales Call by email, any rep', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Joey Lamielle', Email: 'joey@example.com' })
+  ];
+  const lCol = bensLogCol(gas);
+  const logRows = [
+    fakeSalesCallLogRow({
+      'Prospect Email': 'joey@example.com', 'Call Type': 'Sales Call', Rep: 'Tomás',
+      'Call Date': new gas.Date(2026, 7, 1), 'Outcome Logged': true, 'Outcome Disposition': 'Follow-up'
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Email': 'joey@example.com', 'Call Type': 'Sales Call', Rep: 'Tomás',
+      'Call Date': new gas.Date(2026, 8, 5), 'Outcome Logged': true, 'Outcome Disposition': 'Sold'
+    })
+  ];
+  const result = gas.findBensLeadSalesCallStatuses_(trackerRows, tCol, logRows, lCol);
+  assert.equal(result.statuses.length, 1);
+  assert.equal(result.statuses[0].outcomeDisposition, 'Sold', 'must pick the MOST RECENT Sales Call, not the first match');
+  assert.equal(result.statuses[0].showedUp, true);
+  assert.equal(result.stats.matched, 1);
+});
+
+test('findBensLeadSalesCallStatuses_ ignores Discovery/QC/Icons 100 Recording rows -- only a real Sales Call counts', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [bensTrackerRow(gas, { Name: 'Andrea Brunson', Email: 'andrea@example.com' })];
+  const lCol = bensLogCol(gas);
+  const logRows = [
+    fakeSalesCallLogRow({ 'Prospect Email': 'andrea@example.com', 'Call Type': 'QC', Rep: 'Bens', 'Call Date': new gas.Date(2026, 7, 1) }),
+    fakeSalesCallLogRow({ 'Prospect Email': 'andrea@example.com', 'Call Type': 'Discovery', Rep: 'Joana', 'Call Date': new gas.Date(2026, 7, 2) }),
+    fakeSalesCallLogRow({ 'Prospect Email': 'andrea@example.com', 'Call Type': 'Icons 100 Recording', Rep: 'Bens', 'Call Date': new gas.Date(2026, 7, 3) })
+  ];
+  const result = gas.findBensLeadSalesCallStatuses_(trackerRows, tCol, logRows, lCol);
+  assert.equal(result.statuses.length, 0);
+  assert.equal(result.stats.noSalesCallYet, 1);
+});
+
+test('findBensLeadSalesCallStatuses_ marks No-show as not showed up, and blank disposition with Outcome Logged as "no disposition set yet"', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'A', Email: 'a@example.com' }),
+    bensTrackerRow(gas, { Name: 'B', Email: 'b@example.com' })
+  ];
+  const lCol = bensLogCol(gas);
+  const logRows = [
+    fakeSalesCallLogRow({ 'Prospect Email': 'a@example.com', 'Call Type': 'Sales Call', Rep: 'Sean', 'Call Date': new gas.Date(2026, 7, 1), 'Outcome Disposition': 'No-show' }),
+    fakeSalesCallLogRow({ 'Prospect Email': 'b@example.com', 'Call Type': 'Sales Call', Rep: 'Sean', 'Call Date': new gas.Date(2026, 7, 1), 'Outcome Logged': true, 'Outcome Disposition': '' })
+  ];
+  const result = gas.findBensLeadSalesCallStatuses_(trackerRows, tCol, logRows, lCol);
+  const byEmail = {}; result.statuses.forEach((s) => { byEmail[s.email] = s; });
+  assert.equal(byEmail['a@example.com'].showedUp, false);
+  assert.equal(byEmail['b@example.com'].outcomeDisposition, '(logged, no disposition set yet)');
+});
+
+test('findBensLeadSalesCallStatuses_ counts a tracker row with no email as noEmail, never as noSalesCallYet', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [bensTrackerRow(gas, { Name: 'No Email Guy', Email: '' })];
+  const lCol = bensLogCol(gas);
+  const result = gas.findBensLeadSalesCallStatuses_(trackerRows, tCol, [], lCol);
+  assert.equal(result.statuses.length, 0);
+  assert.equal(result.stats.noEmail, 1);
+  assert.equal(result.stats.noSalesCallYet, 0);
+});
+
+test('duePhase17To19Passes_ includes runBensLeadStatusReport only on Friday within its own trigger-hour window', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  const hour = gas.BENS_LEAD_STATUS_REPORT_CONFIG.TRIGGER_HOUR;
+  // 02/01/2026 is a Friday.
+  const fridayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 2, hour, 0, 0), tz).map((p) => p.name);
+  const fridayOutOfWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 2, hour + 5, 0, 0), tz).map((p) => p.name);
+  const saturdayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 3, hour, 0, 0), tz).map((p) => p.name);
+  assert.ok(fridayInWindow.indexOf('runBensLeadStatusReport') !== -1);
+  assert.ok(fridayOutOfWindow.indexOf('runBensLeadStatusReport') === -1);
+  assert.ok(saturdayInWindow.indexOf('runBensLeadStatusReport') === -1);
+});
+
+test('buildAndMaybeSendBensLeadStatusReport_ in preview mode logs and never sends', () => {
+  const ss = { getSheetByName: (name) => {
+    if (name === gas.BENS_PODCAST_SYNC_CONFIG.TRACKER_SHEET_NAME) return fakeIcons100TrackerSheet(gas.BENS_PODCAST_TRACKER_HEADERS.slice(), []);
+    return null;
+  } };
+  const originalOpen = gas.SpreadsheetApp && gas.SpreadsheetApp.openById;
+  const originalResolve = gas.resolveSheet_;
+  const originalSend = gas.sendBensLeadStatusReportEmail_;
+  let sendCalled = false;
+  gas.SpreadsheetApp = { openById: () => ss };
+  gas.resolveSheet_ = () => fakeSalesCallLogSheet([]);
+  gas.sendBensLeadStatusReportEmail_ = () => { sendCalled = true; };
+  try {
+    gas.buildAndMaybeSendBensLeadStatusReport_(true);
+    assert.equal(sendCalled, false);
+  } finally {
+    gas.resolveSheet_ = originalResolve;
+    gas.sendBensLeadStatusReportEmail_ = originalSend;
+    if (originalOpen) gas.SpreadsheetApp.openById = originalOpen;
+  }
+});

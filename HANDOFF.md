@@ -7,6 +7,39 @@
 
 ---
 
+## Built this session — Bens lead status report (11/09/2026)
+
+Kris's ask, from a Slack screenshot: Bens asked Tomás for visibility into
+whether his ICONS 100 leads' Sales Calls got booked/showed up; Tomás pointed
+him at two manual "Sales Tracker" spreadsheets (Joana's and his own) as an
+interim workaround. Kris: "Do both" — build the quick report now, and note
+it as real input for the GHL-replacement mirror's schema work later.
+
+- **`Phase20_BensLeadStatusReport.gs`** (new) — weekly email to Bens (cc
+  Tomás, Kris), cross-referencing his "Icons Podcast Recordings" tracker
+  rows against "Sales Call Log" by email, any rep, Call Type 'Sales Call'
+  (`isSalesCallTypeForFunnel_`/`attendedForFunnel_`, both already existing
+  in `Phase10_ConversionFunnel.gs` — deliberately excludes Discovery/QC).
+  Read-only on both sheets; does NOT write back into the tracker's own "SC
+  Booked"/"SC Date"/"SC Show Up" columns (risk of clobbering a manual
+  edit). Gated behind `BENS_LEAD_STATUS_REPORT_CONFIG.ENABLED` (**false** —
+  run `previewBensLeadStatusReport()` first, confirm the output looks
+  right, then flip it). Added as a FIFTH pass on the existing
+  `runPhase17To19StandingChecks_` shared every-2-hour trigger
+  (`Phase17_SeanFollowUpAutomation.gs`) rather than its own trigger —
+  same 20-trigger-cap reason as Phase 18/19 before it. `installAllReadyTriggers()`
+  already covers this — no separate install step needed once ENABLED is
+  flipped. 6 new tests, `tests/run_tests.js`, 773 passing / 0 failing.
+- **`GHL_REPLACEMENT_ANALYSIS.md`** §4 item 4 (Activity timeline) — added a
+  note that this Slack exchange is real, non-hypothetical confirmation of
+  that gap, with Phase 20 named as today's stopgap, not a reason to drop
+  the item once Step 1+ actually lands.
+- **Not deployed yet** — this sandbox has no `.clasp.json`; needs
+  `git pull && clasp push` on a machine that does, then
+  `previewBensLeadStatusReport()` reviewed before flipping ENABLED.
+
+---
+
 ## ⚠ TARGETS NOW SET — 09/09/2026 (read before touching scoring or training)
 
 Kris set the numbers everyone is working towards: **Joana and Sean each
