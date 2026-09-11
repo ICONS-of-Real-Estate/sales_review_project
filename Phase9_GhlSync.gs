@@ -1018,8 +1018,15 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
     }
 
     if (Date.now() - lastHeartbeatAt > GHL_SYNC_HEARTBEAT_INTERVAL_MS_) {
+      // Real observability gap found live (11/09/2026, right after shipping
+      // the GHL Match Status fix): this line only ever reported fixes.length
+      // (actual email/disposition writes), never statusStamps.length — so a
+      // run correctly ruling out and stamping a run of ambiguous/no-match
+      // rows looked IDENTICAL to the old stuck-forever bug ("0 fix(es)
+      // found" either way), with no way to tell them apart mid-run.
       log_('computeGhlSyncFixes_: still going — ' + stats.scanned + '/' + needingScan + ' row(s) scanned so far, ' +
-        fixes.length + ' fix(es) found.');
+        fixes.length + ' fix(es) found, ' + statusStamps.length + ' row(s) newly ruled out and stamped ' +
+        '(so they won\'t be re-scanned next time).');
       lastHeartbeatAt = Date.now();
     }
 
