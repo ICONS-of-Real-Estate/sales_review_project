@@ -1,3 +1,12 @@
+## Quick reference
+
+- **GHL account URL**: https://app.iconsofrealestate.com/ (Kris, 11/09/2026
+  — this is a custom domain on the account, not the generic
+  app.gohighlevel.com login). Use this when telling Kris where to go for
+  GHL settings (e.g. Private Integrations, to add a missing OAuth scope).
+
+---
+
 ## ⚠ TARGETS NOW SET — 09/09/2026 (read before touching scoring or training)
 
 Kris set the numbers everyone is working towards: **Joana and Sean each
