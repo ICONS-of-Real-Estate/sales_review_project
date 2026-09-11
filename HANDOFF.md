@@ -7,6 +7,68 @@
 
 ---
 
+## Built this session — GHL mirror skeleton, trigger-cap audit (11/09/2026)
+
+Kris said "yes" to all three of: (1) start the GHL-replacement mirror
+schema, (2) review Lead Confirmation reminders' readiness, (3) audit the
+disabled phases against the trigger cap — asked to do all three at once,
+from his phone, deploy deferred to when he's back at a computer.
+
+1. **`tools/dashboard/ghl_mirror.py`** (new) — Step 1 groundwork from
+   `GHL_REPLACEMENT_ANALYSIS.md` §7/§8: a read-only mirror of GHL
+   contacts/opportunities/tags/appointments into `dashboard.db`, alongside
+   `sync.py`'s existing Sheet mirror. Nothing writes to GHL. Deliberately
+   NOT scheduled on any cron yet — `main()` refuses to run without
+   `GHL_API_TOKEN`/`GHL_LOCATION_ID` set, and a `--dry-run` mode fetches
+   and counts without writing. Records opportunity stage-CHANGES going
+   forward (`ghl_opportunity_stage_history`) — the one thing GHL itself
+   doesn't retain — but only from whenever this importer first sees a
+   given opportunity, never retroactively. Field names are the ones this
+   project's own Apps Script GHL integration already confirmed live
+   (`Phase9/13/14/15_*.gs`); a few (contact email/phone/source,
+   opportunity contactId/status) are marked UNVERIFIED in comments since
+   no existing phase has actually read them from this account yet — the
+   first real `--dry-run` is the verification step, not a silent
+   assumption. 10 new tests, `tools/dashboard/tests/test_ghl_mirror.py`,
+   341 passing / 0 failing (whole dashboard suite). **Setup before first
+   real run**: a GHL Private Integration token with `contacts.readonly` +
+   `opportunities.readonly` scopes, `GHL_LOCATION_ID`, both as env vars on
+   the VPS (or `tools/dashboard/.env`) — nothing to do on the Apps Script
+   side for this piece.
+2. **Lead Confirmation reminders (Phase 3) — reviewed, not rebuilt.**
+   Already fully built and tested (`findUpcomingDiscoveryCallsForRep_`,
+   `buildLeadConfirmationReminderEmail_`, `sendUpcomingLeadConfirmationReminders_`,
+   15 existing test references) — reminds a rep ~24h before a Discovery
+   call to confirm the lead will actually show, tracked via a real "Lead
+   Confirmation Reminders Sent" tab so it's idempotent hourly. **Could not
+   run a live preview from this sandbox** — `previewUpcomingLeadConfirmationReminders()`
+   needs a real Calendar via Apps Script, which this session has no access
+   to. Ready to flip whenever Kris wants: `previewUpcomingLeadConfirmationReminders()`
+   first, confirm the output, flip `LEAD_CONFIRMATION_CONFIG.ENABLED`, run
+   `installAllReadyTriggers()` — see the cap warning below first.
+3. **Trigger-cap audit.** Confirmed live (Kris's Triggers-page screenshot,
+   same session): the project is at Apps Script's real 20-trigger cap,
+   zero headroom, after today's Phase 8 consolidation + Phase 20 rollout.
+   Inbox SLA / No-show follow-up / Lead Confirmation reminders are all
+   built the same "the trigger always runs, ENABLED only gates the SEND"
+   way Phase 8 was — but unlike Phase 8, none of their triggers need
+   migrating right now, so `installAllReadyTriggers_`'s current
+   ENABLED-gated install for these three was deliberately left alone:
+   forcing them to always-install now would add up to 3 new triggers
+   immediately and blow the cap again for zero benefit. **Real, free win
+   sitting there right now**: `runInboxSlaCheck`'s trigger already exists
+   on the live project from before Kris disabled it (10/09/2026) and,
+   since `ENABLED` is false, it fires daily doing nothing but logging —
+   deleting that one trigger by hand (Apps Script editor → Triggers)
+   frees 1 slot at zero feature cost, since it isn't sending anything
+   either way right now. Flipping any ONE of the three disabled phases on
+   will cost exactly 1 more trigger slot each (2 if both Inbox SLA and
+   No-show follow-up go on together, since they're separate installers)
+   — there is no slack for more than that without another consolidation
+   first.
+
+---
+
 ## Built this session — Bens lead status report (11/09/2026)
 
 Kris's ask, from a Slack screenshot: Bens asked Tomás for visibility into
