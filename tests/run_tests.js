@@ -12710,3 +12710,123 @@ test('installAllReadyTriggers_ sweeps orphan triggers BEFORE attempting any inst
     gas.installAutomation = originalInstallAutomation;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8 — reply tracker trigger consolidation (11/09/2026, real cap hit)
+// ---------------------------------------------------------------------------
+
+test('duePhase8Passes_ always includes classifyNewReplies regardless of hour', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const names = gas.duePhase8Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, 3, 0, 0), 'America/New_York').map((p) => p.name);
+  assert.ok(names.indexOf('classifyNewReplies') !== -1);
+});
+
+test('duePhase8Passes_ includes sendReplyMetricsReport_ only within its own trigger-hour window', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  const hour = gas.REPLY_TRACKER_CONFIG.DAILY_TRIGGER_HOUR;
+  const inWindow = gas.duePhase8Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, hour, 0, 0), tz).map((p) => p.name);
+  const outOfWindow = gas.duePhase8Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 1, 1, (hour + 12) % 24, 0, 0), tz).map((p) => p.name);
+  assert.ok(inWindow.indexOf('sendReplyMetricsReport_') !== -1);
+  assert.ok(outOfWindow.indexOf('sendReplyMetricsReport_') === -1);
+});
+
+test('runPhase8ReplyTrackerStandingChecks_ calls only the due passes and isolates one pass throwing from the others', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const originalDue = gas.duePhase8Passes_;
+  const originalAlert = gas.sendOpsAlert_;
+  const calls = [];
+  const alerts = [];
+  gas.sendOpsAlert_ = (subject) => alerts.push(subject);
+  gas.duePhase8Passes_ = () => ([
+    { name: 'passA', fn: () => calls.push('passA') },
+    { name: 'passB', fn: () => { throw new Error('boom'); } }
+  ]);
+  try {
+    gas.runPhase8ReplyTrackerStandingChecks_();
+    assert.deepEqual(calls, ['passA']);
+    assert.deepEqual(alerts, ['Standing check error: passB']);
+  } finally {
+    gas.duePhase8Passes_ = originalDue;
+    gas.sendOpsAlert_ = originalAlert;
+  }
+});
+
+test('installReplyTrackerTriggers installs ONE every-4h trigger, sweeping any old classifyNewReplies/sendReplyMetricsReport_ triggers from before the consolidation', () => {
+  const deleted = [];
+  let createdConfig = null;
+  const fakeTriggerBuilder = {
+    timeBased: () => fakeTriggerBuilder,
+    everyHours: (h) => { createdConfig = { everyHours: h }; return fakeTriggerBuilder; },
+    create: () => { createdConfig.created = true; }
+  };
+  const oldTrigger1 = { getHandlerFunction: () => 'classifyNewReplies' };
+  const oldTrigger2 = { getHandlerFunction: () => 'sendReplyMetricsReport_' };
+  const unrelatedTrigger = { getHandlerFunction: () => 'someOtherTrigger' };
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = {
+    getProjectTriggers: () => [oldTrigger1, oldTrigger2, unrelatedTrigger],
+    deleteTrigger: (t) => deleted.push(t),
+    newTrigger: () => fakeTriggerBuilder
+  };
+  try {
+    gas.installReplyTrackerTriggers();
+    assert.deepEqual(deleted, [oldTrigger1, oldTrigger2]);
+    assert.equal(createdConfig.everyHours, 4);
+    assert.equal(createdConfig.created, true);
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('STANDING_AUTOMATION_HANDLERS_ recognizes runPhase8ReplyTrackerStandingChecks_ and no longer separately recognizes classifyNewReplies/sendReplyMetricsReport_ (11/09/2026 consolidation -- either gap would mean installAllReadyTriggers_ sweeps the wrong thing as an orphan)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPhase8ReplyTrackerStandingChecks_') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('classifyNewReplies') === -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('sendReplyMetricsReport_') === -1);
+});
+
+test('installAllReadyTriggers_ installs the Phase 8 reply tracker trigger even when REPLY_TRACKER_CONFIG.ENABLED is false, since the classify pass runs regardless of that flag (real gap found live 11/09/2026: this used to be gated on ENABLED, so a fresh/full re-run with the flag false -- its actual current state -- would never install or migrate this trigger at all)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalInstallAutomation = gas.installAutomation;
+  const originalInstallPhase2Trigger = gas.installPhase2Trigger;
+  const originalInstallSean = gas.installSeanScoringAutomation;
+  const originalInstallTomas = gas.installTomasScoringAutomation;
+  const originalInstallJoana = gas.installJoanaScoringAutomation;
+  const originalInstallBens = gas.installBensScoringAutomation;
+  const configFlags = ['HANDOFF_CONFIG', 'INBOX_SLA_CONFIG', 'WEEKLY_SCORECARD_CONFIG', 'TRAINING_REVIEW_CONFIG',
+    'TOMAS_TRANSCRIPT_REMINDER_CONFIG', 'DAILY_PRACTICE_CONFIG', 'RANDOM_CALIBRATION_CONFIG', 'REPLY_TRACKER_CONFIG',
+    'PLAYBOOK_REVIEW_CONFIG', 'WEEKLY_TRAINING_SUMMARY_CONFIG', 'GHL_CONFIG'];
+  const originalEnabled = {};
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_([]);
+    gas.installAutomation = () => {};
+    gas.installPhase2Trigger = () => {};
+    gas.installSeanScoringAutomation = () => {};
+    gas.installTomasScoringAutomation = () => {};
+    gas.installJoanaScoringAutomation = () => {};
+    gas.installBensScoringAutomation = () => {};
+    configFlags.forEach((name) => { originalEnabled[name] = gas[name].ENABLED; gas[name].ENABLED = false; });
+
+    const originalLog = gas.Logger.log;
+    const lines = [];
+    gas.Logger.log = (msg) => lines.push(msg);
+    try {
+      gas.installAllReadyTriggers_();
+    } finally {
+      gas.Logger.log = originalLog;
+    }
+
+    const remainingHandlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.ok(remainingHandlers.indexOf('runPhase8ReplyTrackerStandingChecks_') !== -1,
+      'the reply tracker trigger must be installed even with REPLY_TRACKER_CONFIG.ENABLED false');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.installAutomation = originalInstallAutomation;
+    gas.installPhase2Trigger = originalInstallPhase2Trigger;
+    gas.installSeanScoringAutomation = originalInstallSean;
+    gas.installTomasScoringAutomation = originalInstallTomas;
+    gas.installJoanaScoringAutomation = originalInstallJoana;
+    gas.installBensScoringAutomation = originalInstallBens;
+    configFlags.forEach((name) => { gas[name].ENABLED = originalEnabled[name]; });
+  }
+});

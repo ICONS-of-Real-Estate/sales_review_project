@@ -725,17 +725,64 @@ function sendReplyMetricsReport_() {
   log_('Sent daily reply tracker report.');
 }
 
+/**
+ * Which of Phase 8's two passes are due this firing of the shared every-4h
+ * trigger below — pure (given `now`), same "isolate the day/hour gating so
+ * it's testable without faking a trigger" shape as duePhase17To19Passes_
+ * (Phase17_SeanFollowUpAutomation.gs). classifyNewReplies has no extra
+ * gate — every firing IS its real cadence, same as that file's Cadence 1.
+ * sendReplyMetricsReport_ only needs an hour-window match, not a day match
+ * (it already refuses to send on a weekend internally) — isWithinHourWindow_'s
+ * window is 4h wide, matching this trigger's own ~4h firing interval, so
+ * one firing is guaranteed to land in it (same reasoning as that file's own
+ * header comment on window width vs. trigger interval).
+ */
+function duePhase8Passes_(now, tz) {
+  var passes = [
+    { name: 'classifyNewReplies', fn: classifyNewReplies, due: true },
+    {
+      name: 'sendReplyMetricsReport_', fn: sendReplyMetricsReport_,
+      due: isWithinHourWindow_(now, tz, REPLY_TRACKER_CONFIG.DAILY_TRIGGER_HOUR, 4)
+    }
+  ];
+  return passes.filter(function (p) { return p.due; });
+}
+
+/**
+ * Trigger target for both Phase 8 passes, sharing ONE every-4h trigger
+ * instead of two separate ones — trigger-cap consolidation, 11/09/2026 (the
+ * project hit Apps Script's 20-trigger cap again, this time for real, with
+ * every one of the 20 legitimately in use — see Phase20_BensLeadStatusReport.gs's
+ * own note on how that was confirmed live). classifyNewReplies and
+ * sendReplyMetricsReport_ are still real, manually-callable functions; they
+ * just no longer each have their own standing trigger.
+ */
+function runPhase8ReplyTrackerStandingChecks_() {
+  RUN_TAG = 'runPhase8ReplyTrackerStandingChecks_';
+  duePhase8Passes_(new Date(), CONFIG.BUSINESS_TIMEZONE).forEach(function (pass) {
+    try {
+      pass.fn();
+    } catch (e) {
+      log_('runPhase8ReplyTrackerStandingChecks_: ' + pass.name + ' threw: ' + e + ' -- continuing to the next pass.');
+      sendOpsAlert_('Standing check error: ' + pass.name, String(e));
+    }
+  });
+}
+
 /** ONE-TIME setup — run once from the Apps Script editor. */
 function installReplyTrackerTriggers() {
   RUN_TAG = 'installReplyTrackerTriggers';
-  reinstallHourlyTrigger_('classifyNewReplies', 4);
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'sendReplyMetricsReport_') ScriptApp.deleteTrigger(t);
+  // Old individual triggers (pre-11/09/2026 consolidation) swept here too,
+  // in case this runs on a project that still has them from before.
+  ['classifyNewReplies', 'sendReplyMetricsReport_'].forEach(function (handler) {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
+    });
   });
-  ScriptApp.newTrigger('sendReplyMetricsReport_')
-    .timeBased().everyDays(1).atHour(REPLY_TRACKER_CONFIG.DAILY_TRIGGER_HOUR).inTimezone(CONFIG.BUSINESS_TIMEZONE).create();
-  log_('Reply tracker installed: classifyNewReplies() every 4h, sendReplyMetricsReport_() daily at ' +
-    REPLY_TRACKER_CONFIG.DAILY_TRIGGER_HOUR + ':00 ' + CONFIG.BUSINESS_TIMEZONE + '. ENABLED is currently ' +
-    REPLY_TRACKER_CONFIG.ENABLED + ' — while false the report logs would be skipped (send only), but classification ' +
-    'and logging run regardless.');
+  reinstallHourlyTrigger_('runPhase8ReplyTrackerStandingChecks_', 4);
+  log_('Reply tracker installed: ONE every-4h trigger running both classifyNewReplies() (every firing) and ' +
+    'sendReplyMetricsReport_() (only within its own ' + REPLY_TRACKER_CONFIG.DAILY_TRIGGER_HOUR +
+    ':00 ' + CONFIG.BUSINESS_TIMEZONE + ' hour window) — was two separate triggers before 11/09/2026\'s ' +
+    'consolidation. ENABLED is currently ' + REPLY_TRACKER_CONFIG.ENABLED + ' — while false the report logs ' +
+    'would be skipped (send only), but classification and logging run regardless.');
 }

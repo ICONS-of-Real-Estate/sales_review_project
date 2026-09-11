@@ -4710,7 +4710,13 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
-  'classifyNewReplies', 'sendReplyMetricsReport_',                         // Phase 8
+  // Phase 8 — consolidated 11/09/2026 onto ONE every-4h trigger (trigger-cap
+  // hit for real; see runPhase8ReplyTrackerStandingChecks_'s own header,
+  // Phase8_ReplyTracker.gs). classifyNewReplies/sendReplyMetricsReport_ are
+  // still real, manually-callable functions — deliberately NOT listed here
+  // any more, so the orphan sweep clears any leftover trigger still
+  // pointing at the old two-trigger setup.
+  'runPhase8ReplyTrackerStandingChecks_',                                  // Phase 8
   'syncGhlEmailAndDisposition_',                                           // Phase 9
   'runBensPodcastSync_',                                                   // Phase 11
   'runGhlNoteSync_',                                                       // Phase 12
@@ -4893,13 +4899,16 @@ function installAllReadyTriggers_() {
       'See QA_COACHING_RESEARCH_REPORT.md §1.1.');
   }
 
-  if (typeof REPLY_TRACKER_CONFIG !== 'undefined' && REPLY_TRACKER_CONFIG.ENABLED) {
-    installReplyTrackerTriggers();
-    installed.push('Phase 8: reply tracker');
-  } else {
-    skipped.push('Phase 8 (reply tracker) — REPLY_TRACKER_CONFIG.ENABLED is false. Run ' +
-      'previewReplyClassification() + previewReplyMetricsReport() first, then flip ENABLED and re-run this.');
-  }
+  // Real gap found live (11/09/2026): this used to gate on ENABLED like
+  // every other phase, but REPLY_TRACKER_CONFIG.ENABLED only ever gated the
+  // daily report EMAIL (its own header comment, Phase8_ReplyTracker.gs) —
+  // classifyNewReplies runs regardless. Gating on ENABLED here meant a
+  // fresh/full re-run with the flag false (its actual current state, since
+  // 09/09/2026) would never install or migrate this trigger at all. Always
+  // install, same as Phase 1/2 above, which have no live-send gate either.
+  installReplyTrackerTriggers();
+  installed.push('Phase 8: reply tracker (classify pass always runs; report email gated by ' +
+    'REPLY_TRACKER_CONFIG.ENABLED, currently ' + REPLY_TRACKER_CONFIG.ENABLED + ')');
 
   // Same gap as Phase 1/5's manually-installed triggers above.
   if (typeof GHL_CONFIG !== 'undefined' && GHL_CONFIG.ENABLED) {
