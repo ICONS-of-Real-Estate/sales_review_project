@@ -403,6 +403,12 @@ def main():
         "--dry-run", action="store_true",
         help="Fetch and print counts only -- writes nothing to dashboard.db.",
     )
+    parser.add_argument(
+        "--inspect", action="store_true",
+        help="Fetch just ONE page of contacts and opportunities and pretty-print the first raw "
+             "record of each -- diagnostic for confirming real field names against this account's "
+             "actual API response shape, without doing a full 65k+ fetch. Writes nothing.",
+    )
     args = parser.parse_args()
 
     if not GHL_API_TOKEN or not GHL_LOCATION_ID:
@@ -416,6 +422,29 @@ def main():
     synced_at = datetime.now(timezone.utc).isoformat()
     client = _ghl_client()
     try:
+        if args.inspect:
+            import json as _json
+            resp = client.get("/contacts/", params={"locationId": GHL_LOCATION_ID, "limit": 1})
+            resp.raise_for_status()
+            body = resp.json()
+            contacts_page = body.get("contacts") or body.get("data") or []
+            print("=== raw /contacts/ response top-level keys ===")
+            print(list(body.keys()))
+            print("=== raw first contact record ===")
+            print(_json.dumps(contacts_page[0] if contacts_page else {}, indent=2, default=str))
+
+            opp_resp = client.get(
+                "/opportunities/search",
+                params={"location_id": GHL_LOCATION_ID, "limit": 1, "page": 1},
+            )
+            opp_resp.raise_for_status()
+            opp_body = opp_resp.json()
+            opps_page = opp_body.get("opportunities") or opp_body.get("data") or []
+            print("=== raw /opportunities/search response top-level keys ===")
+            print(list(opp_body.keys()))
+            print("=== raw first opportunity record ===")
+            print(_json.dumps(opps_page[0] if opps_page else {}, indent=2, default=str))
+            return
         if args.dry_run:
             raw_contacts = fetch_all_contacts(client, GHL_LOCATION_ID)
             raw_opps = fetch_all_opportunities(client, GHL_LOCATION_ID)
