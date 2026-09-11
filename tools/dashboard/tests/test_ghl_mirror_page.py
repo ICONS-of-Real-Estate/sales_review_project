@@ -46,17 +46,21 @@ class TestGhlMirrorContactsQuery:
         assert c["opportunity"]["pipeline_stage_name"] == "Closed Won", "must pick the MOST RECENT opportunity by date_updated"
 
     def test_contact_with_no_opportunity_shows_none_not_a_crash(self, conn):
+        # include_old=True: a contact with no opportunity at all is exactly
+        # what the default filter now hides (see TestGhlMirrorRegressions'
+        # own tests for that) -- this test is only about the render/shape
+        # when one is force-shown, not about the filter itself.
         _seed_contact(conn, "c1", "No Opp Guy", "noopp@example.com")
-        results = app_module.ghl_mirror_contacts()
+        results = app_module.ghl_mirror_contacts(include_old=True)
         assert results[0]["opportunity"] is None
 
     def test_search_filters_by_name_or_email(self, conn):
         _seed_contact(conn, "c1", "Jane Doe", "jane@example.com")
         _seed_contact(conn, "c2", "John Smith", "john@otherdomain.com")
-        results = app_module.ghl_mirror_contacts(search="jane")
+        results = app_module.ghl_mirror_contacts(search="jane", include_old=True)
         assert [c["name"] for c in results] == ["Jane Doe"]
 
-        results = app_module.ghl_mirror_contacts(search="otherdomain")
+        results = app_module.ghl_mirror_contacts(search="otherdomain", include_old=True)
         assert [c["name"] for c in results] == ["John Smith"]
 
 
@@ -105,7 +109,7 @@ class TestGhlMirrorRegressions:
 
     def test_tag_containing_a_comma_is_not_split_into_two_tags(self, conn):
         _seed_contact(conn, "c1", "Jane Doe", "jane@example.com", tags=["high value, referral"])
-        results = app_module.ghl_mirror_contacts()
+        results = app_module.ghl_mirror_contacts(include_old=True)
         assert results[0]["tags"] == ["high value, referral"]
 
     def test_freshness_survives_a_null_sync_meta_value(self, conn):
@@ -124,7 +128,7 @@ class TestGhlMirrorRegressions:
     def test_contacts_are_capped_at_the_limit(self, conn):
         for i in range(5):
             _seed_contact(conn, f"c{i}", f"Person {i}", f"p{i}@example.com")
-        assert len(app_module.ghl_mirror_contacts(limit=3)) == 3
+        assert len(app_module.ghl_mirror_contacts(limit=3, include_old=True)) == 3
 
     def test_blank_name_contacts_sort_to_the_end_not_the_start(self, conn):
         # Real bug, confirmed live (11/09/2026): thousands of genuinely
@@ -134,7 +138,7 @@ class TestGhlMirrorRegressions:
         _seed_contact(conn, "c1", "", "noname@example.com")
         _seed_contact(conn, "c2", "Zach Zebra", "zach@example.com")
         _seed_contact(conn, "c3", "Amy Apple", "amy@example.com")
-        results = app_module.ghl_mirror_contacts()
+        results = app_module.ghl_mirror_contacts(include_old=True)
         names = [c["name"] for c in results]
         assert names == ["Amy Apple", "Zach Zebra", ""], \
             "real-named contacts must sort before the blank-name one, not after"
@@ -143,18 +147,39 @@ class TestGhlMirrorRegressions:
         # Kris's own call, 11/09/2026, looking at the real synced data:
         # "anything older than a year is probably garbage." Default view
         # must hide a contact whose most recent touch is older than
-        # GHL_MIRROR_STALE_DAYS; include_old=True must show it again.
+        # GHL_MIRROR_STALE_DAYS; include_old=True must show it again. Both
+        # contacts get a real opportunity so this isolates the DATE check
+        # specifically, not the separate "has no opportunity at all" check.
         from datetime import datetime, timedelta, timezone
         old_date = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
         recent_date = datetime.now(timezone.utc).isoformat()
         _seed_contact(conn, "old1", "Old Stale Guy", "old@example.com", date_added=old_date)
         _seed_contact(conn, "new1", "Fresh New Guy", "new@example.com", date_added=recent_date)
+        _seed_opportunity(conn, "o1", "old1", "Booked", 0, old_date)
+        _seed_opportunity(conn, "o2", "new1", "Booked", 0, recent_date)
 
         default_results = app_module.ghl_mirror_contacts()
         assert [c["name"] for c in default_results] == ["Fresh New Guy"]
 
         all_results = app_module.ghl_mirror_contacts(include_old=True)
         assert {c["name"] for c in all_results} == {"Fresh New Guy", "Old Stale Guy"}
+
+    def test_contacts_with_no_opportunity_at_all_are_hidden_by_default(self, conn):
+        # Kris's own read of the real data, 11/09/2026: company names and
+        # cold-outreach-tagged contacts ("denise - ...", "terri lam title")
+        # with NO opportunity at all are almost certainly a separate
+        # prospecting list living in the same GHL account, not real
+        # coaching leads -- even with a perfectly fresh date_added.
+        recent_date = datetime.now(timezone.utc).isoformat()
+        _seed_contact(conn, "noopp1", "AAA Insurance", "noopp@example.com", date_added=recent_date)
+        _seed_contact(conn, "hasopp1", "Real Lead", "real@example.com", date_added=recent_date)
+        _seed_opportunity(conn, "o1", "hasopp1", "Booked", 0, recent_date)
+
+        default_results = app_module.ghl_mirror_contacts()
+        assert [c["name"] for c in default_results] == ["Real Lead"]
+
+        all_results = app_module.ghl_mirror_contacts(include_old=True)
+        assert {c["name"] for c in all_results} == {"Real Lead", "AAA Insurance"}
 
     def test_stale_count_matches_what_the_default_view_hides(self, conn):
         from datetime import datetime, timedelta, timezone

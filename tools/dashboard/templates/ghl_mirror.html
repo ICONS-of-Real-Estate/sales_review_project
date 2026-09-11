@@ -34,13 +34,15 @@
 
 {% if stale_hidden_count %}
 <p class="muted" style="max-width: 640px;">
-  {{ stale_hidden_count }} contact{{ "s" if stale_hidden_count != 1 else "" }} not touched in over {{ (stale_days / 365) | round(1) }} year{{ "s" if stale_days != 365 else "" }}
-  {{ "matching this search " if search else "" }}hidden by default (Kris's call, 11/09/2026 — most of this account is stale).
+  {{ stale_hidden_count }} contact{{ "s" if stale_hidden_count != 1 else "" }}{{ " matching this search" if search else "" }}
+  hidden by default — no real opportunity ever, or not touched in over {{ (stale_days / 365) | round(1) }} year{{ "s" if stale_days != 365 else "" }}.
+  Most of these look like a separate cold-outreach list living in the same GHL account, not real coaching leads.
   <a href="/ghl-mirror?{{ 'search=' + (search | urlencode) + '&' if search }}include_old=true">Show them too</a>.
 </p>
 {% elif include_old %}
 <p class="muted" style="max-width: 640px;">
-  Showing stale contacts too. <a href="/ghl-mirror{{ '?search=' + (search | urlencode) if search }}">Hide contacts older than a year</a>.
+  Showing everyone, including contacts with no opportunity or no recent activity.
+  <a href="/ghl-mirror{{ '?search=' + (search | urlencode) if search }}">Hide those again</a>.
 </p>
 {% endif %}
 

@@ -209,13 +209,17 @@ def ghl_mirror_contacts(search="", limit=200, include_old=False):
     sorted to the END instead, so the default (unsearched) view actually
     shows real contacts.
 
-    Second real finding, same day, looking at that fixed view: most of
-    what's left is years-old stale/imported leads (a "reengagement ghl
-    april 26 import" tag on one of them), not current activity. Kris's
-    own call: "anything older than a year is probably garbage." Default
-    view now hides a contact whose OWN most recent touch (max of its
-    date_added/date_updated -- not the opportunity's, which is tracked
-    separately) is older than GHL_MIRROR_STALE_DAYS, unless
+    Second real finding, same day, looking at that fixed view: the age
+    filter below (still applied) wasn't the real signal -- Kris's own read
+    of a full real page: the junk (business names like "aaa insurance",
+    and individuals tagged "denise - ...", "haley - ...", "terri lam
+    title", "jeannie lam lawyer") is almost certainly a SEPARATE
+    cold-outreach/prospecting campaign living in the same GHL account, not
+    old-but-real coaching leads. The actual discriminator, confirmed
+    against his own pasted data: every one of those junk rows has NO
+    opportunity at all, while every real ICONS lead (booked/no-show/
+    closed/podcast-recorded) has one. Default view now also requires the
+    contact to have at least one real opportunity, unless
     `include_old=True` -- never silently drops data, just defaults it out
     of the way, same as every other "no signal != delete it" convention
     in this project.
@@ -233,6 +237,7 @@ def ghl_mirror_contacts(search="", limit=200, include_old=False):
             stale_cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=GHL_MIRROR_STALE_DAYS)).isoformat()
             conditions.append("MAX(COALESCE(c.date_added, ''), COALESCE(c.date_updated, '')) >= ?")
             params.append(stale_cutoff_iso)
+            conditions.append("EXISTS (SELECT 1 FROM ghl_opportunities o WHERE o.contact_ghl_id = c.ghl_id)")
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         contact_rows = conn.execute(
             f"""
@@ -292,9 +297,10 @@ def ghl_mirror_contacts(search="", limit=200, include_old=False):
 
 def ghl_mirror_stale_count(search=""):
     """How many contacts matching `search` are hidden by ghl_mirror_contacts()'s
-    default staleness filter -- for the "N older contact(s) hidden, show them"
-    banner. Separate query rather than reusing ghl_mirror_contacts() itself,
-    since that one applies `limit` and would undercount past the cap."""
+    default filter (stale by date OR no real opportunity ever) -- for the
+    "N contact(s) hidden, show them" banner. Separate query rather than
+    reusing ghl_mirror_contacts() itself, since that one applies `limit`
+    and would undercount past the cap."""
     conn = get_conn()
     try:
         conditions = []
@@ -304,7 +310,10 @@ def ghl_mirror_stale_count(search=""):
             like = f"%{_escape_like(search)}%"
             params += [like, like]
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=GHL_MIRROR_STALE_DAYS)).isoformat()
-        conditions.append("MAX(COALESCE(date_added, ''), COALESCE(date_updated, '')) < ?")
+        conditions.append(
+            "(MAX(COALESCE(date_added, ''), COALESCE(date_updated, '')) < ? "
+            "OR NOT EXISTS (SELECT 1 FROM ghl_opportunities o WHERE o.contact_ghl_id = ghl_contacts.ghl_id))"
+        )
         params.append(cutoff_iso)
         where = "WHERE " + " AND ".join(conditions)
         row = conn.execute(f"SELECT COUNT(*) AS n FROM ghl_contacts {where}", params).fetchone()
