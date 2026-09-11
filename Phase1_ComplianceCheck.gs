@@ -3712,13 +3712,36 @@ function runBensWeeklyPlaybookReviewFinal() {
 }
 
 /**
- * Friday's "move your recordings into Drive" reminder to the reps.
+ * Every rep/closer's own manual tracker sheet Kris has confirmed exists, for
+ * the tracker half of sendRepRecordingsReminder_ below. Deliberately only
+ * the ones actually on file — Sean has no known tracker of his own (nothing
+ * in CLAUDE.md/HANDOFF.md names one), so he's left out rather than guessed
+ * at; adding a real one for him just means adding an entry here.
+ */
+var REP_TRACKER_SHEETS_ = {
+  Bens: { label: '"Icons Podcast Recordings" tab', url: 'https://docs.google.com/spreadsheets/d/' + SALES_CALL_LOG_SPREADSHEET_ID + '/edit' },
+  Joana: { label: 'Joana Sales Tracker', url: 'https://docs.google.com/spreadsheets/d/14VS-se3Cc9jiPYlVex-5MX69ATmwSHhf0xPd6eAEiY0/edit' },
+  Tomás: { label: 'Tomas Sales Tracker', url: 'https://docs.google.com/spreadsheets/d/1SWh26GYP2G4wojtVcKgwyW9PDZcpfAuq5hbH7P8FC7o/edit' }
+};
+
+/**
+ * Friday's "move your recordings into Drive, and keep your tracker current"
+ * reminder to the reps.
  *
- * Tomás, on the Joana training call (08/09/2026), after Bens turned up with
- * no training material at all for the week: "he didn't have the recordings,
- * so maybe he didn't pass them over from Riverside to Google Drive, so it
- * would be nice to have, like, a reminder as well, like, upload your
- * recordings. And you can have this on Friday, for example."
+ * Recordings half — Tomás, on the Joana training call (08/09/2026), after
+ * Bens turned up with no training material at all for the week: "he didn't
+ * have the recordings, so maybe he didn't pass them over from Riverside to
+ * Google Drive, so it would be nice to have, like, a reminder as well, like,
+ * upload your recordings. And you can have this on Friday, for example."
+ *
+ * Tracker half added 11/09/2026, same request from Tomás, same email thread
+ * ("Bens — no flagged calls last week"): "We should have a reminder, perhaps
+ * on Friday, to have people make sure tracker and uploads are on track."
+ * Rides this SAME Friday reminder rather than a new one on purpose — the
+ * project is at Apps Script's 20-trigger cap (see HANDOFF.md, 11/09/2026),
+ * and this is already the Friday-to-reps reminder Tomás's own "uploads"
+ * half describes, so the "tracker" half belongs in the same email, not a
+ * second one competing for a trigger slot that doesn't exist.
  *
  * Deliberately NOT the same thing as sendTomasTranscriptReminder_
  * (Phase6_TrainingCallReview.gs), which nags TOMÁS to upload the TRAINING
@@ -3732,7 +3755,7 @@ function runBensWeeklyPlaybookReviewFinal() {
  * whatever actually made it into Drive.
  */
 function sendRepRecordingsReminder_() {
-  var subject = 'Friday check: are this week\'s call recordings in Drive?';
+  var subject = 'Friday check: recordings uploaded, tracker up to date?';
   var intro = 'Quick end-of-week check — any call recording still sitting in Riverside (or anywhere ' +
     'other than your Drive folder) is invisible to the review system. It can\'t be transcribed, it ' +
     'can\'t be scored, and it won\'t show up in Tuesday\'s training material.\n\n' +
@@ -3740,7 +3763,13 @@ function sendRepRecordingsReminder_() {
   var folders = Object.keys(TRAINING_REVIEW_CONFIG.FOLDERS).map(function (rep) {
     return rep + ': https://drive.google.com/drive/folders/' + TRAINING_REVIEW_CONFIG.FOLDERS[rep];
   }).join('\n');
-  var body = intro + folders + '\n\n— Automated Friday reminder. Reply to Kris with any issues.';
+  var trackerIntro = '\n\nAlso — please make sure your own tracker is up to date for the week ' +
+    '(Tomás\'s ask): every lead you\'ve touched, current status, current stage.\n\n';
+  var trackers = Object.keys(REP_TRACKER_SHEETS_).map(function (rep) {
+    var t = REP_TRACKER_SHEETS_[rep];
+    return rep + ' (' + t.label + '): ' + t.url;
+  }).join('\n');
+  var body = intro + folders + trackerIntro + trackers + '\n\n— Automated Friday reminder. Reply to Kris with any issues.';
 
   var to = CONFIG.REPS.map(function (r) { return r.email; }).filter(Boolean).join(',');
   return guardedSend_(to, subject, body, {

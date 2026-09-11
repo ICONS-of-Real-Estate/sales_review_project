@@ -12830,3 +12830,26 @@ test('installAllReadyTriggers_ installs the Phase 8 reply tracker trigger even w
     configFlags.forEach((name) => { gas[name].ENABLED = originalEnabled[name]; });
   }
 });
+
+test('sendRepRecordingsReminder_ includes a tracker-check reminder alongside the recordings check (Tomás\'s ask, 11/09/2026: "make sure tracker and uploads are on track" -- rides the existing Friday trigger rather than a new one, since the project is at the 20-trigger cap)', () => {
+  const sentEmails = [];
+  const originalSend = gas.MailApp.sendEmail;
+  const originalAudit = gas.auditConfig_;
+  const originalQuota = gas.MailApp.getRemainingDailyQuota;
+  gas.MailApp.sendEmail = (to, subject, body, options) => sentEmails.push({ to, subject, body, options });
+  gas.auditConfig_ = () => ({ ok: true });
+  gas.MailApp.getRemainingDailyQuota = () => 100;
+  try {
+    gas.sendRepRecordingsReminder_();
+    assert.equal(sentEmails.length, 1);
+    const body = sentEmails[0].body;
+    assert.ok(body.indexOf('tracker') !== -1, 'body must mention the tracker check');
+    assert.ok(body.indexOf('Icons Podcast Recordings') !== -1, "Bens's tracker must be named");
+    assert.ok(body.indexOf('14VS-se3Cc9jiPYlVex-5MX69ATmwSHhf0xPd6eAEiY0') !== -1, "Joana's tracker sheet must be linked");
+    assert.ok(body.indexOf('1SWh26GYP2G4wojtVcKgwyW9PDZcpfAuq5hbH7P8FC7o') !== -1, "Tomás's tracker sheet must be linked");
+  } finally {
+    gas.MailApp.sendEmail = originalSend;
+    gas.auditConfig_ = originalAudit;
+    gas.MailApp.getRemainingDailyQuota = originalQuota;
+  }
+});
