@@ -6664,6 +6664,152 @@ test('computeGhlSyncFixes_ stops at the time budget and reports a partial scan, 
 });
 
 // ---------------------------------------------------------------------------
+// GHL Match Status stamping — real bug found live 11/09/2026 (Kris ran
+// syncGhlEmailAndDisposition() many times in a row, each scanning hundreds
+// of rows and finding zero fixes): an ambiguous/no-match/nothing-to-
+// backfill row was left completely blank forever, so every run re-spent
+// API calls re-scanning the exact same dead rows in the same sheet order,
+// and could burn the whole time budget on that cluster without ever
+// reaching fresh rows further down.
+// ---------------------------------------------------------------------------
+
+test('computeGhlSyncFixes_ stamps GHL Match Status for a no-match row, so a future run skips it instead of re-querying GHL forever', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Nobody Found', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.statusStamps.length, 1);
+  assert.equal(result.statusStamps[0].row, 2);
+  assert.ok(result.statusStamps[0].status.indexOf('No GHL match') === 0);
+});
+
+test('computeGhlSyncFixes_ stamps GHL Match Status for an ambiguous row, naming the candidate count', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Nicole Freed', Rep: 'Bens', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Nicole Freed' }, { id: 'c2', name: 'Nicole Freed' }] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.statusStamps.length, 1);
+  assert.ok(result.statusStamps[0].status.indexOf('Ambiguous') === 0);
+  assert.ok(result.statusStamps[0].status.indexOf('2 candidates') !== -1);
+});
+
+test('computeGhlSyncFixes_ stamps GHL Match Status for a confident match with nothing left to backfill (contact has no email, no opportunities)', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Empty Contact', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Empty Contact', email: '' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.fixes.length, 0, 'nothing was actually fixed this run');
+  assert.equal(result.statusStamps.length, 1, 'but the row must still be stamped so it is not re-scanned forever');
+  assert.ok(result.statusStamps[0].status.indexOf('Matched') === 0);
+  assert.ok(result.statusStamps[0].status.indexOf('nothing further to backfill') !== -1);
+});
+
+test('computeGhlSyncFixes_ stamps GHL Match Status when a disposition conflict leaves the row incomplete, naming the conflict specifically', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Conflicted Contact', Rep: 'Sean', 'Prospect Email': 'x@x.com', 'Outcome Disposition': '' })
+  ];
+  const stageLookup = {
+    'closed-won': { pipelineName: 'SALES CALL pipeline', stageName: 'Closed Won', disposition: 'Sold' },
+    'no-show': { pipelineName: 'Cold Calling 2', stageName: 'No Show', disposition: 'No-show' }
+  };
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [{ id: 'c1', name: 'Conflicted Contact' }] }),
+    ghlListOpportunitiesForContact_: () => ({ ok: true, opportunities: [{ pipelineStageId: 'closed-won' }, { pipelineStageId: 'no-show' }] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', stageLookup));
+  assert.equal(result.statusStamps.length, 1);
+  assert.ok(result.statusStamps[0].status.indexOf('disagree on outcome') !== -1);
+});
+
+test('computeGhlSyncFixes_ does NOT stamp a search failure — it is treated as transient and must be retried on the next run, unlike a genuine no-match/ambiguous result', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Transient Failure', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => ({ ok: false, status: 500, body: 'server error', contacts: [] })
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(result.stats.searchFailed, 1);
+  assert.equal(result.statusStamps.length, 0, 'a transient failure must stay retryable, never parked permanently');
+});
+
+test('computeGhlSyncFixes_ skips a row already stamped GHL Match Status from an earlier run, with no GHL API call at all — the actual fix for the reported bug', () => {
+  const dataRows = [
+    fakeSalesCallLogRow({
+      'Prospect Name': 'Already Checked', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '',
+      'GHL Match Status': 'No GHL match 10/09/2026'
+    })
+  ];
+  let searchCalls = 0;
+  const result = withMockedGhlSync_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => fakeSalesCallLogSheet(dataRows) }) },
+    ghlSearchContactByName_: () => { searchCalls++; return { ok: true, contacts: [] }; }
+  }, () => gas.computeGhlSyncFixes_('loc-1', {}));
+  assert.equal(searchCalls, 0, 'a row already stamped unresolved must never trigger a fresh GHL search');
+  assert.equal(result.stats.skippedPreviouslyUnresolved, 1);
+  assert.equal(result.fixes.length, 0);
+  assert.equal(result.statusStamps.length, 0, 'must not re-stamp a row that is already stamped');
+});
+
+function withMockedGhlSyncFull_(mocks, fn) {
+  const originals = {
+    SpreadsheetApp: gas.SpreadsheetApp,
+    Utilities: gas.Utilities,
+    GHL_CONFIG: gas.GHL_CONFIG,
+    ghlCheckSetup_: gas.ghlCheckSetup_,
+    fetchGhlPipelines_: gas.fetchGhlPipelines_,
+    buildGhlStageLookup_: gas.buildGhlStageLookup_,
+    ghlSearchContactByName_: gas.ghlSearchContactByName_,
+    ghlListOpportunitiesForContact_: gas.ghlListOpportunitiesForContact_
+  };
+  gas.Utilities = { sleep: () => {}, formatDate: realFormatDate };
+  gas.GHL_CONFIG = Object.assign({}, gas.GHL_CONFIG, { ENABLED: true });
+  gas.ghlCheckSetup_ = () => 'loc-1';
+  gas.fetchGhlPipelines_ = () => [];
+  gas.buildGhlStageLookup_ = () => ({});
+  Object.assign(gas, mocks);
+  try {
+    return fn();
+  } finally {
+    Object.assign(gas, originals);
+  }
+}
+
+test('syncGhlEmailAndDisposition_ writes GHL Match Status stamps to the sheet even when zero real fixes were found this run — the exact bug: the old early-return checked only fixes.length, so a run that only determined rows were unresolvable wrote nothing and every future run re-attempted the same dead rows from scratch', () => {
+  const cells = {};
+  const dataRows = [
+    fakeSalesCallLogRow({ 'Prospect Name': 'Nobody Found', Rep: 'Sean', 'Prospect Email': '', 'Outcome Disposition': '' })
+  ];
+  const headerRow = gas.SALES_CALL_LOG_HEADERS.slice();
+  const sheet = {
+    getLastRow: () => dataRows.length + 1,
+    getRange: (row, colArg, numRows) => {
+      if (row === 1) return { getValues: () => [headerRow] };
+      if (numRows !== undefined) return { getValues: () => dataRows };
+      return { setValue(v) { cells[row + ':' + colArg] = v; return this; } };
+    }
+  };
+  withMockedGhlSyncFull_({
+    SpreadsheetApp: { openById: () => ({ getSheetByName: () => sheet }) },
+    ghlSearchContactByName_: () => ({ ok: true, contacts: [] })
+  }, () => gas.syncGhlEmailAndDisposition_());
+
+  const statusCol = gas.SALES_CALL_LOG_HEADERS.indexOf('GHL Match Status') + 1;
+  assert.ok(cells['2:' + statusCol], 'the status cell must actually be written even though no real fix was found');
+  assert.ok(String(cells['2:' + statusCol]).indexOf('No GHL match') === 0);
+});
+
+// ---------------------------------------------------------------------------
 // CRM hygiene checks (Phase9_GhlSync.gs) — Rules 2/3 + Tomás's own
 // booked-without-appointment rule from the CRM Hygiene Automation doc.
 // ---------------------------------------------------------------------------

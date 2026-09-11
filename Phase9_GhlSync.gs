@@ -943,17 +943,19 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
   var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
   var sheet = resolveSheet_(ss, 'Sales Call Log');
   var stats = {
-    scanned: 0, skippedAlreadyFilled: 0, confidentMatch: 0, ambiguous: 0,
+    scanned: 0, skippedAlreadyFilled: 0, skippedPreviouslyUnresolved: 0, confidentMatch: 0, ambiguous: 0,
     noMatch: 0, searchFailed: 0, emailFixes: 0, dispositionFixes: 0, dispositionConflicts: 0
   };
-  if (!sheet) { log_('No Sales Call Log tab found.'); return { fixes: [], stats: stats, truncated: false }; }
+  if (!sheet) { log_('No Sales Call Log tab found.'); return { fixes: [], statusStamps: [], stats: stats, truncated: false }; }
 
   var col = getValidatedColumnMap_(sheet);
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { fixes: [], stats: stats, truncated: false };
+  if (lastRow < 2) return { fixes: [], statusStamps: [], stats: stats, truncated: false };
   var rows = sheet.getRange(2, 1, lastRow - 1, SALES_CALL_LOG_HEADERS.length).getValues();
 
   var fixes = [];
+  var statusStamps = [];
+  var todayLabel = Utilities.formatDate(new Date(), CONFIG.BUSINESS_TIMEZONE, 'dd/MM/yyyy');
   var runStart = Date.now();
   var truncated = false;
 
@@ -963,12 +965,23 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
   // multi-minute normal run looks identical to a hang. Log the size of the
   // job up front, then a heartbeat every HEARTBEAT_INTERVAL_MS_ so there's
   // always a recent line proving it's still making progress.
+  //
+  // "GHL Match Status" non-blank also excludes a row from needingScan —
+  // real bug found live (11/09/2026, Kris ran syncGhlEmailAndDisposition()
+  // many times, each scanning hundreds of rows and finding zero fixes): an
+  // ambiguous/no-match/nothing-to-backfill row used to stay completely
+  // blank forever, identical to a never-scanned row, so every run re-spent
+  // API calls on the same dead rows in the same sheet order and could burn
+  // the whole time budget without ever reaching fresh ground. See the
+  // stamping logic below and SALES_CALL_LOG_HEADERS's own comment on this
+  // column.
   var needingScan = 0;
   for (var n = 0; n < rows.length; n++) {
     var nameCell = rows[n][col['Prospect Name'] - 1];
     var emailCell = String(rows[n][col['Prospect Email'] - 1] || '').trim();
     var dispositionCell = String(rows[n][col['Outcome Disposition'] - 1] || '').trim();
-    if (nameCell && !(emailCell && dispositionCell)) needingScan++;
+    var statusCell = String(rows[n][col['GHL Match Status'] - 1] || '').trim();
+    if (nameCell && !(emailCell && dispositionCell) && !statusCell) needingScan++;
   }
   log_('computeGhlSyncFixes_: ' + needingScan + ' of ' + rows.length + ' row(s) need a Prospect Email/Outcome ' +
     'Disposition fix — scanning now (up to 2 GHL calls per row, so this can take a few minutes; a heartbeat ' +
@@ -980,16 +993,27 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
     var prospectName = row[col['Prospect Name'] - 1];
     var existingEmail = String(row[col['Prospect Email'] - 1] || '').trim();
     var existingDisposition = String(row[col['Outcome Disposition'] - 1] || '').trim();
+    var existingStatus = String(row[col['GHL Match Status'] - 1] || '').trim();
 
     if (!prospectName || (existingEmail && existingDisposition)) {
       stats.skippedAlreadyFilled++;
       continue;
     }
 
+    // See this function's header comment on GHL Match Status — a row
+    // already stamped here was genuinely attempted and found unresolvable
+    // (ambiguous/no-match/nothing left to backfill); re-querying GHL for it
+    // every single run is exactly the bug that let a cluster of dead rows
+    // eat the whole time budget and block progress into fresh rows.
+    if (existingStatus) {
+      stats.skippedPreviouslyUnresolved++;
+      continue;
+    }
+
     if (Date.now() - runStart > GHL_SYNC_TIME_BUDGET_MS_) {
       truncated = true;
       log_('computeGhlSyncFixes_: time budget hit after ' + i + '/' + rows.length +
-        ' row(s) — re-run to continue (already-filled rows are skipped automatically, so this is always safe).');
+        ' row(s) — re-run to continue (already-filled/already-stamped rows are skipped automatically, so this is always safe).');
       break;
     }
 
@@ -1001,13 +1025,27 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
 
     stats.scanned++;
     var search = ghlSearchContactByName_(locationId, prospectName);
+    // Search failure is treated as transient (a 429/5xx, a network blip) —
+    // NOT stamped, so it's retried on the next run rather than parked
+    // permanently the way a genuine no-match/ambiguous result is.
     if (!search.ok) { stats.searchFailed++; continue; }
 
     var candidates = search.contacts.filter(function (c) {
       return contactNameLooksLikeQuery_(c, prospectName);
     });
-    if (!candidates.length) { stats.noMatch++; continue; }
-    if (candidates.length > 1) { stats.ambiguous++; continue; }
+    if (!candidates.length) {
+      stats.noMatch++;
+      statusStamps.push({ row: i + 2, status: 'No GHL match ' + todayLabel });
+      continue;
+    }
+    if (candidates.length > 1) {
+      stats.ambiguous++;
+      statusStamps.push({
+        row: i + 2,
+        status: 'Ambiguous ' + todayLabel + ' — ' + candidates.length + ' candidates, needs manual review'
+      });
+      continue;
+    }
 
     var contact = candidates[0];
     stats.confidentMatch++;
@@ -1018,12 +1056,14 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
       stats.emailFixes++;
     }
 
+    var dispositionConflict = false;
     if (!existingDisposition) {
       var oppsRes = ghlListOpportunitiesForContact_(locationId, contact.id);
       if (oppsRes.ok && oppsRes.opportunities.length) {
         var resolved = resolveBestDispositionForOpportunities_(oppsRes.opportunities, stageLookup);
         if (resolved.conflict) {
           stats.dispositionConflicts++;
+          dispositionConflict = true;
         } else if (resolved.disposition) {
           fix.newDisposition = resolved.disposition;
           stats.dispositionFixes++;
@@ -1032,10 +1072,26 @@ function computeGhlSyncFixes_(locationId, stageLookup) {
     }
 
     if (fix.newEmail || fix.newDisposition) fixes.push(fix);
+
+    // A confident match doesn't guarantee both columns end up filled this
+    // run (GHL's own contact record may have no email, or no resolvable
+    // opportunity) — stamp whenever the row would STILL be incomplete
+    // after this attempt, same reasoning as the ambiguous/no-match cases
+    // above, so it doesn't keep re-querying GHL for a fact that won't
+    // change without a human fixing something on the GHL side.
+    var finalEmail = existingEmail || fix.newEmail;
+    var finalDisposition = existingDisposition || fix.newDisposition;
+    if (!(finalEmail && finalDisposition)) {
+      var reason = dispositionConflict
+        ? 'GHL opportunities disagree on outcome, needs a human look'
+        : 'matched GHL contact has nothing further to backfill from';
+      statusStamps.push({ row: i + 2, status: 'Matched ' + todayLabel + ' — ' + reason });
+    }
+
     Utilities.sleep(250); // polite pacing — 2 GHL calls per matched row here, not 1
   }
 
-  return { fixes: fixes, stats: stats, truncated: truncated };
+  return { fixes: fixes, statusStamps: statusStamps, stats: stats, truncated: truncated };
 }
 
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
@@ -1074,15 +1130,19 @@ function previewGhlSync_() {
 
   log_('');
   log_('Scanned ' + result.stats.scanned + ' row(s) needing a fix (' + result.stats.skippedAlreadyFilled +
-    ' already fully filled, skipped with no API call).');
+    ' already fully filled, ' + result.stats.skippedPreviouslyUnresolved +
+    ' already stamped unresolved from an earlier run — neither costs an API call).');
   log_('Confident match: ' + result.stats.confidentMatch + ', ambiguous: ' + result.stats.ambiguous +
     ', no match: ' + result.stats.noMatch + ', search failed: ' + result.stats.searchFailed + '.');
   log_(result.fixes.length + ' row(s) would be updated — ' + result.stats.emailFixes + ' email backfill(s), ' +
     result.stats.dispositionFixes + ' disposition fill(s)' +
     (result.stats.dispositionConflicts ? (', ' + result.stats.dispositionConflicts +
       ' skipped for conflicting dispositions across pipelines (needs a human look)') : '') + '.');
+  log_(result.statusStamps.length + ' row(s) would be stamped "GHL Match Status" (ambiguous/no-match/nothing ' +
+    'further to backfill) so a future run stops re-querying GHL for them — preview never writes this either.');
   if (result.truncated) {
-    log_('PARTIAL SCAN — time budget hit. Re-run previewGhlSync() to see the rest (safe: already-filled rows are skipped automatically).');
+    log_('PARTIAL SCAN — time budget hit. Re-run previewGhlSync() to see the rest (safe: already-filled/' +
+      'already-stamped rows are skipped automatically).');
   }
   log_('Paste this whole log back to Claude before running the real sync.');
 }
@@ -1119,8 +1179,16 @@ function syncGhlEmailAndDisposition_() {
   var stageLookup = buildGhlStageLookup_(pipelines);
 
   var result = computeGhlSyncFixes_(locationId, stageLookup);
-  if (!result.fixes.length) {
-    log_('No Prospect Email / Outcome Disposition fixes found.' +
+  // Real bug found live (11/09/2026, Kris ran this many times in a row,
+  // each finding zero fixes): this early-return used to check ONLY
+  // result.fixes.length — a run that found zero real fixes but DID
+  // determine a batch of rows were ambiguous/no-match/unresolvable
+  // returned here without writing anything, so nothing was ever
+  // persisted and every subsequent run re-attempted the exact same dead
+  // rows from scratch. Must also check statusStamps: writing those IS
+  // real progress, even with zero actual fixes this run.
+  if (!result.fixes.length && !result.statusStamps.length) {
+    log_('No Prospect Email / Outcome Disposition fixes or newly-resolved rows found.' +
       (result.truncated ? ' (PARTIAL scan — time budget hit, re-run to continue.)' : ''));
     return;
   }
@@ -1135,8 +1203,13 @@ function syncGhlEmailAndDisposition_() {
     log_('Row ' + fix.row + ' (' + fix.rep + ') "' + fix.prospectName + '" updated.');
   });
 
+  result.statusStamps.forEach(function (s) {
+    sheet.getRange(s.row, col['GHL Match Status']).setValue(s.status);
+  });
+
   log_('syncGhlEmailAndDisposition_() done — updated ' + result.fixes.length + ' row(s) (' +
-    result.stats.emailFixes + ' email, ' + result.stats.dispositionFixes + ' disposition).' +
+    result.stats.emailFixes + ' email, ' + result.stats.dispositionFixes + ' disposition), stamped ' +
+    result.statusStamps.length + ' previously-unresolved row(s) so future runs skip them.' +
     (result.truncated ? ' PARTIAL scan — re-run to continue with the remaining rows.' : ' Full sheet scanned.'));
 }
 

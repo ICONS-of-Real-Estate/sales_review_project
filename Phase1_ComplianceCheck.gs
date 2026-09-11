@@ -1766,7 +1766,21 @@ var SALES_CALL_LOG_HEADERS = [
   // (findSiblingFileUrl_, same file). Blank whenever no sibling video is
   // found — never a guessed/constructed URL, same "no signal, not a
   // fabricated value" convention as every column above. ---
-  'Recording URL'          // AO
+  'Recording URL',         // AO
+  // 11/09/2026: real bug found live (Kris ran syncGhlEmailAndDisposition()
+  // many times in a row, each scanning hundreds of rows and finding zero
+  // new fixes) — a row that resolved ambiguous/no-match/confident-but-
+  // nothing-to-backfill was left completely blank, indistinguishable from
+  // a row never scanned at all, so EVERY run re-spent 1-2 GHL API calls on
+  // the exact same unresolved rows, in the same sheet order, and could burn
+  // the whole time budget on that cluster without ever reaching fresh rows
+  // further down. computeGhlSyncFixes_ (Phase9_GhlSync.gs) now stamps a
+  // reason here for any row still missing Prospect Email/Outcome
+  // Disposition after a real attempt, so a future run skips it — same
+  // "stamp the outcome, don't just skip silently" pattern
+  // ensureIcons100TagStatusColumn_ already uses. A human clearing this cell
+  // forces a recheck. Blank = never attempted, or attempt still pending.
+  'GHL Match Status'       // AP
 ];
 
 /** The spreadsheet that will host the shared log — Ben's tracker per the brief. */
