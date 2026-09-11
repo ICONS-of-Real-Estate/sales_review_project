@@ -4733,23 +4733,26 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   // functions; they are deliberately NOT listed, so the orphan sweep clears
   // any trigger still pointing at the old two-Monday schedule.
   'runWeeklyTrainingCycle',
-  'runAllOngoingScoringPasses_', 'runRandomCalibrationSample',             // Phase 2
+  'runRandomCalibrationSample',                                            // Phase 2
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4
   'runWeeklyScorecard', 'runWeeklyTrainingSummaries',                      // Phase 5
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
-  // Phase 8 — consolidated 11/09/2026 onto ONE every-4h trigger (trigger-cap
-  // hit for real; see runPhase8ReplyTrackerStandingChecks_'s own header,
-  // Phase8_ReplyTracker.gs). classifyNewReplies/sendReplyMetricsReport_ are
-  // still real, manually-callable functions — deliberately NOT listed here
-  // any more, so the orphan sweep clears any leftover trigger still
-  // pointing at the old two-trigger setup.
-  'runPhase8ReplyTrackerStandingChecks_',                                  // Phase 8
   'syncGhlEmailAndDisposition_',                                           // Phase 9
   'runBensPodcastSync_',                                                   // Phase 11
-  'runGhlNoteSync_',                                                       // Phase 12
   'runCalibrationFeedback',                                                // Phase 16
+  // Phase 2 (ongoing scoring) + Phase 8 (reply tracker) + Phase 12 (GHL
+  // note sync) — each already its OWN prior consolidation (04/09, 11/09,
+  // n/a respectively) — merged again 11/09/2026 onto ONE shared every-4h
+  // trigger (see installEvery4HourStandingChecksTrigger's own header,
+  // Phase2_CallScoring.gs): all three fired every 4h with no day/hour
+  // gating of their own, so merging changes no schedule, just the count.
+  // runAllOngoingScoringPasses_/runGhlNoteSync_/runPhase8ReplyTrackerStandingChecks_
+  // are still real, manually-callable functions — deliberately NOT listed
+  // here any more, so the orphan sweep clears any leftover trigger still
+  // pointing at the old three-trigger setup.
+  'runEvery4HourStandingChecks_',
   // Phase 17 (both cadences)/18/19 share ONE every-2-hour trigger as of
   // 07/09/2026 (trigger-cap consolidation — see runPhase17To19StandingChecks_'s
   // own header, Phase17_SeanFollowUpAutomation.gs) instead of 4 separate
@@ -4830,9 +4833,18 @@ function installAllReadyTriggers_() {
   installAutomation();
   installed.push('Phase 1: daily compliance check + weekly self-heal');
 
-  installOngoingScoringTrigger();
-  installed.push('Phase 2: ongoing call scoring + Sean/Tomás/Joana/Bens auto-scoring, ' +
-    'consolidated onto one every-4h trigger (04/09/2026 — was 5 separate triggers)');
+  // Real cap hit found live (11/09/2026): this used to be three separate
+  // calls (installOngoingScoringTrigger, the ENABLED-gated
+  // installGhlNoteSyncTrigger below, and installReplyTrackerTriggers
+  // further below) — each installing its own every-4h trigger. All three
+  // now ride ONE merged every-4h trigger instead (see
+  // installEvery4HourStandingChecksTrigger's own header,
+  // Phase2_CallScoring.gs) — do NOT add those three calls back here
+  // individually, or the slot savings are undone.
+  installEvery4HourStandingChecksTrigger();
+  installed.push('Phase 2/8/12: ongoing call scoring + GHL note sync + reply tracker, ' +
+    'consolidated onto ONE every-4h trigger (11/09/2026 — was 3 separate triggers, each already its ' +
+    'own earlier consolidation)');
 
   // Real gap found live (03/09/2026): this was installed by hand per its own
   // file's "ONE-TIME SETUP" comment and was invisible to this function ever
@@ -4928,16 +4940,10 @@ function installAllReadyTriggers_() {
       'See QA_COACHING_RESEARCH_REPORT.md §1.1.');
   }
 
-  // Real gap found live (11/09/2026): this used to gate on ENABLED like
-  // every other phase, but REPLY_TRACKER_CONFIG.ENABLED only ever gated the
-  // daily report EMAIL (its own header comment, Phase8_ReplyTracker.gs) —
-  // classifyNewReplies runs regardless. Gating on ENABLED here meant a
-  // fresh/full re-run with the flag false (its actual current state, since
-  // 09/09/2026) would never install or migrate this trigger at all. Always
-  // install, same as Phase 1/2 above, which have no live-send gate either.
-  installReplyTrackerTriggers();
-  installed.push('Phase 8: reply tracker (classify pass always runs; report email gated by ' +
-    'REPLY_TRACKER_CONFIG.ENABLED, currently ' + REPLY_TRACKER_CONFIG.ENABLED + ')');
+  // Phase 8 (reply tracker) — folded into installEvery4HourStandingChecksTrigger()
+  // above, 11/09/2026 (trigger-cap consolidation). Do NOT add
+  // installReplyTrackerTriggers() back here — it would recreate a
+  // standalone trigger alongside the merged one.
 
   // Same gap as Phase 1/5's manually-installed triggers above.
   if (typeof GHL_CONFIG !== 'undefined' && GHL_CONFIG.ENABLED) {
@@ -4958,13 +4964,11 @@ function installAllReadyTriggers_() {
       'previewBensPodcastSync() first, confirm it looks right, then flip ENABLED and re-run this.');
   }
 
-  if (typeof GHL_NOTE_SYNC_CONFIG !== 'undefined' && GHL_NOTE_SYNC_CONFIG.ENABLED) {
-    installGhlNoteSyncTrigger();
-    installed.push('Phase 12: GHL review-note sync');
-  } else {
-    skipped.push('Phase 12 (GHL review-note sync) — GHL_NOTE_SYNC_CONFIG.ENABLED is false. Run ' +
-      'previewGhlNoteSync() first, confirm it looks right, then flip ENABLED and re-run this.');
-  }
+  // Phase 12 (GHL review-note sync) — folded into
+  // installEvery4HourStandingChecksTrigger() above, 11/09/2026. Its own
+  // GHL_NOTE_SYNC_CONFIG.ENABLED gate still applies inside runGhlNoteSync_
+  // itself, unaffected by this consolidation. Do NOT add
+  // installGhlNoteSyncTrigger() back here.
 
   if (typeof CALIBRATION_FEEDBACK_CONFIG !== 'undefined' && CALIBRATION_FEEDBACK_CONFIG.ENABLED) {
     installCalibrationFeedbackTrigger();
@@ -5042,13 +5046,16 @@ var SELF_HEAL_TRIGGER_REGISTRY_ = [
   {
     // 04/09/2026: was two entries here (scoreNewlyLoggedCalls_,
     // scoreSeanTranscripts) for two of the five triggers that got
-    // consolidated into runAllOngoingScoringPasses_ (Phase2_CallScoring.gs) —
-    // replaced with one entry so self-heal still recognizes and repairs the
-    // (now single) ongoing-scoring trigger instead of recreating one of the
-    // two old ones it used to know about by name.
-    handler: 'runAllOngoingScoringPasses_',
-    install: installOngoingScoringTrigger,
-    label: 'consolidated ongoing-scoring trigger',
+    // consolidated into runAllOngoingScoringPasses_ (Phase2_CallScoring.gs).
+    // 11/09/2026: repointed at the further-merged runEvery4HourStandingChecks_
+    // (same file) — that trigger now also covers GHL note sync and the
+    // reply tracker, so self-heal must recognize/repair THAT handler, not
+    // the narrower one it replaced, or self-heal would recreate a
+    // standalone runAllOngoingScoringPasses_ trigger every week and quietly
+    // undo the slot savings.
+    handler: 'runEvery4HourStandingChecks_',
+    install: installEvery4HourStandingChecksTrigger,
+    label: 'consolidated every-4h standing checks (scoring + GHL note sync + reply tracker)',
     pauseProperty: 'PAUSE_ONGOING_SCORING_TRIGGER'
   }
 ];

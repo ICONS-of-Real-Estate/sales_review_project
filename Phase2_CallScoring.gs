@@ -5184,6 +5184,16 @@ function runAllOngoingScoringPasses_() {
  * run this instead of those five. Deletes every one of their triggers (if
  * present) plus any existing copy of its own, then installs the single
  * combined trigger. Safe to re-run any time.
+ *
+ * Superseded 11/09/2026 by installEvery4HourStandingChecksTrigger below as
+ * the function installAllReadyTriggers_/selfHealTriggers_ actually call —
+ * kept here, still real and still directly callable, for the same reason
+ * runPitchGuideReview etc. stayed real after the Phase 17-19 consolidation
+ * (see that consolidation's own comment, Phase17_SeanFollowUpAutomation.gs):
+ * don't delete a working entry point just because the standing-trigger path
+ * moved on. Do NOT call this one from installAllReadyTriggers_ again —
+ * it would recreate a standalone runAllOngoingScoringPasses_ trigger
+ * alongside the merged one below, undoing the slot savings.
  */
 function installOngoingScoringTrigger() {
   RUN_TAG = 'installOngoingScoringTrigger';
@@ -5196,6 +5206,58 @@ function installOngoingScoringTrigger() {
   ScriptApp.newTrigger('runAllOngoingScoringPasses_').timeBased().everyHours(4).create();
   log_('Installed: runAllOngoingScoringPasses_() now runs every 4 hours, replacing the 5 separate ' +
     'per-pass triggers this project used to install individually (frees 4 trigger slots).');
+}
+
+/**
+ * Trigger target for THREE previously-separate every-4h triggers, merged
+ * 11/09/2026 to free 2 more slots against Apps Script's 20-trigger cap
+ * (confirmed live the same day — see HANDOFF.md). All three already fired
+ * every 4 hours with no internal day/hour gating of their own
+ * (runAllOngoingScoringPasses_, runGhlNoteSync_ — Phase12_GhlNoteSync.gs —
+ * and runPhase8ReplyTrackerStandingChecks_ — Phase8_ReplyTracker.gs, which
+ * still does its OWN internal due-passes check for its two passes), so
+ * merging them changes no schedule, just the trigger count. Each callee
+ * already gates its own real work internally (GHL_NOTE_SYNC_CONFIG.ENABLED,
+ * REPLY_TRACKER_CONFIG.ENABLED) — this function doesn't duplicate that,
+ * same "isolate one throwing pass from the others" pattern as those two
+ * functions' own internals.
+ */
+function runEvery4HourStandingChecks_() {
+  RUN_TAG = 'runEvery4HourStandingChecks_';
+  [
+    { name: 'runAllOngoingScoringPasses_', fn: runAllOngoingScoringPasses_ },
+    { name: 'runGhlNoteSync_', fn: runGhlNoteSync_ },
+    { name: 'runPhase8ReplyTrackerStandingChecks_', fn: runPhase8ReplyTrackerStandingChecks_ }
+  ].forEach(function (pass) {
+    try {
+      pass.fn();
+    } catch (e) {
+      log_('runEvery4HourStandingChecks_: ' + pass.name + ' threw: ' + e + ' -- continuing to the next pass.');
+      sendOpsAlert_('Standing check error: ' + pass.name, String(e));
+    }
+  });
+}
+
+/**
+ * ONE-TIME setup — the function installAllReadyTriggers_/selfHealTriggers_
+ * actually call. Deletes any existing copy of the three formerly-separate
+ * triggers (in case this runs on a project that still has them from before
+ * 11/09/2026) plus any prior copy of its own, then installs ONE combined
+ * every-4h trigger. Safe to re-run any time.
+ */
+function installEvery4HourStandingChecksTrigger() {
+  RUN_TAG = 'installEvery4HourStandingChecksTrigger';
+  ['runAllOngoingScoringPasses_', 'runGhlNoteSync_', 'runPhase8ReplyTrackerStandingChecks_',
+    'runEvery4HourStandingChecks_'].forEach(function (handler) {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t);
+    });
+  });
+  ScriptApp.newTrigger('runEvery4HourStandingChecks_').timeBased().everyHours(4).create();
+  log_('Installed: runEvery4HourStandingChecks_() now runs every 4 hours, running ongoing call scoring, ' +
+    'GHL note sync (GHL_NOTE_SYNC_CONFIG.ENABLED currently ' + GHL_NOTE_SYNC_CONFIG.ENABLED + '), and the ' +
+    'Phase 8 reply tracker checks (REPLY_TRACKER_CONFIG.ENABLED currently ' + REPLY_TRACKER_CONFIG.ENABLED +
+    ') — was three separate every-4h triggers before 11/09/2026\'s consolidation (frees 2 trigger slots).');
 }
 
 /**

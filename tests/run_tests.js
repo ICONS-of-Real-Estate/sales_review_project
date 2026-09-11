@@ -8676,7 +8676,8 @@ test('STANDING_AUTOMATION_HANDLERS_ reflects the 04/09/2026 consolidation: old p
     assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf(h) === -1,
       h + ' was consolidated into runAllOngoingScoringPasses_ and must not remain a separately-recognized standing handler');
   });
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runAllOngoingScoringPasses_') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runEvery4HourStandingChecks_') !== -1,
+    'runAllOngoingScoringPasses_ was further merged into runEvery4HourStandingChecks_ (11/09/2026)');
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runBensPodcastSync_') !== -1);
 });
 
@@ -9031,8 +9032,9 @@ test('runGhlNoteSync_ posts the note and marks "GHL Review Synced" true on a rea
   }
 });
 
-test('STANDING_AUTOMATION_HANDLERS_ includes runGhlNoteSync_ (Phase 12) -- a missing handler here gets silently swept as an orphan by installAllReadyTriggers_', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') !== -1);
+test('STANDING_AUTOMATION_HANDLERS_ recognizes runEvery4HourStandingChecks_, not the standalone runGhlNoteSync_ (Phase 12) it was merged into 11/09/2026 -- a missing handler here gets silently swept as an orphan by installAllReadyTriggers_', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runEvery4HourStandingChecks_') !== -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlNoteSync_') === -1);
 });
 
 test('STANDING_AUTOMATION_HANDLERS_ includes the consolidated runPhase17To19StandingChecks_ handler, not the four individual Phase 17/18/19 handlers (trigger-cap consolidation, 07/09/2026) -- missing here means installAllReadyTriggers_ would both never install it AND sweep it away as an orphan the moment someone installs it by hand', () => {
@@ -12779,10 +12781,11 @@ test('installReplyTrackerTriggers installs ONE every-4h trigger, sweeping any ol
   }
 });
 
-test('STANDING_AUTOMATION_HANDLERS_ recognizes runPhase8ReplyTrackerStandingChecks_ and no longer separately recognizes classifyNewReplies/sendReplyMetricsReport_ (11/09/2026 consolidation -- either gap would mean installAllReadyTriggers_ sweeps the wrong thing as an orphan)', () => {
-  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPhase8ReplyTrackerStandingChecks_') !== -1);
+test('STANDING_AUTOMATION_HANDLERS_ recognizes runEvery4HourStandingChecks_ and no longer separately recognizes classifyNewReplies/sendReplyMetricsReport_/runPhase8ReplyTrackerStandingChecks_ (merged further, 11/09/2026 -- any gap here would mean installAllReadyTriggers_ sweeps the wrong thing as an orphan)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runEvery4HourStandingChecks_') !== -1);
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('classifyNewReplies') === -1);
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('sendReplyMetricsReport_') === -1);
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runPhase8ReplyTrackerStandingChecks_') === -1);
 });
 
 test('installAllReadyTriggers_ installs the Phase 8 reply tracker trigger even when REPLY_TRACKER_CONFIG.ENABLED is false, since the classify pass runs regardless of that flag (real gap found live 11/09/2026: this used to be gated on ENABLED, so a fresh/full re-run with the flag false -- its actual current state -- would never install or migrate this trigger at all)', () => {
@@ -12817,8 +12820,8 @@ test('installAllReadyTriggers_ installs the Phase 8 reply tracker trigger even w
     }
 
     const remainingHandlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
-    assert.ok(remainingHandlers.indexOf('runPhase8ReplyTrackerStandingChecks_') !== -1,
-      'the reply tracker trigger must be installed even with REPLY_TRACKER_CONFIG.ENABLED false');
+    assert.ok(remainingHandlers.indexOf('runEvery4HourStandingChecks_') !== -1,
+      'the merged every-4h trigger (covering reply tracker among others) must be installed even with REPLY_TRACKER_CONFIG.ENABLED false');
   } finally {
     gas.ScriptApp = originalScriptApp;
     gas.installAutomation = originalInstallAutomation;
@@ -12852,4 +12855,57 @@ test('sendRepRecordingsReminder_ includes a tracker-check reminder alongside the
     gas.auditConfig_ = originalAudit;
     gas.MailApp.getRemainingDailyQuota = originalQuota;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Every-4h standing checks merge (Phase 2 + 8 + 12, 11/09/2026)
+// ---------------------------------------------------------------------------
+
+test('runEvery4HourStandingChecks_ calls all three merged passes and isolates one throwing from the others', () => {
+  const originalScoring = gas.runAllOngoingScoringPasses_;
+  const originalNoteSync = gas.runGhlNoteSync_;
+  const originalReplyTracker = gas.runPhase8ReplyTrackerStandingChecks_;
+  const originalAlert = gas.sendOpsAlert_;
+  const calls = [];
+  const alerts = [];
+  gas.sendOpsAlert_ = (subject) => alerts.push(subject);
+  gas.runAllOngoingScoringPasses_ = () => calls.push('scoring');
+  gas.runGhlNoteSync_ = () => { throw new Error('boom'); };
+  gas.runPhase8ReplyTrackerStandingChecks_ = () => calls.push('replyTracker');
+  try {
+    gas.runEvery4HourStandingChecks_();
+    assert.deepEqual(calls, ['scoring', 'replyTracker']);
+    assert.deepEqual(alerts, ['Standing check error: runGhlNoteSync_']);
+  } finally {
+    gas.runAllOngoingScoringPasses_ = originalScoring;
+    gas.runGhlNoteSync_ = originalNoteSync;
+    gas.runPhase8ReplyTrackerStandingChecks_ = originalReplyTracker;
+    gas.sendOpsAlert_ = originalAlert;
+  }
+});
+
+test('installEvery4HourStandingChecksTrigger removes old copies of all three formerly-separate triggers plus any prior copy of its own, installing exactly one combined trigger', () => {
+  const originalScriptApp = gas.ScriptApp;
+  gas.ScriptApp = fakeScriptAppTriggers_(
+    ['runAllOngoingScoringPasses_', 'runGhlNoteSync_', 'runPhase8ReplyTrackerStandingChecks_',
+      'runEvery4HourStandingChecks_', 'someUnrelatedHandler_']
+  );
+  try {
+    gas.installEvery4HourStandingChecksTrigger();
+    const handlerNames = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.deepEqual(handlerNames.filter((h) => h === 'runEvery4HourStandingChecks_').length, 1);
+    assert.ok(handlerNames.indexOf('runAllOngoingScoringPasses_') === -1);
+    assert.ok(handlerNames.indexOf('runGhlNoteSync_') === -1);
+    assert.ok(handlerNames.indexOf('runPhase8ReplyTrackerStandingChecks_') === -1);
+    assert.ok(handlerNames.indexOf('someUnrelatedHandler_') !== -1, 'must not touch unrelated triggers');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+  }
+});
+
+test('SELF_HEAL_TRIGGER_REGISTRY_ repairs runEvery4HourStandingChecks_, not the narrower runAllOngoingScoringPasses_ it superseded (real regression risk, 11/09/2026: leaving the old handler here would make self-heal recreate a standalone trigger weekly, silently undoing the slot savings)', () => {
+  const entry = gas.SELF_HEAL_TRIGGER_REGISTRY_.filter((e) => e.pauseProperty === 'PAUSE_ONGOING_SCORING_TRIGGER')[0];
+  assert.ok(entry, 'the ongoing-scoring self-heal entry must still exist');
+  assert.equal(entry.handler, 'runEvery4HourStandingChecks_');
+  assert.equal(entry.install, gas.installEvery4HourStandingChecksTrigger);
 });

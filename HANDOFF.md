@@ -67,6 +67,23 @@ from his phone, deploy deferred to when he's back at a computer.
    — there is no slack for more than that without another consolidation
    first.
 
+**Update, same session — headroom found after all.** Merged the three
+still-separate every-4h triggers (`runAllOngoingScoringPasses_`,
+`runGhlNoteSync_`, `runPhase8ReplyTrackerStandingChecks_` — each already
+its own prior consolidation) into ONE shared every-4h trigger,
+`runEvery4HourStandingChecks_` (`installEvery4HourStandingChecksTrigger`,
+`Phase2_CallScoring.gs`). All three fired every 4h with no day/hour gating
+of their own, so this changes no schedule, just the count — frees **2
+more slots**. `SELF_HEAL_TRIGGER_REGISTRY_`'s ongoing-scoring entry
+repointed at the new merged handler (kept the same `PAUSE_ONGOING_SCORING_TRIGGER`
+script property name) so weekly self-heal doesn't recreate a standalone
+`runAllOngoingScoringPasses_` trigger and quietly undo the savings. 3 new
+tests, 784 passing / 0 failing. **So there IS real headroom now**: 2 free
+slots, on top of the free `runInboxSlaCheck` deletion above (3 total) —
+enough to flip on Lead Confirmation reminders AND one of Inbox SLA/No-show
+follow-up without any further consolidation, or all three if the stale
+`runInboxSlaCheck` trigger is also deleted by hand first.
+
 ---
 
 ## Built this session — Bens lead status report (11/09/2026)
