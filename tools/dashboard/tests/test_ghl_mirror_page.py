@@ -11,8 +11,13 @@ import app as app_module
 import ghl_mirror
 
 
-def _seed_contact(conn, ghl_id, name, email, tags=None, synced_at="2026-01-01T00:00:00+00:00"):
-    contact = ghl_mirror.normalize_contact({"id": ghl_id, "name": name, "email": email, "tags": tags or []}, synced_at)
+def _seed_contact(conn, ghl_id, name, email, tags=None, synced_at="2026-01-01T00:00:00+00:00", date_added=None):
+    # date_added defaults to "now" so a bare _seed_contact() call never trips
+    # app_module.GHL_MIRROR_STALE_DAYS's default filter by accident -- tests
+    # that specifically exercise staleness pass an explicit old date_added.
+    date_added = date_added or datetime.now(timezone.utc).isoformat()
+    raw = {"id": ghl_id, "name": name, "email": email, "tags": tags or [], "dateAdded": date_added, "dateUpdated": date_added}
+    contact = ghl_mirror.normalize_contact(raw, synced_at)
     ghl_mirror.upsert_contacts(conn, [contact])
 
 
@@ -133,3 +138,28 @@ class TestGhlMirrorRegressions:
         names = [c["name"] for c in results]
         assert names == ["Amy Apple", "Zach Zebra", ""], \
             "real-named contacts must sort before the blank-name one, not after"
+
+    def test_stale_contacts_hidden_by_default_but_shown_with_include_old(self, conn):
+        # Kris's own call, 11/09/2026, looking at the real synced data:
+        # "anything older than a year is probably garbage." Default view
+        # must hide a contact whose most recent touch is older than
+        # GHL_MIRROR_STALE_DAYS; include_old=True must show it again.
+        from datetime import datetime, timedelta, timezone
+        old_date = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+        recent_date = datetime.now(timezone.utc).isoformat()
+        _seed_contact(conn, "old1", "Old Stale Guy", "old@example.com", date_added=old_date)
+        _seed_contact(conn, "new1", "Fresh New Guy", "new@example.com", date_added=recent_date)
+
+        default_results = app_module.ghl_mirror_contacts()
+        assert [c["name"] for c in default_results] == ["Fresh New Guy"]
+
+        all_results = app_module.ghl_mirror_contacts(include_old=True)
+        assert {c["name"] for c in all_results} == {"Fresh New Guy", "Old Stale Guy"}
+
+    def test_stale_count_matches_what_the_default_view_hides(self, conn):
+        from datetime import datetime, timedelta, timezone
+        old_date = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+        _seed_contact(conn, "old1", "Old Stale Guy", "old@example.com", date_added=old_date)
+        _seed_contact(conn, "old2", "Old Stale Two", "old2@example.com", date_added=old_date)
+        assert app_module.ghl_mirror_stale_count() == 2
+        assert app_module.ghl_mirror_stale_count(search="Old Stale Guy") == 1

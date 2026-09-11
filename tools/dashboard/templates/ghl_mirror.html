@@ -32,9 +32,21 @@
   </div>
 </div>
 
+{% if stale_hidden_count %}
+<p class="muted" style="max-width: 640px;">
+  {{ stale_hidden_count }} contact{{ "s" if stale_hidden_count != 1 else "" }} not touched in over {{ (stale_days / 365) | round(1) }} year{{ "s" if stale_days != 365 else "" }}
+  {{ "matching this search " if search else "" }}hidden by default (Kris's call, 11/09/2026 — most of this account is stale).
+  <a href="/ghl-mirror?{{ 'search=' + (search | urlencode) + '&' if search }}include_old=true">Show them too</a>.
+</p>
+{% elif include_old %}
+<p class="muted" style="max-width: 640px;">
+  Showing stale contacts too. <a href="/ghl-mirror{{ '?search=' + (search | urlencode) if search }}">Hide contacts older than a year</a>.
+</p>
+{% endif %}
+
 <table>
   <thead>
-    <tr><th>Name</th><th>Email</th><th>Tags</th><th>Pipeline stage</th><th>Value</th><th>Opportunity updated</th></tr>
+    <tr><th>Name</th><th>Email</th><th>Tags</th><th>Pipeline stage</th><th>Value</th><th>Added</th><th>Opportunity updated</th></tr>
   </thead>
   <tbody>
     {% for c in contacts %}
@@ -44,10 +56,11 @@
       <td>{% for tag in c.tags %}<span class="stat" style="padding: 0.15rem 0.6rem; margin: 0 0.25rem 0.25rem 0; display: inline-block; min-width: 0;">{{ tag }}</span>{% else %}—{% endfor %}</td>
       <td>{{ c.opportunity.pipeline_stage_name if c.opportunity else "—" }}</td>
       <td>{% if c.opportunity and c.opportunity.monetary_value is not none %}${{ "%.0f"|format(c.opportunity.monetary_value) }}{% else %}—{% endif %}</td>
+      <td>{{ c.date_added or "—" }}</td>
       <td>{{ c.opportunity.date_updated if c.opportunity else "—" }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">
+    <tr><td colspan="7" class="muted">
       {% if search %}No contacts match "{{ search }}".{% else %}Nothing mirrored yet — run ghl_mirror.py against a real GHL account first.{% endif %}
     </td></tr>
     {% endfor %}
