@@ -2021,6 +2021,24 @@ function previewGhlCommunicationsAudit_(maxContacts) {
  * status, how many records came back if it looks like a list, and the
  * top-level keys so an unexpected shape is visible rather than guessed at.
  */
+/**
+ * Pure. Scans a raw JSON body string for any mention of a phone/SMS
+ * provider — specifically the Twilio-vs-LC-Phone question
+ * GHL_REPLACEMENT_ANALYSIS.md §10 flags as the single biggest swing factor
+ * in the whole GHL-replacement timeline (weeks vs. months, depending on
+ * who owns the numbers and the A2P 10DLC registration). Deliberately a
+ * plain substring scan across the WHOLE body, not a slice-then-hope — a
+ * fixed-length preview can (and did, live 11/09/2026) cut off before
+ * reaching a deeply-nested settings field, silently hiding the answer.
+ */
+function describeGhlPhoneProviderMentions_(body) {
+  var text = String(body || '');
+  var found = ['twilio', 'lc phone', 'lcphone', 'lc-phone'].filter(function (needle) {
+    return text.toLowerCase().indexOf(needle) !== -1;
+  });
+  return found.length ? 'PHONE PROVIDER MENTIONED: ' + found.join(', ') : null;
+}
+
 function describeGhlProbeResult_(res) {
   if (!res || typeof res !== 'object') return 'no response';
   if (res.status !== 200) {
@@ -2038,9 +2056,20 @@ function describeGhlProbeResult_(res) {
     if (Object.prototype.toString.call(json[keys[i]]) === '[object Array]') { listKey = keys[i]; break; }
   }
   var count = listKey ? json[listKey].length : null;
+  // Real bug found live (11/09/2026): a single-OBJECT response (no array
+  // field at all — Location detail is exactly this shape) was sliced to
+  // just 300 characters, the same as a list response's preview. That cut
+  // the Location detail probe off before reaching any settings/phone-
+  // provider field — exactly the one answer that probe exists to find.
+  // A list response still only needs a short preview (the count already
+  // says how many records came back); a single-object response gets a
+  // much longer one, since there's no count to fall back on.
+  var previewLength = listKey ? 300 : 2000;
+  var phoneProviderLine = listKey ? null : describeGhlPhoneProviderMentions_(res.body);
   return 'HTTP 200 :: keys=[' + keys.join(', ') + ']' +
     (listKey ? ' :: ' + count + ' record(s) under "' + listKey + '"' : '') +
-    ' :: ' + String(res.body || '').slice(0, 300);
+    (phoneProviderLine ? ' :: ' + phoneProviderLine : '') +
+    ' :: ' + String(res.body || '').slice(0, previewLength);
 }
 
 /** Apps Script's "Select function to run" dropdown hides trailing-underscore functions. */
@@ -2076,7 +2105,11 @@ function previewGhlAccountDiscovery_() {
     ['Forms', '/forms/?locationId=' + loc,
       'Answers "what exactly is the QC form" — Kris does not know, and Sean reports ' +
       'submissions silently not reaching the CRM.'],
-    ['Form submissions', '/forms/submissions?locationId=' + loc,
+    // Real bug found live (11/09/2026): this endpoint 422'd with "limit
+    // must not be greater than 100" AND "limit must be a number" — GHL
+    // requires an explicit, valid limit param on this one, unlike every
+    // other list endpoint probed here which is happy with none.
+    ['Form submissions', '/forms/submissions?locationId=' + loc + '&limit=20',
       'Whether submissions are landing at all, and how recently. Sean\'s bug, measured.'],
     ['Surveys', '/surveys/?locationId=' + loc,
       'The other GHL data-capture object — the QC form may be a survey, not a form.'],

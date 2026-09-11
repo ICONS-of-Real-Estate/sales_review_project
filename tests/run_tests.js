@@ -5976,6 +5976,54 @@ test('describeGhlProbeResult_ handles a 200 with no list and a junk response wit
   assert.equal(gas.describeGhlProbeResult_(undefined), 'no response');
 });
 
+test('describeGhlProbeResult_ gives a single-object response (no array key) a much longer preview than a list response, so a deeply-nested field is not silently cut off (real bug found live 11/09/2026: the Location detail probe — the one that answers the Twilio-vs-LC-Phone question — was cut off at 300 characters, well before reaching any settings field)', () => {
+  const longBody = '{"location":{"id":"x","name":"y",' + 'z'.repeat(1000) + '"phone_provider":"twilio"}}';
+  const out = gas.describeGhlProbeResult_({ status: 200, json: { location: { id: 'x' } }, body: longBody });
+  assert.ok(out.length > 500, 'a single-object response must get a much longer preview than the old flat 300 chars: got length ' + out.length);
+});
+
+test('describeGhlPhoneProviderMentions_ finds a Twilio/LC-Phone mention anywhere in the raw body, case-insensitively, regardless of where it sits in the JSON', () => {
+  assert.equal(gas.describeGhlPhoneProviderMentions_('{"settings":{"smsProvider":"Twilio"}}'),
+    'PHONE PROVIDER MENTIONED: twilio');
+  assert.equal(gas.describeGhlPhoneProviderMentions_('{"provider":"LC Phone"}'),
+    'PHONE PROVIDER MENTIONED: lc phone');
+  assert.equal(gas.describeGhlPhoneProviderMentions_('{"id":"x","name":"Icons of Real Estate"}'), null,
+    'no mention at all must return null, not an empty/misleading string');
+  assert.equal(gas.describeGhlPhoneProviderMentions_(''), null);
+  assert.equal(gas.describeGhlPhoneProviderMentions_(null), null);
+});
+
+test('describeGhlProbeResult_ surfaces the phone-provider line for a single-object response, but never for a list response (a list of workflows mentioning "twilio" in a workflow NAME would be a false positive to flag as the account-level answer)', () => {
+  const withMention = gas.describeGhlProbeResult_({
+    status: 200, json: { location: { id: 'x' } }, body: '{"location":{"phoneProvider":"twilio"}}'
+  });
+  assert.ok(/PHONE PROVIDER MENTIONED: twilio/.test(withMention));
+
+  const listWithMention = gas.describeGhlProbeResult_({
+    status: 200, json: { workflows: [{ id: 'a' }] }, body: '{"workflows":[{"name":"Twilio SMS reminder"}]}'
+  });
+  assert.ok(!/PHONE PROVIDER MENTIONED/.test(listWithMention),
+    'a list response must never surface this line, even if a record happens to mention the word');
+});
+
+test('previewGhlAccountDiscovery_\'s Form submissions probe sends an explicit, valid limit param (real bug found live 11/09/2026: GHL 422\'d with "limit must not be greater than 100" / "limit must be a number" when this endpoint got no limit at all, unlike every other list endpoint probed here)', () => {
+  const calledPaths = [];
+  const originalGet = gas.ghlApiGet_;
+  const originalCheckSetup = gas.ghlCheckSetup_;
+  gas.ghlApiGet_ = (path) => { calledPaths.push(path); return { status: 200, json: {}, body: '{}' }; };
+  gas.ghlCheckSetup_ = () => 'loc-1';
+  try {
+    gas.previewGhlAccountDiscovery_();
+    const submissionsCall = calledPaths.find((p) => p.indexOf('/forms/submissions') !== -1);
+    assert.ok(submissionsCall, 'the Form submissions probe must actually run');
+    assert.ok(/limit=\d+/.test(submissionsCall), 'must send an explicit numeric limit: ' + submissionsCall);
+    assert.ok(!/limit=(&|$)/.test(submissionsCall), 'limit must not be present-but-blank either');
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+    gas.ghlCheckSetup_ = originalCheckSetup;
+  }
+});
+
 test('ghlTimestampToIso_ normalizes BOTH of GHL\'s timestamp formats (real bug: raw epoch ms sitting in the live "GHL Stage Triage" tab)', () => {
   // Confirmed from the live sheet 09/09/2026: Last GHL Activity holds raw
   // values like 1787216916228 next to proper ISO strings, because notes come
