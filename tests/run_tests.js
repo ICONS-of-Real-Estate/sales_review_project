@@ -12909,3 +12909,213 @@ test('SELF_HEAL_TRIGGER_REGISTRY_ repairs runEvery4HourStandingChecks_, not the 
   assert.equal(entry.handler, 'runEvery4HourStandingChecks_');
   assert.equal(entry.install, gas.installEvery4HourStandingChecksTrigger);
 });
+
+// ---------------------------------------------------------------------------
+// Phase21_DailyLeadApprovalDigest.gs
+// ---------------------------------------------------------------------------
+
+test('clampDailyLeadCount_ passes through an allowed value and falls back to the default for anything else', () => {
+  assert.equal(gas.clampDailyLeadCount_(10), 10);
+  assert.equal(gas.clampDailyLeadCount_(50), 50);
+  assert.equal(gas.clampDailyLeadCount_(37), gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT);
+  assert.equal(gas.clampDailyLeadCount_(undefined), gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT);
+  assert.equal(gas.clampDailyLeadCount_('not a number'), gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT);
+});
+
+test('leadDigestSettingsMapFromRows_ keeps only the LAST row per rep (append-only, last row wins) and clamps each value', () => {
+  const rows = [
+    ['Sean', 25, new Date()],
+    ['Bens', 999, new Date()], // invalid -> clamps to default
+    ['Sean', 50, new Date()] // supersedes the first Sean row
+  ];
+  assert.deepEqual(Object.assign({}, gas.leadDigestSettingsMapFromRows_(rows)), {
+    Sean: 50,
+    Bens: gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT
+  });
+});
+
+test('leadDigestSettingsMapFromRows_ skips a blank rep name', () => {
+  assert.deepEqual(Object.assign({}, gas.leadDigestSettingsMapFromRows_([['', 25, new Date()]])), {});
+});
+
+test('getLeadDigestDailyCountForRep_ returns the default when the sheet has no data rows yet', () => {
+  assert.equal(
+    gas.getLeadDigestDailyCountForRep_({ getLastRow: () => 1 }, 'Sean'),
+    gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT
+  );
+});
+
+test('getLeadDigestDailyCountForRep_ reads via getRange/getValues and returns the clamped setting for that rep', () => {
+  const fakeSheet = {
+    getLastRow: () => 2,
+    getRange: () => ({ getValues: () => [['Sean', 100, new Date()]] })
+  };
+  assert.equal(gas.getLeadDigestDailyCountForRep_(fakeSheet, 'Sean'), 100);
+  assert.equal(gas.getLeadDigestDailyCountForRep_(fakeSheet, 'Bens'), gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT);
+});
+
+test('buildGhlStageOrderLookup_ maps each stage to its 0..1 position within its OWN pipeline, not a global index', () => {
+  const pipelines = [
+    { id: 'p1', stages: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] }, // 3 stages -> 0, 0.5, 1
+    { id: 'p2', stages: [{ id: 's9' }] } // single-stage pipeline -> 0, never divides by zero
+  ];
+  const lookup = gas.buildGhlStageOrderLookup_(pipelines);
+  assert.equal(lookup.s1, 0);
+  assert.equal(lookup.s2, 0.5);
+  assert.equal(lookup.s3, 1);
+  assert.equal(lookup.s9, 0);
+});
+
+test('buildLeadDigestCandidate_ returns null for a terminal (Closed) stage, no matter how stale', () => {
+  const pipeline = { name: 'Sales Pipeline', stages: [{ id: 's1', name: 'Closed Won' }] };
+  const opp = { pipelineStageId: 's1', updatedAt: '2020-01-01T00:00:00Z', contact: { email: 'a@example.com' } };
+  assert.equal(gas.buildLeadDigestCandidate_(opp, pipeline, {}, Date.now()), null);
+});
+
+test('buildLeadDigestCandidate_ returns null when the opportunity has not been stale long enough yet', () => {
+  const pipeline = { name: 'Sales Pipeline', stages: [{ id: 's1', name: 'Booked' }] };
+  const now = Date.UTC(2026, 8, 11);
+  const opp = { pipelineStageId: 's1', updatedAt: new Date(now - 1 * 24 * 3600 * 1000).toISOString(), contact: { email: 'a@example.com' } };
+  assert.equal(gas.buildLeadDigestCandidate_(opp, pipeline, {}, now), null, 'only 1 day stale, STALE_MIN_DAYS is 3');
+});
+
+test('buildLeadDigestCandidate_ returns null when the contact has no email to draft a follow-up to', () => {
+  const pipeline = { name: 'Sales Pipeline', stages: [{ id: 's1', name: 'Booked' }] };
+  const now = Date.UTC(2026, 8, 11);
+  const opp = { pipelineStageId: 's1', updatedAt: new Date(now - 10 * 24 * 3600 * 1000).toISOString(), contact: {} };
+  assert.equal(gas.buildLeadDigestCandidate_(opp, pipeline, {}, now), null);
+});
+
+test('buildLeadDigestCandidate_ builds the full candidate shape for a real stale, non-terminal, emailed lead', () => {
+  const pipeline = { id: 'p1', name: 'Sales Pipeline', stages: [{ id: 's1', name: 'New' }, { id: 's2', name: 'Booked' }] };
+  const now = Date.UTC(2026, 8, 11);
+  const opp = {
+    id: 'o1', contactId: 'c1', name: 'Fallback Name', pipelineStageId: 's2',
+    updatedAt: new Date(now - 10 * 24 * 3600 * 1000).toISOString(),
+    contact: { name: 'Jane Doe', email: 'jane@example.com' }
+  };
+  const stageOrderLookup = gas.buildGhlStageOrderLookup_([pipeline]);
+  const candidate = gas.buildLeadDigestCandidate_(opp, pipeline, stageOrderLookup, now);
+  assert.deepEqual(Object.assign({}, candidate), {
+    contactId: 'c1', opportunityId: 'o1', leadName: 'Jane Doe', leadEmail: 'jane@example.com',
+    pipelineName: 'Sales Pipeline', stageName: 'Booked', daysStale: 10, stageOrder: 1, touches: 0
+  });
+});
+
+test('compareLeadDigestPriority_ orders by freshest-stale first, then furthest through the pipeline, then most touches', () => {
+  const a = { daysStale: 3, stageOrder: 0.5, touches: 1 };
+  const b = { daysStale: 10, stageOrder: 0.5, touches: 1 };
+  assert.ok(gas.compareLeadDigestPriority_(a, b) < 0, 'tier 1: fresher-stale (smaller daysStale) sorts first');
+
+  const c = { daysStale: 5, stageOrder: 1, touches: 0 };
+  const d = { daysStale: 5, stageOrder: 0, touches: 99 };
+  assert.ok(gas.compareLeadDigestPriority_(c, d) < 0, 'tier 2: further through the pipeline (larger stageOrder) sorts first, beating touches');
+
+  const e = { daysStale: 5, stageOrder: 0.5, touches: 10 };
+  const f = { daysStale: 5, stageOrder: 0.5, touches: 2 };
+  assert.ok(gas.compareLeadDigestPriority_(e, f) < 0, 'tier 3: more touches sorts first once tiers 1-2 tie');
+});
+
+test('rankAndCapLeadDigestCandidates_ sorts, caps to count, and stamps 1-based priorityRank', () => {
+  const candidates = [
+    { leadName: 'Stale 10d', daysStale: 10, stageOrder: 0, touches: 0 },
+    { leadName: 'Stale 3d', daysStale: 3, stageOrder: 0, touches: 0 },
+    { leadName: 'Stale 7d', daysStale: 7, stageOrder: 0, touches: 0 }
+  ];
+  const ranked = gas.rankAndCapLeadDigestCandidates_(candidates, 2);
+  assert.deepEqual(ranked.map((l) => l.leadName), ['Stale 3d', 'Stale 7d']);
+  assert.deepEqual(ranked.map((l) => l.priorityRank), [1, 2]);
+});
+
+test('buildLeadDigestEmail_ lists every lead with its priority rank and includes the approval URL', () => {
+  const leads = [
+    { priorityRank: 1, leadName: 'Jane Doe', leadEmail: 'jane@example.com', pipelineName: 'Sales', stageName: 'Booked', daysStale: 5, touches: 2 }
+  ];
+  const email = gas.buildLeadDigestEmail_('Sean', leads, 'https://example.com/exec?token=abc');
+  assert.match(email.subject, /Sean.*1/);
+  assert.match(email.body, /Jane Doe/);
+  assert.match(email.body, /https:\/\/example\.com\/exec\?token=abc/);
+  assert.match(email.htmlBody, /Jane Doe/);
+  assert.match(email.htmlBody, /https:\/\/example\.com\/exec\?token=abc/);
+});
+
+test('buildLeadDigestEmail_ says plainly when there are no leads, with no dangling approval link', () => {
+  const email = gas.buildLeadDigestEmail_('Sean', [], 'https://example.com/exec?token=abc');
+  assert.match(email.body, /No leads need follow-up today/);
+  assert.ok(email.body.indexOf('https://example.com') === -1);
+});
+
+test('buildFollowUpDraftEmail_ names the lead and their current stage in the draft', () => {
+  const draft = gas.buildFollowUpDraftEmail_({ leadName: 'Jane Doe', stageName: 'Booked' });
+  assert.match(draft.subject, /Jane Doe/);
+  assert.match(draft.body, /Jane Doe/);
+  assert.match(draft.body, /Booked/);
+});
+
+test('renderLeadDigestApprovalPage_ shows a plain message when the token matches no rows', () => {
+  const html = gas.renderLeadDigestApprovalPage_('tok', '', [], gas.DAILY_LEAD_APPROVAL_CONFIG.DEFAULT_DAILY_LEAD_COUNT);
+  assert.match(html, /No leads found for this link/);
+});
+
+test('renderLeadDigestApprovalPage_ renders an approve/reject control and comment box per pending lead, keyed by opportunity id', () => {
+  const rows = [{
+    sheetRow: 2, priorityRank: 1, leadName: 'Jane Doe', leadEmail: 'jane@example.com',
+    pipelineName: 'Sales', stageName: 'Booked', daysStale: 5, touches: 2,
+    opportunityId: 'o1', status: 'pending', comment: ''
+  }];
+  const html = gas.renderLeadDigestApprovalPage_('tok', 'Sean', rows, 25);
+  assert.match(html, /name="status_o1"/);
+  assert.match(html, /name="comment_o1"/);
+  assert.match(html, /Jane Doe/);
+  assert.match(html, /checked/); // the 25 radio, and Approve pre-selected
+});
+
+test('renderLeadDigestApprovalPage_ shows a submitted summary, not the form again, once every row is decided', () => {
+  const rows = [{
+    sheetRow: 2, priorityRank: 1, leadName: 'Jane Doe', leadEmail: 'jane@example.com',
+    pipelineName: 'Sales', stageName: 'Booked', daysStale: 5, touches: 2,
+    opportunityId: 'o1', status: 'approved', comment: 'looks good'
+  }];
+  const html = gas.renderLeadDigestApprovalPage_('tok', 'Sean', rows, 25);
+  assert.match(html, /already submitted/);
+  assert.match(html, /1 approved/);
+  assert.ok(html.indexOf('name="status_o1"') === -1, 'must not show editable controls again');
+});
+
+test('getLeadDigestQueueRowsForToken_ returns only rows for the given token, sorted by Priority Rank', () => {
+  const fakeSheet = {
+    getLastRow: () => 3,
+    getRange: () => ({
+      getValues: () => [
+        ['tokA', '2026-09-11', 'Sean', 'c2', 'o2', 'Lead Two', 'two@example.com', 'Sales', 'Booked', 5, 1, 2, 'pending', '', ''],
+        ['tokB', '2026-09-11', 'Bens', 'c9', 'o9', 'Other Rep Lead', 'x@example.com', 'Sales', 'New', 5, 0, 1, 'pending', '', ''],
+        ['tokA', '2026-09-11', 'Sean', 'c1', 'o1', 'Lead One', 'one@example.com', 'Sales', 'New', 3, 0, 1, 'pending', '', '']
+      ]
+    })
+  };
+  const rows = gas.getLeadDigestQueueRowsForToken_(fakeSheet, 'tokA');
+  assert.deepEqual(Array.from(rows).map((r) => r.leadName), ['Lead One', 'Lead Two']);
+  assert.equal(rows[0].rep, 'Sean');
+  assert.equal(rows[0].sheetRow, 4); // third data row -> index 2 -> sheetRow 2+2
+});
+
+test('duePhase17To19Passes_ includes runDailyLeadApprovalDigest only on a weekday within its own trigger-hour window', () => {
+  gas.Utilities = { formatDate: realFormatDate };
+  const tz = 'America/New_York';
+  const hour = gas.DAILY_LEAD_APPROVAL_CONFIG.TRIGGER_HOUR;
+
+  // Thursday 2026-09-10 in-window
+  const weekdayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 9, 10, hour, 0, 0), tz)
+    .map((p) => p.name);
+  assert.ok(weekdayInWindow.indexOf('runDailyLeadApprovalDigest') !== -1);
+
+  // Thursday, out of window
+  const weekdayOutOfWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 9, 10, hour + 5, 0, 0), tz)
+    .map((p) => p.name);
+  assert.ok(weekdayOutOfWindow.indexOf('runDailyLeadApprovalDigest') === -1);
+
+  // Saturday, same hour -- must not fire on a weekend
+  const saturdayInWindow = gas.duePhase17To19Passes_(gas.dateAtTimeInBusinessTimezone_(2026, 9, 12, hour, 0, 0), tz)
+    .map((p) => p.name);
+  assert.ok(saturdayInWindow.indexOf('runDailyLeadApprovalDigest') === -1);
+});

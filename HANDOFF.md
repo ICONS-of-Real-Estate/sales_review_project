@@ -7,6 +7,54 @@
 
 ---
 
+## Built this session — Daily lead follow-up approval digest (11/09/2026, latest)
+
+Kris's ask: every work-day morning, email Sean/Bens/Joana (cc Kris+Tomás)
+their prioritized stale-lead list, with a link where each rep sets their
+own daily list size (10/25/50/100), approves/rejects individually or all
+at once with an optional comment per lead, and — once confirmed — gets
+follow-up drafts sitting in their OWN Gmail inbox, ready to review and
+send (never auto-sent).
+
+1. **`Phase21_DailyLeadApprovalDigest.gs`** (new) — `DAILY_LEAD_APPROVAL_CONFIG.ENABLED`
+   is `false`; run `previewDailyLeadApprovalDigest()` first and review the
+   log, THEN deploy the web app (Apps Script editor -> Deploy -> New
+   deployment -> Web app, execute as "User accessing the web app", access
+   restricted to `iconsofrealestate.com` — already declared in
+   `appsscript.json`'s new `webapp` block, but the deployment itself still
+   has to be created by hand in the editor) and set
+   `DAILY_LEAD_APPROVAL_CONFIG.WEBAPP_URL_OVERRIDE` to the real deployment
+   URL before flipping `ENABLED`.
+   - Pulls each rep's open, non-terminal GHL opportunities live (every
+     pipeline, `assignedTo` resolved to a rep the same way
+     Phase15_CrmOrganizationReview.gs already does), filters to ones stale
+     >= `STALE_MIN_DAYS` (3), and ranks by Kris's own three tiers: freshest
+     newly-stale first, then furthest through the pipeline (normalized 0-1
+     so pipelines of different lengths compare fairly), then most real
+     (non-AI-note) touches.
+   - New sheet tabs: **"Lead Digest Settings"** (per-rep daily count) and
+     **"Lead Digest Queue"** (one row per lead per day — token, decision,
+     comment). Sends via `guardedSend_`, same quota/config guard as every
+     other phase.
+   - **The approval link sidesteps Phase17's gmail.compose blocker entirely**:
+     the web app runs "as the user accessing it," so when a rep clicks
+     Approve, `GmailApp.createDraft()` runs AS THEM — the draft lands in
+     their own Drafts folder with zero domain-wide-delegation setup. The
+     tradeoff: they must open the link signed into their real
+     @iconsofrealestate.com account.
+   - Joined the shared `runPhase17To19StandingChecks_` trigger
+     (Phase17_SeanFollowUpAutomation.gs) as a sixth pass rather than a new
+     standalone trigger (trigger-cap history, same file) — gated to
+     weekdays only, in its own `TRIGGER_HOUR` window.
+   - Draft body is one generic template for v1 (not per-rep voice) and
+     rejection comments are recorded but not yet fed back into ranking —
+     both flagged as deliberate v1 scope in the file's own header, not
+     silently promised.
+   - 20 new tests (`tests/run_tests.js`), 804 passing across the whole
+     suite, fail-before verified.
+
+---
+
 ## Built this session — GHL mirror read surface + trigger merge (11/09/2026, later)
 
 Kris said "go" to both of: (1) the GHL mirror's read surface (Step 2), (2)

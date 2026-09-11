@@ -860,12 +860,24 @@ function duePhase17To19Passes_(now, tz) {
       name: 'runBensLeadStatusReport', fn: runBensLeadStatusReport,
       due: Utilities.formatDate(now, tz, 'EEEE') === 'Friday' &&
         isWithinHourWindow_(now, tz, BENS_LEAD_STATUS_REPORT_CONFIG.TRIGGER_HOUR, 2)
+    },
+    // Added 11/09/2026 (Phase21_DailyLeadApprovalDigest.gs) as a sixth pass —
+    // same trigger-cap reason as the other four. "Every work day" = not a
+    // weekend, same isWeekendInBusinessTz_ this file already uses for
+    // business-day math elsewhere. Not safe to leave ungated:
+    // buildAndMaybeSendLeadDigests_ has its own per-rep same-day dedup, but
+    // that dedup only prevents a SECOND email in one day, not firing outside
+    // the intended morning window.
+    {
+      name: 'runDailyLeadApprovalDigest', fn: runDailyLeadApprovalDigest,
+      due: !isWeekendInBusinessTz_(now) &&
+        isWithinHourWindow_(now, tz, DAILY_LEAD_APPROVAL_CONFIG.TRIGGER_HOUR, 2)
     }
   ];
   return passes.filter(function (p) { return p.due; });
 }
 
-/** Trigger target for all five consolidated standing checks (a fifth, Phase 20's Bens lead status report, joined 11/09/2026 — see duePhase17To19Passes_ above). Each pass still has its own ENABLED/DETECTION_ENABLED/CADENCE2_ENABLED gate inside its own run*() function — duePhase17To19Passes_ only adds the day/hour-window gates the non-Cadence-1 passes need now that they share a trigger. Failures in one pass never block the others (same isolate-and-continue pattern as runAllOngoingScoringPasses_). */
+/** Trigger target for all six consolidated standing checks (a fifth, Phase 20's Bens lead status report, joined 11/09/2026; a sixth, Phase 21's daily lead approval digest, joined the same day — see duePhase17To19Passes_ above). Each pass still has its own ENABLED/DETECTION_ENABLED/CADENCE2_ENABLED gate inside its own run*() function — duePhase17To19Passes_ only adds the day/hour-window gates the non-Cadence-1 passes need now that they share a trigger. Failures in one pass never block the others (same isolate-and-continue pattern as runAllOngoingScoringPasses_). */
 function runPhase17To19StandingChecks_() {
   RUN_TAG = 'runPhase17To19StandingChecks_';
   duePhase17To19Passes_(new Date(), CONFIG.BUSINESS_TIMEZONE).forEach(function (pass) {
