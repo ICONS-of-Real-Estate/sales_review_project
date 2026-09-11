@@ -149,9 +149,12 @@ def _freshness_from_sync_meta_key(key):
         return {"last_synced_at": None, "age_minutes": None, "level": "stale"}
     try:
         last_synced_at = datetime.fromisoformat(row["value"])
-    except ValueError:
+    except (ValueError, TypeError):
         # A corrupted sync_meta value must not 500 the whole overview page —
-        # report it the same as "never synced" instead.
+        # report it the same as "never synced" instead. TypeError is real,
+        # not defensive: fromisoformat() raises it (not ValueError) for a
+        # non-string value, e.g. a stray int/None written by a bug elsewhere —
+        # confirmed live (11/09/2026) via /ghl-mirror 500ing on exactly this.
         return {"last_synced_at": None, "age_minutes": None, "level": "stale"}
     age_minutes = (datetime.now(timezone.utc) - last_synced_at).total_seconds() / 60
     if age_minutes < FRESHNESS_WARN_MINUTES:
@@ -175,41 +178,77 @@ def ghl_freshness_status():
     return _freshness_from_sync_meta_key("ghl_last_synced_at")
 
 
-def ghl_mirror_contacts(search=""):
-    """Every ghl_contacts row, each with its tags (comma-joined) and its
-    most recently updated opportunity, if any -- one row per contact, not
-    per opportunity, since a contact page is what this route is for.
-    `search` matches name/email, case-insensitively, same LIKE pattern
-    filtered_calls() already uses elsewhere in this file."""
-    conn = get_conn()
-    where = ""
-    params = []
-    if search:
-        where = "WHERE c.name LIKE ? OR c.email LIKE ?"
-        like = f"%{search}%"
-        params = [like, like]
-    rows = conn.execute(
-        f"""
-        SELECT c.ghl_id, c.name, c.email, c.phone, c.source, c.date_added,
-               GROUP_CONCAT(DISTINCT t.tag) AS tags
-        FROM ghl_contacts c
-        LEFT JOIN ghl_contact_tags t ON t.contact_ghl_id = c.ghl_id
-        {where}
-        GROUP BY c.ghl_id
-        ORDER BY c.name COLLATE NOCASE
-        """,
-        params,
-    ).fetchall()
-    contacts = [dict(r) for r in rows]
+def _escape_like(s):
+    """Escapes SQLite LIKE's own wildcards (`%`/`_`) out of raw user input,
+    paired with `ESCAPE '\\'` on the query itself. Real bug (code review,
+    11/09/2026): without this, searching for a literal "_" or "%" (plausible
+    in a name/email) silently matched every contact instead of none/one,
+    since LIKE treats both as wildcards. filtered_calls() elsewhere in this
+    file doesn't need this helper -- it searches via FTS5's `MATCH`, not
+    `LIKE`, a different query language with its own escaping
+    (sanitize_fts5_query) -- so this is the first real LIKE usage here."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    opp_rows = conn.execute(
-        """
-        SELECT contact_ghl_id, pipeline_stage_name, status, monetary_value, date_updated
-        FROM ghl_opportunities
-        ORDER BY date_updated DESC
-        """
-    ).fetchall()
-    conn.close()
+
+def ghl_mirror_contacts(search="", limit=200):
+    """Every ghl_contacts row (capped at `limit`, same "don't render an
+    unbounded table" discipline as get_leads()/filtered_calls() elsewhere in
+    this file), each with its tags and its most recently updated
+    opportunity, if any -- one row per contact, not per opportunity, since a
+    contact page is what this route is for. `search` matches name/email,
+    case-insensitively, wildcards escaped (see _escape_like)."""
+    conn = get_conn()
+    try:
+        where = ""
+        params = []
+        if search:
+            where = "WHERE c.name LIKE ? ESCAPE '\\' OR c.email LIKE ? ESCAPE '\\'"
+            like = f"%{_escape_like(search)}%"
+            params = [like, like]
+        contact_rows = conn.execute(
+            f"""
+            SELECT ghl_id, name, email, phone, source, date_added
+            FROM ghl_contacts c
+            {where}
+            ORDER BY name COLLATE NOCASE
+            LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+        contacts = [dict(r) for r in contact_rows]
+        if not contacts:
+            return contacts
+        contact_ids = [c["ghl_id"] for c in contacts]
+        id_placeholders = ",".join("?" * len(contact_ids))
+
+        # Tags fetched per-contact (not GROUP_CONCAT'd into one string) --
+        # real bug (code review, 11/09/2026): GROUP_CONCAT's default comma
+        # separator collided with a tag that itself contains a comma, and
+        # splitting back on "," silently fabricated extra tags that don't
+        # exist in GHL.
+        tag_rows = conn.execute(
+            f"SELECT contact_ghl_id, tag FROM ghl_contact_tags WHERE contact_ghl_id IN ({id_placeholders})",
+            contact_ids,
+        ).fetchall()
+        tags_by_contact = {}
+        for r in tag_rows:
+            tags_by_contact.setdefault(r["contact_ghl_id"], []).append(r["tag"])
+
+        # Scoped to just these contacts' opportunities, not the whole table
+        # (code review, 11/09/2026) -- a search narrowing to a handful of
+        # contacts no longer pulls and sorts every opportunity in the mirror.
+        opp_rows = conn.execute(
+            f"""
+            SELECT contact_ghl_id, pipeline_stage_name, status, monetary_value, date_updated
+            FROM ghl_opportunities
+            WHERE contact_ghl_id IN ({id_placeholders})
+            ORDER BY date_updated DESC
+            """,
+            contact_ids,
+        ).fetchall()
+    finally:
+        conn.close()
+
     latest_opp_by_contact = {}
     for r in opp_rows:
         cid = r["contact_ghl_id"]
@@ -217,7 +256,7 @@ def ghl_mirror_contacts(search=""):
             latest_opp_by_contact[cid] = dict(r)
 
     for c in contacts:
-        c["tags"] = c["tags"].split(",") if c["tags"] else []
+        c["tags"] = tags_by_contact.get(c["ghl_id"], [])
         c["opportunity"] = latest_opp_by_contact.get(c["ghl_id"])
     return contacts
 

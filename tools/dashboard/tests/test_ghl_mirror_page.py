@@ -85,3 +85,38 @@ class TestGhlMirrorPage:
         resp = client.get("/ghl-mirror")
         assert resp.status_code == 200
         assert "Never synced" not in resp.text
+
+
+class TestGhlMirrorRegressions:
+    """Bugs found by code review (11/09/2026), fixed the same day."""
+
+    def test_search_escapes_like_wildcards(self, conn):
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com")
+        _seed_contact(conn, "c2", "John Smith", "john@example.com")
+        # A literal underscore/percent in the search box must not act as a
+        # LIKE wildcard and match everyone.
+        assert app_module.ghl_mirror_contacts(search="_") == []
+        assert app_module.ghl_mirror_contacts(search="%") == []
+
+    def test_tag_containing_a_comma_is_not_split_into_two_tags(self, conn):
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com", tags=["high value, referral"])
+        results = app_module.ghl_mirror_contacts()
+        assert results[0]["tags"] == ["high value, referral"]
+
+    def test_freshness_survives_a_null_sync_meta_value(self, conn):
+        # fromisoformat(None) raises TypeError (not ValueError) -- must still
+        # degrade to "never synced", not 500. (An int value doesn't reach
+        # this path: sync_meta.value has TEXT affinity, so SQLite coerces an
+        # inserted int to its string form before fromisoformat ever sees it
+        # -- NULL is the real way a non-string value reaches this code.)
+        conn.execute("DELETE FROM sync_meta WHERE key = 'ghl_last_synced_at'")
+        conn.execute("INSERT INTO sync_meta (key, value) VALUES ('ghl_last_synced_at', NULL)")
+        conn.commit()
+        result = app_module.ghl_freshness_status()
+        assert result["level"] == "stale"
+        assert result["last_synced_at"] is None
+
+    def test_contacts_are_capped_at_the_limit(self, conn):
+        for i in range(5):
+            _seed_contact(conn, f"c{i}", f"Person {i}", f"p{i}@example.com")
+        assert len(app_module.ghl_mirror_contacts(limit=3)) == 3
