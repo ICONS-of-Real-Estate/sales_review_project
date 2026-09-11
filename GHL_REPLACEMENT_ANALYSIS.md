@@ -583,6 +583,57 @@ The corollary is worth stating plainly: **stopping after Step 1 or 2 is a
 perfectly good outcome.** Mirror the data, close the reporting gap, keep
 paying the $299, and revisit. That is a real option, not a failure.
 
+### The Twilio question — answered, 11/09/2026 (Kris/Hazel call)
+
+Not from a probe — from Kris's own words on an unrelated SEO call: *"we just
+moved from Twil[i]o to GHL for SMS and calling, I mean, we can move back to
+Twil[i]o, it's got an API that we can connect."*
+
+This resolves §10 Q1/Q2 for real: **it's GHL's own phone/SMS (LC Phone),
+not bring-your-own-Twilio.** The account used to run Twilio directly, then
+moved everything (SMS + calling) onto GHL. §5.2 stays the long pole per the
+table above — a fresh Twilio account, A2P 10DLC registration, and porting
+numbers back would all be needed. The one upside: Twilio is a known
+quantity here, not a new vendor decision — they already ran on it before,
+so "move back" is a re-integration, not a first-time build.
+
+### Two separate replacement efforts running in parallel — don't conflate them
+
+Same call surfaced a second GHL-replacement project that isn't this one:
+**Hania is migrating GHL's *client-facing* usage** (the agency runs GHL
+for its own clients, separately from ICONS' internal sales pipeline) into
+"the hub," her own product, over "two sprints" (~1 month). Kris, on his
+own internal sales-team replacement (this document, `ghl_mirror.py`
+onward): *"I reckon I can definitely get it done in the next two weeks...
+mirror, and use both, and then when you can see that one's working fine,
+switch the other off."* That's the same Step 1 → parallel-run → cutover
+shape already in §8, just a real timeline attached to it now (his target,
+not a commitment).
+
+### Real-world confirmation of §4 item 4 (Activity timeline) — not hypothetical
+
+Hazel gave a concrete before/after that's worth keeping as the reference
+case when that item's schema gets designed: on MailerLite (pre-GHL), a
+lead was just an email address — no idea which page, campaign, or podcast
+brought them in. After moving to GHL: full per-lead history — SMS with
+Sean, which newsletter they read, source page, Facebook/Instagram
+engagement (comments, DMs), and whether a "new" ad click was actually an
+old lead re-engaging or a genuinely first-time contact. Kris's own list of
+what must carry over, in his words: form source, "the actions they did,"
+Twilio conversation history (once/if that migration happens), and Facebook
+ad re-engagement history. None of this is new scope — it's exactly §4 item
+4 — but it's now anchored to a real, specific pain (MailerLite-era
+blindness) rather than an abstract "nice to have."
+
+### Adjacent, NOT part of this replacement
+
+Kris mentioned a separate personal project on the same call: scraping and
+enriching RealTrends' agent directory (name, city, rank, email, website,
+phone) for small-batch, personalized outreach ("100 people who'll actually
+buy something" instead of a 10,000-person blast). Related in spirit (both
+are "know your leads properly" projects) but a different system with a
+different data source — not folded into `ghl_mirror.py` or this plan.
+
 ---
 
 ## 11. Status
