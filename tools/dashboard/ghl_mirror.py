@@ -97,6 +97,18 @@ def init_ghl_schema(conn):
             start_time TEXT, end_time TEXT, status TEXT,
             synced_at TEXT
         );
+        -- GHL's own pipeline/stage definitions, including display ORDER --
+        -- previously fetched fresh every sync (fetch_all_pipelines) just to
+        -- resolve pipeline_stage_name, then discarded. Persisted now so the
+        -- dashboard can render a kanban board with columns in GHL's real
+        -- order instead of alphabetically. Wholesale delete-then-insert each
+        -- sync (upsert_pipelines), same "GHL's own list is the current
+        -- truth" convention as ghl_contacts' tags.
+        CREATE TABLE IF NOT EXISTS ghl_pipelines (
+            pipeline_id TEXT, pipeline_name TEXT, pipeline_order INTEGER,
+            stage_id TEXT, stage_name TEXT, stage_order INTEGER,
+            PRIMARY KEY (pipeline_id, stage_id)
+        );
         CREATE TABLE IF NOT EXISTS sync_meta (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -278,6 +290,30 @@ def upsert_appointments(conn, appointments, synced_at):
     conn.commit()
 
 
+def upsert_pipelines(conn, pipelines):
+    """pipelines: the raw list from GET /opportunities/pipelines (each with
+    `id`, `name`, `stages: [{id, name}, ...]`, already in GHL's own display
+    order -- same source resolve_stage_name() already reads). Wholesale
+    delete-then-insert, same as upsert_contacts' tag replacement: GHL's own
+    current list of pipelines/stages IS the truth, there's no partial-diff
+    worth keeping."""
+    conn.execute("DELETE FROM ghl_pipelines")
+    rows = []
+    for pipeline_order, pipeline in enumerate(pipelines):
+        pipeline_id = pipeline.get("id")
+        pipeline_name = pipeline.get("name")
+        for stage_order, stage in enumerate(pipeline.get("stages") or []):
+            rows.append((pipeline_id, pipeline_name, pipeline_order, stage.get("id"), stage.get("name"), stage_order))
+    conn.executemany(
+        """
+        INSERT INTO ghl_pipelines (pipeline_id, pipeline_name, pipeline_order, stage_id, stage_name, stage_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
 def _ghl_client():
     import httpx  # imported here, not at module top, so tests exercising the pure functions
                    # above never need httpx importable / GHL creds set at all.
@@ -397,6 +433,7 @@ def run_sync(conn, client, location_id, synced_at):
     upsert_contacts(conn, contacts)
 
     pipelines = fetch_all_pipelines(client, location_id)
+    upsert_pipelines(conn, pipelines)
     raw_opps = fetch_all_opportunities(client, location_id)
     opportunities = []
     for raw in raw_opps:

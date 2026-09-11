@@ -64,6 +64,142 @@ class TestGhlMirrorContactsQuery:
         assert [c["name"] for c in results] == ["John Smith"]
 
 
+class TestGhlMirrorContactsSort:
+    def test_sort_by_value_desc_puts_the_highest_value_opportunity_first(self, conn):
+        _seed_contact(conn, "c1", "Low Value", "low@example.com")
+        _seed_contact(conn, "c2", "High Value", "high@example.com")
+        _seed_opportunity(conn, "o1", "c1", "Booked", 100.0, "2026-01-01T00:00:00")
+        _seed_opportunity(conn, "o2", "c2", "Booked", 900.0, "2026-01-01T00:00:00")
+        results = app_module.ghl_mirror_contacts(sort="value", direction="desc")
+        assert [c["name"] for c in results] == ["High Value", "Low Value"]
+
+    def test_sort_by_added_asc_puts_the_oldest_contact_first(self, conn):
+        recent = datetime.now(timezone.utc).isoformat()
+        older = "2026-01-01T00:00:00+00:00"
+        _seed_contact(conn, "c1", "Newer", "newer@example.com", date_added=recent)
+        _seed_contact(conn, "c2", "Older", "older@example.com", date_added=older)
+        _seed_opportunity(conn, "o1", "c1", "Booked", 0, recent)
+        _seed_opportunity(conn, "o2", "c2", "Booked", 0, older)
+        results = app_module.ghl_mirror_contacts(sort="added", direction="asc", include_old=True)
+        assert [c["name"] for c in results] == ["Older", "Newer"]
+
+    def test_unrecognized_sort_value_falls_back_to_name_instead_of_crashing(self, conn):
+        _seed_contact(conn, "c1", "Amy Apple", "amy@example.com")
+        _seed_contact(conn, "c2", "Zach Zebra", "zach@example.com")
+        results = app_module.ghl_mirror_contacts(sort="'; DROP TABLE ghl_contacts; --", include_old=True)
+        assert [c["name"] for c in results] == ["Amy Apple", "Zach Zebra"]
+
+
+class TestGhlMirrorContactDetail:
+    def test_returns_none_for_an_unknown_contact(self, conn):
+        assert app_module.ghl_mirror_contact_detail("nope") is None
+
+    def test_returns_full_record_with_all_tags_and_all_opportunities(self, conn):
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com", tags=["vip", "podcast-guest"])
+        _seed_opportunity(conn, "o1", "c1", "Booked", 100.0, "2026-01-01T00:00:00")
+        _seed_opportunity(conn, "o2", "c1", "Closed Won", 500.0, "2026-02-01T00:00:00")
+
+        detail = app_module.ghl_mirror_contact_detail("c1")
+        assert detail["name"] == "Jane Doe"
+        assert set(detail["tags"]) == {"vip", "podcast-guest"}
+        assert len(detail["opportunities"]) == 2, "must show EVERY opportunity, not just the latest"
+        assert {o["pipeline_stage_name"] for o in detail["opportunities"]} == {"Booked", "Closed Won"}
+        assert detail["appointments"] == []
+
+    def test_includes_each_opportunitys_observed_stage_history(self, conn):
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com")
+        ghl_mirror.upsert_opportunities(conn, [{
+            "ghl_id": "o1", "contact_ghl_id": "c1", "pipeline_id": "p1",
+            "pipeline_stage_id": "s1", "pipeline_stage_name": "New",
+            "status": "open", "monetary_value": 0,
+            "date_added": "2026-01-01", "date_updated": "2026-01-01",
+            "last_status_change_at": "2026-01-01", "synced_at": "t1",
+        }], "t1")
+        ghl_mirror.upsert_opportunities(conn, [{
+            "ghl_id": "o1", "contact_ghl_id": "c1", "pipeline_id": "p1",
+            "pipeline_stage_id": "s2", "pipeline_stage_name": "Booked",
+            "status": "open", "monetary_value": 0,
+            "date_added": "2026-01-01", "date_updated": "2026-02-01",
+            "last_status_change_at": "2026-02-01", "synced_at": "t2",
+        }], "t2")
+        detail = app_module.ghl_mirror_contact_detail("c1")
+        assert detail["opportunities"][0]["stage_history"] == [
+            {"opportunity_ghl_id": "o1", "from_stage_id": "s1", "to_stage_id": "s2", "observed_at": "t2"}
+        ]
+
+
+class TestGhlMirrorPipelineHelpers:
+    def test_pipeline_columns_come_back_in_ghls_own_order_not_alphabetical(self, conn):
+        ghl_mirror.upsert_pipelines(conn, [
+            {"id": "p1", "name": "Sales Pipeline", "stages": [{"id": "s2", "name": "Zzz Stage"}, {"id": "s1", "name": "Aaa Stage"}]},
+        ])
+        columns = app_module.ghl_mirror_pipeline_columns()
+        assert columns == [{
+            "pipeline_id": "p1", "pipeline_name": "Sales Pipeline",
+            "stages": [{"stage_id": "s2", "stage_name": "Zzz Stage"}, {"stage_id": "s1", "stage_name": "Aaa Stage"}],
+        }]
+
+    def test_pipeline_board_groups_contacts_by_stage(self, conn):
+        ghl_mirror.upsert_pipelines(conn, [
+            {"id": "p1", "name": "Sales Pipeline", "stages": [{"id": "s1", "name": "New"}, {"id": "s2", "name": "Booked"}]},
+        ])
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com")
+        _seed_contact(conn, "c2", "John Smith", "john@example.com")
+        ghl_mirror.upsert_opportunities(conn, [{
+            "ghl_id": "o1", "contact_ghl_id": "c1", "pipeline_id": "p1",
+            "pipeline_stage_id": "s1", "pipeline_stage_name": "New",
+            "status": "open", "monetary_value": 0,
+            "date_added": "2026-01-01", "date_updated": datetime.now(timezone.utc).isoformat(),
+            "last_status_change_at": "2026-01-01", "synced_at": "t1",
+        }], "t1")
+        ghl_mirror.upsert_opportunities(conn, [{
+            "ghl_id": "o2", "contact_ghl_id": "c2", "pipeline_id": "p1",
+            "pipeline_stage_id": "s2", "pipeline_stage_name": "Booked",
+            "status": "open", "monetary_value": 0,
+            "date_added": "2026-01-01", "date_updated": datetime.now(timezone.utc).isoformat(),
+            "last_status_change_at": "2026-01-01", "synced_at": "t1",
+        }], "t1")
+        board = app_module.ghl_mirror_pipeline_board("p1")
+        assert [c["name"] for c in board["s1"]] == ["Jane Doe"]
+        assert [c["name"] for c in board["s2"]] == ["John Smith"]
+
+
+class TestGhlMirrorRoutes:
+    def test_contact_detail_page_renders(self, client, db_path, conn):
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com", tags=["vip"])
+        _seed_opportunity(conn, "o1", "c1", "Booked", 250.0, "2026-01-01T00:00:00")
+        resp = client.get("/ghl-mirror/c1")
+        assert resp.status_code == 200
+        assert "Jane Doe" in resp.text
+        assert "Booked" in resp.text
+
+    def test_contact_detail_page_404s_for_unknown_contact(self, client, db_path):
+        resp = client.get("/ghl-mirror/nope")
+        assert resp.status_code == 404
+
+    def test_pipeline_page_renders_with_no_pipelines_mirrored(self, client, db_path):
+        resp = client.get("/ghl-mirror/pipeline")
+        assert resp.status_code == 200
+        assert "No pipelines mirrored yet" in resp.text
+
+    def test_pipeline_page_renders_columns_and_cards(self, client, db_path, conn):
+        ghl_mirror.upsert_pipelines(conn, [
+            {"id": "p1", "name": "Sales Pipeline", "stages": [{"id": "s1", "name": "New"}]},
+        ])
+        _seed_contact(conn, "c1", "Jane Doe", "jane@example.com")
+        ghl_mirror.upsert_opportunities(conn, [{
+            "ghl_id": "o1", "contact_ghl_id": "c1", "pipeline_id": "p1",
+            "pipeline_stage_id": "s1", "pipeline_stage_name": "New",
+            "status": "open", "monetary_value": 0,
+            "date_added": "2026-01-01", "date_updated": datetime.now(timezone.utc).isoformat(),
+            "last_status_change_at": "2026-01-01", "synced_at": "t1",
+        }], "t1")
+        resp = client.get("/ghl-mirror/pipeline")
+        assert resp.status_code == 200
+        assert "Sales Pipeline" in resp.text
+        assert "Jane Doe" in resp.text
+
+
 class TestGhlMirrorPage:
     def test_renders_empty_state_when_nothing_synced(self, client, db_path):
         resp = client.get("/ghl-mirror")

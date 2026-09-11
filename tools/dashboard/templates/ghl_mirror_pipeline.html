@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>GHL Mirror — Pipeline</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced
+  {% endif %}
+</span>
+
+<p class="muted" style="max-width: 640px;">
+  A board view like GHL's own — one pipeline's stages as columns, each contact
+  with an open opportunity in that stage as a card. <a href="/ghl-mirror">Back to the list view →</a>
+</p>
+
+{% if pipelines %}
+<div style="margin-bottom: 1.5rem;">
+  {% for p in pipelines %}
+  <a href="/ghl-mirror/pipeline?pipeline_id={{ p.pipeline_id | urlencode }}{{ '&include_old=true' if include_old }}"
+     class="stat" style="display:inline-block; margin-right: 0.75rem; padding: 0.5rem 1rem; {{ 'background:#1c2333;' if p.pipeline_id == selected_pipeline_id }}">
+    {{ p.pipeline_name }}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if not pipelines %}
+<p class="muted">No pipelines mirrored yet — run ghl_mirror.py against a real GHL account first.</p>
+{% elif not columns %}
+<p class="muted">That pipeline has no stages.</p>
+{% else %}
+<div style="display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem;">
+  {% for col in columns %}
+  <div style="flex: 0 0 260px; background: #161c2b; border-radius: 10px; padding: 0.75rem;">
+    <h2 style="margin: 0 0 0.75rem; font-size: 0.9rem; display:flex; justify-content: space-between;">
+      <span>{{ col.stage_name }}</span>
+      <span class="muted">{{ col.cards | length }}</span>
+    </h2>
+    {% for card in col.cards %}
+    <a href="/ghl-mirror/{{ card.contact_ghl_id | urlencode }}"
+       style="display:block; background:#0f1420; border-radius: 8px; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem; color: inherit; text-decoration: none;">
+      <div style="font-weight: 600;">{{ card.name or "(unnamed)" }}</div>
+      <div class="muted" style="font-size: 0.8rem;">
+        {% if card.monetary_value is not none %}${{ "%.0f"|format(card.monetary_value) }} · {% endif %}{{ card.date_updated or "—" }}
+      </div>
+    </a>
+    {% else %}
+    <p class="muted" style="font-size: 0.85rem;">Empty.</p>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

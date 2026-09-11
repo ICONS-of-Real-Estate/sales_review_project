@@ -192,8 +192,21 @@ def _escape_like(s):
 
 GHL_MIRROR_STALE_DAYS = 365  # Kris's own call, 11/09/2026: "anything older than a year is probably garbage"
 
+# Whitelisted sort columns for /ghl-mirror's clickable headers -- never
+# interpolate the raw `sort` query param straight into SQL (that's a SQL
+# injection surface for a value we don't control), so every accepted value
+# maps to a fixed, known-safe ORDER BY expression instead.
+GHL_MIRROR_SORT_COLUMNS = {
+    "name": "(c.name IS NULL OR c.name = '') ASC, c.name COLLATE NOCASE",
+    "email": "(c.email IS NULL OR c.email = '') ASC, c.email COLLATE NOCASE",
+    "stage": "(opp.pipeline_stage_name IS NULL) ASC, opp.pipeline_stage_name COLLATE NOCASE",
+    "value": "opp.monetary_value",
+    "added": "c.date_added",
+    "updated": "opp.date_updated",
+}
 
-def ghl_mirror_contacts(search="", limit=200, include_old=False):
+
+def ghl_mirror_contacts(search="", limit=200, include_old=False, sort="name", direction="asc"):
     """Every ghl_contacts row (capped at `limit`, same "don't render an
     unbounded table" discipline as get_leads()/filtered_calls() elsewhere in
     this file), each with its tags and its most recently updated
@@ -223,6 +236,17 @@ def ghl_mirror_contacts(search="", limit=200, include_old=False):
     `include_old=True` -- never silently drops data, just defaults it out
     of the way, same as every other "no signal != delete it" convention
     in this project.
+
+    `sort`/`direction` drive the clickable column headers on /ghl-mirror --
+    `sort` MUST come from GHL_MIRROR_SORT_COLUMNS (never interpolate the raw
+    query param into SQL) and falls back to the default name sort for
+    anything else, same "never trust the query string" discipline as
+    _escape_like. Sorting by stage/value/updated needs the same "most
+    recently updated opportunity per contact" row the rest of this function
+    already computes in Python below -- done here instead via a window
+    function so the ORDER BY can see it, and the Python side still only
+    needs the single latest-per-contact reduction for the OTHER columns'
+    display.
     """
     conn = get_conn()
     try:
@@ -239,12 +263,20 @@ def ghl_mirror_contacts(search="", limit=200, include_old=False):
             params.append(stale_cutoff_iso)
             conditions.append("EXISTS (SELECT 1 FROM ghl_opportunities o WHERE o.contact_ghl_id = c.ghl_id)")
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        order_expr = GHL_MIRROR_SORT_COLUMNS.get(sort, GHL_MIRROR_SORT_COLUMNS["name"])
+        dir_sql = "DESC" if direction == "desc" else "ASC"
         contact_rows = conn.execute(
             f"""
-            SELECT ghl_id, name, email, phone, source, date_added, date_updated
+            WITH opp_latest AS (
+                SELECT contact_ghl_id, pipeline_stage_name, monetary_value, date_updated,
+                       ROW_NUMBER() OVER (PARTITION BY contact_ghl_id ORDER BY date_updated DESC) AS rn
+                FROM ghl_opportunities
+            )
+            SELECT c.ghl_id, c.name, c.email, c.phone, c.source, c.date_added, c.date_updated
             FROM ghl_contacts c
+            LEFT JOIN opp_latest opp ON opp.contact_ghl_id = c.ghl_id AND opp.rn = 1
             {where}
-            ORDER BY (name IS NULL OR name = '') ASC, name COLLATE NOCASE
+            ORDER BY {order_expr} {dir_sql}
             LIMIT ?
             """,
             params + [limit],
@@ -320,6 +352,147 @@ def ghl_mirror_stale_count(search=""):
         return row["n"]
     finally:
         conn.close()
+
+
+def ghl_mirror_contact_detail(ghl_id):
+    """The "click a lead to get all the details" view (Kris, 11/09/2026) --
+    unlike ghl_mirror_contacts() above, this is per-contact and wants
+    EVERYTHING: the full contact record, every tag, every opportunity (not
+    just the latest -- a contact can have more than one, e.g. a QC and a
+    Sales Call opportunity in different pipelines), each opportunity's
+    observed stage-change history, and any appointments. Returns None if
+    the contact isn't in the mirror at all, so the route can 404 instead of
+    rendering a blank page."""
+    conn = get_conn()
+    try:
+        contact_row = conn.execute(
+            "SELECT ghl_id, name, first_name, last_name, email, phone, source, owner_id, "
+            "date_added, date_updated, synced_at FROM ghl_contacts WHERE ghl_id = ?",
+            (ghl_id,),
+        ).fetchone()
+        if contact_row is None:
+            return None
+        contact = dict(contact_row)
+        contact["tags"] = [
+            r["tag"] for r in conn.execute(
+                "SELECT tag FROM ghl_contact_tags WHERE contact_ghl_id = ? ORDER BY tag", (ghl_id,)
+            ).fetchall()
+        ]
+        opp_rows = conn.execute(
+            """
+            SELECT ghl_id, pipeline_id, pipeline_stage_id, pipeline_stage_name, status,
+                   monetary_value, date_added, date_updated, last_status_change_at
+            FROM ghl_opportunities
+            WHERE contact_ghl_id = ?
+            ORDER BY date_updated DESC
+            """,
+            (ghl_id,),
+        ).fetchall()
+        opportunities = [dict(r) for r in opp_rows]
+        opp_ids = [o["ghl_id"] for o in opportunities]
+        history_by_opp = {}
+        if opp_ids:
+            id_placeholders = ",".join("?" * len(opp_ids))
+            history_rows = conn.execute(
+                f"""
+                SELECT opportunity_ghl_id, from_stage_id, to_stage_id, observed_at
+                FROM ghl_opportunity_stage_history
+                WHERE opportunity_ghl_id IN ({id_placeholders})
+                ORDER BY observed_at DESC
+                """,
+                opp_ids,
+            ).fetchall()
+            for r in history_rows:
+                history_by_opp.setdefault(r["opportunity_ghl_id"], []).append(dict(r))
+        for o in opportunities:
+            o["stage_history"] = history_by_opp.get(o["ghl_id"], [])
+        contact["opportunities"] = opportunities
+        contact["appointments"] = [
+            dict(r) for r in conn.execute(
+                "SELECT ghl_id, calendar_id, title, start_time, end_time, status "
+                "FROM ghl_appointments WHERE contact_ghl_id = ? ORDER BY start_time DESC",
+                (ghl_id,),
+            ).fetchall()
+        ]
+        return contact
+    finally:
+        conn.close()
+
+
+def ghl_mirror_pipeline_columns(pipeline_id=None):
+    """Ordered pipeline/stage definitions (GHL_REPLACEMENT_ANALYSIS.md
+    Step 2's "pipeline view like GHL" ask, 11/09/2026) -- persisted by
+    ghl_mirror.upsert_pipelines() in GHL's own display order, not
+    alphabetically. Returns a list of {pipeline_id, pipeline_name, stages:
+    [{stage_id, stage_name}, ...]}. `pipeline_id` narrows to one pipeline
+    (the kanban board only ever shows one at a time); omit it to list every
+    pipeline (e.g. for a pipeline picker)."""
+    conn = get_conn()
+    try:
+        conditions = ["1=1"]
+        params = []
+        if pipeline_id:
+            conditions.append("pipeline_id = ?")
+            params.append(pipeline_id)
+        rows = conn.execute(
+            f"""
+            SELECT pipeline_id, pipeline_name, pipeline_order, stage_id, stage_name, stage_order
+            FROM ghl_pipelines
+            WHERE {" AND ".join(conditions)}
+            ORDER BY pipeline_order, stage_order
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    pipelines = []
+    by_id = {}
+    for r in rows:
+        pid = r["pipeline_id"]
+        if pid not in by_id:
+            by_id[pid] = {"pipeline_id": pid, "pipeline_name": r["pipeline_name"], "stages": []}
+            pipelines.append(by_id[pid])
+        by_id[pid]["stages"].append({"stage_id": r["stage_id"], "stage_name": r["stage_name"]})
+    return pipelines
+
+
+def ghl_mirror_pipeline_board(pipeline_id, include_old=False):
+    """Contacts + their opportunity IN THIS ONE PIPELINE, grouped by stage --
+    the actual kanban board data. Only contacts with an opportunity in
+    `pipeline_id` appear at all (a board column is meaningless for a
+    contact with no opportunity in that pipeline), so `include_old`'s
+    "no opportunity at all" leg from ghl_mirror_contacts() doesn't apply
+    here -- having an opportunity IN THIS PIPELINE already proves that.
+    `include_old` still applies the staleness-by-date filter, same
+    GHL_MIRROR_STALE_DAYS cutoff, since a years-untouched opportunity is
+    just as likely to be dead weight on a kanban board as in the list view.
+    """
+    conn = get_conn()
+    try:
+        conditions = ["o.pipeline_id = ?"]
+        params = [pipeline_id]
+        if not include_old:
+            stale_cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=GHL_MIRROR_STALE_DAYS)).isoformat()
+            conditions.append("COALESCE(o.date_updated, '') >= ?")
+            params.append(stale_cutoff_iso)
+        rows = conn.execute(
+            f"""
+            SELECT o.ghl_id AS opportunity_ghl_id, o.pipeline_stage_id, o.pipeline_stage_name,
+                   o.monetary_value, o.date_updated,
+                   c.ghl_id AS contact_ghl_id, c.name, c.email
+            FROM ghl_opportunities o
+            JOIN ghl_contacts c ON c.ghl_id = o.contact_ghl_id
+            WHERE {" AND ".join(conditions)}
+            ORDER BY o.date_updated DESC
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    by_stage = {}
+    for r in rows:
+        by_stage.setdefault(r["pipeline_stage_id"], []).append(dict(r))
+    return by_stage
 
 
 def top_failure_mode_per_rep():
@@ -2001,7 +2174,9 @@ PLAYBOOK_SLUG_TO_REP = {v: k for k, v in REP_TO_PLAYBOOK_SLUG.items()}
 
 
 @app.get("/ghl-mirror", response_class=HTMLResponse)
-def ghl_mirror_page(request: Request, search: str = "", include_old: bool = False):
+def ghl_mirror_page(
+    request: Request, search: str = "", include_old: bool = False, sort: str = "name", dir: str = "asc"
+):
     """Read-only view of ghl_mirror.py's tables (GHL_REPLACEMENT_ANALYSIS.md
     Step 2 — "own the read surface"). Reps still WORK in GHL; this is
     where they start LOOKING, once ghl_mirror.py actually has something to
@@ -2011,19 +2186,78 @@ def ghl_mirror_page(request: Request, search: str = "", include_old: bool = Fals
     Kris's own call, 11/09/2026, looking at the real data: most of this
     account is years-old stale leads, not current activity — "anything
     older than a year is probably garbage." Defaults to hiding those (see
-    ghl_mirror_contacts's own header); `?include_old=true` shows everyone."""
+    ghl_mirror_contacts's own header); `?include_old=true` shows everyone.
+
+    `sort`/`dir` back the clickable column headers (Kris, 11/09/2026:
+    "sort the field") -- an unrecognized `sort` value just falls back to
+    the default name sort (see GHL_MIRROR_SORT_COLUMNS), never a 500."""
+    direction = "desc" if dir == "desc" else "asc"
     return render(
         request,
         "ghl_mirror.html",
         {
             "active_page": "ghl_mirror",
             "freshness": ghl_freshness_status(),
-            "contacts": ghl_mirror_contacts(search, include_old=include_old),
+            "contacts": ghl_mirror_contacts(search, include_old=include_old, sort=sort, direction=direction),
             "search": search,
             "include_old": include_old,
+            "sort": sort,
+            "dir": direction,
             "stale_hidden_count": 0 if include_old else ghl_mirror_stale_count(search),
             "stale_days": GHL_MIRROR_STALE_DAYS,
         },
+    )
+
+
+@app.get("/ghl-mirror/pipeline", response_class=HTMLResponse)
+def ghl_mirror_pipeline_page(request: Request, pipeline_id: str = "", include_old: bool = False):
+    """GHL-style kanban board (Kris, 11/09/2026: "I want a pipleine view
+    like GHL") -- one pipeline's stages as columns, each contact with an
+    opportunity in that pipeline as a card in its stage's column. Defaults
+    to the first pipeline (by GHL's own display order) when none is picked,
+    same "never show a genuinely empty page when there's a sane default"
+    convention as the rest of this dashboard."""
+    pipelines = ghl_mirror_pipeline_columns()
+    if not pipeline_id and pipelines:
+        pipeline_id = pipelines[0]["pipeline_id"]
+    selected = next((p for p in pipelines if p["pipeline_id"] == pipeline_id), None)
+    board = ghl_mirror_pipeline_board(pipeline_id, include_old=include_old) if pipeline_id else {}
+    columns = []
+    if selected:
+        for stage in selected["stages"]:
+            cards = board.get(stage["stage_id"], [])
+            columns.append({"stage_id": stage["stage_id"], "stage_name": stage["stage_name"], "cards": cards})
+    return render(
+        request,
+        "ghl_mirror_pipeline.html",
+        {
+            "active_page": "ghl_mirror",
+            "freshness": ghl_freshness_status(),
+            "pipelines": pipelines,
+            "selected_pipeline_id": pipeline_id,
+            "columns": columns,
+            "include_old": include_old,
+        },
+    )
+
+
+@app.get("/ghl-mirror/{ghl_id}", response_class=HTMLResponse)
+def ghl_mirror_contact_page(request: Request, ghl_id: str):
+    """Contact detail page (Kris, 11/09/2026: "click on the lead to get all
+    the details") -- full record, every tag, every opportunity (with its
+    own observed stage history), and any appointments. 404s, not a blank
+    page, for a ghl_id not in the mirror (bad link, or a contact that's
+    since been merged/deleted in GHL itself)."""
+    contact = ghl_mirror_contact_detail(ghl_id)
+    if contact is None:
+        return HTMLResponse(
+            "<p>No such contact in the mirror.</p><p><a href='/ghl-mirror'>Back to GHL Mirror</a></p>",
+            status_code=404,
+        )
+    return render(
+        request,
+        "ghl_mirror_detail.html",
+        {"active_page": "ghl_mirror", "contact": contact},
     )
 
 

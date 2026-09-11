@@ -10,12 +10,13 @@
 </span>
 
 <p class="muted" style="max-width: 640px;">
-  Read-only mirror of GHL contacts and their most recent opportunity —
+  Read-only mirror of GHL contacts and their opportunities —
   Step 1/2 of the GHL-replacement work (see <code>GHL_REPLACEMENT_ANALYSIS.md</code>).
   Reps still work in GHL itself; this is only for looking. Fed by
   <code>tools/dashboard/ghl_mirror.py</code>, which has no live GHL data
   yet — an empty table below means the mirror hasn't been pointed at a
   real GHL account, not that something's broken.
+  <a href="/ghl-mirror/pipeline">View as a pipeline board →</a>
 </p>
 
 <form method="get" action="/ghl-mirror" style="margin-bottom: 1.5rem;">
@@ -46,14 +47,30 @@
 </p>
 {% endif %}
 
+{% macro sort_link(field, label) %}
+{% set next_dir = 'desc' if (sort == field and dir == 'asc') else 'asc' %}
+<a href="/ghl-mirror?{{ 'search=' + (search | urlencode) + '&' if search }}{{ 'include_old=true&' if include_old }}sort={{ field }}&dir={{ next_dir }}"
+   style="color: inherit; text-decoration: none;">
+  {{ label }}{% if sort == field %} {{ '▲' if dir == 'asc' else '▼' }}{% endif %}
+</a>
+{% endmacro %}
+
 <table>
   <thead>
-    <tr><th>Name</th><th>Email</th><th>Tags</th><th>Pipeline stage</th><th>Value</th><th>Added</th><th>Opportunity updated</th></tr>
+    <tr>
+      <th>{{ sort_link('name', 'Name') }}</th>
+      <th>{{ sort_link('email', 'Email') }}</th>
+      <th>Tags</th>
+      <th>{{ sort_link('stage', 'Pipeline stage') }}</th>
+      <th>{{ sort_link('value', 'Value') }}</th>
+      <th>{{ sort_link('added', 'Added') }}</th>
+      <th>{{ sort_link('updated', 'Opportunity updated') }}</th>
+    </tr>
   </thead>
   <tbody>
     {% for c in contacts %}
     <tr>
-      <td>{{ c.name or "(unnamed)" }}</td>
+      <td><a href="/ghl-mirror/{{ c.ghl_id | urlencode }}">{{ c.name or "(unnamed)" }}</a></td>
       <td>{{ c.email or "—" }}</td>
       <td>{% for tag in c.tags %}<span class="stat" style="padding: 0.15rem 0.6rem; margin: 0 0.25rem 0.25rem 0; display: inline-block; min-width: 0;">{{ tag }}</span>{% else %}—{% endfor %}</td>
       <td>{{ c.opportunity.pipeline_stage_name if c.opportunity else "—" }}</td>

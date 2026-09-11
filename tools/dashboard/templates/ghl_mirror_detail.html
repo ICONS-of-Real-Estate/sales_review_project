@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="/ghl-mirror">← Back to GHL Mirror</a></p>
+<h1>{{ contact.name or "(unnamed)" }}</h1>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="value" style="font-size: 1rem;">{{ contact.email or "—" }}</div>
+    <div class="label">Email</div>
+  </div>
+  <div class="stat">
+    <div class="value" style="font-size: 1rem;">{{ contact.phone or "—" }}</div>
+    <div class="label">Phone</div>
+  </div>
+  <div class="stat">
+    <div class="value" style="font-size: 1rem;">{{ contact.source or "—" }}</div>
+    <div class="label">Source</div>
+  </div>
+  <div class="stat">
+    <div class="value" style="font-size: 1rem;">{{ contact.date_added or "—" }}</div>
+    <div class="label">Added</div>
+  </div>
+</div>
+
+<p>
+  {% for tag in contact.tags %}<span class="stat" style="padding: 0.15rem 0.6rem; margin: 0 0.25rem 0.25rem 0; display: inline-block; min-width: 0;">{{ tag }}</span>{% else %}<span class="muted">No tags.</span>{% endfor %}
+</p>
+
+<h2>Opportunities ({{ contact.opportunities | length }})</h2>
+{% if contact.opportunities %}
+  {% for o in contact.opportunities %}
+  <div class="chart-card">
+    <h2 style="margin-top:0;">{{ o.pipeline_stage_name or o.pipeline_stage_id }}</h2>
+    <div class="stat-row">
+      <div class="stat">
+        <div class="value" style="font-size: 1rem;">{% if o.monetary_value is not none %}${{ "%.0f"|format(o.monetary_value) }}{% else %}—{% endif %}</div>
+        <div class="label">Value</div>
+      </div>
+      <div class="stat">
+        <div class="value" style="font-size: 1rem;">{{ o.status or "—" }}</div>
+        <div class="label">Status</div>
+      </div>
+      <div class="stat">
+        <div class="value" style="font-size: 1rem;">{{ o.date_added or "—" }}</div>
+        <div class="label">Created</div>
+      </div>
+      <div class="stat">
+        <div class="value" style="font-size: 1rem;">{{ o.date_updated or "—" }}</div>
+        <div class="label">Updated</div>
+      </div>
+    </div>
+    {% if o.stage_history %}
+    <p class="muted" style="margin-bottom: 0.5rem;">Stage changes we've observed since this mirror started tracking it:</p>
+    <table>
+      <thead><tr><th>From</th><th>To</th><th>Observed</th></tr></thead>
+      <tbody>
+        {% for h in o.stage_history %}
+        <tr><td>{{ h.from_stage_id }}</td><td>{{ h.to_stage_id }}</td><td>{{ h.observed_at }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No stage changes observed yet by this mirror.</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+<p class="muted">No opportunities.</p>
+{% endif %}
+
+<h2>Appointments ({{ contact.appointments | length }})</h2>
+{% if contact.appointments %}
+<table>
+  <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for a in contact.appointments %}
+    <tr><td>{{ a.title or "—" }}</td><td>{{ a.start_time or "—" }}</td><td>{{ a.end_time or "—" }}</td><td>{{ a.status or "—" }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No appointments mirrored yet.</p>
+{% endif %}
+{% endblock %}

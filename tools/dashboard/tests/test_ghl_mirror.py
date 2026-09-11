@@ -122,6 +122,33 @@ class TestUpsertAppointments:
         assert conn.execute("SELECT COUNT(*) FROM ghl_appointments").fetchone()[0] == 1
 
 
+class TestUpsertPipelines:
+    def test_persists_pipeline_and_stage_order(self, conn):
+        pipelines = [
+            {"id": "p1", "name": "Sales Pipeline", "stages": [{"id": "s1", "name": "New"}, {"id": "s2", "name": "Booked"}]},
+            {"id": "p2", "name": "Podcast Pipeline", "stages": [{"id": "s3", "name": "Recorded"}]},
+        ]
+        ghl_mirror.upsert_pipelines(conn, pipelines)
+        rows = conn.execute(
+            "SELECT pipeline_id, pipeline_name, pipeline_order, stage_id, stage_name, stage_order "
+            "FROM ghl_pipelines ORDER BY pipeline_order, stage_order"
+        ).fetchall()
+        assert rows == [
+            ("p1", "Sales Pipeline", 0, "s1", "New", 0),
+            ("p1", "Sales Pipeline", 0, "s2", "Booked", 1),
+            ("p2", "Podcast Pipeline", 1, "s3", "Recorded", 0),
+        ]
+
+    def test_re_syncing_replaces_the_old_list_wholesale(self, conn):
+        # A stage renamed or removed in GHL itself must disappear here too --
+        # same "GHL's own current list is the truth" contract as
+        # upsert_contacts' tag replacement.
+        ghl_mirror.upsert_pipelines(conn, [{"id": "p1", "name": "Old", "stages": [{"id": "s1", "name": "Stage A"}]}])
+        ghl_mirror.upsert_pipelines(conn, [{"id": "p2", "name": "New", "stages": [{"id": "s9", "name": "Stage B"}]}])
+        rows = conn.execute("SELECT pipeline_id, stage_id FROM ghl_pipelines").fetchall()
+        assert rows == [("p2", "s9")]
+
+
 class TestMainGuard:
     def test_main_refuses_to_run_without_a_token_or_location_configured(self, monkeypatch, capsys):
         monkeypatch.setattr(ghl_mirror, "GHL_API_TOKEN", None)
