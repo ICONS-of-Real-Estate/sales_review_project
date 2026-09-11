@@ -37,6 +37,7 @@ os.environ.setdefault(
 )
 
 import app as app_module  # noqa: E402
+import ghl_mirror  # noqa: E402
 import sync  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -94,6 +95,7 @@ def db_path(tmp_path, monkeypatch):
     path = tmp_path / "dashboard.db"
     conn = sqlite3.connect(str(path))
     sync.init_schema(conn)
+    ghl_mirror.init_ghl_schema(conn)
     conn.close()
     monkeypatch.setattr(app_module, "DB_PATH", str(path))
     monkeypatch.setattr(sync, "DB_PATH", str(path))

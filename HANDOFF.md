@@ -7,6 +7,28 @@
 
 ---
 
+## Built this session — GHL mirror read surface + trigger merge (11/09/2026, later)
+
+Kris said "go" to both of: (1) the GHL mirror's read surface (Step 2), (2)
+freeing more trigger headroom.
+
+1. **`/ghl-mirror` dashboard page** (new) — read-only table of
+   `ghl_mirror.py`'s contacts, each with its tags and most recently
+   updated opportunity (stage/value/date). `app.py`'s `ghl_mirror_contacts()`
+   query + a search box (name/email). Fed entirely by `ghl_mirror.py`'s
+   tables, which have no live GHL data yet (see that module's own
+   docstring) — the page's empty state says so explicitly rather than
+   looking broken. Startup now also runs `ghl_mirror.init_ghl_schema()`
+   alongside `sync.py`'s own, so the tables exist even before any real
+   sync. 6 new tests, 347 passing across the whole dashboard suite,
+   fail-before verified.
+2. **Trigger merge** — see the "found headroom after all" update in the
+   section below: `runAllOngoingScoringPasses_`/`runGhlNoteSync_`/
+   `runPhase8ReplyTrackerStandingChecks_` merged into one
+   `runEvery4HourStandingChecks_` trigger, freeing 2 more slots.
+
+---
+
 ## Built this session — GHL mirror skeleton, trigger-cap audit (11/09/2026)
 
 Kris said "yes" to all three of: (1) start the GHL-replacement mirror

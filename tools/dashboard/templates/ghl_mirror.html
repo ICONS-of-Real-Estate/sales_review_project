@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>GHL Mirror</h1>
+<span class="freshness {{ freshness.level }}">
+  {% if freshness.last_synced_at %}
+    Last synced {{ freshness.age_minutes | round(0) | int }} min ago
+  {% else %}
+    Never synced
+  {% endif %}
+</span>
+
+<p class="muted" style="max-width: 640px;">
+  Read-only mirror of GHL contacts and their most recent opportunity —
+  Step 1/2 of the GHL-replacement work (see <code>GHL_REPLACEMENT_ANALYSIS.md</code>).
+  Reps still work in GHL itself; this is only for looking. Fed by
+  <code>tools/dashboard/ghl_mirror.py</code>, which has no live GHL data
+  yet — an empty table below means the mirror hasn't been pointed at a
+  real GHL account, not that something's broken.
+</p>
+
+<form method="get" action="/ghl-mirror" style="margin-bottom: 1.5rem;">
+  <input type="text" name="search" value="{{ search }}" placeholder="Search name or email"
+         style="padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid #262c3d; background: #161c2b; color: #e8ecf4; min-width: 260px;">
+  <button type="submit" style="padding: 0.5rem 1rem; border-radius: 6px; border: none; background: #7dc4ff; color: #0f1420; cursor: pointer;">Search</button>
+  {% if search %}<a href="/ghl-mirror" style="margin-left: 0.75rem;">Clear</a>{% endif %}
+</form>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="value">{{ contacts | length }}</div>
+    <div class="label">Contact{{ "s" if contacts | length != 1 else "" }}{{ " matching search" if search else "" }}</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Name</th><th>Email</th><th>Tags</th><th>Pipeline stage</th><th>Value</th><th>Opportunity updated</th></tr>
+  </thead>
+  <tbody>
+    {% for c in contacts %}
+    <tr>
+      <td>{{ c.name or "(unnamed)" }}</td>
+      <td>{{ c.email or "—" }}</td>
+      <td>{% for tag in c.tags %}<span class="stat" style="padding: 0.15rem 0.6rem; margin: 0 0.25rem 0.25rem 0; display: inline-block; min-width: 0;">{{ tag }}</span>{% else %}—{% endfor %}</td>
+      <td>{{ c.opportunity.pipeline_stage_name if c.opportunity else "—" }}</td>
+      <td>{% if c.opportunity and c.opportunity.monetary_value is not none %}${{ "%.0f"|format(c.opportunity.monetary_value) }}{% else %}—{% endif %}</td>
+      <td>{{ c.opportunity.date_updated if c.opportunity else "—" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">
+      {% if search %}No contacts match "{{ search }}".{% else %}Nothing mirrored yet — run ghl_mirror.py against a real GHL account first.{% endif %}
+    </td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

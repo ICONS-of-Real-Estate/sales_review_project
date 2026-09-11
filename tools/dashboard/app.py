@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 import auth
+import ghl_mirror
 import sheets_write
 import sync
 import transcripts
@@ -121,6 +122,7 @@ def render(request: Request, name: str, context: dict):
 try:
     _startup_conn = sqlite3.connect(DB_PATH)
     sync.init_schema(_startup_conn)
+    ghl_mirror.init_ghl_schema(_startup_conn)
     _startup_conn.close()
 except Exception as e:
     print(f"WARNING: could not initialize schema at {DB_PATH}: {e}")
@@ -139,11 +141,9 @@ def get_conn():
     return conn
 
 
-def freshness_status():
+def _freshness_from_sync_meta_key(key):
     conn = get_conn()
-    row = conn.execute(
-        "SELECT value FROM sync_meta WHERE key = 'last_synced_at'"
-    ).fetchone()
+    row = conn.execute("SELECT value FROM sync_meta WHERE key = ?", (key,)).fetchone()
     conn.close()
     if not row:
         return {"last_synced_at": None, "age_minutes": None, "level": "stale"}
@@ -161,6 +161,65 @@ def freshness_status():
     else:
         level = "stale"
     return {"last_synced_at": last_synced_at, "age_minutes": age_minutes, "level": level}
+
+
+def freshness_status():
+    return _freshness_from_sync_meta_key("last_synced_at")
+
+
+def ghl_freshness_status():
+    """Same shape as freshness_status(), keyed off ghl_mirror.py's own
+    sync_meta row ('ghl_last_synced_at') -- separate from the Sheet sync's
+    freshness since the two run independently (ghl_mirror.py isn't on any
+    schedule yet at all, see that module's own docstring)."""
+    return _freshness_from_sync_meta_key("ghl_last_synced_at")
+
+
+def ghl_mirror_contacts(search=""):
+    """Every ghl_contacts row, each with its tags (comma-joined) and its
+    most recently updated opportunity, if any -- one row per contact, not
+    per opportunity, since a contact page is what this route is for.
+    `search` matches name/email, case-insensitively, same LIKE pattern
+    filtered_calls() already uses elsewhere in this file."""
+    conn = get_conn()
+    where = ""
+    params = []
+    if search:
+        where = "WHERE c.name LIKE ? OR c.email LIKE ?"
+        like = f"%{search}%"
+        params = [like, like]
+    rows = conn.execute(
+        f"""
+        SELECT c.ghl_id, c.name, c.email, c.phone, c.source, c.date_added,
+               GROUP_CONCAT(DISTINCT t.tag) AS tags
+        FROM ghl_contacts c
+        LEFT JOIN ghl_contact_tags t ON t.contact_ghl_id = c.ghl_id
+        {where}
+        GROUP BY c.ghl_id
+        ORDER BY c.name COLLATE NOCASE
+        """,
+        params,
+    ).fetchall()
+    contacts = [dict(r) for r in rows]
+
+    opp_rows = conn.execute(
+        """
+        SELECT contact_ghl_id, pipeline_stage_name, status, monetary_value, date_updated
+        FROM ghl_opportunities
+        ORDER BY date_updated DESC
+        """
+    ).fetchall()
+    conn.close()
+    latest_opp_by_contact = {}
+    for r in opp_rows:
+        cid = r["contact_ghl_id"]
+        if cid not in latest_opp_by_contact:  # first row per contact_ghl_id wins -- already DESC by date_updated
+            latest_opp_by_contact[cid] = dict(r)
+
+    for c in contacts:
+        c["tags"] = c["tags"].split(",") if c["tags"] else []
+        c["opportunity"] = latest_opp_by_contact.get(c["ghl_id"])
+    return contacts
 
 
 def top_failure_mode_per_rep():
@@ -1839,6 +1898,25 @@ def queue_page(request: Request, rep: str = ""):
 # scroll of all three; moved the full text to each rep's own /reps/{rep}
 # page, this page keeps only cross-rep search).
 PLAYBOOK_SLUG_TO_REP = {v: k for k, v in REP_TO_PLAYBOOK_SLUG.items()}
+
+
+@app.get("/ghl-mirror", response_class=HTMLResponse)
+def ghl_mirror_page(request: Request, search: str = ""):
+    """Read-only view of ghl_mirror.py's tables (GHL_REPLACEMENT_ANALYSIS.md
+    Step 2 — "own the read surface"). Reps still WORK in GHL; this is
+    where they start LOOKING, once ghl_mirror.py actually has something to
+    show — see that module's own docstring for why it has no live data
+    yet. Empty on a fresh dashboard.db is the expected state, not a bug."""
+    return render(
+        request,
+        "ghl_mirror.html",
+        {
+            "active_page": "ghl_mirror",
+            "freshness": ghl_freshness_status(),
+            "contacts": ghl_mirror_contacts(search),
+            "search": search,
+        },
+    )
 
 
 @app.get("/training", response_class=HTMLResponse)
