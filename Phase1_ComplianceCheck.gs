@@ -4745,11 +4745,15 @@ var STANDING_AUTOMATION_HANDLERS_ = [
  *     leaves it alone — flipping ENABLED to true and re-running this
  *     picks it up.
  *
- * Also SWEEPS: after installing/skipping every known phase, deletes any
- * trigger whose handler isn't in STANDING_AUTOMATION_HANDLERS_ above —
- * ad-hoc backfill runners included, whatever job left them behind. Re-run
- * this any time the trigger count looks wrong; it both fixes the count and
- * reports exactly what it removed.
+ * Also SWEEPS: BEFORE installing/skipping anything (moved here 11/09/2026 —
+ * see that function's own top-of-body comment for the outage that caused
+ * the move), deletes any trigger whose handler isn't in
+ * STANDING_AUTOMATION_HANDLERS_ above — ad-hoc backfill runners included,
+ * whatever job left them behind — so a newly-enabled phase that needs a
+ * fresh trigger slot gets first crack at whatever the sweep just freed,
+ * instead of the sweep being unreachable because the cap was already hit.
+ * Re-run this any time the trigger count looks wrong; it both fixes the
+ * count and reports exactly what it removed.
  */
 /** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
 function installAllReadyTriggers() {
@@ -4759,6 +4763,34 @@ function installAllReadyTriggers() {
 function installAllReadyTriggers_() {
   RUN_TAG = 'installAllReadyTriggers_';
   var installed = [], skipped = [];
+
+  // Real outage found live (11/09/2026): the orphan sweep used to run at
+  // the very end of this function, AFTER every install*Trigger() call. The
+  // project already hit Apps Script's 20-trigger-per-script cap once
+  // (07/09/2026) and does again the moment a newly-enabled phase needs one
+  // more slot than is free — installPhase17To19StandingChecksTrigger threw
+  // "This script has too many triggers" trying to add Phase 20's trigger,
+  // which meant the function returned early and the sweep below never ran,
+  // so any stale/orphaned triggers sitting in those "too many" slots never
+  // got cleared either — a self-inflicted deadlock: the fix (sweep) was
+  // unreachable BECAUSE of the exact problem (cap hit) it exists to fix.
+  // Moved here, before any install*Trigger() call, so stale slots are freed
+  // first and every phase below gets a fair shot at the room it needs.
+  var orphansRemoved = [];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var handler = t.getHandlerFunction();
+    if (STANDING_AUTOMATION_HANDLERS_.indexOf(handler) === -1) {
+      ScriptApp.deleteTrigger(t);
+      orphansRemoved.push(handler);
+    }
+  });
+  if (orphansRemoved.length) {
+    installed.push('Swept ' + orphansRemoved.length + ' orphan trigger(s) up front, not part of standing ' +
+      'automation, to free room before installing: ' + orphansRemoved.join(', '));
+  } else {
+    installed.push('Orphan sweep (run up front, before any installs): none found.');
+  }
+  RUN_TAG = 'installAllReadyTriggers_'; // reset — ScriptApp.deleteTrigger above sets nothing, but keep this defensive against future edits above it
 
   installAutomation();
   installed.push('Phase 1: daily compliance check + weekly self-heal');
@@ -4939,35 +4971,11 @@ function installAllReadyTriggers_() {
   // RUN_TAG reset here on purpose: every install*() call above sets its own
   // RUN_TAG at its own top (that's how each log_() line above got its own
   // [installXxx] prefix), which leaves RUN_TAG stuck on whichever ran last
-  // by the time we get here — confirmed live (31/08/2026): the sweep below
-  // and the "done" summary both showed up as [installReplyTrackerTriggers]
-  // without this reset.
+  // by the time we get here — confirmed live (31/08/2026): the "done"
+  // summary below showed up as [installReplyTrackerTriggers] without this
+  // reset. (The orphan sweep itself moved to the top of this function,
+  // 11/09/2026 — see its own comment up there for why.)
   RUN_TAG = 'installAllReadyTriggers_';
-
-  // General orphan sweep — replaces the old hardcoded single-purpose
-  // rescoreAllCalls carve-out (31/08/2026). Real gap found live (03/09/2026):
-  // that carve-out only ever knew about ONE ad-hoc backfill trigger by name.
-  // A second one (runRescoreLastWeekViaTrigger_, added the same day) would
-  // have been just as invisible to it as the three missing phases above
-  // were — anything not in STANDING_AUTOMATION_HANDLERS_ is, by definition,
-  // not standing automation this file knows about, so it gets removed
-  // regardless of what it's called or when it was added. Start a backfill
-  // on purpose with its own install*Trigger() function afterward — this
-  // function will stop it again the next time it's re-run, same as before.
-  var orphansRemoved = [];
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    var handler = t.getHandlerFunction();
-    if (STANDING_AUTOMATION_HANDLERS_.indexOf(handler) === -1) {
-      ScriptApp.deleteTrigger(t);
-      orphansRemoved.push(handler);
-    }
-  });
-  if (orphansRemoved.length) {
-    installed.push('Swept ' + orphansRemoved.length + ' orphan trigger(s), not part of standing ' +
-      'automation: ' + orphansRemoved.join(', '));
-  } else {
-    installed.push('Orphan sweep: none found — every existing trigger is recognized standing automation.');
-  }
 
   log_('installAllReadyTriggers_ done.\nInstalled:\n  ' + installed.join('\n  ') +
     '\nSkipped:\n  ' + skipped.join('\n  '));

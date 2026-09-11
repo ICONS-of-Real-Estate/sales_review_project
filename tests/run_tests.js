@@ -12694,3 +12694,19 @@ test('buildAndMaybeSendBensLeadStatusReport_ in preview mode logs and never send
     if (originalOpen) gas.SpreadsheetApp.openById = originalOpen;
   }
 });
+
+test('installAllReadyTriggers_ sweeps orphan triggers BEFORE attempting any install*Trigger() call, so a later trigger-cap throw cannot make the sweep unreachable (real outage, 11/09/2026: installPhase17To19StandingChecksTrigger threw "too many triggers" and the sweep, which used to run at the very end, never got a chance to free the stale slots that caused it)', () => {
+  const originalScriptApp = gas.ScriptApp;
+  const originalInstallAutomation = gas.installAutomation;
+  try {
+    gas.ScriptApp = fakeScriptAppTriggers_(['someStaleOrphanHandler_']);
+    gas.installAutomation = () => { throw new Error('simulated: too many triggers'); };
+    assert.throws(() => gas.installAllReadyTriggers_(), /simulated: too many triggers/);
+    const remainingHandlers = gas.ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    assert.ok(remainingHandlers.indexOf('someStaleOrphanHandler_') === -1,
+      'the orphan must already be swept even though installAutomation (which runs right after the sweep) threw');
+  } finally {
+    gas.ScriptApp = originalScriptApp;
+    gas.installAutomation = originalInstallAutomation;
+  }
+});
