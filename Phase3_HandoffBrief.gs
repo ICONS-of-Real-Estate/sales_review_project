@@ -569,7 +569,15 @@ function findProspectSocialLinks_(prospectName, prospectEmail) {
 // ---------------------------------------------------------------------------
 
 var FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG = {
-  ENABLED: false,
+  // Flipped true 12/09/2026 after a clean previewFirstTouchResearchSummary()
+  // run against 5 real prospects (Anthony Camperi, Lucy Quinones, Chelsea
+  // Fernandez, Monique Lewis, Salisia Murray) — every summary was specific
+  // and grounded in the real snippets, and it correctly flagged identity
+  // ambiguity itself in 2/5 cases (a same-named LinkedIn profile that was
+  // clearly a different person) rather than blending in the wrong person's
+  // facts, which is exactly the safety property buildFirstTouchResearchSystemPrompt_
+  // asks for.
+  ENABLED: true,
   MAX_RESULTS_TO_MODEL: 6
 };
 
