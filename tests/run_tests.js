@@ -7874,6 +7874,10 @@ test('buildLeadConfirmationReminderEmail_ tells the rep to call the LEAD to conf
     'must say so honestly rather than printing the raw title as if it were a real name');
 });
 
+test('STANDING_AUTOMATION_HANDLERS_ protects runGhlHygieneCheck_ from the orphan sweep, even though GHL_HYGIENE_CONFIG.ENABLED is false and it is install-by-hand only (real gap found live, GHL_REPLACEMENT_ANALYSIS.md §6.3, 09/09/2026)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlHygieneCheck_') !== -1);
+});
+
 test('findUpcomingDiscoveryCallsForRep_/sendUpcomingLeadConfirmationReminders_ are wired into STANDING_AUTOMATION_HANDLERS_/installAllReadyTriggers_, same "no silent gap" discipline as every other phase (03/09/2026)', () => {
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('sendUpcomingLeadConfirmationReminders_') !== -1);
   assert.equal(typeof gas.LEAD_CONFIRMATION_CONFIG, 'object');
@@ -9805,6 +9809,96 @@ test('ghlStageIsTerminal_ matches "Closed Won"/"Closed lost" case-insensitively 
   assert.equal(gas.ghlStageIsTerminal_('Closed Won'), true);
   assert.equal(gas.ghlStageIsTerminal_('Closed lost'), true);
   assert.equal(gas.ghlStageIsTerminal_('Sales Call - Booked'), false);
+});
+
+test('ghlListOpenOpportunitiesInPipeline_ now paginates for real, instead of silently stopping at one page (real bug, GHL_REPLACEMENT_ANALYSIS.md §6.3, 09/09/2026: the live "GHL Stage Triage" tab only ever reflected "Cold Calling", 50 of ~2,309 real opportunities)', () => {
+  const originalGet = gas.ghlApiGet_;
+  try {
+    const pageOf = (n) => Array.from({ length: n }, (_, i) => ({ id: 'o' + i }));
+    gas.ghlApiGet_ = (path) => {
+      const m = path.match(/[&?]page=(\d+)/);
+      const page = m ? Number(m[1]) : 1;
+      if (page === 1) return { status: 200, json: { opportunities: pageOf(100) }, body: '' };
+      if (page === 2) return { status: 200, json: { opportunities: pageOf(30) }, body: '' }; // short page -- last one
+      throw new Error('must not request a third page once a short page came back');
+    };
+    const result = gas.ghlListOpenOpportunitiesInPipeline_('loc1', 'p1', 100);
+    assert.equal(result.ok, true);
+    assert.equal(result.opportunities.length, 130);
+    assert.equal(result.possiblyTruncated, false);
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+  }
+});
+
+test('ghlListOpenOpportunitiesInPipeline_ sends location_id/pipeline_id/limit/page on every request', () => {
+  const originalGet = gas.ghlApiGet_;
+  const calledPaths = [];
+  try {
+    gas.ghlApiGet_ = (path) => {
+      calledPaths.push(path);
+      return { status: 200, json: { opportunities: [] }, body: '' };
+    };
+    gas.ghlListOpenOpportunitiesInPipeline_('loc1', 'p1', 50);
+    assert.equal(calledPaths.length, 1);
+    assert.match(calledPaths[0], /location_id=loc1/);
+    assert.match(calledPaths[0], /pipeline_id=p1/);
+    assert.match(calledPaths[0], /limit=50/);
+    assert.match(calledPaths[0], /page=1/);
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+  }
+});
+
+test('ghlListOpenOpportunitiesInPipeline_ stops at MAX_PAGES_PER_PIPELINE and reports possiblyTruncated when every page came back full', () => {
+  const originalGet = gas.ghlApiGet_;
+  const originalMaxPages = gas.GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE;
+  try {
+    gas.GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE = 3;
+    let calls = 0;
+    gas.ghlApiGet_ = () => {
+      calls++;
+      return { status: 200, json: { opportunities: Array.from({ length: 10 }, (_, i) => ({ id: 'o' + i })) }, body: '' };
+    };
+    const result = gas.ghlListOpenOpportunitiesInPipeline_('loc1', 'p1', 10);
+    assert.equal(calls, 3, 'must stop exactly at the safety cap, not keep paginating forever');
+    assert.equal(result.opportunities.length, 30);
+    assert.equal(result.possiblyTruncated, true, 'a still-full last page at the cap means more likely exist');
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+    gas.GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE = originalMaxPages;
+  }
+});
+
+test('ghlListOpenOpportunitiesInPipeline_ returns ok:false only when the FIRST page fails', () => {
+  const originalGet = gas.ghlApiGet_;
+  try {
+    gas.ghlApiGet_ = () => ({ status: 500, json: null, body: 'server error' });
+    const result = gas.ghlListOpenOpportunitiesInPipeline_('loc1', 'p1', 100);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 500);
+    assert.deepEqual(Array.from(result.opportunities), []);
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+  }
+});
+
+test('ghlListOpenOpportunitiesInPipeline_ keeps earlier pages\' data (ok:true, possiblyTruncated) when a LATER page fails, instead of discarding everything', () => {
+  const originalGet = gas.ghlApiGet_;
+  try {
+    gas.ghlApiGet_ = (path) => {
+      const m = path.match(/[&?]page=(\d+)/);
+      const page = m ? Number(m[1]) : 1;
+      if (page === 1) return { status: 200, json: { opportunities: Array.from({ length: 100 }, (_, i) => ({ id: 'o' + i })) }, body: '' };
+      return { status: 429, json: null, body: 'rate limited' };
+    };
+    const result = gas.ghlListOpenOpportunitiesInPipeline_('loc1', 'p1', 100);
+    assert.equal(result.ok, true, 'partial real data must not be thrown away over a later page failing');
+    assert.equal(result.opportunities.length, 100);
+    assert.equal(result.possiblyTruncated, true, 'a mid-fetch failure means this is known-incomplete');
+  } finally {
+    gas.ghlApiGet_ = originalGet;
+  }
 });
 
 test('buildGhlStageTriageSuggestion_ says leave-as-is when a real future appointment exists, even on a very stale stage', () => {

@@ -56,6 +56,16 @@ var GHL_STAGE_TRIAGE_CONFIG = {
   // batch first, then raise" pattern as GHL_NOTE_SYNC_CONFIG.MAX_ROWS_PER_RUN.
   MAX_OPPORTUNITIES_PER_RUN: 25,
 
+  // ghlListOpenOpportunitiesInPipeline_ used to fetch a single page (100
+  // opportunities) per pipeline and call it done — GHL_REPLACEMENT_ANALYSIS.md
+  // §6.3, confirmed live: the "GHL Stage Triage" tab only ever saw "Cold
+  // Calling" (50 of ~2,309 real opportunities across every pipeline), with
+  // nothing on the page saying so. Now paginates for real; this is just a
+  // safety cap against a runaway loop, not the everyday limit — the largest
+  // known pipeline (ICONS Podcast, ~946 opportunities) needs 10 pages at 100
+  // each, so 30 pages (3,000 opportunities) leaves real headroom.
+  MAX_PAGES_PER_PIPELINE: 30,
+
   // ghlMostRecentConversationDate_ now fetches each conversation's own
   // messages (to filter out automated ones — see ghlMessageIsAutomated_),
   // not just the conversation's own lastMessageDate — same
@@ -194,26 +204,50 @@ function readExistingGhlStageTriageOpportunityIds_(sheet) {
 }
 
 /**
- * One GHL API call — lists opportunities in one pipeline that are NOT in a
- * terminal stage, newest activity last. Best-effort against an unconfirmed
- * shape (this endpoint's snake_case quirk is already documented at
- * ghlListOpportunitiesForContact_ above) — logs full status/body on
- * failure rather than assuming.
+ * Lists every opportunity in one pipeline (not just its first page). Real
+ * bug, confirmed live (GHL_REPLACEMENT_ANALYSIS.md §6.3, 09/09/2026): this
+ * used to fetch a single page and call it done, so the live "GHL Stage
+ * Triage" tab only ever reflected "Cold Calling" — 50 of ~2,309 real
+ * opportunities across every pipeline — with nothing on the sheet saying
+ * so. `page`-based pagination per this endpoint's own confirmed-live usage
+ * elsewhere (Phase9_GhlSync.gs's own comment on this same endpoint).
  *
- * Single page only (`limit`, no cursor) — GHL v2's pagination shape for this
- * endpoint hasn't been confirmed live yet. A pipeline with more open
- * opportunities than `limit` will only surface its first page; the log says
- * so explicitly rather than silently under-reporting.
+ * `possiblyTruncated` now means something real: true only if
+ * GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE's safety cap was hit (a
+ * pipeline with 3,000+ open opportunities), or a later page failed after
+ * earlier pages already succeeded (partial data returned rather than
+ * discarded). `ok: false` is reserved for the FIRST page failing — nothing
+ * usable came back at all.
  */
 function ghlListOpenOpportunitiesInPipeline_(locationId, pipelineId, limit) {
-  var path = '/opportunities/search?location_id=' + encodeURIComponent(locationId) +
-    '&pipeline_id=' + encodeURIComponent(pipelineId) + '&limit=' + encodeURIComponent(limit || 100);
-  var res = ghlApiGet_(path);
-  if (res.status !== 200) {
-    return { ok: false, status: res.status, body: res.body, url: res.url, opportunities: [] };
+  var pageSize = limit || 100;
+  var maxPages = GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE;
+  var opportunities = [];
+  var page = 1;
+  var truncated = false;
+  var failure = null;
+
+  while (page <= maxPages) {
+    var path = '/opportunities/search?location_id=' + encodeURIComponent(locationId) +
+      '&pipeline_id=' + encodeURIComponent(pipelineId) + '&limit=' + encodeURIComponent(pageSize) +
+      '&page=' + encodeURIComponent(page);
+    var res = ghlApiGet_(path);
+    if (res.status !== 200) {
+      failure = res;
+      if (opportunities.length) truncated = true; // partial data — flag it, don't silently under-report
+      break;
+    }
+    var batch = (res.json && (res.json.opportunities || res.json.data)) || [];
+    opportunities = opportunities.concat(batch);
+    if (batch.length < pageSize) break; // short page — this was the last one
+    page++;
   }
-  var opps = (res.json && (res.json.opportunities || res.json.data)) || [];
-  return { ok: true, opportunities: opps, possiblyTruncated: opps.length >= (limit || 100) };
+  if (page > maxPages) truncated = true; // hit the safety cap with a still-full last page — likely more exist
+
+  if (!opportunities.length && failure) {
+    return { ok: false, status: failure.status, body: failure.body, url: failure.url, opportunities: [] };
+  }
+  return { ok: true, opportunities: opportunities, possiblyTruncated: truncated };
 }
 
 /**

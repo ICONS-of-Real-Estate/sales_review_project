@@ -4740,6 +4740,16 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   'runTrainingCallReview', 'sendTomasTranscriptReminder_',                 // Phase 6
   'runDailyPracticeCompliance', 'sendDailyPracticeReminders_', 'runDailyPracticeGrading', // Phase 7
   'syncGhlEmailAndDisposition_',                                           // Phase 9
+  // Real gap found live (GHL_REPLACEMENT_ANALYSIS.md §6.3, 09/09/2026):
+  // installGhlHygieneCheckTrigger (Phase9_GhlSync.gs) is documented as a
+  // manual "ONE-TIME setup, run manually" install (deliberately NOT called
+  // from this function — GHL_HYGIENE_CONFIG.ENABLED is false as of this
+  // comment), but its handler was never added here — so a human who
+  // followed that file's own setup instructions and ran it by hand would
+  // have their trigger silently deleted the very next time this function's
+  // orphan sweep ran. Listed here so it's actually protected once installed,
+  // same as every other standing automation.
+  'runGhlHygieneCheck_',
   'runBensPodcastSync_',                                                   // Phase 11
   'runCalibrationFeedback',                                                // Phase 16
   // Phase 2 (ongoing scoring) + Phase 8 (reply tracker) + Phase 12 (GHL

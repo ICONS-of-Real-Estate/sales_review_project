@@ -357,6 +357,15 @@ All in `Phase14_GhlStageTriage.gs`, all live now, all found by cross-checking
 the real spreadsheet rather than reading code. Worth fixing whether or not GHL
 is ever replaced, because Tomás is being shown this output.
 
+**STATUS 12/09/2026 — all fixed.** 6.1/6.2 were already wired in by the time
+this session re-checked the live code (`ghlMostRecentNoteDate_` already
+filters `ghlNoteIsOurOwn_` and normalizes via `ghlTimestampToIso_`;
+`ghlMostRecentConversationDate_` already walks real messages, filtering
+`ghlMessageIsAutomated_`, both ISO-normalized before the `[...].sort().pop()`
+comparison — this doc just hadn't been updated to say so). 6.3 itself, and
+its carried-over trigger-registry gap, were still live and are fixed in this
+session — see each subsection below.
+
 ### 6.1 Our own bot's notes are counted as human activity — **CONFIRMED, not inferred**
 `ghlMostRecentNoteDate_` takes the most recent note on a contact. Since
 05/09/2026, `runGhlNoteSync_` (`Phase12_GhlNoteSync.gs`) has been posting our
@@ -401,15 +410,19 @@ Stage Triage" tab currently shows `1787216916228` where a date should be
 `ghlTimestampToIso_` (`Phase9_GhlSync.gs`, added with this document, unit
 tested) is the fix — it is not yet wired into Phase 14.
 
-### 6.3 Triage sees a sliver of the CRM
-`ghlListOpenOpportunitiesInPipeline_` is **single page, no cursor**, and the
-live tab contains only "Cold Calling" rows (50 of ~2,309 opportunities). The
-code is honest about it (`possiblyTruncated`), but nobody reading the tab would
-know.
+### 6.3 Triage sees a sliver of the CRM — **FIXED 12/09/2026**
+`ghlListOpenOpportunitiesInPipeline_` was **single page, no cursor**, and the
+live tab contained only "Cold Calling" rows (50 of ~2,309 opportunities). The
+code was honest about it (`possiblyTruncated`), but nobody reading the tab
+would know. Now paginates for real (`page` param, confirmed-live cursor
+style for this endpoint), capped at `GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE`
+(30 pages = 3,000 opportunities per pipeline) as a safety valve, not the
+everyday limit — the largest known pipeline (ICONS Podcast, ~946
+opportunities) needs only 10.
 
-*Also carried over from the earlier code survey, unrelated to Phase 14:*
-`installGhlHygieneCheckTrigger` (`Phase9_GhlSync.gs`) installs a handler that
-is **not registered in `STANDING_AUTOMATION_HANDLERS_`**
+*Also carried over from the earlier code survey, unrelated to Phase 14 —
+**FIXED 12/09/2026**:* `installGhlHygieneCheckTrigger` (`Phase9_GhlSync.gs`)
+installs a handler that was **not registered in `STANDING_AUTOMATION_HANDLERS_`**
 (`Phase1_ComplianceCheck.gs`) — so `installAllReadyTriggers_`'s orphan sweep
 deletes it on the next run. Install it and it silently disappears.
 
