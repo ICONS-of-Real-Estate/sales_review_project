@@ -7878,6 +7878,10 @@ test('STANDING_AUTOMATION_HANDLERS_ protects runGhlHygieneCheck_ from the orphan
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runGhlHygieneCheck_') !== -1);
 });
 
+test('STANDING_AUTOMATION_HANDLERS_ protects runConversionFunnel from the orphan sweep, even though CONVERSION_FUNNEL_CONFIG.ENABLED is false and it is install-by-hand only (same shape of gap as runGhlHygieneCheck_, found live 12/09/2026)', () => {
+  assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('runConversionFunnel') !== -1);
+});
+
 test('findUpcomingDiscoveryCallsForRep_/sendUpcomingLeadConfirmationReminders_ are wired into STANDING_AUTOMATION_HANDLERS_/installAllReadyTriggers_, same "no silent gap" discipline as every other phase (03/09/2026)', () => {
   assert.ok(gas.STANDING_AUTOMATION_HANDLERS_.indexOf('sendUpcomingLeadConfirmationReminders_') !== -1);
   assert.equal(typeof gas.LEAD_CONFIRMATION_CONFIG, 'object');

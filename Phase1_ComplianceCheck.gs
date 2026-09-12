@@ -4733,6 +4733,16 @@ var STANDING_AUTOMATION_HANDLERS_ = [
   // functions; they are deliberately NOT listed, so the orphan sweep clears
   // any trigger still pointing at the old two-Monday schedule.
   'runWeeklyTrainingCycle',
+  // Real gap found live (12/09/2026, same shape/severity as the
+  // runGhlHygieneCheck_ one just above/below in this file's history):
+  // installConversionFunnelTrigger (Phase10_ConversionFunnel.gs) is
+  // documented as its own manual "run installConversionFunnelTrigger()"
+  // one-time install, deliberately not called from installAllReadyTriggers_
+  // (CONVERSION_FUNNEL_CONFIG.ENABLED is false as of this comment), but its
+  // handler was never added here either — so installing it by hand, exactly
+  // as that file's own setup instructions say to, would have had it swept
+  // as an orphan on the very next installAllReadyTriggers_ run.
+  'runConversionFunnel',                                                   // Phase 10
   'runRandomCalibrationSample',                                            // Phase 2
   'sendUpcomingHandoffBriefs_', 'sendUpcomingLeadConfirmationReminders_',  // Phase 3
   'runInboxSlaCheck', 'runNoShowFollowUpCheck',                            // Phase 4
