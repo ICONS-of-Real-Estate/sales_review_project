@@ -594,7 +594,9 @@ one, worth keeping separate in your head:
   existing `findSiblingFileCreatedDate_` used for Call Date) captures it at
   scoring time across all four write paths (Sean/Joana/Tomás ongoing +
   Bens/Joana-legacy). Feeds Tomás's "put the recordings in GHL too" ask —
-  not yet wired into `Phase12_GhlNoteSync.gs`'s note body, just captured.
+  **wired into `Phase12_GhlNoteSync.gs`'s note body 12/09/2026**
+  (`buildGhlReviewNoteBody_` now adds a "Recording" link alongside the
+  existing "Transcript" one, blank/omitted when no sibling video was found).
 - **Dashboard date bug** — Kris, looking at Bens' rep page: *"The dates are
   wrong. It's only September."* Root cause: `tools/dashboard/sync.py`
   fetched dates via Sheets' `FORMATTED_VALUE`, which follows the live

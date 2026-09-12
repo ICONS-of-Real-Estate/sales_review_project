@@ -9029,6 +9029,23 @@ test('buildGhlReviewNoteBody_ includes call date/type/rep, lead quality, score, 
   assert.ok(body.indexOf('<a href="https://drive.google.com/x">Transcript</a>') !== -1);
 });
 
+test('buildGhlReviewNoteBody_ includes a Recording link when recordingUrl is present (Tomás\'s "put the recordings in GHL too" ask, wired in 12/09/2026 -- the column was captured at scoring time but never read here)', () => {
+  const body = gas.buildGhlReviewNoteBody_({
+    callDate: '20/08/2026', callType: 'Sales Call', rep: 'Sean', leadQualityVerdict: 'Qualified',
+    callQualityScore: 4, aiFeedbackSummary: '', transcriptUrl: 'https://drive.google.com/transcript',
+    recordingUrl: 'https://drive.google.com/recording'
+  });
+  assert.ok(body.indexOf('<a href="https://drive.google.com/recording">Recording</a>') !== -1);
+});
+
+test('buildGhlReviewNoteBody_ omits the Recording line entirely when recordingUrl is blank (a row scored before the column existed, or no sibling video found) -- never a dangling empty link', () => {
+  const body = gas.buildGhlReviewNoteBody_({
+    callDate: '20/08/2026', callType: 'Sales Call', rep: 'Sean', leadQualityVerdict: 'Qualified',
+    callQualityScore: 4, aiFeedbackSummary: '', transcriptUrl: '', recordingUrl: ''
+  });
+  assert.ok(body.indexOf('Recording') === -1);
+});
+
 test('buildGhlReviewNoteBody_ escapes free-text feedback so an untrusted AI summary can never break the note\'s HTML', () => {
   const body = gas.buildGhlReviewNoteBody_({
     callDate: '20/08/2026', callType: 'QC', rep: 'Bens', leadQualityVerdict: 'Qualified',

@@ -133,6 +133,15 @@ function buildGhlReviewNoteBody_(rowData) {
   if (rowData.transcriptUrl) {
     lines.push('<a href="' + rowData.transcriptUrl + '">Transcript</a>');
   }
+  // Tomás's ask ("put the recordings in GHL too") — the sibling video file
+  // URL has been captured into the "Recording URL" column at scoring time
+  // since findSiblingFileUrl_ was added (Phase2_CallScoring.gs), but this
+  // note body never read it. Blank/missing for a row scored before that
+  // column existed, or one with no sibling video found — same "blank if
+  // none found" honesty as the column's own write-time comment.
+  if (rowData.recordingUrl) {
+    lines.push('<a href="' + rowData.recordingUrl + '">Recording</a>');
+  }
   return lines.join('<br><br>');
 }
 
@@ -299,7 +308,8 @@ function computeGhlReviewNoteSyncPlan_(locationId, maxToPlan) {
       leadQualityVerdict: leadQualityVerdict,
       callQualityScore: row[col['Call Quality Score'] - 1],
       aiFeedbackSummary: row[col['AI Feedback Summary'] - 1],
-      transcriptUrl: row[col['Transcript URL'] - 1]
+      transcriptUrl: row[col['Transcript URL'] - 1],
+      recordingUrl: row[col['Recording URL'] - 1]
     });
 
     toPost.push({ row: i + 2, prospectName: prospectName, contactId: candidates[0].id, noteBody: noteBody });
