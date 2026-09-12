@@ -31,6 +31,24 @@ Kris (12/09/2026): that IS the real closing/sales conversation for this
 funnel, just not named that -- STARTING_A_PODCAST_TITLE_PATTERN below
 counts it as a sales call, same as a literally-titled one.
 
+Also matches "Podcast Qualification Zoom / ..." (found live via
+--list-titles, 2 occurrences) -- same real qualification call, just a
+spelling variant that dropped "call" -- QUALIFICATION_TITLE_PATTERN
+below matches "qualification call" OR "qualification zoom".
+
+"Podcast Discovery Call" (found live via --list-titles as the dominant
+unclassified title, ~25+ occurrences) is NOT a sales call and must not
+be counted as one. Confirmed with Kris (12/09/2026): it's a separate,
+later step -- an account-manager handoff call, booked once the client
+is already sold, sometimes before payment is actually collected (the
+sales rep is meant to stay on to collect payment, but doesn't always).
+It is currently being phased OUT in favor of a second closing call with
+Tomas (a second sales call) until payment is actually in -- so going
+forward this title should get rarer, but historical converted contacts
+still carry it. Tracked here as its own discovery_call_count, separate
+from qualification/sales counts, so it doesn't inflate sales_call_count
+or misrepresent what actually closed the deal.
+
 Usage:
     python ghl_icp_converted_appointments.py --inspect       # print every real appointment payload, write nothing
     python ghl_icp_converted_appointments.py                  # fetch for every row in --in, write --out
@@ -42,16 +60,19 @@ import sys
 
 import ghl_mirror
 
-QUALIFICATION_TITLE_PATTERN = re.compile(r"qualification call", re.IGNORECASE)
+QUALIFICATION_TITLE_PATTERN = re.compile(r"qualification (?:call|zoom)", re.IGNORECASE)
 SALES_CALL_TITLE_PATTERN = re.compile(r"sales call", re.IGNORECASE)
 # The ICONS Podcast funnel's real closing call -- confirmed with Kris
 # (12/09/2026) it functions as the sales call despite the non-literal title.
 STARTING_A_PODCAST_TITLE_PATTERN = re.compile(r"starting a podcast", re.IGNORECASE)
+# NOT a sales call -- confirmed with Kris (12/09/2026) this is the later
+# account-manager handoff call, tracked separately. See module docstring.
+DISCOVERY_CALL_TITLE_PATTERN = re.compile(r"discovery call", re.IGNORECASE)
 
 OUTPUT_COLUMNS = [
     "contact_id", "full_name", "email", "phone",
     "appointment_count", "qualification_call_count", "sales_call_count",
-    "first_appointment_date", "converted", "close_date",
+    "discovery_call_count", "first_appointment_date", "converted", "close_date",
 ]
 
 
@@ -87,6 +108,7 @@ def classify_appointment_(appointment):
     return {
         "is_qualification": bool(QUALIFICATION_TITLE_PATTERN.search(text)),
         "is_sales_call": bool(SALES_CALL_TITLE_PATTERN.search(text)) or bool(STARTING_A_PODCAST_TITLE_PATTERN.search(text)),
+        "is_discovery_call": bool(DISCOVERY_CALL_TITLE_PATTERN.search(text)),
     }
 
 
@@ -103,6 +125,7 @@ def summarize_contact_appointments_(appointments):
         "appointment_count": len(appointments),
         "qualification_call_count": sum(1 for c in classified if c["is_qualification"]),
         "sales_call_count": sum(1 for c in classified if c["is_sales_call"]),
+        "discovery_call_count": sum(1 for c in classified if c["is_discovery_call"]),
         "first_appointment_date": dates[0] if dates else "",
     }
 
@@ -160,8 +183,9 @@ def main():
             for title, count in sorted(title_counts.items(), key=lambda kv: -kv[1]):
                 classification = classify_appointment_({"title": title})
                 tag = ("qualification" if classification["is_qualification"] else
-                       "sales_call" if classification["is_sales_call"] else "UNCLASSIFIED")
-                print(f"  {count:>3}x [{tag:>13}] {title}")
+                       "sales_call" if classification["is_sales_call"] else
+                       "discovery_call" if classification["is_discovery_call"] else "UNCLASSIFIED")
+                print(f"  {count:>3}x [{tag:>14}] {title}")
             return
 
         out_rows = []
@@ -174,6 +198,7 @@ def main():
                 "appointment_count": summary["appointment_count"],
                 "qualification_call_count": summary["qualification_call_count"],
                 "sales_call_count": summary["sales_call_count"],
+                "discovery_call_count": summary["discovery_call_count"],
                 "first_appointment_date": summary["first_appointment_date"],
                 "converted": row.get("converted", ""), "close_date": row.get("close_date", ""),
             })

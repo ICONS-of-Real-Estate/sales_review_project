@@ -14,11 +14,24 @@ import ghl_icp_converted_appointments as appts
 class TestClassifyAppointment:
     def test_matches_qualification_call_in_the_title(self):
         result = appts.classify_appointment_({"title": "Qualification Call w/ Jane Doe"})
-        assert result == {"is_qualification": True, "is_sales_call": False}
+        assert result == {"is_qualification": True, "is_sales_call": False, "is_discovery_call": False}
+
+    def test_matches_qualification_zoom_variant(self):
+        # Real title sampled live via --list-titles: "Podcast Qualification
+        # Zoom / ..." -- a spelling variant that dropped "call" entirely.
+        result = appts.classify_appointment_({"title": "Podcast Qualification Zoom/ Jane Doe and ICONS of Real Estate"})
+        assert result["is_qualification"] is True
 
     def test_matches_sales_call_in_the_title(self):
         result = appts.classify_appointment_({"title": "Sales Call - Jane Doe"})
-        assert result == {"is_qualification": False, "is_sales_call": True}
+        assert result == {"is_qualification": False, "is_sales_call": True, "is_discovery_call": False}
+
+    def test_discovery_call_is_not_a_sales_call(self):
+        # Confirmed with Kris (12/09/2026): "Podcast Discovery Call" is the
+        # later account-manager handoff call, not the closing/sales call --
+        # must classify as its own category, never fold into sales_call.
+        result = appts.classify_appointment_({"title": "Podcast Discovery Call - Jane Doe and Icons"})
+        assert result == {"is_qualification": False, "is_sales_call": False, "is_discovery_call": True}
 
     def test_falls_back_to_calendar_name_when_no_title(self):
         result = appts.classify_appointment_({"calendarName": "Qualification Calls"})
@@ -30,7 +43,7 @@ class TestClassifyAppointment:
 
     def test_neither_matches_when_no_recognizable_text_at_all(self):
         result = appts.classify_appointment_({})
-        assert result == {"is_qualification": False, "is_sales_call": False}
+        assert result == {"is_qualification": False, "is_sales_call": False, "is_discovery_call": False}
 
     def test_case_insensitive_match(self):
         result = appts.classify_appointment_({"title": "SALES CALL"})
@@ -41,13 +54,13 @@ class TestClassifyAppointment:
         # closing call -- confirmed with Kris it functions as the sales call
         # despite the non-literal title.
         result = appts.classify_appointment_({"title": "Starting A Podcast / Amanda LeGault and  Tomas"})
-        assert result == {"is_qualification": False, "is_sales_call": True}
+        assert result == {"is_qualification": False, "is_sales_call": True, "is_discovery_call": False}
 
     def test_podcast_qualification_call_still_matches_qualification(self):
         # Real title sampled live: "Podcast Qualification Call / ..." --
         # substring match on "Qualification Call" must still fire.
         result = appts.classify_appointment_({"title": "Podcast Qualification Call / Amanda LeGault and ICONS of Real Estate"})
-        assert result == {"is_qualification": True, "is_sales_call": False}
+        assert result == {"is_qualification": True, "is_sales_call": False, "is_discovery_call": False}
 
 
 class TestSummarizeContactAppointments:
@@ -55,7 +68,7 @@ class TestSummarizeContactAppointments:
         summary = appts.summarize_contact_appointments_([])
         assert summary == {
             "appointment_count": 0, "qualification_call_count": 0,
-            "sales_call_count": 0, "first_appointment_date": "",
+            "sales_call_count": 0, "discovery_call_count": 0, "first_appointment_date": "",
         }
 
     def test_counts_are_true_counts_not_01_flags(self):
@@ -70,6 +83,15 @@ class TestSummarizeContactAppointments:
         assert summary["qualification_call_count"] == 2
         assert summary["sales_call_count"] == 1
         assert summary["appointment_count"] == 3
+
+    def test_discovery_call_counted_separately_not_as_sales_call(self):
+        appointments = [
+            {"title": "Podcast Discovery Call - Jane Doe and Icons", "startTime": "2026-03-01T00:00:00Z"},
+            {"title": "Sales Call", "startTime": "2026-02-01T00:00:00Z"},
+        ]
+        summary = appts.summarize_contact_appointments_(appointments)
+        assert summary["discovery_call_count"] == 1
+        assert summary["sales_call_count"] == 1
 
     def test_first_appointment_date_is_the_earliest_regardless_of_list_order(self):
         appointments = [
