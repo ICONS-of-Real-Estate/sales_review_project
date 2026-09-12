@@ -69,6 +69,26 @@ class TestCallCountBreakdown:
         assert analyze.call_count_breakdown_([]) == {}
 
 
+class TestNeitherStageDiscoverySplit:
+    def test_splits_neither_bucket_by_discovery_call_presence(self):
+        rows = [
+            _row("c1", True, 0, 0, discovery_call_count="1"),
+            _row("c2", True, 0, 0, discovery_call_count="0"),
+            _row("c3", True, 0, 0),  # no discovery_call_count column at all
+            _row("c4", True, 1, 0, discovery_call_count="1"),  # not in the neither bucket at all
+        ]
+        split = analyze.neither_stage_discovery_split_(rows)
+        assert split == {"with_discovery_call": 1, "no_call_on_record": 2}
+
+    def test_missing_discovery_call_count_column_reads_as_zero(self):
+        rows = [_row("c1", True, 0, 0)]
+        split = analyze.neither_stage_discovery_split_(rows)
+        assert split == {"with_discovery_call": 0, "no_call_on_record": 1}
+
+    def test_empty_input_returns_zero_zero(self):
+        assert analyze.neither_stage_discovery_split_([]) == {"with_discovery_call": 0, "no_call_on_record": 0}
+
+
 class TestFormatBreakdown:
     def test_orders_most_common_combo_first_with_percentages(self):
         breakdown = {(1, 1): 3, (0, 1): 1}

@@ -64,6 +64,41 @@ def call_count_breakdown_(rows):
     return breakdown
 
 
+def neither_stage_discovery_split_(rows):
+    """Pure. Among rows with qualification_call_count==0 and sales_call_count==0
+    (the "reached NEITHER stage" bucket), splits by whether discovery_call_count
+    is >0 -- lets a caller tell "converted via a discovery call, no
+    qualification/sales call on record" (a real, if soon-to-be-rare, path --
+    see ghl_icp_converted_appointments.py's own header) apart from "no call of
+    any kind on record." Only meaningful against a file that has a
+    discovery_call_count column (ghl_icp_converted_appointments.py's output,
+    not ghl_icp_export.py's) -- a missing column reads as 0 for every row, same
+    convention as call_count_breakdown_, so the split degenerates to
+    "no_call_on_record" for everything rather than crashing."""
+    with_discovery = 0
+    without = 0
+    for row in rows:
+        try:
+            qual = int(row.get("qualification_call_count") or 0)
+        except ValueError:
+            qual = 0
+        try:
+            sales = int(row.get("sales_call_count") or 0)
+        except ValueError:
+            sales = 0
+        if qual != 0 or sales != 0:
+            continue
+        try:
+            discovery = int(row.get("discovery_call_count") or 0)
+        except ValueError:
+            discovery = 0
+        if discovery > 0:
+            with_discovery += 1
+        else:
+            without += 1
+    return {"with_discovery_call": with_discovery, "no_call_on_record": without}
+
+
 def format_breakdown_(breakdown, total):
     """Pure. Human-readable lines, most-common combo first."""
     labels = {
@@ -106,6 +141,15 @@ def main():
     print(f"Qualification/sales-call breakdown among the {len(converted)} converted contact(s):")
     for line in format_breakdown_(call_count_breakdown_(converted), len(converted)):
         print(line)
+
+    if any("discovery_call_count" in r for r in converted):
+        split = neither_stage_discovery_split_(converted)
+        neither_total = split["with_discovery_call"] + split["no_call_on_record"]
+        if neither_total:
+            print()
+            print(f"  Of those {neither_total} \"reached NEITHER stage\": "
+                  f"{split['with_discovery_call']} had a discovery call on record "
+                  f"(AM handoff, not a sales call), {split['no_call_on_record']} had no call at all.")
 
 
 if __name__ == "__main__":
