@@ -36,6 +36,19 @@ class TestClassifyAppointment:
         result = appts.classify_appointment_({"title": "SALES CALL"})
         assert result["is_sales_call"] is True
 
+    def test_starting_a_podcast_counts_as_a_sales_call(self):
+        # Real title sampled live (12/09/2026), ICONS Podcast funnel's real
+        # closing call -- confirmed with Kris it functions as the sales call
+        # despite the non-literal title.
+        result = appts.classify_appointment_({"title": "Starting A Podcast / Amanda LeGault and  Tomas"})
+        assert result == {"is_qualification": False, "is_sales_call": True}
+
+    def test_podcast_qualification_call_still_matches_qualification(self):
+        # Real title sampled live: "Podcast Qualification Call / ..." --
+        # substring match on "Qualification Call" must still fire.
+        result = appts.classify_appointment_({"title": "Podcast Qualification Call / Amanda LeGault and ICONS of Real Estate"})
+        assert result == {"is_qualification": True, "is_sales_call": False}
+
 
 class TestSummarizeContactAppointments:
     def test_zero_appointments_gives_zero_counts_and_blank_date(self):

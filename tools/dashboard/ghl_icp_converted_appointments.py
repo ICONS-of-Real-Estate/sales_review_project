@@ -21,8 +21,18 @@ applies to just the converted group: 60 contacts is 60 API calls, and
 this file's own --inspect mode samples the real shape before trusting it
 for classification.
 
+Real shapes sampled live (12/09/2026, --inspect against 3 real converted
+contacts): a "title" field really is there, e.g. "Podcast Qualification
+Call / Amanda LeGault and ICONS of Real Estate" (matches
+QUALIFICATION_TITLE_PATTERN fine, substring match). But the podcast
+funnel's actual closing call is titled "Starting A Podcast / {name} and
+{team member}" -- no literal "Sales Call" text at all. Confirmed with
+Kris (12/09/2026): that IS the real closing/sales conversation for this
+funnel, just not named that -- STARTING_A_PODCAST_TITLE_PATTERN below
+counts it as a sales call, same as a literally-titled one.
+
 Usage:
-    python ghl_icp_converted_appointments.py --inspect       # print 3 real appointment payloads, write nothing
+    python ghl_icp_converted_appointments.py --inspect       # print every real appointment payload, write nothing
     python ghl_icp_converted_appointments.py                  # fetch for every row in --in, write --out
 """
 import argparse
@@ -34,6 +44,9 @@ import ghl_mirror
 
 QUALIFICATION_TITLE_PATTERN = re.compile(r"qualification call", re.IGNORECASE)
 SALES_CALL_TITLE_PATTERN = re.compile(r"sales call", re.IGNORECASE)
+# The ICONS Podcast funnel's real closing call -- confirmed with Kris
+# (12/09/2026) it functions as the sales call despite the non-literal title.
+STARTING_A_PODCAST_TITLE_PATTERN = re.compile(r"starting a podcast", re.IGNORECASE)
 
 OUTPUT_COLUMNS = [
     "contact_id", "full_name", "email", "phone",
@@ -73,7 +86,7 @@ def classify_appointment_(appointment):
     text = str(appointment.get("title") or appointment.get("calendarName") or appointment.get("name") or "")
     return {
         "is_qualification": bool(QUALIFICATION_TITLE_PATTERN.search(text)),
-        "is_sales_call": bool(SALES_CALL_TITLE_PATTERN.search(text)),
+        "is_sales_call": bool(SALES_CALL_TITLE_PATTERN.search(text)) or bool(STARTING_A_PODCAST_TITLE_PATTERN.search(text)),
     }
 
 
@@ -124,7 +137,7 @@ def main():
                 appointments = fetch_appointments_for_contact_(client, row["contact_id"])
                 print(f"=== contact {row['contact_id']} ({row.get('full_name')}) -- "
                       f"{len(appointments)} appointment(s) ===")
-                print(json.dumps(appointments[:2], indent=2, default=str))
+                print(json.dumps(appointments, indent=2, default=str))
             return
 
         out_rows = []
