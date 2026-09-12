@@ -13353,6 +13353,60 @@ test('rankAndCapLeadDigestCandidates_ sorts, caps to count, and stamps 1-based p
   assert.deepEqual(ranked.map((l) => l.priorityRank), [1, 2]);
 });
 
+test('fetchAllOpenOpportunitiesAcrossPipelines_ fetches every pipeline ONCE and attaches each opportunity to its own pipeline (real gap found in code review, 12/09/2026: the old per-rep design re-fetched all pipelines from scratch for every rep)', () => {
+  const originalList = gas.ghlListOpenOpportunitiesInPipeline_;
+  const calledPipelineIds = [];
+  try {
+    gas.ghlListOpenOpportunitiesInPipeline_ = (locationId, pipelineId) => {
+      calledPipelineIds.push(pipelineId);
+      return { ok: true, opportunities: [{ id: pipelineId + '-o1' }], possiblyTruncated: false };
+    };
+    const pipelines = [{ id: 'p1', name: 'Pipeline One' }, { id: 'p2', name: 'Pipeline Two' }];
+    const result = gas.fetchAllOpenOpportunitiesAcrossPipelines_('loc1', pipelines, Date.now());
+    assert.deepEqual(Array.from(calledPipelineIds), ['p1', 'p2'], 'must fetch each pipeline exactly once');
+    assert.equal(result.timeBudgetHit, false);
+    assert.equal(result.entries.length, 2);
+    assert.equal(result.entries[0].pipeline.id, 'p1');
+    assert.equal(result.entries[0].opp.id, 'p1-o1');
+    assert.equal(result.entries[1].pipeline.id, 'p2');
+  } finally {
+    gas.ghlListOpenOpportunitiesInPipeline_ = originalList;
+  }
+});
+
+test('fetchAllOpenOpportunitiesAcrossPipelines_ stops and reports timeBudgetHit once DAILY_LEAD_APPROVAL_CONFIG.TIME_BUDGET_MS is exceeded, instead of fetching every pipeline unconditionally', () => {
+  const originalList = gas.ghlListOpenOpportunitiesInPipeline_;
+  let calls = 0;
+  try {
+    gas.ghlListOpenOpportunitiesInPipeline_ = () => { calls++; return { ok: true, opportunities: [], possiblyTruncated: false }; };
+    const pipelines = [{ id: 'p1', name: 'Pipeline One' }, { id: 'p2', name: 'Pipeline Two' }];
+    // startedAtMs already past the budget -- the very first loop iteration's check must bail before any fetch.
+    const longAgo = Date.now() - (gas.DAILY_LEAD_APPROVAL_CONFIG.TIME_BUDGET_MS + 1000);
+    const result = gas.fetchAllOpenOpportunitiesAcrossPipelines_('loc1', pipelines, longAgo);
+    assert.equal(result.timeBudgetHit, true);
+    assert.equal(calls, 0, 'must not fetch anything once the budget is already exceeded');
+    assert.deepEqual(Array.from(result.entries), []);
+  } finally {
+    gas.ghlListOpenOpportunitiesInPipeline_ = originalList;
+  }
+});
+
+test('fetchAllOpenOpportunitiesAcrossPipelines_ skips a pipeline whose fetch fails and continues to the next one', () => {
+  const originalList = gas.ghlListOpenOpportunitiesInPipeline_;
+  try {
+    gas.ghlListOpenOpportunitiesInPipeline_ = (locationId, pipelineId) => {
+      if (pipelineId === 'p1') return { ok: false, status: 500, body: 'error', opportunities: [] };
+      return { ok: true, opportunities: [{ id: 'o2' }], possiblyTruncated: false };
+    };
+    const pipelines = [{ id: 'p1', name: 'Pipeline One' }, { id: 'p2', name: 'Pipeline Two' }];
+    const result = gas.fetchAllOpenOpportunitiesAcrossPipelines_('loc1', pipelines, Date.now());
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.entries[0].opp.id, 'o2');
+  } finally {
+    gas.ghlListOpenOpportunitiesInPipeline_ = originalList;
+  }
+});
+
 test('buildLeadDigestEmail_ lists every lead with its priority rank and includes the approval URL', () => {
   const leads = [
     { priorityRank: 1, leadName: 'Jane Doe', leadEmail: 'jane@example.com', pipelineName: 'Sales', stageName: 'Booked', daysStale: 5, touches: 2 }

@@ -333,7 +333,8 @@ function previewCrmOrganizationReview_() {
     }
     if (list.possiblyTruncated) {
       log_('Pipeline "' + pipeline.name + '": ' + list.opportunities.length +
-        ' open opportunity(s) returned, possibly truncated (single-page fetch, see Phase14_GhlStageTriage.gs).');
+        ' open opportunity(s) returned, possibly truncated (hit the pagination safety cap, or a later page ' +
+        'failed mid-fetch — see ghlListOpenOpportunitiesInPipeline_\'s own header, Phase14_GhlStageTriage.gs).');
     }
 
     var stageCounts = {};

@@ -62,6 +62,13 @@ var DAILY_LEAD_APPROVAL_CONFIG = {
   DEFAULT_DAILY_LEAD_COUNT: 25,
   STALE_MIN_DAYS: 3, // an open opportunity counts as "needs follow-up" once it's sat this long untouched
   CANDIDATE_POOL_MULTIPLIER: 3, // how many tier-1/2-ranked candidates get a real touches lookup before the final cap
+  // Same 5-minute margin as every other full-CRM-scan job in this codebase
+  // (GHL_STAGE_TRIAGE_CONFIG.TIME_BUDGET_MS, CRM_ORGANIZATION_REVIEW_CONFIG.TIME_BUDGET_MS)
+  // -- real gap found in code review (12/09/2026): this file had no
+  // time-budget guard at all, and ghlListOpenOpportunitiesInPipeline_'s
+  // real pagination (this same session) means a single pipeline scan can
+  // now cost up to 30 sequential HTTP calls.
+  TIME_BUDGET_MS: 5 * 60 * 1000,
   TRIGGER_HOUR: 7, // morning, CONFIG.BUSINESS_TIMEZONE
   // Set this to the real deployed web app URL once known (Deploy -> Manage
   // deployments in the Apps Script editor) — ScriptApp.getService().getUrl()
@@ -264,26 +271,59 @@ function buildFollowUpDraftEmail_(lead) {
 // buildAndMaybeSendReengagementDigest_, Phase17_SeanFollowUpAutomation.gs).
 // ---------------------------------------------------------------------------
 
-/** Every open, non-terminal opportunity assigned to `repName` across every pipeline, turned into ranked candidates capped at `count`. Touches are looked up for a bounded pool only (tier-1/2 order first, then the top CANDIDATE_POOL_MULTIPLIER * count get a real notes lookup) — a full-account touches lookup would be one API call per lead, most of which get thrown away by tiers 1-2 anyway. */
-function collectStaleLeadsForRep_(locationId, pipelines, userNameLookup, repName, nowMs, count) {
-  var stageOrderLookup = buildGhlStageOrderLookup_(pipelines);
-  var candidates = [];
-
-  pipelines.forEach(function (pipeline) {
+/**
+ * Fetches every open, non-terminal opportunity across EVERY pipeline ONCE
+ * per run — not once per rep. Real gap found in code review (12/09/2026):
+ * ghlListOpenOpportunitiesInPipeline_'s real pagination (added this same
+ * session) means one pipeline can now cost up to
+ * GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE (30) sequential HTTP
+ * calls, and the old per-rep design re-fetched all ~6 pipelines from
+ * scratch for EVERY entry in DAILY_LEAD_APPROVAL_CONFIG.REPS (3x redundant
+ * traffic for 3 reps) with no time-budget guard anywhere in this file,
+ * unlike every other full-CRM-scan job in this codebase
+ * (GHL_STAGE_TRIAGE_CONFIG.TIME_BUDGET_MS, CRM_ORGANIZATION_REVIEW_CONFIG.TIME_BUDGET_MS)
+ * — a scenario that used to finish comfortably could now run past Apps
+ * Script's execution-time limit and throw mid-run. Fetching once and
+ * reusing the same {opp, pipeline} list for every rep's own filter/rank
+ * pass fixes both the redundancy and gives one place to apply the time
+ * budget.
+ */
+function fetchAllOpenOpportunitiesAcrossPipelines_(locationId, pipelines, startedAtMs) {
+  var entries = []; // {opp, pipeline}
+  var timeBudgetHit = false;
+  for (var i = 0; i < pipelines.length; i++) {
+    if (Date.now() - startedAtMs > DAILY_LEAD_APPROVAL_CONFIG.TIME_BUDGET_MS) {
+      timeBudgetHit = true;
+      log_('fetchAllOpenOpportunitiesAcrossPipelines_: time budget hit before pipeline "' + pipelines[i].name +
+        '" (and ' + (pipelines.length - i) + ' more) — stopping here for this run, re-run to continue.');
+      break;
+    }
+    var pipeline = pipelines[i];
     var list = ghlListOpenOpportunitiesInPipeline_(locationId, pipeline.id, 100);
     if (!list.ok) {
-      log_('collectStaleLeadsForRep_: pipeline "' + pipeline.name + '" fetch failed (HTTP ' + list.status +
-        ') — skipped for this run.');
-      return;
+      log_('fetchAllOpenOpportunitiesAcrossPipelines_: pipeline "' + pipeline.name + '" fetch failed (HTTP ' +
+        list.status + ') — skipped for this run.');
+      continue;
     }
-    list.opportunities.forEach(function (opp) {
-      var assigneeName = userNameLookup[opp.assignedTo];
-      if (!assigneeName || !ghlAssigneeNameMatchesKnownRep_(assigneeName, (function () {
-        var known = {}; known[normalize_(repName)] = true; return known;
-      })())) return;
-      var candidate = buildLeadDigestCandidate_(opp, pipeline, stageOrderLookup, nowMs);
-      if (candidate) candidates.push(candidate);
-    });
+    list.opportunities.forEach(function (opp) { entries.push({ opp: opp, pipeline: pipeline }); });
+  }
+  return { entries: entries, timeBudgetHit: timeBudgetHit };
+}
+
+/** Every already-fetched {opp, pipeline} entry assigned to `repName`, turned into ranked candidates capped at
+ * `count`. Touches are looked up for a bounded pool only (tier-1/2 order first, then the top
+ * CANDIDATE_POOL_MULTIPLIER * count get a real notes lookup) — a full-account touches lookup would be one API
+ * call per lead, most of which get thrown away by tiers 1-2 anyway. */
+function collectStaleLeadsForRep_(entries, stageOrderLookup, userNameLookup, repName, nowMs, count) {
+  var candidates = [];
+
+  entries.forEach(function (e) {
+    var assigneeName = userNameLookup[e.opp.assignedTo];
+    if (!assigneeName || !ghlAssigneeNameMatchesKnownRep_(assigneeName, (function () {
+      var known = {}; known[normalize_(repName)] = true; return known;
+    })())) return;
+    var candidate = buildLeadDigestCandidate_(e.opp, e.pipeline, stageOrderLookup, nowMs);
+    if (candidate) candidates.push(candidate);
   });
 
   // Tiers 1-2 first (cheap, no API calls), THEN spend real API calls on
@@ -338,12 +378,24 @@ function leadDigestApprovalUrl_(token) {
 /** Shared by preview and live paths. dryRun=true never writes or sends. */
 function buildAndMaybeSendLeadDigests_(dryRun) {
   RUN_TAG = 'buildAndMaybeSendLeadDigests_';
+  var runStartedAt = Date.now();
   var locationId = ghlCheckSetup_();
   var pipelines = fetchGhlPipelines_(locationId);
   if (!pipelines) { log_('buildAndMaybeSendLeadDigests_: could not fetch pipelines, aborting this run.'); return 0; }
   var userNameLookup = buildGhlUserNameLookup_(fetchGhlLocationUsers_(locationId));
   var nowMs = new Date().getTime();
   var todayStr = todayDigestDateString_();
+
+  // Fetched ONCE for every rep, not once per rep — see
+  // fetchAllOpenOpportunitiesAcrossPipelines_'s own header for why (real
+  // gap found in code review, 12/09/2026: this used to re-fetch all ~6
+  // pipelines from scratch for every rep in DAILY_LEAD_APPROVAL_CONFIG.REPS).
+  var fetchResult = fetchAllOpenOpportunitiesAcrossPipelines_(locationId, pipelines, runStartedAt);
+  if (fetchResult.timeBudgetHit) {
+    log_('buildAndMaybeSendLeadDigests_: time budget hit mid-fetch — proceeding with the ' +
+      fetchResult.entries.length + ' opportunity(ies) already fetched; re-run to pick up the rest.');
+  }
+  var stageOrderLookup = buildGhlStageOrderLookup_(pipelines);
 
   var settingsSheet = getOrCreateLeadDigestSettingsSheet_();
   var queueSheet = getOrCreateLeadDigestQueueSheet_();
@@ -363,7 +415,7 @@ function buildAndMaybeSendLeadDigests_(dryRun) {
     }
 
     var count = getLeadDigestDailyCountForRep_(settingsSheet, repName);
-    var leads = collectStaleLeadsForRep_(locationId, pipelines, userNameLookup, repName, nowMs, count);
+    var leads = collectStaleLeadsForRep_(fetchResult.entries, stageOrderLookup, userNameLookup, repName, nowMs, count);
 
     if (dryRun) {
       log_('(preview) ' + repName + ': ' + leads.length + ' lead(s) (of up to ' + count + ') would be sent.');

@@ -209,8 +209,15 @@ function readExistingGhlStageTriageOpportunityIds_(sheet) {
  * used to fetch a single page and call it done, so the live "GHL Stage
  * Triage" tab only ever reflected "Cold Calling" — 50 of ~2,309 real
  * opportunities across every pipeline — with nothing on the sheet saying
- * so. `page`-based pagination per this endpoint's own confirmed-live usage
- * elsewhere (Phase9_GhlSync.gs's own comment on this same endpoint).
+ * so. `page`-based pagination confirmed live against this exact endpoint
+ * (12/09/2026): tools/dashboard/ghl_mirror.py's fetch_all_opportunities
+ * uses the same `page` param against /opportunities/search and correctly
+ * fetched 2,493 distinct opportunities across ~25 pages in a real run —
+ * not a duplicated first page repeated, which is what an unsupported/
+ * ignored `page` param would produce. (Phase9_GhlSync.gs's own
+ * ghlListOpportunitiesForContact_ calls this same endpoint but never
+ * paginates at all — a single contact's own opportunities fit on one
+ * page, so it was never real evidence either way; don't cite it as such.)
  *
  * `possiblyTruncated` now means something real: true only if
  * GHL_STAGE_TRIAGE_CONFIG.MAX_PAGES_PER_PIPELINE's safety cap was hit (a
@@ -451,7 +458,8 @@ function previewGhlStageTriage_() {
     if (list.possiblyTruncated) {
       truncatedPipelines.push(pipeline.name);
       log_('Pipeline "' + pipeline.name + '": ' + list.opportunities.length +
-        ' open opportunity(s) returned, possibly truncated (single-page fetch) — see file header.');
+        ' open opportunity(s) returned, possibly truncated (hit MAX_PAGES_PER_PIPELINE, or a later page failed ' +
+        'mid-fetch) — see ghlListOpenOpportunitiesInPipeline_\'s own header.');
     }
     fetchedOpportunities += list.opportunities.length;
 
@@ -518,9 +526,10 @@ function previewGhlStageTriage_() {
   log_('COVERAGE: fetched ' + fetchedOpportunities + ' open opportunity(s) across ' + pipelines.length +
     ' pipeline(s).' +
     (truncatedPipelines.length
-      ? ' ' + truncatedPipelines.length + ' pipeline(s) hit the single-page fetch limit and were only ' +
-        'PARTIALLY scanned: ' + truncatedPipelines.join(', ') + '. Anything stale beyond that first page was ' +
-        'never looked at, so this run is a sample, not a sweep — do not read the sheet as the full picture.'
+      ? ' ' + truncatedPipelines.length + ' pipeline(s) hit the pagination safety cap (or a later page failed ' +
+        'mid-fetch) and were only PARTIALLY scanned: ' + truncatedPipelines.join(', ') + '. Anything beyond ' +
+        'what was fetched was never looked at, so this run is a sample, not a sweep — do not read the sheet ' +
+        'as the full picture.'
       : ' No pipeline hit the fetch limit, so this run saw every open opportunity it asked for.'));
   log_('Nothing in GHL was changed. Tomás/Joana tick Approved or Rejected per row on that sheet — ' +
     'ticking a box does not move anything in GHL yet; it is a decision log for now.');
