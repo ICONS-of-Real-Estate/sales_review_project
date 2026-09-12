@@ -477,20 +477,159 @@ function prospectSearchQuery_(prospectName, prospectEmail) {
     : '"' + prospectName + '" LinkedIn OR website OR real estate agent';
 }
 
-function findProspectSocialLinks_(prospectName, prospectEmail) {
-  try {
-    var res = serperSearch_(prospectSearchQuery_(prospectName, prospectEmail));
-    if (res.status !== 200) {
-      log_('  findProspectSocialLinks_: Serper lookup failed for "' + prospectName + '" — status ' +
-        res.status + '. ' + String(res.body).slice(0, 300));
+/**
+ * Pure. Tomás's own feedback on a real first-touch brief (12/09/2026): "From
+ * the 3 links, only the first one is relevant. The other are about other
+ * agents who are not her" and "The link that should have been shared" was
+ * her actual Instagram/LinkedIn/YouTube. The one general query above returns
+ * whatever the whole web ranks highest for her name — often a brokerage
+ * "meet the team" page (which legitimately contains her name alongside
+ * OTHER agents, so it passes searchResultLooksLikeProspect_'s token check
+ * without actually being about her specifically). A `site:` search against
+ * exactly the platforms Tomás asked for goes straight to a profile that is
+ * about her ALONE, by construction — much less likely to surface a teammate.
+ */
+function firstTouchResearchQueries_(prospectName, prospectEmail) {
+  var quoted = '"' + prospectName + '"';
+  return [
+    prospectSearchQuery_(prospectName, prospectEmail),
+    quoted + ' site:instagram.com',
+    quoted + ' site:linkedin.com/in',
+    quoted + ' site:youtube.com'
+  ];
+}
+
+/**
+ * Pure. Merges parsed-and-filtered Serper result batches (one per query in
+ * firstTouchResearchQueries_) into one deduped list, in first-seen order,
+ * capped at PROSPECT_LINKS_LOOKUP_CONFIG.MAX_RESULTS — the same platforms
+ * often surface the same profile from more than one query.
+ */
+function dedupeResearchResultsByLink_(batches, maxResults) {
+  var seen = {};
+  var merged = [];
+  batches.forEach(function (batch) {
+    batch.forEach(function (r) {
+      if (seen[r.link]) return;
+      seen[r.link] = true;
+      merged.push(r);
+    });
+  });
+  return merged.slice(0, maxResults);
+}
+
+/**
+ * Runs every query in firstTouchResearchQueries_ against Serper, filters
+ * each batch to plausible matches (searchResultLooksLikeProspect_), and
+ * returns the deduped, capped {title, link, snippet} list — the richer
+ * shape generateFirstTouchResearchSummary_ needs (snippets, not just a bare
+ * link) to write an actual research summary instead of a link dump. Never
+ * throws — one query failing just means that platform contributes nothing,
+ * same "a nice-to-have link is never worth blocking the brief" contract as
+ * the old single-query version.
+ */
+function collectProspectResearchResults_(prospectName, prospectEmail) {
+  var batches = firstTouchResearchQueries_(prospectName, prospectEmail).map(function (query) {
+    try {
+      var res = serperSearch_(query);
+      if (res.status !== 200) {
+        log_('  collectProspectResearchResults_: Serper lookup failed for "' + prospectName + '" (query "' +
+          query + '") — status ' + res.status + '. ' + String(res.body).slice(0, 300));
+        return [];
+      }
+      return parseSerperResults_(res.json).filter(function (r) { return searchResultLooksLikeProspect_(r, prospectName); });
+    } catch (e) {
+      log_('  collectProspectResearchResults_ threw for "' + prospectName + '" (query "' + query + '"): ' + e);
       return [];
     }
-    return parseSerperResults_(res.json)
-      .filter(function (r) { return searchResultLooksLikeProspect_(r, prospectName); })
-      .map(function (r) { return r.link; });
+  });
+  return dedupeResearchResultsByLink_(batches, PROSPECT_LINKS_LOOKUP_CONFIG.MAX_RESULTS);
+}
+
+/** Back-compat thin wrapper — every existing caller just wants the links. */
+function findProspectSocialLinks_(prospectName, prospectEmail) {
+  return collectProspectResearchResults_(prospectName, prospectEmail).map(function (r) { return r.link; });
+}
+
+// ---------------------------------------------------------------------------
+// Written research summary + suggested opener — Tomás's feedback on a real
+// first-touch brief (12/09/2026): "more than links is to tell us what they
+// found online about the lead, in words" and, on the generic "GOING IN, YOU
+// NEED TWO THINGS" opener repeated on every brief: "if we have this always
+// repeat like this, might as well not have it... from the information one
+// pulls up online, you could actually personalize this" (his own example:
+// she started Instagram this summer with 300+ followers — ask how she grew
+// that fast; she does short-form video, clearly not camera-shy; she appears
+// to work as a marketing manager elsewhere — confirm if that's full-time).
+//
+// A FRESH kind of LLM output nobody has reviewed yet — same deliberately
+// SEPARATE-flag discipline as HANDOFF_CONFIG's own header comment. Run
+// previewFirstTouchResearchSummary_() against real names before flipping
+// FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG.ENABLED.
+// ---------------------------------------------------------------------------
+
+var FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG = {
+  ENABLED: false,
+  MAX_RESULTS_TO_MODEL: 6
+};
+
+function buildFirstTouchResearchSystemPrompt_() {
+  return [
+    'You are preparing pre-call research notes for a sales rep about to cold-call a prospect for the',
+    'first time. You are given a list of web search results (title/link/snippet) about this specific',
+    'person, already filtered to plausible matches by name.',
+    '',
+    'Write a short, specific research summary the rep can skim in 10 seconds, and ONE suggested opening',
+    'line the rep could actually say, grounded in a specific, notable fact from the results — not generic',
+    'small talk.',
+    '',
+    'Ground every claim ONLY in the provided snippets — never invent a fact, a number, a platform, or a',
+    'job title that is not actually stated in what you were given. If the results do not support a',
+    'confident, specific opener, say so plainly instead of inventing one.',
+    '',
+    'Return ONLY raw JSON. No markdown code fences, no leading or trailing text, in this exact shape:',
+    '',
+    '{',
+    '  "research_summary": "string — 1-3 \\n-separated short lines, each one SPECIFIC fact (not a vague',
+    '   restatement like \\"has a real estate business\\" — e.g. \\"Started her Instagram this summer,',
+    '   already has 300+ followers\\")",',
+    '  "suggested_opener": "string — one sentence the rep could actually say to open the call, referencing',
+    '   a specific fact from research_summary; \\"No confident opener from what we found\\" if the results',
+    '   are too thin or ambiguous to support one"',
+    '}'
+  ].join('\n');
+}
+
+function isValidFirstTouchResearchSchema_(obj) {
+  return !!(obj && typeof obj.research_summary === 'string' && typeof obj.suggested_opener === 'string');
+}
+
+function buildFirstTouchResearchUserPrompt_(prospectName, results) {
+  var resultsText = results.map(function (r, i) {
+    return (i + 1) + '. ' + r.title + ' (' + r.link + ')\n   ' + (r.snippet || '(no snippet)');
+  }).join('\n');
+  return 'Prospect: ' + prospectName + '\n\nSearch results:\n' + resultsText;
+}
+
+/**
+ * Turns raw search results into a written summary + suggested opener.
+ * Returns null (never throws) on empty input or a generation failure — the
+ * brief falls back to the plain link list via prospectResearchLine_, same
+ * fail-soft contract as everything else in this section: a nice-to-have
+ * research summary is never worth blocking or degrading the brief send.
+ */
+function generateFirstTouchResearchSummary_(prospectName, results) {
+  if (!results || !results.length) return null;
+  var systemPrompt = buildFirstTouchResearchSystemPrompt_();
+  var userPrompt = buildFirstTouchResearchUserPrompt_(prospectName, results.slice(0, FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG.MAX_RESULTS_TO_MODEL));
+  try {
+    var raw = callKimiJudge_(systemPrompt, userPrompt, 'phase3:first_touch_research');
+    var parsed = stripFencesAndParseJson_(raw);
+    if (!isValidFirstTouchResearchSchema_(parsed)) throw new Error('Parsed JSON missing required first-touch-research fields.');
+    return parsed;
   } catch (e) {
-    log_('  findProspectSocialLinks_ threw for "' + prospectName + '": ' + e);
-    return [];
+    log_('  generateFirstTouchResearchSummary_ failed for "' + prospectName + '": ' + e);
+    return null;
   }
 }
 
@@ -535,6 +674,44 @@ function prospectResearchLine_(ctx) {
     'TikTok, YouTube, their Zillow profile, and their brokerage\'s own announcement posts.';
 }
 
+/** Exact sentinel generateFirstTouchResearchSummary_'s own prompt asks the model to use when the
+ * results don't support a confident opener — checked here so that message never gets shown to a rep
+ * as if it were a real suggested opener. */
+var NO_CONFIDENT_OPENER_SENTINEL_ = 'No confident opener from what we found';
+
+/**
+ * Pure. Plain-text lines for the "WHAT WE COULD FIND" section. Tomás's ask
+ * (12/09/2026): "more than links is to tell us what they found online about
+ * the lead, in words" — when a research summary exists, it leads, with the
+ * raw links demoted to a "Sources" list underneath (still there — Joana's
+ * earlier ask was links Kris can actually click); falls back to the plain
+ * link-or-status line (prospectResearchLine_) when no summary was generated
+ * (lookup off, FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG disabled, or the model
+ * call failed) — never blocks or degrades the rest of the brief either way.
+ */
+function firstTouchResearchSectionLines_(ctx) {
+  if (ctx.researchSummary) {
+    var lines = ctx.researchSummary.research_summary.split('\n');
+    if (ctx.researchLinks && ctx.researchLinks.length) {
+      lines = lines.concat([''], ['Sources:'], ctx.researchLinks.map(function (l) { return '  ' + l; }));
+    }
+    return lines;
+  }
+  return [prospectResearchLine_(ctx)];
+}
+
+/**
+ * Pure. Tomás's other ask, same feedback: stop repeating the generic
+ * "GOING IN, YOU NEED TWO THINGS" opener verbatim every time — personalize
+ * from whatever was actually found. Returns [] (nothing inserted, GOAL/PAIN
+ * section unchanged) when there's no summary, or the model itself said the
+ * results were too thin for a confident opener — never fabricates one.
+ */
+function firstTouchOpenerLines_(ctx) {
+  if (!ctx.researchSummary || ctx.researchSummary.suggested_opener === NO_CONFIDENT_OPENER_SENTINEL_) return [];
+  return ['', 'SUGGESTED OPENER (from what we found): ' + ctx.researchSummary.suggested_opener];
+}
+
 function buildFirstTouchBriefEmailBody_(ctx) {
   var lines = [
     'Hi ' + ctx.nextRepFirstName + ',',
@@ -550,7 +727,8 @@ function buildFirstTouchBriefEmailBody_(ctx) {
     lines.push('Their email: ' + ctx.prospectEmail, '');
   }
   lines.push('WHAT WE COULD FIND (unconfirmed — verify before using any of it):');
-  lines.push(prospectResearchLine_(ctx));
+  lines = lines.concat(firstTouchResearchSectionLines_(ctx));
+  lines = lines.concat(firstTouchOpenerLines_(ctx));
   lines.push('',
     'GOING IN, YOU NEED TWO THINGS:',
     '  1. THE GOAL — what are they running towards? Specific, in their words. "Wants to grow" is not a ' +
@@ -575,13 +753,40 @@ function buildFirstTouchBriefEmailBody_(ctx) {
  * must carry raw HTML tags, not escaped text (CLAUDE.md — bitten a prior
  * session already).
  */
-function buildFirstTouchBriefEmailHtml_(ctx) {
-  var researchHtml = ctx.researchLinks && ctx.researchLinks.length
+/** HTML twin of firstTouchResearchSectionLines_ — same lead-with-the-summary,
+ * demote-links-to-Sources behavior. */
+function firstTouchResearchSectionHtml_(ctx) {
+  if (ctx.researchSummary) {
+    var summaryHtml = ctx.researchSummary.research_summary.split('\n').map(function (line) {
+      return '<p style="margin:2px 0;">' + escapeHtml_(line) + '</p>';
+    }).join('');
+    var sourcesHtml = (ctx.researchLinks && ctx.researchLinks.length)
+      ? '<p style="margin:8px 0 2px;color:#555;"><i>Sources:</i></p><ul style="margin:0;padding-left:20px;">' +
+        ctx.researchLinks.map(function (link) {
+          var safe = escapeHtml_(link);
+          return '<li><a href="' + safe + '">' + safe + '</a></li>';
+        }).join('') + '</ul>'
+      : '';
+    return summaryHtml + sourcesHtml;
+  }
+  return ctx.researchLinks && ctx.researchLinks.length
     ? '<ul style="margin:4px 0 0;padding-left:20px;">' + ctx.researchLinks.map(function (link) {
         var safe = escapeHtml_(link);
         return '<li><a href="' + safe + '">' + safe + '</a></li>';
       }).join('') + '</ul>'
     : '<p style="margin:4px 0 0;color:#555;">' + escapeHtml_(prospectResearchLine_(ctx)) + '</p>';
+}
+
+/** HTML twin of firstTouchOpenerLines_ — '' (nothing inserted) under the same conditions. */
+function firstTouchOpenerHtml_(ctx) {
+  if (!ctx.researchSummary || ctx.researchSummary.suggested_opener === NO_CONFIDENT_OPENER_SENTINEL_) return '';
+  return '<p style="background:#eaf3ff;border-left:4px solid #2a6099;padding:8px 12px;">' +
+    '<b>Suggested opener</b> <i>(from what we found)</i>: ' + escapeHtml_(ctx.researchSummary.suggested_opener) + '</p>';
+}
+
+function buildFirstTouchBriefEmailHtml_(ctx) {
+  var researchHtml = firstTouchResearchSectionHtml_(ctx);
+  var openerHtml = firstTouchOpenerHtml_(ctx);
 
   return [
     '<p>Hi ' + escapeHtml_(ctx.nextRepFirstName) + ',</p>',
@@ -595,6 +800,7 @@ function buildFirstTouchBriefEmailHtml_(ctx) {
       escapeHtml_(ctx.prospectEmail) + '</a></p>' : '',
     '<p><b>WHAT WE COULD FIND</b> <i>(unconfirmed — verify before using any of it)</i>:</p>',
     researchHtml,
+    openerHtml,
     '<p><b>GOING IN, YOU NEED TWO THINGS:</b></p>',
     '<ol style="padding-left:20px;">',
     '<li><b style="color:#2a6099;">THE GOAL</b> — what are they running towards? Specific, in their ' +
@@ -622,6 +828,11 @@ function sendFirstTouchHandoffBrief_(repCfg, ev, tz) {
   // (e.g. the lead plus a spouse/partner) makes "which one is the prospect"
   // ambiguous, so only pass it through when there's exactly one.
   var lookupAttempted = !!(typeof PROSPECT_LINKS_LOOKUP_CONFIG !== 'undefined' && PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED);
+  var singleAttendeeEmail = ev.attendeeEmails && ev.attendeeEmails.length === 1 ? ev.attendeeEmails[0] : '';
+  var researchResults = lookupAttempted ? collectProspectResearchResults_(ev.prospectGuess, singleAttendeeEmail) : [];
+  var researchSummary = (FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG.ENABLED && researchResults.length)
+    ? generateFirstTouchResearchSummary_(ev.prospectGuess, researchResults)
+    : null;
   var ctx = {
     nextRepFirstName: String(repCfg.name).split(' ')[0],
     prospectName: ev.prospectGuess,
@@ -630,10 +841,8 @@ function sendFirstTouchHandoffBrief_(repCfg, ev, tz) {
     nextCallDateStr: Utilities.formatDate(ev.start, tz, 'dd/MM/yyyy'),
     nextCallTimeStr: Utilities.formatDate(ev.start, tz, 'HH:mm'),
     lookupAttempted: lookupAttempted,
-    researchLinks: lookupAttempted
-      ? findProspectSocialLinks_(ev.prospectGuess, ev.attendeeEmails && ev.attendeeEmails.length === 1
-          ? ev.attendeeEmails[0] : '')
-      : []
+    researchLinks: researchResults.map(function (r) { return r.link; }),
+    researchSummary: researchSummary
   };
   var body = buildFirstTouchBriefEmailBody_(ctx);
   var htmlBody = buildFirstTouchBriefEmailHtml_(ctx);
@@ -707,6 +916,45 @@ function previewProspectLinksLookup_() {
       (links.length ? links.join(', ') : '(no plausible match found)'));
   });
   log_('previewProspectLinksLookup_ done.');
+}
+
+/**
+ * Read-only: samples a handful of real prospect names, runs
+ * collectProspectResearchResults_ + generateFirstTouchResearchSummary_
+ * against each, and logs the written summary/opener it would produce — so
+ * Kris/Tomás can judge quality before flipping
+ * FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG.ENABLED. Calls Serper AND the model,
+ * writes nothing and sends nothing.
+ */
+/** Apps Script's "Select function" dropdown hides trailing-underscore functions — this is the runnable entry point. */
+function previewFirstTouchResearchSummary() {
+  return previewFirstTouchResearchSummary_();
+}
+
+function previewFirstTouchResearchSummary_() {
+  RUN_TAG = 'previewFirstTouchResearchSummary_';
+  var ss = SpreadsheetApp.openById(SALES_CALL_LOG_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Sales Call Log');
+  if (!sheet) { log_('No Sales Call Log tab found.'); return; }
+  var col = getValidatedColumnMap_(sheet);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) { log_('No data rows in Sales Call Log.'); return; }
+  var sampleSize = Math.min(5, lastRow - 1);
+  var values = sheet.getRange(2, 1, sampleSize, SALES_CALL_LOG_HEADERS.length).getValues();
+  values.forEach(function (row) {
+    var name = row[col['Prospect Name'] - 1];
+    if (!name) return;
+    var email = col['Prospect Email'] ? row[col['Prospect Email'] - 1] : '';
+    var results = collectProspectResearchResults_(name, email);
+    log_('  "' + name + '" — ' + results.length + ' plausible result(s): ' +
+      results.map(function (r) { return r.link; }).join(', '));
+    if (!results.length) return;
+    var summary = generateFirstTouchResearchSummary_(name, results);
+    if (!summary) { log_('    ↳ summary generation failed — see log above.'); return; }
+    log_('    ↳ research_summary: ' + summary.research_summary.replace(/\n/g, ' | '));
+    log_('    ↳ suggested_opener: ' + summary.suggested_opener);
+  });
+  log_('previewFirstTouchResearchSummary_ done.');
 }
 
 // ---------------------------------------------------------------------------

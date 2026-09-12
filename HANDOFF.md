@@ -7,6 +7,44 @@
 
 ---
 
+## Built this session — First-touch brief: written research summary + personalized opener (12/09/2026, latest)
+
+Tomás's feedback on a real first-touch brief (Kuulei, 12/09/2026): of 3
+links shared, only 1 was actually her — the other 2 were teammates on the
+same brokerage page; the last was a dead listing. He wanted the real
+Instagram/LinkedIn/YouTube links, a WRITTEN summary of what was found
+("more than links... in words"), and the generic "GOING IN, YOU NEED TWO
+THINGS" opener personalized from what's actually known about the lead
+instead of repeated verbatim every time.
+
+`Phase3_HandoffBrief.gs`:
+- `findProspectSocialLinks_` now runs the general query PLUS one
+  `site:instagram.com` / `site:linkedin.com/in` / `site:youtube.com` query
+  each (`firstTouchResearchQueries_`), merged/deduped
+  (`collectProspectResearchResults_`/`dedupeResearchResultsByLink_`) — a
+  profile URL on one of those exact platforms is about that person alone,
+  much less likely to be a "meet the team" page than the old single
+  generic query. `findProspectSocialLinks_` itself is now a thin
+  link-only wrapper — no existing caller's behavior changed.
+- New `FIRST_TOUCH_RESEARCH_SUMMARY_CONFIG` (`ENABLED: false` — a fresh,
+  unreviewed kind of LLM output, same deliberately-separate-flag
+  discipline as `HANDOFF_CONFIG`'s own header) + `generateFirstTouchResearchSummary_`
+  (`callKimiJudge_`, same model as the rest of this file) turns the raw
+  search snippets into a short written summary and ONE suggested opener,
+  grounded only in what was actually found — never fabricates one when
+  the results are thin. Run `previewFirstTouchResearchSummary()` against
+  real names before flipping `ENABLED`.
+- The email now leads with that summary (links demoted to a "Sources"
+  list underneath) and inserts the suggested opener ahead of "GOING IN,
+  YOU NEED TWO THINGS" — that section itself is unchanged when there's no
+  summary yet (lookup off, config off, or generation failed), so nothing
+  regresses for a brief with nothing to personalize.
+- 17 new tests, 821/822 passing across the whole `.gs` suite (the one
+  pre-existing failure predates this change, unrelated —
+  `COMPLIANCE_CHECK_CONFIG.ENABLED false` calendar-match-pass test).
+
+---
+
 ## Built this session — Daily lead follow-up approval digest (11/09/2026, latest)
 
 Kris's ask: every work-day morning, email Sean/Bens/Joana (cc Kris+Tomás)

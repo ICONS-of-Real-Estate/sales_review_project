@@ -7953,7 +7953,13 @@ test('findProspectSocialLinks_ filters out non-matching results and returns only
       }
     });
     const links = gas.findProspectSocialLinks_('Jane Doe');
-    assert.deepEqual(links, ['https://janedoerealty.com']);
+    // Array.from: findProspectSocialLinks_ now merges/dedupes results itself
+    // (firstTouchResearchQueries_'s multiple site: queries), so the returned
+    // array is built inside the vm sandbox rather than inherited from the
+    // mock's own host-realm array — same cross-realm identity issue deepEqual
+    // (aliased to deepStrictEqual by node:assert/strict) already required
+    // Array.from for elsewhere in this file (e.g. readExistingReconciliationReviewKeys_).
+    assert.deepEqual(Array.from(links), ['https://janedoerealty.com']);
   } finally {
     gas.serperSearch_ = originalSearch;
   }
@@ -7974,6 +7980,190 @@ test('findProspectSocialLinks_ degrades to an empty list, never throws, on a non
   } finally {
     gas.serperSearch_ = originalSearch;
   }
+});
+
+test('firstTouchResearchQueries_ includes the general query plus one site: query per platform Tomás asked for (12/09/2026)', () => {
+  const queries = Array.from(gas.firstTouchResearchQueries_('Kuulei Hunter', ''));
+  assert.equal(queries.length, 4);
+  assert.equal(queries[0], gas.prospectSearchQuery_('Kuulei Hunter', ''));
+  assert.ok(queries.some((q) => q.indexOf('site:instagram.com') !== -1));
+  assert.ok(queries.some((q) => q.indexOf('site:linkedin.com/in') !== -1));
+  assert.ok(queries.some((q) => q.indexOf('site:youtube.com') !== -1));
+});
+
+test('dedupeResearchResultsByLink_ keeps first-seen order and drops a link already seen in an earlier batch', () => {
+  const batches = [
+    [{ title: 'A', link: 'https://instagram.com/kuulei', snippet: 's1' }],
+    [{ title: 'A dup', link: 'https://instagram.com/kuulei', snippet: 's1-dup' },
+     { title: 'B', link: 'https://linkedin.com/in/kuulei', snippet: 's2' }]
+  ];
+  const merged = Array.from(gas.dedupeResearchResultsByLink_(batches, 10));
+  assert.deepEqual(merged.map((r) => r.link), ['https://instagram.com/kuulei', 'https://linkedin.com/in/kuulei']);
+});
+
+test('dedupeResearchResultsByLink_ caps the merged result at maxResults', () => {
+  const batches = [[
+    { title: 'A', link: 'https://a.com', snippet: '' },
+    { title: 'B', link: 'https://b.com', snippet: '' },
+    { title: 'C', link: 'https://c.com', snippet: '' }
+  ]];
+  assert.equal(Array.from(gas.dedupeResearchResultsByLink_(batches, 2)).length, 2);
+});
+
+test('collectProspectResearchResults_ merges every platform query, filtered and deduped, into one {title,link,snippet} list', () => {
+  const originalSearch = gas.serperSearch_;
+  try {
+    gas.serperSearch_ = (query) => {
+      if (query.indexOf('site:instagram.com') !== -1) {
+        return { status: 200, json: { organic: [{ title: 'Kuulei Hunter on Instagram', link: 'https://instagram.com/kuulei_nvrealtor', snippet: 'Kuulei Hunter, real estate content' }] } };
+      }
+      return { status: 200, json: { organic: [{ title: 'Unrelated', link: 'https://someotherbiz.com', snippet: 'nothing to do with her' }] } };
+    };
+    const results = Array.from(gas.collectProspectResearchResults_('Kuulei Hunter', ''));
+    assert.deepEqual(results.map((r) => r.link), ['https://instagram.com/kuulei_nvrealtor']);
+    assert.equal(results[0].snippet, 'Kuulei Hunter, real estate content');
+  } finally {
+    gas.serperSearch_ = originalSearch;
+  }
+});
+
+test('collectProspectResearchResults_ degrades to [] for a single query that fails, without losing the other queries\' results', () => {
+  const originalSearch = gas.serperSearch_;
+  try {
+    gas.serperSearch_ = (query) => {
+      if (query.indexOf('site:instagram.com') !== -1) throw new Error('network error on this one query');
+      return { status: 200, json: { organic: [{ title: 'Kuulei Hunter Realty', link: 'https://kuuleirealty.com', snippet: 'Kuulei Hunter, agent' }] } };
+    };
+    const results = Array.from(gas.collectProspectResearchResults_('Kuulei Hunter', ''));
+    assert.ok(results.some((r) => r.link === 'https://kuuleirealty.com'),
+      'one query throwing must not wipe out results the other queries already found');
+  } finally {
+    gas.serperSearch_ = originalSearch;
+  }
+});
+
+test('isValidFirstTouchResearchSchema_ requires both string fields', () => {
+  assert.equal(gas.isValidFirstTouchResearchSchema_({ research_summary: 'x', suggested_opener: 'y' }), true);
+  assert.equal(gas.isValidFirstTouchResearchSchema_({ research_summary: 'x' }), false);
+  assert.equal(gas.isValidFirstTouchResearchSchema_(null), false);
+  assert.equal(gas.isValidFirstTouchResearchSchema_({ research_summary: 1, suggested_opener: 'y' }), false);
+});
+
+test('buildFirstTouchResearchUserPrompt_ lists every result with its title, link, and snippet', () => {
+  const prompt = gas.buildFirstTouchResearchUserPrompt_('Kuulei Hunter', [
+    { title: 'Kuulei on Instagram', link: 'https://instagram.com/kuulei_nvrealtor', snippet: 'Started this summer, 300+ followers' }
+  ]);
+  assert.match(prompt, /Kuulei Hunter/);
+  assert.match(prompt, /Kuulei on Instagram/);
+  assert.match(prompt, /https:\/\/instagram\.com\/kuulei_nvrealtor/);
+  assert.match(prompt, /Started this summer, 300\+ followers/);
+});
+
+test('generateFirstTouchResearchSummary_ returns null without calling the model when there are no results at all — never worth the call', () => {
+  const originalCall = gas.callKimiJudge_;
+  try {
+    gas.callKimiJudge_ = () => { throw new Error('must not be called with zero results'); };
+    assert.equal(gas.generateFirstTouchResearchSummary_('Kuulei Hunter', []), null);
+  } finally {
+    gas.callKimiJudge_ = originalCall;
+  }
+});
+
+test('generateFirstTouchResearchSummary_ parses a valid model reply into {research_summary, suggested_opener}', () => {
+  const originalCall = gas.callKimiJudge_;
+  try {
+    gas.callKimiJudge_ = () => JSON.stringify({
+      research_summary: 'Started Instagram this summer, already 300+ followers.',
+      suggested_opener: 'Congrats on growing your Instagram to 300+ followers so fast — how did you do that?'
+    });
+    const summary = gas.generateFirstTouchResearchSummary_('Kuulei Hunter', [
+      { title: 'Kuulei on Instagram', link: 'https://instagram.com/kuulei_nvrealtor', snippet: 'Started this summer, 300+ followers' }
+    ]);
+    assert.match(summary.research_summary, /300\+ followers/);
+    assert.match(summary.suggested_opener, /Congrats/);
+  } finally {
+    gas.callKimiJudge_ = originalCall;
+  }
+});
+
+test('generateFirstTouchResearchSummary_ returns null (never throws) when the model reply fails to parse — a nice-to-have summary must never block the brief', () => {
+  const originalCall = gas.callKimiJudge_;
+  try {
+    gas.callKimiJudge_ = () => 'not json at all';
+    assert.equal(gas.generateFirstTouchResearchSummary_('Kuulei Hunter', [{ title: 't', link: 'https://x.com', snippet: 's' }]), null);
+  } finally {
+    gas.callKimiJudge_ = originalCall;
+  }
+});
+
+test('firstTouchResearchSectionLines_ leads with the written summary and demotes links to a Sources list when a summary exists', () => {
+  const ctx = {
+    researchSummary: { research_summary: 'Fact one.\nFact two.', suggested_opener: 'Ask about fact one.' },
+    researchLinks: ['https://instagram.com/kuulei_nvrealtor']
+  };
+  const lines = Array.from(gas.firstTouchResearchSectionLines_(ctx));
+  assert.deepEqual(lines, ['Fact one.', 'Fact two.', '', 'Sources:', '  https://instagram.com/kuulei_nvrealtor']);
+});
+
+test('firstTouchResearchSectionLines_ falls back to prospectResearchLine_ when there is no summary', () => {
+  const ctx = { researchSummary: null, researchLinks: ['https://instagram.com/kuulei_nvrealtor'], lookupAttempted: true };
+  assert.deepEqual(Array.from(gas.firstTouchResearchSectionLines_(ctx)), ['https://instagram.com/kuulei_nvrealtor']);
+});
+
+test('firstTouchOpenerLines_ inserts the suggested opener when a summary exists with a real (non-sentinel) opener', () => {
+  const ctx = { researchSummary: { research_summary: 'x', suggested_opener: 'Ask about her Instagram growth.' } };
+  assert.deepEqual(Array.from(gas.firstTouchOpenerLines_(ctx)),
+    ['', 'SUGGESTED OPENER (from what we found): Ask about her Instagram growth.']);
+});
+
+test('firstTouchOpenerLines_ returns nothing (never fabricates) when the model itself said the results were too thin', () => {
+  const ctx = { researchSummary: { research_summary: 'x', suggested_opener: gas.NO_CONFIDENT_OPENER_SENTINEL_ } };
+  assert.deepEqual(Array.from(gas.firstTouchOpenerLines_(ctx)), []);
+});
+
+test('firstTouchOpenerLines_ returns nothing when there is no research summary at all', () => {
+  assert.deepEqual(Array.from(gas.firstTouchOpenerLines_({ researchSummary: null })), []);
+});
+
+test('buildFirstTouchBriefEmailBody_ includes the research summary and suggested opener ahead of GOING IN, YOU NEED TWO THINGS when a summary exists', () => {
+  const body = gas.buildFirstTouchBriefEmailBody_({
+    nextRepFirstName: 'Sean', prospectName: 'Kuulei Hunter', nextCallType: 'discovery call',
+    nextCallDateStr: '11/09/2026', nextCallTimeStr: '13:00', lookupAttempted: true,
+    researchLinks: ['https://instagram.com/kuulei_nvrealtor'],
+    researchSummary: { research_summary: 'Started Instagram this summer, already 300+ followers.',
+      suggested_opener: 'Ask how she grew her Instagram so fast.' }
+  });
+  assert.match(body, /Started Instagram this summer, already 300\+ followers\./);
+  assert.match(body, /SUGGESTED OPENER \(from what we found\): Ask how she grew her Instagram so fast\./);
+  assert.match(body, /Sources:/);
+  assert.match(body, /https:\/\/instagram\.com\/kuulei_nvrealtor/);
+  const openerIndex = body.indexOf('SUGGESTED OPENER');
+  const goalPainIndex = body.indexOf('GOING IN, YOU NEED TWO THINGS');
+  assert.ok(openerIndex !== -1 && openerIndex < goalPainIndex, 'the opener must come before the generic GOAL/PAIN section');
+});
+
+test('buildFirstTouchBriefEmailHtml_ renders the research summary and opener as real HTML when a summary exists', () => {
+  const html = gas.buildFirstTouchBriefEmailHtml_({
+    nextRepFirstName: 'Sean', prospectName: 'Kuulei Hunter', nextCallType: 'discovery call',
+    nextCallDateStr: '11/09/2026', nextCallTimeStr: '13:00', lookupAttempted: true,
+    researchLinks: ['https://instagram.com/kuulei_nvrealtor'],
+    researchSummary: { research_summary: 'Started Instagram this summer, already 300+ followers.',
+      suggested_opener: 'Ask how she grew her Instagram so fast.' }
+  });
+  assert.match(html, /Started Instagram this summer, already 300\+ followers\./);
+  assert.match(html, /<b>Suggested opener<\/b>/);
+  assert.match(html, /Ask how she grew her Instagram so fast\./);
+  assert.match(html, /<a href="https:\/\/instagram\.com\/kuulei_nvrealtor">/);
+});
+
+test('buildFirstTouchBriefEmailHtml_ falls back to the plain link list, with no opener callout, when there is no research summary', () => {
+  const html = gas.buildFirstTouchBriefEmailHtml_({
+    nextRepFirstName: 'Sean', prospectName: 'Kuulei Hunter', nextCallType: 'discovery call',
+    nextCallDateStr: '11/09/2026', nextCallTimeStr: '13:00', lookupAttempted: true,
+    researchLinks: ['https://instagram.com/kuulei_nvrealtor'], researchSummary: null
+  });
+  assert.match(html, /<a href="https:\/\/instagram\.com\/kuulei_nvrealtor">/);
+  assert.ok(html.indexOf('Suggested opener') === -1);
 });
 
 test('enrichProspectLinksWithWebSearch_ is a no-op while PROSPECT_LINKS_LOOKUP_CONFIG.ENABLED is false', () => {
