@@ -269,6 +269,61 @@ class TestFetchAllContactsPagination:
             "startAfter on the second request must be an epoch-millis int, not the raw ISO dateAdded string"
 
 
+class TestFetchAllContactsMaxContacts:
+    def test_stops_paginating_once_max_contacts_is_reached_instead_of_fetching_everything(self):
+        """Real bug, confirmed live (12/09/2026): ghl_icp_export.py's --limit
+        used to slice the list AFTER fetch_all_contacts had already paged
+        through the entire account, so a '200-contact sample' took as long
+        as a full 65k+ export. max_contacts must actually cut the fetch
+        short, not just the returned list."""
+        page1 = {"contacts": [{"id": f"c{i}", "dateAdded": "2026-09-08T20:12:50.819Z"} for i in range(100)]}
+        page2 = {"contacts": [{"id": f"c{100 + i}", "dateAdded": "2026-09-09T00:00:00.000Z"} for i in range(100)]}
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self._body = body
+                self.status_code = 200
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._body
+
+        class FakeClient:
+            def get(self, path, params=None):
+                calls.append(params)
+                return FakeResponse(page1 if len(calls) == 1 else page2)
+
+        result = ghl_mirror.fetch_all_contacts(FakeClient(), "loc1", max_contacts=150)
+        assert len(result) == 150, "must trim to exactly max_contacts"
+        assert len(calls) == 2, "must not fetch a third page once max_contacts is already satisfied"
+
+    def test_max_contacts_none_preserves_existing_fetch_everything_behavior(self):
+        page1 = {"contacts": [{"id": "c1", "dateAdded": "2026-09-08T20:12:50.819Z"}]}
+
+        class FakeResponse:
+            def __init__(self, body):
+                self._body = body
+                self.status_code = 200
+                self.headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._body
+
+        class FakeClient:
+            def get(self, path, params=None):
+                return FakeResponse(page1)
+
+        result = ghl_mirror.fetch_all_contacts(FakeClient(), "loc1")  # short final page ends the loop naturally
+        assert len(result) == 1
+
+
 class TestFetchProgressLogging:
     """Kris's feedback, 11/09/2026: a real run against 65,000+ contacts
     (650+ pages) produced zero output until the very end and looked hung.

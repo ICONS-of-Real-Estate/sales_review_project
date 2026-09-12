@@ -233,9 +233,7 @@ def main():
         print(f"  Sales-call-matching stages: {sales_stages}", file=sys.stderr)
 
         print("Fetching contacts (this can take a while for a large account)...", file=sys.stderr)
-        contacts = ghl_mirror.fetch_all_contacts(client, ghl_mirror.GHL_LOCATION_ID)
-        if args.limit:
-            contacts = contacts[:args.limit]
+        contacts = ghl_mirror.fetch_all_contacts(client, ghl_mirror.GHL_LOCATION_ID, max_contacts=args.limit)
         print(f"  {len(contacts)} contact(s) to export.", file=sys.stderr)
 
         print("Fetching opportunities...", file=sys.stderr)

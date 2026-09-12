@@ -367,7 +367,7 @@ def _dateadded_to_epoch_millis(dateadded):
     return int(datetime.fromisoformat(iso).timestamp() * 1000)
 
 
-def fetch_all_contacts(client, location_id, log_every=10):
+def fetch_all_contacts(client, location_id, log_every=10, max_contacts=None):
     """Paginated GET /contacts/, confirmed-live endpoint shape
     (ghlSearchContactByName_, Phase9_GhlSync.gs) -- `query` param omitted
     here since we want everyone, not a name match. Pagination params
@@ -381,7 +381,16 @@ def fetch_all_contacts(client, location_id, log_every=10):
     with zero output between the start and the final count, a genuine
     multi-minute fetch looked identical to a hang. `log_every` is a
     parameter, not a hardcoded stderr call, so tests can pass a value that
-    never fires without needing to mock print()."""
+    never fires without needing to mock print().
+
+    `max_contacts` stops paginating (not just returning) once at least that
+    many have been fetched -- real bug, confirmed live (12/09/2026):
+    ghl_icp_export.py's own --limit only trimmed the LIST after this
+    function had already paged through the entire account, so a "quick
+    200-contact sample" took exactly as long as a full 65k+ export. None
+    (the default) preserves every existing caller's current behavior
+    (ghl_mirror.py's own run_sync_ never passes it) -- fetch everything,
+    same as before this parameter existed."""
     contacts = []
     start_after_id = None
     start_after = None
@@ -401,11 +410,15 @@ def fetch_all_contacts(client, location_id, log_every=10):
         contacts.extend(page)
         if page_num % log_every == 0:
             print(f"  fetch_all_contacts: {len(contacts)} contact(s) so far (page {page_num})...", file=sys.stderr)
+        if max_contacts and len(contacts) >= max_contacts:
+            break
         if len(page) < PAGE_LIMIT:
             break
         start_after_id = page[-1].get("id")
         last_date_added = page[-1].get("dateAdded")
         start_after = _dateadded_to_epoch_millis(last_date_added) if last_date_added else None
+    if max_contacts:
+        contacts = contacts[:max_contacts]
     print(f"fetch_all_contacts: done, {len(contacts)} contact(s) total.", file=sys.stderr)
     return contacts
 
