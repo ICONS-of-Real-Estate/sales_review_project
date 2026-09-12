@@ -117,6 +117,13 @@ def main():
                          help="Print the raw appointments payload for the first 3 contacts and exit -- writes "
                               "nothing. Run this FIRST to confirm what fields a real appointment actually has "
                               "before trusting the title-matching classification.")
+    parser.add_argument("--list-titles", action="store_true",
+                         help="Fetch appointments for every row in --in and print every DISTINCT title seen, "
+                              "with a count and how each one currently classifies -- writes nothing. Run this "
+                              "when the qualification/sales-call breakdown looks off (a real gap found live, "
+                              "12/09/2026: only 3 contacts' worth of real titles had ever been sampled before "
+                              "classifying all 60 -- 'reached neither stage' jumped to 55%% once real appointment "
+                              "counts came in, meaning real appointments exist that neither pattern matches).")
     args = parser.parse_args()
 
     if not ghl_mirror.GHL_API_TOKEN or not ghl_mirror.GHL_LOCATION_ID:
@@ -138,6 +145,23 @@ def main():
                 print(f"=== contact {row['contact_id']} ({row.get('full_name')}) -- "
                       f"{len(appointments)} appointment(s) ===")
                 print(json.dumps(appointments, indent=2, default=str))
+            return
+
+        if args.list_titles:
+            title_counts = {}
+            for i, row in enumerate(rows, start=1):
+                appointments = fetch_appointments_for_contact_(client, row["contact_id"])
+                for a in appointments:
+                    title = str(a.get("title") or a.get("calendarName") or a.get("name") or "(no title field at all)")
+                    title_counts[title] = title_counts.get(title, 0) + 1
+                if i % 10 == 0:
+                    print(f"  {i}/{len(rows)} contact(s) scanned...", file=sys.stderr)
+            print(f"\n{len(title_counts)} distinct appointment title(s) across {len(rows)} contact(s):\n")
+            for title, count in sorted(title_counts.items(), key=lambda kv: -kv[1]):
+                classification = classify_appointment_({"title": title})
+                tag = ("qualification" if classification["is_qualification"] else
+                       "sales_call" if classification["is_sales_call"] else "UNCLASSIFIED")
+                print(f"  {count:>3}x [{tag:>13}] {title}")
             return
 
         out_rows = []
