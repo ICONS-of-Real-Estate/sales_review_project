@@ -12926,6 +12926,27 @@ test('findBensLeadSalesCallStatuses_ matches a tracker lead to their most recent
   assert.equal(result.stats.matched, 1);
 });
 
+test('findBensLeadSalesCallStatuses_ lets a later VALID Call Date replace an earlier row whose Call Date is blank/unparseable (real bug, 12/09/2026: an invalid best.callDate could never be beaten, even by a real later Sales Call)', () => {
+  const tCol = bensTrackerCol(gas);
+  const trackerRows = [
+    bensTrackerRow(gas, { Name: 'Joey Lamielle', Email: 'joey@example.com' })
+  ];
+  const lCol = bensLogCol(gas);
+  const logRows = [
+    fakeSalesCallLogRow({
+      'Prospect Email': 'joey@example.com', 'Call Type': 'Sales Call', Rep: 'Tomás',
+      'Call Date': '', 'Outcome Logged': false, 'Outcome Disposition': ''
+    }),
+    fakeSalesCallLogRow({
+      'Prospect Email': 'joey@example.com', 'Call Type': 'Sales Call', Rep: 'Tomás',
+      'Call Date': new gas.Date(2026, 8, 5), 'Outcome Logged': true, 'Outcome Disposition': 'Sold'
+    })
+  ];
+  const result = gas.findBensLeadSalesCallStatuses_(trackerRows, tCol, logRows, lCol);
+  assert.equal(result.statuses.length, 1);
+  assert.equal(result.statuses[0].outcomeDisposition, 'Sold', 'the later, genuinely valid row must win over the earlier blank-dated one');
+});
+
 test('findBensLeadSalesCallStatuses_ ignores Discovery/QC/Icons 100 Recording rows -- only a real Sales Call counts', () => {
   const tCol = bensTrackerCol(gas);
   const trackerRows = [bensTrackerRow(gas, { Name: 'Andrea Brunson', Email: 'andrea@example.com' })];

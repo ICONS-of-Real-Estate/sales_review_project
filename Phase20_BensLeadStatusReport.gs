@@ -71,7 +71,16 @@ function findBensLeadSalesCallStatuses_(trackerRows, trackerCol, logRows, logCol
       if (normalize_(logRow[logCol['Prospect Email'] - 1]) !== normEmail) return;
       if (!isSalesCallTypeForFunnel_(logRow[logCol['Call Type'] - 1])) return;
       var callDate = logRow[logCol['Call Date'] - 1];
-      var isNewerOrFirst = !best || (best.callDate instanceof Date && callDate instanceof Date && callDate > best.callDate);
+      // Real bug, found live (12/09/2026): if the FIRST matching row happens
+      // to have a blank/unparseable Call Date, `best.callDate instanceof
+      // Date` is false forever after -- no later row, however genuinely
+      // newer and valid, could ever replace it, so Bens would get stuck on
+      // a stale/dateless match while a real later Sales Call sat ignored.
+      // A valid callDate must always beat an invalid best, not just a
+      // valid-but-older one.
+      var callDateValid = callDate instanceof Date && !isNaN(callDate);
+      var bestDateValid = best && best.callDate instanceof Date && !isNaN(best.callDate);
+      var isNewerOrFirst = !best || (callDateValid && (!bestDateValid || callDate > best.callDate));
       if (isNewerOrFirst) {
         best = {
           callDate: callDate,
