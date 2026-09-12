@@ -159,6 +159,68 @@ class TestMainGuard:
         assert exc_info.value.code == 1
 
 
+class TestGetWithRetry:
+    class _FakeResponse:
+        def __init__(self, status_code, headers=None):
+            self.status_code = status_code
+            self.headers = headers or {}
+
+    class _FakeClient:
+        def __init__(self, responses):
+            self._responses = list(responses)
+            self.calls = 0
+
+        def get(self, path, params=None):
+            self.calls += 1
+            return self._responses[min(self.calls, len(self._responses)) - 1]
+
+    def test_returns_immediately_on_a_200_with_no_retry(self):
+        client = self._FakeClient([self._FakeResponse(200)])
+        sleeps = []
+        resp = ghl_mirror._get_with_retry(client, "/contacts/", sleep=sleeps.append)
+        assert resp.status_code == 200
+        assert client.calls == 1
+        assert sleeps == []
+
+    def test_retries_on_429_then_succeeds(self):
+        client = self._FakeClient([self._FakeResponse(429), self._FakeResponse(429), self._FakeResponse(200)])
+        sleeps = []
+        resp = ghl_mirror._get_with_retry(client, "/contacts/", sleep=sleeps.append)
+        assert resp.status_code == 200
+        assert client.calls == 3
+        assert sleeps == [2, 4], "must back off exponentially (2s, 4s, ...) between retries"
+
+    def test_honors_a_numeric_retry_after_header_over_the_default_backoff(self):
+        client = self._FakeClient([self._FakeResponse(429, {"Retry-After": "7"}), self._FakeResponse(200)])
+        sleeps = []
+        ghl_mirror._get_with_retry(client, "/contacts/", sleep=sleeps.append)
+        assert sleeps == [7]
+
+    def test_gives_up_after_max_retries_and_returns_the_last_response(self):
+        client = self._FakeClient([self._FakeResponse(429)] * 10)
+        sleeps = []
+        resp = ghl_mirror._get_with_retry(client, "/contacts/", max_retries=2, sleep=sleeps.append)
+        assert resp.status_code == 429
+        assert client.calls == 3  # initial attempt + 2 retries
+        assert sleeps == [2, 4]
+
+    def test_retries_on_5xx_the_same_as_429(self):
+        client = self._FakeClient([self._FakeResponse(503), self._FakeResponse(200)])
+        sleeps = []
+        resp = ghl_mirror._get_with_retry(client, "/contacts/", sleep=sleeps.append)
+        assert resp.status_code == 200
+        assert client.calls == 2
+
+    def test_a_non_numeric_retry_after_header_falls_back_to_the_default_backoff(self):
+        # Some servers send an HTTP-date Retry-After instead of seconds --
+        # must not crash trying to parse it as a number.
+        client = self._FakeClient([self._FakeResponse(429, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+                                    self._FakeResponse(200)])
+        sleeps = []
+        ghl_mirror._get_with_retry(client, "/contacts/", sleep=sleeps.append)
+        assert sleeps == [2]
+
+
 class TestDateAddedToEpochMillis:
     def test_converts_iso_z_suffix_to_millisecond_epoch(self):
         # Real bug, confirmed live (11/09/2026): sending the raw ISO string
@@ -185,6 +247,8 @@ class TestFetchAllContactsPagination:
         class FakeResponse:
             def __init__(self, body):
                 self._body = body
+                self.status_code = 200
+                self.headers = {}
 
             def raise_for_status(self):
                 pass
@@ -214,6 +278,8 @@ class TestFetchProgressLogging:
         class FakeResponse:
             def __init__(self, body):
                 self._body = body
+                self.status_code = 200
+                self.headers = {}
 
             def raise_for_status(self):
                 pass

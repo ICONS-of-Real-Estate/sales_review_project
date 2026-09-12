@@ -40,6 +40,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -331,6 +332,30 @@ def _ghl_client():
     )
 
 
+def _get_with_retry(client, path, params=None, max_retries=5, sleep=time.sleep):
+    """GET with exponential backoff on 429/5xx. Real gap until now: every
+    fetch_all_* function below just called client.get(...) directly with no
+    retry at all, so a single rate-limit response partway through a 65k+
+    contact pull would fail the whole run. Honors GHL's own Retry-After
+    header when it sends a plain integer seconds value; otherwise backs off
+    2/4/8/16/32s. `sleep` is injectable so tests never actually wait."""
+    delay = 2
+    resp = None
+    for attempt in range(max_retries + 1):
+        resp = client.get(path, params=params)
+        if resp.status_code not in (429, 500, 502, 503, 504):
+            return resp
+        if attempt == max_retries:
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        wait = float(retry_after) if retry_after and retry_after.strip().isdigit() else delay
+        print(f"  GHL API HTTP {resp.status_code} on {path} -- retrying in {wait:.0f}s "
+              f"(attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+        sleep(wait)
+        delay *= 2
+    return resp
+
+
 def _dateadded_to_epoch_millis(dateadded):
     """GHL's `dateAdded` on a contact is an ISO-8601 string
     ("2026-09-08T20:12:50.819Z"), but the /contacts/ endpoint's own
@@ -367,7 +392,7 @@ def fetch_all_contacts(client, location_id, log_every=10):
         if start_after_id:
             params["startAfterId"] = start_after_id
             params["startAfter"] = start_after
-        resp = client.get("/contacts/", params=params)
+        resp = _get_with_retry(client, "/contacts/", params=params)
         resp.raise_for_status()
         body = resp.json()
         page = body.get("contacts") or body.get("data") or []
@@ -389,7 +414,7 @@ def fetch_all_pipelines(client, location_id):
     """GET /opportunities/pipelines -- same endpoint Phase14_GhlStageTriage.gs/
     Phase15_CrmOrganizationReview.gs already fetch live for their own stage
     lookups."""
-    resp = client.get("/opportunities/pipelines", params={"locationId": location_id})
+    resp = _get_with_retry(client, "/opportunities/pipelines", params={"locationId": location_id})
     resp.raise_for_status()
     return resp.json().get("pipelines") or []
 
@@ -403,8 +428,8 @@ def fetch_all_opportunities(client, location_id, log_every=10):
     opportunities = []
     page = 1
     while True:
-        resp = client.get(
-            "/opportunities/search",
+        resp = _get_with_retry(
+            client, "/opportunities/search",
             params={"location_id": location_id, "limit": PAGE_LIMIT, "page": page},
         )
         resp.raise_for_status()
